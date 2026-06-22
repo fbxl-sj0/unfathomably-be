@@ -1,0 +1,1 @@
+Remote account custom fields are now capped before validation instead of rejecting otherwise usable remote users.

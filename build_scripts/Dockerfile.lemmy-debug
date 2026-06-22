@@ -1,0 +1,68 @@
+# Project: Unfathomably federation smoke tests
+# ------------------------------------------------------------
+#
+# File: Dockerfile.lemmy-debug
+#
+# Purpose:
+#
+#   Build a debug-assertions Lemmy server image for local federation smoke
+#   tests that run entirely inside a disposable Docker network.
+#
+# Responsibilities:
+#
+#   * build the selected stable Lemmy ref from official source
+#   * keep debug assertions enabled so Lemmy permits HTTP ActivityPub URLs
+#     inside the isolated smoke-test network
+#   * provide a small runtime image that behaves like the stock Lemmy server
+#
+# This file intentionally does NOT contain:
+#
+#   * production Lemmy deployment settings
+#   * frontend build steps
+#   * TLS certificate or reverse proxy setup
+#
+
+FROM rust:1-bookworm AS builder
+
+ARG LEMMY_REF=0.19.18
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        clang \
+        git \
+        libpq-dev \
+        pkg-config \
+        protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone \
+        --depth 1 \
+        --recurse-submodules \
+        --shallow-submodules \
+        --branch "${LEMMY_REF}" \
+        https://github.com/LemmyNet/lemmy.git \
+        /src
+
+WORKDIR /src
+
+RUN cargo build --locked --bin lemmy_server
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libpq5 \
+    && useradd --system --uid 991 --gid users --home-dir /nonexistent --shell /usr/sbin/nologin lemmy \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/target/debug/lemmy_server /usr/local/bin/lemmy_server
+
+USER lemmy
+
+EXPOSE 8536
+
+ENTRYPOINT ["lemmy_server"]
+
+# end of Dockerfile.lemmy-debug

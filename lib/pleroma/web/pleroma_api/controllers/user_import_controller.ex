@@ -1,0 +1,72 @@
+# Pleroma: A lightweight social networking server
+# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# SPDX-License-Identifier: AGPL-3.0-only
+
+defmodule Pleroma.Web.PleromaAPI.UserImportController do
+  use Pleroma.Web, :controller
+
+  require Logger
+
+  alias Pleroma.User
+  alias Pleroma.Web.ApiSpec
+  alias Pleroma.Web.Plugs.OAuthScopesPlug
+
+  plug(OAuthScopesPlug, %{scopes: ["follow", "write:follows"]} when action == :follow)
+  plug(OAuthScopesPlug, %{scopes: ["follow", "write:blocks"]} when action == :blocks)
+  plug(OAuthScopesPlug, %{scopes: ["follow", "write:mutes"]} when action == :mutes)
+
+  plug(Pleroma.Web.ApiSpec.CastAndValidate)
+  defdelegate open_api_operation(action), to: ApiSpec.UserImportOperation
+
+  def follow(%Plug.Conn{body_params: %{list: %Plug.Upload{path: path}}} = conn, _) do
+    read_import_file(conn, path, &follow(&1, %{}))
+  end
+
+  def follow(%{assigns: %{user: follower}, body_params: %{list: list}} = conn, _) do
+    identifiers =
+      list
+      |> String.split("\n")
+      |> Enum.map(&(&1 |> String.split(",") |> List.first()))
+      |> List.delete("Account address")
+      |> Enum.map(&(&1 |> String.trim() |> String.trim_leading("@")))
+      |> Enum.reject(&(&1 == ""))
+
+    User.Import.follow_import(follower, identifiers)
+    json(conn, "job started")
+  end
+
+  def blocks(%Plug.Conn{body_params: %{list: %Plug.Upload{path: path}}} = conn, _) do
+    read_import_file(conn, path, &blocks(&1, %{}))
+  end
+
+  def blocks(%{assigns: %{user: blocker}, body_params: %{list: list}} = conn, _) do
+    User.Import.blocks_import(blocker, prepare_user_identifiers(list))
+    json(conn, "job started")
+  end
+
+  def mutes(%Plug.Conn{body_params: %{list: %Plug.Upload{path: path}}} = conn, _) do
+    read_import_file(conn, path, &mutes(&1, %{}))
+  end
+
+  def mutes(%{assigns: %{user: user}, body_params: %{list: list}} = conn, _) do
+    User.Import.mutes_import(user, prepare_user_identifiers(list))
+    json(conn, "job started")
+  end
+
+  defp prepare_user_identifiers(list) do
+    list
+    |> String.split()
+    |> Enum.map(&String.trim_leading(&1, "@"))
+  end
+
+  defp read_import_file(%Plug.Conn{} = conn, path, next) do
+    case File.read(path) do
+      {:ok, list} ->
+        next.(%Plug.Conn{conn | body_params: %{list: list}})
+
+      {:error, reason} ->
+        Logger.warning("Could not read import file #{inspect(path)}: #{inspect(reason)}")
+        render_error(conn, :bad_request, "Could not read import file")
+    end
+  end
+end

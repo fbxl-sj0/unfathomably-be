@@ -1,0 +1,1 @@
+LDAP StartTLS now verifies server certificates by default while preserving explicit administrator TLS overrides.

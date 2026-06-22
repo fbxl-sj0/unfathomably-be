@@ -1,0 +1,1 @@
+LDAP automatic account registration can now use a configurable mail attribute through `:ldap, :mail` or `LDAP_MAIL`.

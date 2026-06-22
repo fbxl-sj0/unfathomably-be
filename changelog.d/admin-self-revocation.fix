@@ -1,0 +1,1 @@
+Admin self-revocation is now blocked before the generic permission revocation handler can match.
