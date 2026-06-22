@@ -21,10 +21,10 @@ defmodule Pleroma.Mixfile do
       deps: deps(),
       test_coverage: [tool: :covertool, summary: true],
       # Docs
-      homepage_url: "https://github.com/fbxl/unfathomably-be",
-      source_url: "https://github.com/fbxl/unfathomably-be",
+      homepage_url: "https://github.com/fbxl-sj0/unfathomably-be",
+      source_url: "https://github.com/fbxl-sj0/unfathomably-be",
       docs: [
-        source_url_pattern: "https://github.com/fbxl/unfathomably-be/blob/main/%{path}#L%{line}",
+        source_url_pattern: "https://github.com/fbxl-sj0/unfathomably-be/blob/main/%{path}#L%{line}",
         logo: "priv/static/images/logo.png",
         extras: ["README.md", "CHANGELOG.md"] ++ Path.wildcard("docs/**/*.md"),
         groups_for_extras: [
