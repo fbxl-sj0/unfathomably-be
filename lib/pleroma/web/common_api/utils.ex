@@ -86,10 +86,12 @@ defmodule Pleroma.Web.CommonAPI.Utils do
   end
 
   def get_to_and_cc(%{visibility: visibility} = draft) when visibility in ["public", "local"] do
+    recipients = addressed_recipients(draft)
+
     to =
       case visibility do
-        "public" -> [Pleroma.Constants.as_public() | draft.mentions]
-        "local" -> [Utils.as_local_public() | draft.mentions]
+        "public" -> [Pleroma.Constants.as_public() | recipients]
+        "local" -> [Utils.as_local_public() | recipients]
       end
 
     cc = [draft.user.follower_address]
@@ -102,7 +104,7 @@ defmodule Pleroma.Web.CommonAPI.Utils do
   end
 
   def get_to_and_cc(%{visibility: "unlisted"} = draft) do
-    to = [draft.user.follower_address | draft.mentions]
+    to = [draft.user.follower_address | addressed_recipients(draft)]
     cc = [Pleroma.Constants.as_public()]
 
     if draft.in_reply_to do
@@ -120,13 +122,21 @@ defmodule Pleroma.Web.CommonAPI.Utils do
   def get_to_and_cc(%{visibility: "direct"} = draft) do
     # If the OP is a DM already, add the implicit actor.
     if draft.in_reply_to && Visibility.is_direct?(draft.in_reply_to) do
-      {Enum.uniq([draft.in_reply_to.data["actor"] | draft.mentions]), []}
+      {Enum.uniq([draft.in_reply_to.data["actor"] | addressed_recipients(draft)]), []}
     else
-      {draft.mentions, []}
+      {addressed_recipients(draft), []}
     end
   end
 
-  def get_to_and_cc(%{visibility: {:list, _}, mentions: mentions}), do: {mentions, []}
+  def get_to_and_cc(%{visibility: {:list, _}} = draft), do: {addressed_recipients(draft), []}
+
+  defp addressed_recipients(%{mentions: mentions, addressed_groups: groups}) do
+    (mentions || [])
+    |> Kernel.++(groups || [])
+    |> Enum.uniq()
+  end
+
+  defp addressed_recipients(%{mentions: mentions}), do: mentions || []
 
   def get_addressed_users(_, to) when is_list(to) do
     to

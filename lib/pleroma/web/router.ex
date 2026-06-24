@@ -929,6 +929,8 @@ defmodule Pleroma.Web.Router do
 
     get("/timelines/home", TimelineController, :home)
     get("/timelines/direct", TimelineController, :direct)
+    get("/timelines/groups", FederatedGroupTimelineController, :index)
+    get("/timelines/sources", FederatedSourceTimelineController, :index)
     get("/timelines/list/:list_id", TimelineController, :list)
 
     get("/announcements", AnnouncementController, :index)

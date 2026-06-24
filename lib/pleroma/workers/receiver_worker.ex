@@ -32,13 +32,38 @@ defmodule Pleroma.Workers.ReceiverWorker do
     })
   end
 
+  defp perform_incoming(%{"_json" => activities}) when is_list(activities) do
+    activities
+    |> Enum.map(&perform_incoming/1)
+    |> merge_batch_results()
+  end
+
   defp perform_incoming(params) do
-    with {:ok, res} <- Federator.perform(:incoming_ap_doc, params) do
-      {:ok, res}
-    else
-      e -> process_errors(e)
+    try do
+      with {:ok, res} <- Federator.perform(:incoming_ap_doc, params) do
+        {:ok, res}
+      else
+        e -> process_errors(e)
+      end
+    rescue
+      e in Ecto.ConstraintError ->
+        case e.constraint do
+          "activities_unique_apid_index" -> {:cancel, :already_present}
+          _ -> reraise(e, __STACKTRACE__)
+        end
     end
   end
+
+  defp merge_batch_results(results) do
+    case Enum.find(results, &retryable_result?/1) do
+      nil -> {:ok, :batch_processed}
+      result -> result
+    end
+  end
+
+  defp retryable_result?({:ok, _}), do: false
+  defp retryable_result?({:cancel, _}), do: false
+  defp retryable_result?(_), do: true
 
   defp signature_retry_job?(args) do
     Enum.any?(~w(method req_headers request_path query_string), &Map.has_key?(args, &1))
@@ -53,22 +78,65 @@ defmodule Pleroma.Workers.ReceiverWorker do
 
   defp process_errors(errors) do
     case errors do
-      {:error, :not_found} = reason -> {:cancel, reason}
-      {:error, :forbidden} = reason -> {:cancel, reason}
-      {:error, {:user_active, false} = reason} -> {:cancel, reason}
-      {:error, {:validate, {:error, _changeset} = reason}} -> {:cancel, reason}
-      {:error, :origin_containment_failed} -> {:cancel, :origin_containment_failed}
-      {:error, :already_present} -> {:cancel, :already_present}
-      {:error, {:validate_object, reason}} -> {:cancel, reason}
-      {:error, {:validate, reason}} -> {:cancel, reason}
-      {:error, {:reject, reason}} -> {:cancel, reason}
-      {:signature, false} -> {:cancel, :invalid_signature}
-      {:same_actor, false} -> {:cancel, :actor_signature_mismatch}
-      {:error, reason = "Object has been deleted"} -> {:cancel, reason}
-      {:error, {:side_effects, {:error, :no_object_actor}} = reason} -> {:cancel, reason}
-      :missing_incoming_ap_doc_params -> {:cancel, :missing_incoming_ap_doc_params}
-      {:error, _} = e -> e
-      e -> e
+      {:error, :not_found} = reason ->
+        {:cancel, reason}
+
+      {:error, :forbidden} = reason ->
+        {:cancel, reason}
+
+      {:error, {:user_active, false} = reason} ->
+        {:cancel, reason}
+
+      {:error, {:validate, {:error, _changeset} = reason}} ->
+        {:cancel, reason}
+
+      {:error, {_stage, {:error, %Ecto.Changeset{} = changeset}}} ->
+        {:cancel, {:error, changeset}}
+
+      {:error, :origin_containment_failed} ->
+        {:cancel, :origin_containment_failed}
+
+      {:error, :already_present} ->
+        {:cancel, :already_present}
+
+      {:error, {:http, status}} when status in [401, 403, 404, 410] ->
+        {:cancel, {:http, status}}
+
+      {:error, {:unsupported_activity_type, _} = reason} ->
+        {:cancel, reason}
+
+      {:error, {:validate_object, reason}} ->
+        {:cancel, reason}
+
+      {:error, {:validate, reason}} ->
+        {:cancel, reason}
+
+      {:error, {:reject, reason}} ->
+        {:cancel, reason}
+
+      {:signature, false} ->
+        {:cancel, :invalid_signature}
+
+      {:same_actor, false} ->
+        {:cancel, :actor_signature_mismatch}
+
+      {:error, reason = "Object has been deleted"} ->
+        {:cancel, reason}
+
+      {:error, {:side_effects, {:error, :no_object_actor}} = reason} ->
+        {:cancel, reason}
+
+      :missing_incoming_ap_doc_params ->
+        {:cancel, :missing_incoming_ap_doc_params}
+
+      :error ->
+        {:cancel, :error}
+
+      {:error, _} = e ->
+        e
+
+      e ->
+        e
     end
   end
 end

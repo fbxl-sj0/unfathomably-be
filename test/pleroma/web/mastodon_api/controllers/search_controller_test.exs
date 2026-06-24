@@ -271,6 +271,22 @@ defmodule Pleroma.Web.MastodonAPI.SearchControllerTest do
 
       assert length(results) == 1
     end
+
+    test "returns account if query contains a copied directional control", %{conn: conn} do
+      user = insert(:user, %{nickname: "selfhosted@lemmy.world"})
+      pop_directional_isolate = <<0x2069::utf8>>
+
+      results =
+        conn
+        |> get(
+          "/api/v1/accounts/search?#{URI.encode_query(%{q: "@selfhosted@lemmy.world" <> pop_directional_isolate})}"
+        )
+        |> json_response_and_validate_schema(200)
+
+      result_ids = for result <- results, do: result["acct"]
+
+      assert user.nickname in result_ids
+    end
   end
 
   describe ".search" do

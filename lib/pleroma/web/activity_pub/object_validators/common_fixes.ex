@@ -51,14 +51,18 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
   end
 
   def fix_activity_addressing(activity) do
-    %User{follower_address: follower_collection} = User.get_cached_by_ap_id(activity["actor"])
+    case User.get_cached_by_ap_id(activity["actor"]) do
+      %User{follower_address: follower_collection} ->
+        activity
+        |> cast_and_filter_recipients("to", follower_collection)
+        |> cast_and_filter_recipients("cc", follower_collection)
+        |> cast_and_filter_recipients("bto", follower_collection)
+        |> cast_and_filter_recipients("bcc", follower_collection)
+        |> Transmogrifier.fix_implicit_addressing(follower_collection)
 
-    activity
-    |> cast_and_filter_recipients("to", follower_collection)
-    |> cast_and_filter_recipients("cc", follower_collection)
-    |> cast_and_filter_recipients("bto", follower_collection)
-    |> cast_and_filter_recipients("bcc", follower_collection)
-    |> Transmogrifier.fix_implicit_addressing(follower_collection)
+      _ ->
+        activity
+    end
   end
 
   def fix_actor(data) do
@@ -76,6 +80,21 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     data
     |> Map.put("context", object_context)
   end
+
+  def fix_activity_context(data, %Object{data: object_data}) do
+    context =
+      object_data["conversation"] ||
+        object_data["inReplyTo"] ||
+        object_data["id"]
+
+    if is_binary(context) do
+      Map.put(data, "context", Utils.maybe_create_context(context))
+    else
+      data
+    end
+  end
+
+  def fix_activity_context(data, _), do: data
 
   def fix_object_action_recipients(%{"type" => "Announce", "actor" => actor} = data, object) do
     if group_actor?(actor) do
@@ -103,6 +122,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
     Map.put(data, "to", to)
   end
+
+  defp do_fix_object_action_recipients(data, _), do: data
 
   defp group_actor?(actor) when is_binary(actor) do
     case User.get_by_ap_id(actor) do

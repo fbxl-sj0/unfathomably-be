@@ -200,7 +200,11 @@ defmodule Pleroma.Web.WebFinger do
   def finger(account), do: do_finger(account, true)
 
   defp do_finger(account, follow_redirects) do
-    account = String.trim_leading(account, "@")
+    account =
+      account
+      |> String.replace(~r/\p{C}+/u, " ")
+      |> String.trim()
+      |> String.trim_leading("@")
 
     domain =
       with [_name, domain] <- String.split(account, "@") do

@@ -8,6 +8,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceMentionsInContent do
   alias Pleroma.Formatter
   alias Pleroma.Object
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Addressing
 
   @behaviour Pleroma.Web.ActivityPub.MRF.Policy
 
@@ -87,6 +88,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceMentionsInContent do
       |> clean_recipients(object)
       |> Enum.map(&User.get_cached_by_ap_id/1)
       |> Enum.reject(&is_nil/1)
+      |> Enum.reject(&Addressing.suppress_implicit_mention_user?(&1, object))
       |> sort_replied_user(replied_to_user)
 
     explicitly_mentioned_uris =

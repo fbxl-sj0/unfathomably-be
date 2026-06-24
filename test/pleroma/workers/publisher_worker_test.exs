@@ -59,6 +59,17 @@ defmodule Pleroma.Workers.PublisherWorkerTest do
       assert {:ok, %Oban.Job{args: %{"activity_data" => %{"object" => %{"type" => "Like"}}}}} =
                Federator.publish(activity)
     end
+
+    test "cancels deferred publish jobs whose activity has been deleted" do
+      job = %Oban.Job{
+        args: %{
+          "op" => "publish",
+          "activity_id" => Ecto.UUID.generate()
+        }
+      }
+
+      assert {:cancel, :activity_not_found} = PublisherWorker.perform(job)
+    end
   end
 
   describe "dormant instance delivery" do

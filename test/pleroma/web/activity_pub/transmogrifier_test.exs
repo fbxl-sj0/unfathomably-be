@@ -224,6 +224,41 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       end
     end
 
+    test "it does not turn group audience addresses into generated mention tags" do
+      user = insert(:user)
+      parent_author = insert(:user, local: false, nickname: "alice@lemmy.example")
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "main@lemmy.example",
+          ap_id: "https://lemmy.example/c/main"
+        )
+
+      parent = insert(:note_activity, user: parent_author)
+
+      {:ok, activity} =
+        CommonAPI.post(user, %{
+          status: "replying without synthetic tags",
+          in_reply_to_id: parent.id,
+          group_id: group.ap_id
+        })
+
+      {:ok, modified} = Transmogrifier.prepare_outgoing(activity.data)
+      object = modified["object"]
+
+      mention_hrefs =
+        object["tag"]
+        |> Enum.filter(&(is_map(&1) and &1["type"] == "Mention"))
+        |> Enum.map(& &1["href"])
+
+      assert object["audience"] == group.ap_id
+      refute Map.has_key?(object, "pleroma_internal")
+      refute group.ap_id in mention_hrefs
+      refute parent_author.ap_id in mention_hrefs
+    end
+
     test "it adds the json-ld context and the conversation property" do
       user = insert(:user)
 

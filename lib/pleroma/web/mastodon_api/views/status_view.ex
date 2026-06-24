@@ -14,6 +14,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.UserRelationship
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.CommonAPI.Utils
   alias Pleroma.Web.MastodonAPI.AccountView
@@ -255,7 +256,9 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       |> Enum.map(fn tag -> tag["href"] end)
 
     mentions =
-      (object.data["to"] ++ tag_mentions)
+      object.data["to"]
+      |> Addressing.filter_implicit_mention_ap_ids(object.data)
+      |> Kernel.++(tag_mentions)
       |> Enum.uniq()
       |> Enum.map(fn
         Pleroma.Constants.as_public() -> nil

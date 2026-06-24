@@ -353,6 +353,21 @@ defmodule Pleroma.UserSearchTest do
       assert user == result |> Map.put(:search_rank, nil) |> Map.put(:search_type, nil)
     end
 
+    test "ignores copied unicode directional controls in remote handles" do
+      user = insert(:user, nickname: "selfhosted@lemmy.world")
+      pop_directional_isolate = <<0x2069::utf8>>
+
+      [result] = User.search("@selfhosted@lemmy.world" <> pop_directional_isolate)
+
+      assert user == result |> Map.put(:search_rank, nil) |> Map.put(:search_type, nil)
+    end
+
+    test "does not crash on disallowed idna codepoints in remote handles" do
+      pop_directional_isolate = <<0x2069::utf8>>
+
+      assert [] = User.search("@missing@example.invalid" <> pop_directional_isolate)
+    end
+
     test "works with idna domains and query as link" do
       user = insert(:user, nickname: "lain@" <> to_string(:idna.encode("zetsubou.みんな")))
 

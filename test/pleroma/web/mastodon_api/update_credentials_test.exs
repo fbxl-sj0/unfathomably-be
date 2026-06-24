@@ -456,6 +456,7 @@ defmodule Pleroma.Web.MastodonAPI.UpdateCredentialsTest do
 
       user = User.get_by_id(user.id)
       assert user.avatar["name"] == "me and pleroma tan"
+      assert user.avatar["summary"] == "me and pleroma tan"
     end
 
     test "adds avatar description to existing avatar", %{user: user, conn: conn} do
@@ -479,6 +480,51 @@ defmodule Pleroma.Web.MastodonAPI.UpdateCredentialsTest do
 
       user = User.get_by_id(user.id)
       assert user.avatar["name"] == "me and pleroma tan"
+      assert user.avatar["summary"] == "me and pleroma tan"
+    end
+
+    test "adds header description with a new header", %{user: user, conn: conn} do
+      new_header = %Plug.Upload{
+        content_type: "image/jpeg",
+        path: Path.absname("test/fixtures/image.jpg"),
+        filename: "a_header.jpg"
+      }
+
+      res =
+        patch(conn, "/api/v1/accounts/update_credentials", %{
+          "header" => new_header,
+          "header_description" => "a red and black skyline"
+        })
+
+      assert json_response_and_validate_schema(res, 200)
+
+      user = User.get_by_id(user.id)
+      assert user.banner["name"] == "a red and black skyline"
+      assert user.banner["summary"] == "a red and black skyline"
+    end
+
+    test "adds header description to existing header", %{user: user, conn: conn} do
+      new_header = %Plug.Upload{
+        content_type: "image/jpeg",
+        path: Path.absname("test/fixtures/image.jpg"),
+        filename: "a_header.jpg"
+      }
+
+      assert user.banner == %{}
+
+      conn
+      |> patch("/api/v1/accounts/update_credentials", %{"header" => new_header})
+
+      assert conn
+             |> assign(:user, User.get_by_id(user.id))
+             |> patch("/api/v1/accounts/update_credentials", %{
+               "header_description" => "a red and black skyline"
+             })
+             |> json_response_and_validate_schema(200)
+
+      user = User.get_by_id(user.id)
+      assert user.banner["name"] == "a red and black skyline"
+      assert user.banner["summary"] == "a red and black skyline"
     end
 
     test "Strip / from upload files", %{user: user, conn: conn} do

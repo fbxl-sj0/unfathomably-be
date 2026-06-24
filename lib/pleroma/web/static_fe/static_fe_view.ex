@@ -23,10 +23,19 @@ defmodule Pleroma.Web.StaticFE.StaticFEView do
     Utils.fetch_media_type(@media_types, mediaType)
   end
 
-  def format_date(date) do
-    {:ok, date, _} = DateTime.from_iso8601(date)
+  def format_date(date) when is_binary(date) do
+    with {:ok, date, _} <- DateTime.from_iso8601(date) do
+      format_date(date)
+    else
+      _ -> format_date(DateTime.utc_now())
+    end
+  end
+
+  def format_date(%DateTime{} = date) do
     Strftime.strftime!(date, "%Y/%m/%d %l:%M:%S %p UTC")
   end
+
+  def format_date(_), do: format_date(DateTime.utc_now())
 
   def instance_name, do: Pleroma.Config.get([:instance, :name], "Pleroma")
 

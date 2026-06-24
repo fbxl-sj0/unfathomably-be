@@ -557,6 +557,36 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
     assert mention.url == recipient_ap_id
   end
 
+  test "does not create mentions from group audience addresses" do
+    author = insert(:user)
+    parent_author = insert(:user)
+    mentioned = insert(:user)
+
+    group =
+      insert(:user,
+        actor_type: "Group",
+        local: false,
+        nickname: "main@lemmy.example",
+        ap_id: "https://lemmy.example/c/main"
+      )
+
+    {:ok, parent} = CommonAPI.post(parent_author, %{status: "parent"})
+
+    {:ok, activity} =
+      CommonAPI.post(author, %{
+        status: "reply @#{mentioned.nickname}",
+        in_reply_to_id: parent.id,
+        group_id: group.ap_id
+      })
+
+    %{mentions: mentions} = StatusView.render("show.json", %{activity: activity})
+    mention_urls = Enum.map(mentions, & &1.url)
+
+    assert mention_urls == [mentioned.ap_id]
+    refute group.ap_id in mention_urls
+    refute parent_author.ap_id in mention_urls
+  end
+
   test "create mentions from the 'tag' field" do
     recipient = insert(:user)
     cc = insert_pair(:user) |> Enum.map(& &1.ap_id)

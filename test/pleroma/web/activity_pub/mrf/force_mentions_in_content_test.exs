@@ -115,6 +115,45 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceMentionsInContentTest do
     assert filtered == "I'ma tired..."
   end
 
+  test "does not force group audience or group reply parent into the content" do
+    mario = insert(:user, nickname: "mario")
+    luigi = insert(:user, nickname: "luigi")
+    wario = insert(:user, nickname: "wario")
+
+    group =
+      insert(:user,
+        actor_type: "Group",
+        local: false,
+        ap_id: "https://lemmy.example/c/main",
+        nickname: "main@lemmy.example"
+      )
+
+    {:ok, post} = CommonAPI.post(mario, %{status: "Letsa go!"})
+
+    activity = %{
+      "type" => "Create",
+      "actor" => wario.ap_id,
+      "object" => %{
+        "type" => "Note",
+        "actor" => wario.ap_id,
+        "content" => "WHA-HA!",
+        "to" => [
+          mario.ap_id,
+          luigi.ap_id,
+          group.ap_id,
+          Constants.as_public()
+        ],
+        "audience" => group.ap_id,
+        "inReplyTo" => Object.normalize(post).data["id"]
+      }
+    }
+
+    {:ok, %{"object" => %{"content" => filtered}}} = ForceMentionsInContent.filter(activity)
+
+    assert filtered ==
+             "<span class=\"recipients-inline\"><span class=\"h-card\"><a class=\"u-url mention\" data-user=\"#{luigi.id}\" href=\"#{luigi.ap_id}\" rel=\"ugc\">@<span>luigi</span></a></span> </span>WHA-HA!"
+  end
+
   test "don't mention in top-level posts" do
     mario = insert(:user, nickname: "mario")
     luigi = insert(:user, nickname: "luigi")

@@ -728,6 +728,16 @@ config :pleroma, :config_description, [
         ]
       },
       %{
+        key: :group_post_default_visibility,
+        type: :string,
+        description:
+          "Default visibility for posts and replies addressed to ActivityPub Group actors when the client does not explicitly choose a standard visibility. `unlisted` keeps group posts out of public timelines while still federating them to the addressed group.",
+        suggestions: [
+          "unlisted",
+          "public"
+        ]
+      },
+      %{
         key: :allow_relay,
         type: :boolean,
         description:
@@ -1849,6 +1859,48 @@ config :pleroma, :config_description, [
           "The number of Note replies' URIs to be included with outgoing federation (`5` to match Mastodon hardcoded value, `0` to disable the output)"
       },
       %{
+        key: :remote_replies_collection_refresh,
+        type: :keyword,
+        description:
+          "Settings for delayed refreshes of remote public posts' advertised replies collections.",
+        children: [
+          %{
+            key: :enabled,
+            type: :boolean,
+            description:
+              "Enable delayed fetching of advertised replies collections for remote public posts."
+          },
+          %{
+            key: :schedule,
+            type: {:list, :integer},
+            description:
+              "Seconds after an incoming remote post when its replies collection should be refreshed."
+          },
+          %{
+            key: :triggered_refresh_delay,
+            type: :integer,
+            description:
+              "Seconds to debounce refreshes triggered by incoming remote replies to a known post."
+          },
+          %{
+            key: :triggered_refresh_ancestor_depth,
+            type: :integer,
+            description:
+              "Maximum number of known replied-to ancestors to refresh when an incoming remote reply arrives (`0` to disable triggered ancestor refreshes)."
+          },
+          %{
+            key: :max_pages,
+            type: :integer,
+            description: "Maximum number of collection/page documents to fetch per refresh."
+          },
+          %{
+            key: :max_items,
+            type: :integer,
+            description: "Maximum number of reply object fetches to enqueue per refresh."
+          }
+        ]
+      },
+      %{
         key: :follow_handshake_timeout,
         type: :integer,
         description: "Following handshake timeout",
@@ -2010,17 +2062,17 @@ config :pleroma, :config_description, [
         description:
           "Background jobs queues (keys: queues, values: max numbers of concurrent jobs)",
         suggestions: [
-          activity_expiration: 10,
-          attachments_cleanup: 5,
-          background: 5,
-          federator_incoming: 50,
-          federator_outgoing: 50,
-          mailer: 10,
-          scheduled_activities: 10,
-          poll_notifications: 10,
-          notifications: 20,
-          transmogrifier: 20,
-          web_push: 50
+          activity_expiration: 5,
+          attachments_cleanup: 1,
+          background: 3,
+          federator_incoming: 8,
+          federator_outgoing: 8,
+          mailer: 5,
+          scheduled_activities: 5,
+          poll_notifications: 2,
+          notifications: 8,
+          transmogrifier: 5,
+          web_push: 8
         ],
         children: [
           %{
@@ -2039,61 +2091,61 @@ config :pleroma, :config_description, [
             key: :attachments_cleanup,
             type: :integer,
             description: "Attachment deletion queue",
-            suggestions: [5]
+            suggestions: [1]
           },
           %{
             key: :background,
             type: :integer,
             description: "Background queue",
-            suggestions: [5]
+            suggestions: [3]
           },
           %{
             key: :federator_incoming,
             type: :integer,
             description: "Incoming federation queue",
-            suggestions: [50]
+            suggestions: [8]
           },
           %{
             key: :federator_outgoing,
             type: :integer,
             description: "Outgoing federation queue",
-            suggestions: [50]
+            suggestions: [8]
           },
           %{
             key: :mailer,
             type: :integer,
             description: "Email sender queue, see Pleroma.Emails.Mailer",
-            suggestions: [10]
+            suggestions: [5]
           },
           %{
             key: :scheduled_activities,
             type: :integer,
             description: "Scheduled activities queue, see Pleroma.ScheduledActivities",
-            suggestions: [10]
+            suggestions: [5]
           },
           %{
             key: :poll_notifications,
             type: :integer,
             description: "Stores poll expirations so it can notify users when a poll ends",
-            suggestions: [10]
+            suggestions: [2]
           },
           %{
             key: :notifications,
             type: :integer,
             description: "Creates notifications for activities in the background",
-            suggestions: [20]
+            suggestions: [8]
           },
           %{
             key: :transmogrifier,
             type: :integer,
             description: "Transmogrifier queue",
-            suggestions: [20]
+            suggestions: [5]
           },
           %{
             key: :web_push,
             type: :integer,
             description: "Web push notifications queue",
-            suggestions: [50]
+            suggestions: [8]
           }
         ]
       },
@@ -2105,8 +2157,10 @@ config :pleroma, :config_description, [
           {"0 0 * * 0", Pleroma.Workers.Cron.DigestEmailsWorker},
           {"0 0 * * *", Pleroma.Workers.Cron.NewUsersDigestWorker},
           {"*/10 * * * *", Pleroma.Workers.Cron.AppCleanupWorker},
+          {"17 * * * *", Pleroma.Workers.Cron.ObanCleanupWorker},
           {"0 3 * * *", Pleroma.Workers.Cron.ScheduleReachabilityWorker},
-          {"0 4 * * *", Pleroma.Workers.Cron.GroupDiscussionCleanupWorker}
+          {"0 4 * * *", Pleroma.Workers.Cron.RemotePostCleanupWorker},
+          {"30 4 * * *", Pleroma.Workers.Cron.GroupDiscussionCleanupWorker}
         ]
       }
     ]
@@ -2125,6 +2179,62 @@ config :pleroma, :config_description, [
           federator_incoming: 5,
           federator_outgoing: 5
         ]
+      }
+    ]
+  },
+  %{
+    group: :pleroma,
+    key: Pleroma.Workers.Cron.RemotePostCleanupWorker,
+    type: :group,
+    description:
+      "Prunes stale remote public post objects that can be refetched later, while keeping posts and threads local users interacted with.",
+    children: [
+      %{
+        key: :enabled,
+        type: :boolean,
+        description: "Enable daily remote post cache pruning.",
+        suggestions: [true]
+      },
+      %{
+        key: :max_age_days,
+        type: :integer,
+        description:
+          "Remote public posts older than this many days may be pruned when no local user has interacted with them.",
+        suggestions: [365, 730]
+      },
+      %{
+        key: :batch_size,
+        type: :integer,
+        description: "Maximum number of remote post objects to prune per cleanup run.",
+        suggestions: [200, 500, 1000]
+      },
+      %{
+        key: :candidate_scan_limit,
+        type: :integer,
+        description:
+          "Maximum number of old remote post objects to inspect before applying the expensive local-interaction checks.",
+        suggestions: [20_000, 50_000]
+      },
+      %{
+        key: :query_timeout_ms,
+        type: :integer,
+        description:
+          "Maximum time, in milliseconds, for each database query used by the remote post cleanup worker.",
+        suggestions: [60_000, 120_000]
+      },
+      %{
+        key: :keep_threads_with_local_activity,
+        type: :boolean,
+        description:
+          "Keep an entire thread when a local user has replied, liked, repeated, reacted, or bookmarked within the thread.",
+        suggestions: [true]
+      },
+      %{
+        key: :keep_direct_or_mentioned,
+        type: :boolean,
+        description:
+          "Keep old remote posts that directly address local users or generated local notifications.",
+        suggestions: [true]
       }
     ]
   },
@@ -2860,6 +2970,14 @@ config :pleroma, :config_description, [
         ]
       }
     ]
+  },
+  %{
+    group: :hackney,
+    key: :tls_session_resumption,
+    label: "Hackney TLS Session Resumption",
+    type: :boolean,
+    description:
+      "Allows Hackney to enable TLS 1.3 session resumption for its default TLS configuration. Unfathomably disables this by default because remote federation touches many unusual TLS stacks, and avoiding Erlang's client ticket store is more stable for long-running federation workers."
   },
   %{
     group: :pleroma,

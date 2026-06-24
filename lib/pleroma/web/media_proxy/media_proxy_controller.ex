@@ -12,6 +12,8 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
   alias Pleroma.Web.MediaProxy
   alias Plug.Conn
 
+  require Logger
+
   plug(:sandbox)
 
   def remote(conn, %{"sig" => sig64, "url" => url64}) do
@@ -109,54 +111,78 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
   end
 
   defp handle_png_preview(conn, media_proxy_url) do
-    quality = Config.get!([:media_preview_proxy, :image_quality])
-    {thumbnail_max_width, thumbnail_max_height} = thumbnail_max_dimensions()
+    with_preview_fallback(conn, media_proxy_url, fn ->
+      quality = Config.get!([:media_preview_proxy, :image_quality])
+      {thumbnail_max_width, thumbnail_max_height} = thumbnail_max_dimensions()
 
-    with {:ok, thumbnail_binary} <-
-           MediaHelper.image_resize(
-             media_proxy_url,
-             %{
-               max_width: thumbnail_max_width,
-               max_height: thumbnail_max_height,
-               quality: quality,
-               format: "png"
-             }
-           ) do
-      conn
-      |> put_preview_response_headers(["image/png", "preview.png"])
-      |> send_resp(200, thumbnail_binary)
-    else
-      _ ->
-        fallback_on_preview_error(conn, media_proxy_url)
-    end
+      with {:ok, thumbnail_binary} <-
+             MediaHelper.image_resize(
+               media_proxy_url,
+               %{
+                 max_width: thumbnail_max_width,
+                 max_height: thumbnail_max_height,
+                 quality: quality,
+                 format: "png"
+               }
+             ) do
+        conn
+        |> put_preview_response_headers(["image/png", "preview.png"])
+        |> send_resp(200, thumbnail_binary)
+      else
+        _ ->
+          fallback_on_preview_error(conn, media_proxy_url)
+      end
+    end)
   end
 
   defp handle_jpeg_preview(conn, media_proxy_url) do
-    quality = Config.get!([:media_preview_proxy, :image_quality])
-    {thumbnail_max_width, thumbnail_max_height} = thumbnail_max_dimensions()
+    with_preview_fallback(conn, media_proxy_url, fn ->
+      quality = Config.get!([:media_preview_proxy, :image_quality])
+      {thumbnail_max_width, thumbnail_max_height} = thumbnail_max_dimensions()
 
-    with {:ok, thumbnail_binary} <-
-           MediaHelper.image_resize(
-             media_proxy_url,
-             %{max_width: thumbnail_max_width, max_height: thumbnail_max_height, quality: quality}
-           ) do
-      conn
-      |> put_preview_response_headers()
-      |> send_resp(200, thumbnail_binary)
-    else
-      _ ->
-        fallback_on_preview_error(conn, media_proxy_url)
-    end
+      with {:ok, thumbnail_binary} <-
+             MediaHelper.image_resize(
+               media_proxy_url,
+               %{
+                 max_width: thumbnail_max_width,
+                 max_height: thumbnail_max_height,
+                 quality: quality
+               }
+             ) do
+        conn
+        |> put_preview_response_headers()
+        |> send_resp(200, thumbnail_binary)
+      else
+        _ ->
+          fallback_on_preview_error(conn, media_proxy_url)
+      end
+    end)
   end
 
   defp handle_video_preview(conn, media_proxy_url) do
-    with {:ok, thumbnail_binary} <-
-           MediaHelper.video_framegrab(media_proxy_url) do
-      conn
-      |> put_preview_response_headers()
-      |> send_resp(200, thumbnail_binary)
-    else
-      _ ->
+    with_preview_fallback(conn, media_proxy_url, fn ->
+      with {:ok, thumbnail_binary} <-
+             MediaHelper.video_framegrab(media_proxy_url) do
+        conn
+        |> put_preview_response_headers()
+        |> send_resp(200, thumbnail_binary)
+      else
+        _ ->
+          fallback_on_preview_error(conn, media_proxy_url)
+      end
+    end)
+  end
+
+  defp with_preview_fallback(conn, media_proxy_url, fun) do
+    try do
+      fun.()
+    rescue
+      error ->
+        Logger.debug("Media preview failed for #{media_proxy_url}: #{Exception.message(error)}")
+        fallback_on_preview_error(conn, media_proxy_url)
+    catch
+      :exit, reason ->
+        Logger.debug("Media preview exited for #{media_proxy_url}: #{inspect(reason)}")
         fallback_on_preview_error(conn, media_proxy_url)
     end
   end

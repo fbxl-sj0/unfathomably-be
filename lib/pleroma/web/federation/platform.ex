@@ -88,6 +88,7 @@ defmodule Pleroma.Web.Federation.Platform do
     "pixelfed" => %{platform: "pixelfed", label: "Pixelfed", family: :photo},
     "pleroma" => %{platform: "pleroma", label: "Pleroma/Akkoma", family: :microblog},
     "postmarks" => %{platform: "postmarks", label: "Postmarks", family: :bookmarks},
+    "rss" => %{platform: "rss", label: "RSS/Atom", family: :longform},
     "sharkey" => %{platform: "sharkey", label: "Sharkey", family: :microblog},
     "snac" => %{platform: "snac", label: "snac", family: :microblog},
     "smithereen" => %{platform: "smithereen", label: "Smithereen", family: :groups},

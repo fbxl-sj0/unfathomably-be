@@ -18,10 +18,12 @@ defmodule Pleroma.Web.FederatedTarget do
   alias Pleroma.FollowingRelationship
   alias Pleroma.GroupMembership
   alias Pleroma.HTTP
+  alias Pleroma.Instances
   alias Pleroma.Object.Fetcher
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.RemoteReplies
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.Federation.Platform
   alias Pleroma.Web.MastodonAPI.StatusView
@@ -86,6 +88,28 @@ defmodule Pleroma.Web.FederatedTarget do
 
   def list_groups(user, params), do: list_targets(:group, user, params)
   def list_sources(user, params), do: list_targets(:source, user, params)
+
+  @doc "Return AP IDs for reachable groups followed by the given user."
+  def followed_group_ap_ids(%User{} = user) do
+    user
+    |> FollowingRelationship.following_query()
+    |> filter_followed_kind(:group)
+    |> select([_r, u], u.ap_id)
+    |> Repo.all()
+  end
+
+  def followed_group_ap_ids(_user), do: []
+
+  @doc "Return AP IDs for reachable sources followed by the given user."
+  def followed_source_ap_ids(%User{} = user) do
+    user
+    |> FollowingRelationship.following_query()
+    |> filter_followed_kind(:source)
+    |> select([_r, u], u.ap_id)
+    |> Repo.all()
+  end
+
+  def followed_source_ap_ids(_user), do: []
 
   def search_groups(params), do: search_targets(:group, params)
   def search_sources(params), do: search_targets(:source, params)
@@ -232,6 +256,21 @@ defmodule Pleroma.Web.FederatedTarget do
 
     group_capability_labels(kind, platform.platform)
   end
+
+  def group_member_count(%User{local: false, follower_count: count})
+      when is_integer(count) and count > 0,
+      do: count
+
+  def group_member_count(%User{local: false} = group) do
+    group
+    |> fetch_remote_group_member_count()
+    |> case do
+      count when is_integer(count) -> count
+      _ -> group.follower_count || 0
+    end
+  end
+
+  def group_member_count(%User{} = group), do: group.follower_count || 0
 
   def source_platform(%User{} = user) do
     user
@@ -569,6 +608,8 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp filter_followed_kind(query, :group) do
+    reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+
     where(
       query,
       [_r, u],
@@ -577,14 +618,36 @@ defmodule Pleroma.Web.FederatedTarget do
             fragment("? ~* ?", u.ap_id, ^@group_service_actor_regex))) and
         u.is_active == true and u.invisible == false and fragment("? ~ ?", u.ap_id, "^https?://")
     )
+    |> filter_reachable_followed_actor(reachability_datetime_threshold)
   end
 
   defp filter_followed_kind(query, :source) do
+    reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+
     where(
       query,
       [_r, u],
       (u.actor_type != @group_actor_type or is_nil(u.actor_type)) and u.local == false and
         u.is_active == true and u.invisible == false and fragment("? ~ ?", u.ap_id, "^https?://")
+    )
+    |> filter_reachable_followed_actor(reachability_datetime_threshold)
+  end
+
+  defp filter_reachable_followed_actor(query, reachability_datetime_threshold) do
+    where(
+      query,
+      [_r, u],
+      fragment(
+        """
+        not exists (
+          select 1 from instances i
+          where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+            and i.unreachable_since <= ?
+        )
+        """,
+        u.ap_id,
+        ^reachability_datetime_threshold
+      )
     )
   end
 
@@ -625,6 +688,8 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp kind_query(:group) do
+    reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+
     from(u in User,
       where:
         u.actor_type == @group_actor_type or
@@ -632,17 +697,43 @@ defmodule Pleroma.Web.FederatedTarget do
              fragment("? ~* ?", u.ap_id, ^@group_service_actor_regex)),
       where: u.is_active == true,
       where: u.invisible == false,
-      where: fragment("? ~ ?", u.ap_id, "^https?://")
+      where: fragment("? ~ ?", u.ap_id, "^https?://"),
+      where:
+        fragment(
+          """
+          not exists (
+            select 1 from instances i
+            where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+              and i.unreachable_since <= ?
+          )
+          """,
+          u.ap_id,
+          ^reachability_datetime_threshold
+        )
     )
   end
 
   defp kind_query(:source) do
+    reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+
     from(u in User,
       where: u.actor_type != @group_actor_type or is_nil(u.actor_type),
       where: u.local == false,
       where: u.is_active == true,
       where: u.invisible == false,
-      where: fragment("? ~ ?", u.ap_id, "^https?://")
+      where: fragment("? ~ ?", u.ap_id, "^https?://"),
+      where:
+        fragment(
+          """
+          not exists (
+            select 1 from instances i
+            where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+              and i.unreachable_since <= ?
+          )
+          """,
+          u.ap_id,
+          ^reachability_datetime_threshold
+        )
     )
   end
 
@@ -677,7 +768,10 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp normalize_identifier(identifier) when is_binary(identifier) do
-    identifier = String.trim(identifier)
+    identifier =
+      identifier
+      |> String.replace(~r/\p{C}+/u, " ")
+      |> String.trim()
 
     cond do
       identifier == "" ->
@@ -1210,7 +1304,7 @@ defmodule Pleroma.Web.FederatedTarget do
 
   @doc "Return native preview items for a remote ActivityPub group."
   def group_items(%User{} = group, params \\ %{}) do
-    case group_items_result(group, params) do
+    case group_items_result(group, params, nil) do
       {:ok, envelope} ->
         envelope
 
@@ -1220,13 +1314,13 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   @doc "Return native preview items or a structured group-preview error."
-  def group_items_result(group, params \\ %{})
+  def group_items_result(group, params \\ %{}, reading_user \\ nil)
 
-  def group_items_result(%User{local: true, actor_type: "Group"}, _params) do
+  def group_items_result(%User{local: true, actor_type: "Group"}, _params, _reading_user) do
     {:ok, empty_source_items()}
   end
 
-  def group_items_result(%User{} = group, params) do
+  def group_items_result(%User{} = group, params, reading_user) do
     group_context = group_context(group)
 
     limit =
@@ -1234,14 +1328,14 @@ defmodule Pleroma.Web.FederatedTarget do
       |> Map.get("limit", Map.get(params, :limit, 20))
       |> parse_source_item_limit()
 
-    with {:ok, collection} <- group_items_collection(group),
+    with {:ok, collection} <- group_items_collection(group, params),
          {:ok, page} <- first_source_item_page(collection) do
       items =
         page
         |> source_collection_items()
         |> Enum.take(preview_candidate_limit(limit))
         |> Enum.map(&group_preview_item/1)
-        |> Enum.map(&render_source_item(&1, group_context))
+        |> Enum.map(&render_source_item(&1, group_context, reading_user))
         |> Enum.reject(&is_nil/1)
         |> Enum.take(limit)
 
@@ -1419,20 +1513,44 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_items_fetch_json(url) when is_binary(url) do
     case source_items_unsigned_fetch(url) do
       {:ok, %{} = data} ->
+        mark_source_items_fetch_reachable(url)
         {:ok, data}
 
       {:error, :invalid_body} ->
+        mark_source_items_fetch_invalid(url)
         {:error, :invalid_body}
 
       _ ->
         case safe_signed_fetch(url) do
-          {:ok, %{} = data} -> {:ok, data}
-          _ -> {:error, :fetch_failed}
+          {:ok, %{} = data} ->
+            mark_source_items_fetch_reachable(url)
+            {:ok, data}
+
+          _ ->
+            {:error, :fetch_failed}
         end
     end
   end
 
   defp source_items_fetch_json(_), do: {:error, :invalid_source}
+
+  defp mark_source_items_fetch_reachable(url) do
+    Instances.set_reachable(url)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp mark_source_items_fetch_invalid(url) do
+    Instances.set_consistently_unreachable(url)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
 
   defp safe_signed_fetch(url) do
     Fetcher.fetch_and_contain_remote_object_from_id(url)
@@ -1530,8 +1648,33 @@ defmodule Pleroma.Web.FederatedTarget do
     }
   end
 
-  defp group_items_collection(%User{} = group) do
-    case group_platform_items_collection(group) do
+  defp fetch_remote_group_member_count(%User{follower_address: followers_url} = group)
+       when is_binary(followers_url) do
+    with {:ok, %{} = followers} <- source_items_fetch_json(followers_url),
+         count when is_integer(count) <- collection_total_items(followers) do
+      maybe_cache_group_member_count(group, count)
+      count
+    else
+      _ -> nil
+    end
+  end
+
+  defp fetch_remote_group_member_count(_), do: nil
+
+  defp maybe_cache_group_member_count(%User{follower_count: count}, count), do: :ok
+
+  defp maybe_cache_group_member_count(%User{} = group, count) when is_integer(count) do
+    group
+    |> Ecto.Changeset.change(%{follower_count: count})
+    |> Repo.update()
+    |> case do
+      {:ok, group} -> User.set_cache(group)
+      _ -> :ok
+    end
+  end
+
+  defp group_items_collection(%User{} = group, params) do
+    case group_platform_items_collection(group, params) do
       {:ok, %{} = collection} ->
         {:ok, collection}
 
@@ -1548,16 +1691,16 @@ defmodule Pleroma.Web.FederatedTarget do
     end
   end
 
-  defp group_platform_items_collection(%User{} = group) do
+  defp group_platform_items_collection(%User{} = group, params) do
     case group_platform(group).platform do
-      "lemmy" -> threadiverse_api_collection(group, "api/v3")
-      "piefed" -> threadiverse_api_collection(group, "api/alpha")
+      "lemmy" -> threadiverse_api_collection(group, "api/v3", params)
+      "piefed" -> threadiverse_api_collection(group, "api/alpha", params)
       "mbin" -> mbin_api_collection(group)
       _ -> {:error, :unsupported_platform}
     end
   end
 
-  defp threadiverse_api_collection(%User{} = group, api_path) do
+  defp threadiverse_api_collection(%User{} = group, api_path, params) do
     with %URI{scheme: scheme, host: host, path: path} when is_binary(host) <-
            parse_uri(group.ap_id || group.uri),
          community when is_binary(community) <- threadiverse_community_name(path),
@@ -1565,7 +1708,11 @@ defmodule Pleroma.Web.FederatedTarget do
            "#{scheme || "https"}://#{host}/#{api_path}/post/list?community_name=" <>
              URI.encode_www_form(community) <> "&sort=New&limit=20",
          {:ok, %{"posts" => posts}} when is_list(posts) <- source_items_fetch_json(url),
-         items <- posts |> Enum.map(&threadiverse_post_item/1) |> Enum.reject(&is_nil/1),
+         items <-
+           posts
+           |> maybe_filter_threadiverse_featured_posts(params)
+           |> Enum.map(&threadiverse_post_item/1)
+           |> Enum.reject(&is_nil/1),
          true <- items != [] do
       {:ok, %{"orderedItems" => items, "totalItems" => length(items)}}
     else
@@ -1583,6 +1730,26 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp threadiverse_community_name(_), do: nil
 
+  defp maybe_filter_threadiverse_featured_posts(posts, params) do
+    if truthy_source_item_param?(params, "include_featured") do
+      posts
+    else
+      Enum.reject(posts, &threadiverse_featured_post?/1)
+    end
+  end
+
+  defp truthy_source_item_param?(params, key) do
+    Map.get(params, key, Map.get(params, String.to_atom(key))) in [true, "true", "1", 1]
+  end
+
+  defp threadiverse_featured_post?(%{"post" => %{} = post}) do
+    Enum.any?(["featured_community", "featured_local", "stickied", "pinned"], fn key ->
+      post[key] in [true, "true", "1", 1]
+    end)
+  end
+
+  defp threadiverse_featured_post?(_), do: false
+
   defp threadiverse_post_item(%{"post" => %{} = post} = view) do
     creator = Map.get(view, "creator", %{})
 
@@ -1595,7 +1762,8 @@ defmodule Pleroma.Web.FederatedTarget do
       "url" => post["ap_id"] || post["url"],
       "published" => post["published"],
       "attributedTo" => creator["actor_id"],
-      "image" => threadiverse_post_image(post)
+      "image" => threadiverse_post_image(post),
+      "commentsCount" => threadiverse_post_comment_count(view)
     }
   end
 
@@ -1613,6 +1781,22 @@ defmodule Pleroma.Web.FederatedTarget do
     do: thumbnail
 
   defp threadiverse_post_image(_), do: nil
+
+  defp threadiverse_post_comment_count(%{"counts" => %{} = counts}) do
+    normalized_integer(
+      counts["comments"] || counts["comments_count"] || counts["comment_count"] ||
+        counts["replies"] || counts["replies_count"]
+    )
+  end
+
+  defp threadiverse_post_comment_count(%{"post" => %{} = post}) do
+    normalized_integer(
+      post["comments"] || post["comments_count"] || post["comment_count"] ||
+        post["replies"] || post["replies_count"]
+    )
+  end
+
+  defp threadiverse_post_comment_count(_), do: nil
 
   defp mbin_api_collection(%User{} = group) do
     with %URI{scheme: scheme, host: host, path: path} when is_binary(host) <-
@@ -1918,6 +2102,7 @@ defmodule Pleroma.Web.FederatedTarget do
       duration: nil,
       event_start: nil,
       location: nil,
+      comments_count: nil,
       render_hint: source_item_render_hint(source_context.platform.platform_family),
       source_kind: source_context.source_kind,
       source_kind_label: source_context.source_kind_label,
@@ -1931,6 +2116,7 @@ defmodule Pleroma.Web.FederatedTarget do
     media = source_item_media(item)
     summary = source_item_summary(item)
     platform = source_item_platform(item, source_context.platform)
+    comments_count = source_item_comments_count(item)
 
     %{
       id: source_item_id(item, url),
@@ -1946,24 +2132,27 @@ defmodule Pleroma.Web.FederatedTarget do
       duration: source_item_duration(item),
       event_start: source_item_event_start(item),
       location: source_item_location(item),
+      comments_count: comments_count,
       render_hint: source_item_render_hint(platform.platform_family),
       source_kind: source_context.source_kind,
       source_kind_label: source_context.source_kind_label,
       capabilities: source_context.capabilities
     }
     |> Map.merge(platform)
-    |> maybe_put(:status, source_item_status(item, reading_user))
+    |> maybe_put(:status, source_item_status(item, reading_user, comments_count))
   end
 
   defp render_source_item(_, _, _), do: nil
 
-  defp source_item_status(%{} = item, reading_user) do
+  defp source_item_status(%{} = item, reading_user, comments_count) do
     with id when is_binary(id) <- source_item_object_id(item),
          %Activity{} = activity <- source_item_activity(item, id),
          true <- Visibility.visible_for_user?(activity, reading_user),
+         :ok <- maybe_fetch_source_item_replies(activity),
+         %Activity{} = activity <- Activity.get_create_by_object_ap_id_with_object(id),
          status when is_map(status) <-
            StatusView.render("show.json", %{activity: activity, for: reading_user}) do
-      status
+      maybe_put_status_replies_count(status, comments_count)
     else
       _ -> nil
     end
@@ -1973,13 +2162,37 @@ defmodule Pleroma.Web.FederatedTarget do
     _, _ -> nil
   end
 
+  defp maybe_fetch_source_item_replies(%Activity{} = activity) do
+    RemoteReplies.fetch_for_activity(activity)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp maybe_put_status_replies_count(status, count) when is_integer(count) do
+    existing_count =
+      normalized_integer(status[:replies_count]) ||
+        normalized_integer(status["replies_count"]) ||
+        0
+
+    if count > existing_count do
+      Map.put(status, :replies_count, count)
+    else
+      status
+    end
+  end
+
+  defp maybe_put_status_replies_count(status, _), do: status
+
   defp source_item_activity(item, id) do
     Activity.get_create_by_object_ap_id_with_object(id) ||
       maybe_fetch_source_item_activity(item, id)
   end
 
   defp maybe_fetch_source_item_activity(%{"type" => type}, id)
-       when type in ["Note", "Article", "Page", "Question"] do
+       when type in ["Note", "Article", "Page", "Question", "Audio", "Video", "Image", "Event"] do
     with {:ok, _object} <- Fetcher.fetch_object_from_id(id, depth: 0) do
       Activity.get_create_by_object_ap_id_with_object(id)
     else
@@ -2192,6 +2405,35 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_item_location(%{"location" => location}), do: source_item_location_value(location)
   defp source_item_location(_), do: nil
 
+  defp source_item_comments_count(%{} = item) do
+    [
+      normalized_integer(item["commentsCount"]),
+      normalized_integer(item["comments_count"]),
+      normalized_integer(item["comment_count"]),
+      normalized_integer(item["repliesCount"]),
+      normalized_integer(item["replies_count"]),
+      source_item_collection_count(item["comments"]),
+      source_item_collection_count(item["replies"])
+    ]
+    |> Enum.find(&is_integer/1)
+  end
+
+  defp source_item_collection_count(%{"totalItems" => count}), do: normalized_integer(count)
+  defp source_item_collection_count(%{"total_items" => count}), do: normalized_integer(count)
+
+  defp source_item_collection_count(collection_url) when is_binary(collection_url) do
+    with true <- safe_fetch_url?(collection_url),
+         {:ok, %{} = collection} <- source_items_fetch_json(collection_url) do
+      collection_total_items(collection) ||
+        source_item_collection_count(collection["items"] || collection["orderedItems"])
+    else
+      _ -> nil
+    end
+  end
+
+  defp source_item_collection_count(items) when is_list(items), do: length(items)
+  defp source_item_collection_count(_), do: nil
+
   defp source_item_location_value(value) when is_binary(value), do: value
   defp source_item_location_value(%{"name" => name}) when is_binary(name), do: name
   defp source_item_location_value(%{"address" => address}) when is_binary(address), do: address
@@ -2209,6 +2451,18 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_page_next(%{"next" => next}) when is_binary(next), do: next
   defp source_page_next(_), do: nil
 
-  defp collection_total_items(%{"totalItems" => count}) when is_integer(count), do: count
+  defp collection_total_items(%{"totalItems" => count}), do: normalized_integer(count)
+  defp collection_total_items(%{"total_items" => count}), do: normalized_integer(count)
   defp collection_total_items(_), do: nil
+
+  defp normalized_integer(value) when is_integer(value), do: value
+
+  defp normalized_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, _} -> integer
+      _ -> nil
+    end
+  end
+
+  defp normalized_integer(_), do: nil
 end

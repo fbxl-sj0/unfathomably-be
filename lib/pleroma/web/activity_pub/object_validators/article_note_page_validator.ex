@@ -29,24 +29,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
     end
 
     field(:replies, {:array, ObjectValidators.ObjectID}, default: [])
+    field(:replies_collection, ObjectValidators.ObjectID)
     field(:source, :map)
   end
 
-  def cast_and_apply(data) do
+  def cast_and_apply(data, opts \\ []) do
     data
-    |> cast_data
+    |> cast_data(opts)
     |> apply_action(:insert)
   end
 
-  def cast_and_validate(data) do
+  def cast_and_validate(data, opts \\ []) do
     data
-    |> cast_data()
+    |> cast_data(opts)
     |> validate_data()
   end
 
-  def cast_data(data) do
+  def cast_data(data, opts \\ []) do
     %__MODULE__{}
-    |> changeset(data)
+    |> changeset(data, opts)
   end
 
   defp fix_url(%{"url" => url} = data) when is_bitstring(url), do: data
@@ -60,20 +61,91 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
   defp fix_tag(%{"tag" => tag} = data) when is_map(tag), do: Map.put(data, "tag", [tag])
   defp fix_tag(data), do: Map.drop(data, ["tag"])
 
+  defp fix_replies_collection(data, opts) do
+    collection_id = replies_collection_candidate(data, opts)
+    data = Map.delete(data, "replies_collection")
+
+    with collection_id when is_binary(collection_id) <- collection_id,
+         {:ok, collection_id} <- ObjectValidators.ObjectID.cast(collection_id),
+         true <- same_origin?(collection_id, data["id"]) do
+      Map.put(data, "replies_collection", collection_id)
+    else
+      _ -> data
+    end
+  end
+
+  defp replies_collection_candidate(data, opts) do
+    case replies_collection_id(data["replies"]) do
+      nil -> internal_replies_collection_id(data, opts)
+      collection_id -> collection_id
+    end
+  end
+
+  defp internal_replies_collection_id(
+         %{"replies" => replies, "replies_collection" => collection_id},
+         opts
+       )
+       when is_list(replies) and is_binary(collection_id) do
+    if Keyword.get(opts, :preserve_internal_replies_collection) do
+      collection_id
+    end
+  end
+
+  defp internal_replies_collection_id(_, _), do: nil
+
+  defp replies_collection_id(replies) when is_binary(replies), do: replies
+
+  defp replies_collection_id(%{"id" => id}) when is_binary(id), do: id
+
+  defp replies_collection_id(%{"first" => %{"partOf" => id}}) when is_binary(id), do: id
+
+  defp replies_collection_id(_), do: nil
+
+  defp same_origin?(left, right) when is_binary(left) and is_binary(right) do
+    left = URI.parse(left)
+    right = URI.parse(right)
+
+    is_binary(left.scheme) and is_binary(left.host) and is_binary(right.scheme) and
+      is_binary(right.host) and left.scheme == right.scheme and
+      String.downcase(left.host) == String.downcase(right.host) and
+      uri_port(left) == uri_port(right)
+  end
+
+  defp same_origin?(_, _), do: false
+
+  defp uri_port(%URI{port: nil, scheme: scheme}), do: URI.default_port(scheme)
+  defp uri_port(%URI{port: port}), do: port
+
+  # Legacy internal *oma format.
+  defp fix_replies(%{"replies" => replies} = data) when is_list(replies), do: data
+
   defp fix_replies(%{"replies" => %{"first" => %{"items" => replies}}} = data)
+       when is_list(replies),
+       do: Map.put(data, "replies", replies)
+
+  defp fix_replies(%{"replies" => %{"first" => %{"orderedItems" => replies}}} = data)
        when is_list(replies),
        do: Map.put(data, "replies", replies)
 
   defp fix_replies(%{"replies" => %{"items" => replies}} = data) when is_list(replies),
     do: Map.put(data, "replies", replies)
 
-  # Collections are not supported here. If the `replies` field is not something
-  # the ObjectID validator can handle, the activity/object would be rejected,
-  # which is worse than dropping the unsupported reply collection.
-  defp fix_replies(%{"replies" => replies} = data) when not is_list(replies),
-    do: Map.drop(data, ["replies"])
+  defp fix_replies(%{"replies" => %{"orderedItems" => replies}} = data) when is_list(replies),
+    do: Map.put(data, "replies", replies)
 
-  defp fix_replies(data), do: data
+  defp fix_replies(data), do: Map.delete(data, "replies")
+
+  defp fix_likes(%{"likes" => likes} = data) when is_list(likes), do: data
+
+  defp fix_likes(%{"likes" => %{"totalItems" => total_items}} = data)
+       when is_integer(total_items) and total_items >= 0 do
+    data
+    |> Map.put("like_count", total_items)
+    |> Map.delete("likes")
+  end
+
+  defp fix_likes(%{"likes" => _likes} = data), do: Map.delete(data, "likes")
+  defp fix_likes(data), do: data
 
   defp fix_quote_url(%{"quoteUrl" => _quote_url} = data), do: data
 
@@ -208,13 +280,15 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
 
   defp fix_misskey_content(object), do: object
 
-  def fix(data) do
+  def fix(data, opts \\ []) do
     data
     |> CommonFixes.fix_actor()
+    |> fix_replies_collection(opts)
     |> CommonFixes.fix_object_defaults()
     |> fix_url()
     |> fix_tag()
     |> fix_replies()
+    |> fix_likes()
     |> fix_quote_url()
     |> fix_attachments()
     |> normalize_source()
@@ -225,8 +299,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
     |> Transmogrifier.maybe_add_language()
   end
 
-  def changeset(struct, data) do
-    data = fix(data)
+  def changeset(struct, data, opts \\ []) do
+    data = fix(data, opts)
 
     struct
     |> cast(data, __schema__(:fields) -- [:attachment, :tag])

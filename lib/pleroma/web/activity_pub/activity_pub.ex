@@ -124,12 +124,9 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     with local <- Keyword.fetch!(meta, :local),
          {recipients, _, _} <- get_recipients(object),
          {:ok, activity} <-
-           Repo.insert(%Activity{
-             data: object,
-             local: local,
-             recipients: recipients,
-             actor: object["actor"]
-           }),
+           %Activity{local: local, actor: object["actor"]}
+           |> Activity.change(%{data: object, recipients: recipients})
+           |> Repo.insert(),
          # Expiration creation stays here so non-object activities keep the same
          # behavior as the older insertion path.
          {:ok, _} <- maybe_create_activity_expiration(activity) do
@@ -192,14 +189,11 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   defp insert_activity_with_expiration(data, local, recipients) do
-    struct = %Activity{
-      data: data,
-      local: local,
-      actor: data["actor"],
-      recipients: recipients
-    }
+    changeset =
+      %Activity{local: local, actor: data["actor"]}
+      |> Activity.change(%{data: data, recipients: recipients})
 
-    with {:ok, activity} <- Repo.insert(struct) do
+    with {:ok, activity} <- Repo.insert(changeset) do
       maybe_create_activity_expiration(activity)
     end
   end
@@ -1102,6 +1096,27 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp restrict_replies(query, _), do: query
 
+  defp restrict_discussion_roots(query, %{discussion_roots_only: true}) do
+    from(
+      [_activity, object] in query,
+      where:
+        fragment(
+          """
+          ?->'inReplyTo' is null
+          or ?->>'inReplyTo' is null
+          or ?->>'inReplyTo' = ''
+          or ?->'inReplyTo' = '[]'::jsonb
+          """,
+          object.data,
+          object.data,
+          object.data,
+          object.data
+        )
+    )
+  end
+
+  defp restrict_discussion_roots(query, _), do: query
+
   defp restrict_reblogs(query, %{exclude_reblogs: true}) do
     from(activity in query, where: fragment("?->>'type' != 'Announce'", activity.data))
   end
@@ -1518,6 +1533,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       |> maybe_order(opts)
       |> restrict_recipients(recipients, opts[:user])
       |> restrict_replies(opts)
+      |> restrict_discussion_roots(opts)
       |> restrict_since(opts)
       |> restrict_local(opts)
       |> restrict_remote(opts)
@@ -1667,10 +1683,21 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp normalize_image(_), do: nil
 
   defp maybe_put_image_description(map, %{"name" => description}) when is_binary(description) do
-    Map.put(map, "name", description)
+    put_image_description(map, description)
+  end
+
+  defp maybe_put_image_description(map, %{"summary" => description})
+       when is_binary(description) do
+    put_image_description(map, description)
   end
 
   defp maybe_put_image_description(map, _), do: map
+
+  defp put_image_description(map, description) do
+    map
+    |> Map.put("name", description)
+    |> Map.put("summary", description)
+  end
 
   defp normalize_also_known_as(urls) when is_list(urls), do: urls
   defp normalize_also_known_as(url) when is_binary(url), do: [url]
@@ -1712,10 +1739,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     featured_address = data["featured"]
     {:ok, pinned_objects} = fetch_and_prepare_featured_from_ap_id(featured_address)
 
-    public_key =
-      if is_map(data["publicKey"]) && is_binary(data["publicKey"]["publicKeyPem"]) do
-        data["publicKey"]["publicKeyPem"]
-      end
+    public_key = public_key_pem(data["publicKey"])
 
     shared_inbox =
       if is_map(data["endpoints"]) && is_binary(data["endpoints"]["sharedInbox"]) do
@@ -1764,6 +1788,16 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
        }}
     end
   end
+
+  defp public_key_pem(keys) when is_list(keys) do
+    Enum.find_value(keys, &public_key_pem/1)
+  end
+
+  defp public_key_pem(%{"publicKeyPem" => public_key}) when is_binary(public_key), do: public_key
+
+  defp public_key_pem(%{"publicKey" => public_key}), do: public_key_pem(public_key)
+
+  defp public_key_pem(_), do: nil
 
   defp nickname_from_actor(data, additional) do
     generated = generated_nickname(data)
@@ -1927,6 +1961,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         Logger.info("Rejected user #{ap_id}: #{inspect(reason)}")
         {:error, e}
 
+      {:error, {:http, code} = e} when code in [401, 403, 404, 410] ->
+        Logger.debug("Could not decode user at fetch #{ap_id}, #{inspect(e)}")
+        {:error, e}
+
       {:error, e} ->
         Logger.error("Could not decode user at fetch #{ap_id}, #{inspect(e)}")
         {:error, e}
@@ -1963,15 +2001,24 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         "type" => type,
         "orderedItems" => objects
       })
-      when type in @featured_collection_item_types do
-    Map.new(objects, fn
-      %{"id" => object_ap_id} -> {object_ap_id, NaiveDateTime.utc_now()}
-      object_ap_id when is_binary(object_ap_id) -> {object_ap_id, NaiveDateTime.utc_now()}
+      when type in @featured_collection_item_types and is_list(objects) do
+    objects
+    |> Enum.reduce(%{}, fn
+      %{"id" => object_ap_id}, acc when is_binary(object_ap_id) ->
+        Map.put(acc, object_ap_id, NaiveDateTime.utc_now())
+
+      object_ap_id, acc when is_binary(object_ap_id) ->
+        Map.put(acc, object_ap_id, NaiveDateTime.utc_now())
+
+      _, acc ->
+        acc
     end)
   end
 
+  def pin_data_from_featured_collection(nil), do: %{}
+
   def pin_data_from_featured_collection(obj) do
-    Logger.error("Could not parse featured collection #{inspect(obj)}")
+    Logger.debug("Could not parse featured collection #{inspect(obj)}")
     %{}
   end
 
@@ -1984,7 +2031,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       {:ok, prepare_featured_collection(data)}
     else
       e ->
-        Logger.error("Could not decode featured collection at fetch #{ap_id}, #{inspect(e)}")
+        Logger.debug("Could not decode featured collection at fetch #{ap_id}, #{inspect(e)}")
         {:ok, %{}}
     end
   end
@@ -2008,7 +2055,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         pin_data_from_featured_collection(data)
 
       e ->
-        Logger.error("Could not decode featured collection page at fetch #{first}, #{inspect(e)}")
+        Logger.debug("Could not decode featured collection page at fetch #{first}, #{inspect(e)}")
         %{}
     end
   end

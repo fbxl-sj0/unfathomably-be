@@ -525,6 +525,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
       object = Object.normalize(activity.data["object"])
 
       assert object.data["replies"] == items
+      assert object.data["replies_collection"] == data["object"]["replies"]["id"]
 
       for id <- items do
         job_args = %{"op" => "fetch_remote", "id" => id, "depth" => 1}

@@ -240,11 +240,24 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
               :actor_signature_mismatch,
               :host_header_mismatch,
               :invalid_signature,
-              :invalid_signature_retry_metadata,
-              :missing_signature_retry_metadata,
               :origin_containment_failed
             ] do
-    Logger.warning(
+    log_signature_retry_rejection(:info, reason, context)
+  end
+
+  defp log_signature_retry_rejection({:cancel, reason}, context)
+       when reason in [
+              :invalid_signature_retry_metadata,
+              :missing_signature_retry_metadata
+            ] do
+    log_signature_retry_rejection(:warning, reason, context)
+  end
+
+  defp log_signature_retry_rejection(_result, _context), do: :ok
+
+  defp log_signature_retry_rejection(level, reason, context) do
+    Logger.log(
+      level,
       "Failed-signature inbox retry rejected " <>
         "reason=#{inspect(reason)} " <>
         "payload_actor=#{inspect(context[:payload_actor])} " <>
@@ -254,6 +267,4 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
         "request_path=#{inspect(context[:request_path])}"
     )
   end
-
-  defp log_signature_retry_rejection(_result, _context), do: :ok
 end

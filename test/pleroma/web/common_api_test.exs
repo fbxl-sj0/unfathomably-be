@@ -1963,5 +1963,72 @@ defmodule Pleroma.Web.CommonAPITest do
 
       assert [] = get_announces_of_object(post.object)
     end
+
+    test "group-targeted posts default to unlisted", %{poster: poster, group: group} do
+      {:ok, post} = CommonAPI.post(poster, %{status: "community post", group_id: group.ap_id})
+
+      object = Object.normalize(post, fetch: false)
+
+      assert Visibility.get_visibility(post) == "unlisted"
+      assert group.ap_id in object.data["to"]
+      refute Pleroma.Constants.as_public() in object.data["to"]
+      assert Pleroma.Constants.as_public() in object.data["cc"]
+    end
+
+    test "group-targeted posts can opt into public timeline visibility", %{
+      poster: poster,
+      group: group
+    } do
+      {:ok, post} =
+        CommonAPI.post(poster, %{
+          status: "community post",
+          group_id: group.ap_id,
+          group_timeline_visible: true
+        })
+
+      assert Visibility.get_visibility(post) == "public"
+    end
+
+    test "explicit visibility wins for group-targeted posts", %{poster: poster, group: group} do
+      {:ok, post} =
+        CommonAPI.post(poster, %{
+          status: "community post",
+          group_id: group.ap_id,
+          visibility: "public"
+        })
+
+      assert Visibility.get_visibility(post) == "public"
+    end
+
+    test "group post default visibility is configurable", %{poster: poster, group: group} do
+      clear_config([:instance, :group_post_default_visibility], "public")
+
+      {:ok, post} = CommonAPI.post(poster, %{status: "community post", group_id: group.ap_id})
+
+      assert Visibility.get_visibility(post) == "public"
+    end
+
+    test "replies to group-addressed posts use the group post default", %{
+      poster: poster,
+      group: group
+    } do
+      replier = insert(:user)
+
+      {:ok, parent} =
+        CommonAPI.post(poster, %{
+          status: "community post",
+          group_id: group.ap_id,
+          group_timeline_visible: true
+        })
+
+      {:ok, reply} =
+        CommonAPI.post(replier, %{
+          status: "community reply",
+          in_reply_to_id: parent.id
+        })
+
+      assert Visibility.get_visibility(parent) == "public"
+      assert Visibility.get_visibility(reply) == "unlisted"
+    end
   end
 end

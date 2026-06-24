@@ -14,6 +14,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   alias Pleroma.Object.Containment
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.ObjectValidator
@@ -564,6 +565,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
            Pipeline.common_pipeline(data, local: false) do
       {:ok, activity}
     else
+      {:error, _} = error -> error
       e -> {:error, e}
     end
   end
@@ -671,6 +673,10 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     else
       _e -> :error
     end
+  end
+
+  def handle_incoming(%{"type" => type}, _options) when is_binary(type) do
+    {:error, {:unsupported_activity_type, type}}
   end
 
   def handle_incoming(_, _), do: :error
@@ -983,7 +989,10 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def add_mention_tags(object) do
     to = object["to"] || []
     cc = object["cc"] || []
-    mentioned = User.get_users_from_set(to ++ cc, local_only: false)
+
+    mentioned =
+      User.get_users_from_set(to ++ cc, local_only: false)
+      |> Enum.reject(&Addressing.suppress_implicit_mention_user?(&1, object))
 
     mentions = Enum.map(mentioned, &build_mention_tag/1)
 

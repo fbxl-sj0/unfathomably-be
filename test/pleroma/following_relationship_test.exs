@@ -7,6 +7,7 @@ defmodule Pleroma.FollowingRelationshipTest do
 
   alias Pleroma.FollowingRelationship
   alias Pleroma.Instances
+  alias Pleroma.User
   alias Pleroma.Web.ActivityPub.InternalFetchActor
   alias Pleroma.Web.ActivityPub.Relay
 
@@ -43,6 +44,24 @@ defmodule Pleroma.FollowingRelationshipTest do
                actor.follower_address,
                user.follower_address
              ]
+    end
+  end
+
+  describe "follow/3" do
+    test "does not inflate counters when the follow already exists" do
+      follower = insert(:user)
+      following = insert(:user)
+
+      assert {:ok, _, _} = FollowingRelationship.follow(follower, following, :follow_accept)
+      assert {:ok, _, _} = FollowingRelationship.follow(follower, following, :follow_accept)
+
+      follower = User.get_by_id(follower.id)
+      following = User.get_by_id(following.id)
+
+      assert follower.following_count == 1
+      assert following.follower_count == 1
+      assert FollowingRelationship.following_count(follower) == 1
+      assert FollowingRelationship.follower_count(following) == 1
     end
   end
 

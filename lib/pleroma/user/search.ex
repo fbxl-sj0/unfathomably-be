@@ -65,20 +65,34 @@ defmodule Pleroma.User.Search do
   end
 
   defp format_query(query_string) do
+    query_string = strip_identifier_controls(query_string)
+
     # Strip the beginning @ off if there is a query
     query_string = String.trim_leading(query_string, "@")
 
-    with [name, domain] <- String.split(query_string, "@") do
-      encoded_domain =
-        domain
-        |> String.replace(~r/[!-\-|@|[-`|{-~|\/|:|\s]+/, "")
-        |> String.to_charlist()
-        |> :idna.encode()
-        |> to_string()
-
+    with [name, domain] <- String.split(query_string, "@"),
+         {:ok, encoded_domain} <- encode_domain(domain) do
       name <> "@" <> encoded_domain
     else
       _ -> query_string
+    end
+  end
+
+  defp strip_identifier_controls(query_string) when is_binary(query_string) do
+    query_string
+    |> String.replace(~r/\p{C}+/u, " ")
+    |> String.trim()
+  end
+
+  defp strip_identifier_controls(_query_string), do: ""
+
+  defp encode_domain(domain) do
+    domain = String.replace(domain, ~r/[!-\-|@|[-`|{-~|\/|:|\s]+/, "")
+
+    try do
+      {:ok, domain |> String.to_charlist() |> :idna.encode() |> to_string()}
+    catch
+      _kind, _reason -> :error
     end
   end
 

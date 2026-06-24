@@ -2261,4 +2261,26 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
              obj_id in object_ids
            end)
   end
+
+  test "featured collections index", %{conn: conn} do
+    user = insert(:user)
+    %{nickname: nickname, ap_id: ap_id, featured_address: featured_address} = user
+    collections_id = "#{ap_id}/collections"
+    first_page_id = "#{collections_id}?page=1"
+
+    %{"id" => ^collections_id, "type" => "Collection", "totalItems" => 1} =
+      conn
+      |> get("/users/#{nickname}/collections")
+      |> json_response(200)
+
+    %{
+      "id" => ^first_page_id,
+      "type" => "CollectionPage",
+      "partOf" => ^collections_id,
+      "items" => [^featured_address]
+    } =
+      conn
+      |> get("/users/#{nickname}/collections?page=1")
+      |> json_response(200)
+  end
 end

@@ -27,7 +27,9 @@ defmodule Pleroma.Web.Nodeinfo.NodeinfoController do
 
   # Schema definition: https://github.com/jhass/nodeinfo/blob/master/schemas/2.0/schema.json
   # and https://github.com/jhass/nodeinfo/blob/master/schemas/2.1/schema.json
-  def nodeinfo(conn, %{"version" => version}) do
+  def nodeinfo(conn, %{"version" => version} = params) do
+    version = normalize_version(version, params)
+
     case Nodeinfo.get_nodeinfo(version) do
       {:error, :missing} ->
         render_error(conn, :not_found, "Nodeinfo schema version not handled")
@@ -43,4 +45,10 @@ defmodule Pleroma.Web.Nodeinfo.NodeinfoController do
   end
 
   defp schema_rel(version), do: "#{@schema_base}/#{version}"
+
+  defp normalize_version("2", %{"_format" => minor}) when minor in ["0", "1"] do
+    "2.#{minor}"
+  end
+
+  defp normalize_version(version, _params), do: version
 end

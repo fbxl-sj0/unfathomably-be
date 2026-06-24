@@ -6,6 +6,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
   use Pleroma.Web.ConnCase
 
   alias Pleroma.GroupMembership
+  alias Pleroma.Instances
   alias Pleroma.Notification
   alias Pleroma.User
   alias Pleroma.Web.CommonAPI
@@ -27,7 +28,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
           local: false,
           nickname: "coffee@lotide.example",
           ap_id: "https://lotide.example/c/coffee",
-          name: "Coffee"
+          name: "Coffee",
+          follower_count: 12
         )
 
       source =
@@ -48,10 +50,45 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                %{
                  "id" => ^group_id,
                  "display_name" => "Coffee",
+                 "members_count" => 1,
                  "target_profile" => "threadiverse_forum",
                  "relationship" => %{"member" => true}
                }
              ] =
+               conn
+               |> get("/api/v1/groups")
+               |> json_response(200)
+    end
+
+    test "does not list followed groups from consistently unreachable instances", %{
+      conn: conn,
+      user: user
+    } do
+      reachable_group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "live@live.example",
+          ap_id: "https://live.example/c/live",
+          name: "Live"
+        )
+
+      unreachable_group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "dead@dead.example",
+          ap_id: "https://dead.example/c/dead",
+          name: "Dead"
+        )
+
+      {:ok, _, _} = User.follow(user, reachable_group)
+      {:ok, _, _} = User.follow(user, unreachable_group)
+      Instances.set_consistently_unreachable("dead.example")
+
+      reachable_group_id = to_string(reachable_group.id)
+
+      assert [%{"id" => ^reachable_group_id}] =
                conn
                |> get("/api/v1/groups")
                |> json_response(200)
@@ -64,7 +101,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
           local: false,
           nickname: "games@lotide.example",
           ap_id: "https://lotide.example/communities/games",
-          name: "Games"
+          name: "Games",
+          follower_count: 9
         )
 
       insert(:user,
@@ -82,6 +120,33 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                |> get("/api/v1/groups?q=games")
                |> json_response(200)
     end
+
+    test "does not search groups from consistently unreachable instances", %{conn: conn} do
+      visible_group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "shared@live.example",
+          ap_id: "https://live.example/c/shared",
+          name: "Shared"
+        )
+
+      insert(:user,
+        actor_type: "Group",
+        local: false,
+        nickname: "shared@dead.example",
+        ap_id: "https://dead.example/c/shared",
+        name: "Shared"
+      )
+
+      Instances.set_consistently_unreachable("dead.example")
+      visible_group_id = to_string(visible_group.id)
+
+      assert [%{"id" => ^visible_group_id}] =
+               conn
+               |> get("/api/v1/groups?q=shared")
+               |> json_response(200)
+    end
   end
 
   describe "GET /api/v1/groups/:id" do
@@ -94,7 +159,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
           local: false,
           nickname: "video@peertube.example",
           ap_id: "https://peertube.example/video-channels/video",
-          name: "Video Channel"
+          name: "Video Channel",
+          follower_count: 7
         )
 
       group_id = to_string(group.id)
@@ -103,11 +169,53 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                "id" => ^group_id,
                "owner" => %{"id" => ^group_id},
                "slug" => ^group_id,
+               "members_count" => 7,
                "target_profile" => "collection_channel"
              } =
                conn
                |> get("/api/v1/groups/#{group.id}")
                |> json_response(200)
+    end
+
+    test "fetches a missing remote group member count from followers collection", %{conn: conn} do
+      followers_url = "https://peertube.example/video-channels/video/followers"
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "video@peertube.example",
+          ap_id: "https://peertube.example/video-channels/video",
+          follower_address: followers_url,
+          follower_count: 0,
+          name: "Video Channel"
+        )
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^followers_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => followers_url,
+                "type" => "OrderedCollection",
+                "totalItems" => "42"
+              })
+          }
+      end)
+
+      group_id = to_string(group.id)
+
+      assert %{
+               "id" => ^group_id,
+               "members_count" => 42
+             } =
+               conn
+               |> get("/api/v1/groups/#{group.id}")
+               |> json_response(200)
+
+      assert %{follower_count: 42} = User.get_cached_by_id(group.id)
     end
   end
 
@@ -314,6 +422,108 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
   describe "GET /api/v1/timelines/group/:id" do
     setup do: oauth_access(["read:statuses"])
 
+    test "returns root posts from followed groups", %{conn: conn, user: user} do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "selfhosted@lemmy.example",
+          ap_id: "https://lemmy.example/c/selfhosted"
+        )
+
+      unfollowed_group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "linux@lemmy.example",
+          ap_id: "https://lemmy.example/c/linux"
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          nickname: "alice@lemmy.example",
+          ap_id: "https://lemmy.example/u/alice"
+        )
+
+      {:ok, _, _} = Pleroma.FollowingRelationship.follow(user, group, :follow_accept)
+
+      context = "https://lemmy.example/post/1"
+
+      root =
+        insert(:note,
+          user: author,
+          data: %{
+            "content" => "<p>A followed group root.</p>",
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      followed_activity =
+        insert(:note_activity,
+          user: author,
+          note: root,
+          local: false,
+          data_attrs: %{
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      reply =
+        insert(:note,
+          user: author,
+          data: %{
+            "content" => "<p>A followed group reply.</p>",
+            "context" => context,
+            "inReplyTo" => root.data["id"],
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      _reply_activity =
+        insert(:note_activity,
+          user: author,
+          note: reply,
+          local: false,
+          data_attrs: %{
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      other_root =
+        insert(:note,
+          user: author,
+          data: %{
+            "content" => "<p>An unfollowed group root.</p>",
+            "to" => [Pleroma.Constants.as_public(), unfollowed_group.ap_id]
+          }
+        )
+
+      _unfollowed_activity =
+        insert(:note_activity,
+          user: author,
+          note: other_root,
+          local: false,
+          data_attrs: %{"to" => [Pleroma.Constants.as_public(), unfollowed_group.ap_id]}
+        )
+
+      assert [
+               %{
+                 "id" => followed_activity_id,
+                 "content" => content
+               }
+             ] =
+               conn
+               |> get("/api/v1/timelines/groups")
+               |> json_response(200)
+
+      assert followed_activity_id == to_string(followed_activity.id)
+      assert content =~ "A followed group root"
+    end
+
     test "returns a timeline envelope for a known federated group", %{conn: conn, user: user} do
       group =
         insert(:user,
@@ -330,6 +540,454 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                conn
                |> get("/api/v1/timelines/group/#{group.id}")
                |> json_response(200)
+    end
+
+    test "includes public activities authored by the group actor", %{conn: conn} do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "root42@peertube.example",
+          ap_id: "https://peertube.example/video-channels/root42"
+        )
+
+      note =
+        insert(:note,
+          user: group,
+          data: %{
+            "type" => "Video",
+            "name" => "Repairing a Commodore drive",
+            "content" => "<p>A channel video.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      activity = insert(:note_activity, user: group, note: note)
+
+      assert [
+               %{
+                 "id" => activity_id,
+                 "account" => %{"id" => group_id},
+                 "content" => content
+               }
+             ] =
+               conn
+               |> get("/api/v1/timelines/group/#{group.id}")
+               |> json_response(200)
+
+      assert activity_id == to_string(activity.id)
+      assert group_id == to_string(group.id)
+      assert content =~ "Repairing a Commodore drive"
+    end
+
+    test "does not use the normal group feed as the pinned group timeline", %{conn: conn} do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "selfhosted@lemmy.example",
+          ap_id: "https://lemmy.example/c/selfhosted"
+        )
+
+      note =
+        insert(:note,
+          user: group,
+          data: %{
+            "content" => "<p>A normal thread root.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      _activity = insert(:note_activity, user: group, note: note, local: false)
+
+      assert [] =
+               conn
+               |> get("/api/v1/timelines/group/#{group.id}?pinned=true")
+               |> json_response(200)
+    end
+
+    test "returns only actual pinned group activities for the pinned timeline", %{conn: conn} do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "videos@peertube.example",
+          ap_id: "https://peertube.example/video-channels/videos"
+        )
+
+      pinned =
+        insert(:note,
+          user: group,
+          data: %{
+            "type" => "Video",
+            "name" => "Pinned channel video",
+            "content" => "<p>This one is featured.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      unpinned =
+        insert(:note,
+          user: group,
+          data: %{
+            "type" => "Video",
+            "name" => "Normal channel video",
+            "content" => "<p>This one is not featured.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      pinned_activity = insert(:note_activity, user: group, note: pinned, local: false)
+      _unpinned_activity = insert(:note_activity, user: group, note: unpinned, local: false)
+
+      {:ok, _group} = User.add_pinned_object_id(group, pinned.data["id"])
+
+      assert [
+               %{
+                 "id" => pinned_activity_id,
+                 "content" => content
+               }
+             ] =
+               conn
+               |> get("/api/v1/timelines/group/#{group.id}?pinned=true")
+               |> json_response(200)
+
+      assert pinned_activity_id == to_string(pinned_activity.id)
+      assert content =~ "Pinned channel video"
+    end
+
+    test "returns discussion roots instead of flat announced comments by default", %{conn: conn} do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "selfhosted@lemmy.example",
+          ap_id: "https://lemmy.example/c/selfhosted"
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          nickname: "alice@lemmy.example",
+          ap_id: "https://lemmy.example/u/alice"
+        )
+
+      context = "https://lemmy.example/post/1"
+
+      post =
+        insert(:note,
+          user: author,
+          data: %{
+            "content" => "<p>A thread root.</p>",
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      _post_activity =
+        insert(:note_activity,
+          user: author,
+          note: post,
+          local: false,
+          data_attrs: %{
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      comment =
+        insert(:note,
+          user: author,
+          data: %{
+            "content" => "<p>A recent comment.</p>",
+            "context" => context,
+            "inReplyTo" => post.data["id"],
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      _comment_activity =
+        insert(:note_activity,
+          user: author,
+          note: comment,
+          local: false,
+          data_attrs: %{
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      post_announce =
+        Pleroma.Repo.insert!(%Pleroma.Activity{
+          local: false,
+          actor: group.ap_id,
+          recipients: [Pleroma.Constants.as_public(), group.ap_id],
+          data: %{
+            "id" => Pleroma.Web.ActivityPub.Utils.generate_activity_id(),
+            "type" => "Announce",
+            "actor" => group.ap_id,
+            "object" => post.data["id"],
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id],
+            "cc" => []
+          }
+        })
+
+      comment_announce =
+        Pleroma.Repo.insert!(%Pleroma.Activity{
+          local: false,
+          actor: group.ap_id,
+          recipients: [Pleroma.Constants.as_public(), group.ap_id],
+          data: %{
+            "id" => Pleroma.Web.ActivityPub.Utils.generate_activity_id(),
+            "type" => "Announce",
+            "actor" => group.ap_id,
+            "object" => comment.data["id"],
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id],
+            "cc" => []
+          }
+        })
+
+      assert [
+               %{
+                 "id" => post_announce_id,
+                 "content" => post_content
+               }
+             ] =
+               conn
+               |> get("/api/v1/timelines/group/#{group.id}")
+               |> json_response(200)
+
+      assert post_announce_id == to_string(post_announce.id)
+      assert post_content =~ "A thread root"
+
+      flat_results =
+        conn
+        |> get("/api/v1/timelines/group/#{group.id}?with_replies=true")
+        |> json_response(200)
+
+      flat_ids = Enum.map(flat_results, & &1["id"])
+      flat_contents = Enum.map(flat_results, & &1["content"])
+
+      assert to_string(comment_announce.id) in flat_ids
+      assert length(flat_contents) == 2
+      assert Enum.any?(flat_contents, &(&1 =~ "A thread root"))
+      assert Enum.any?(flat_contents, &(&1 =~ "A recent comment"))
+    end
+
+    test "refreshes a partially cached remote threadiverse group first page", %{conn: conn} do
+      group_url = "https://lemmy.example/c/selfhosted"
+
+      api_url =
+        "https://lemmy.example/api/v3/post/list?community_name=selfhosted&sort=New&limit=20"
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "selfhosted@lemmy.example",
+          ap_id: group_url
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          nickname: "alice@lemmy.example",
+          ap_id: "https://lemmy.example/u/alice"
+        )
+
+      stale =
+        insert(:note,
+          user: group,
+          data: %{
+            "content" => "<p>A stale cached community item.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      _stale_activity = insert(:note_activity, user: group, note: stale, local: false)
+
+      featured_url = "https://lemmy.example/post/featured"
+      first_url = "https://lemmy.example/post/2"
+      second_url = "https://lemmy.example/post/1"
+
+      featured =
+        insert(:note,
+          user: author,
+          data: %{
+            "id" => featured_url,
+            "content" => "<p>A featured remote root.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      first =
+        insert(:note,
+          user: author,
+          data: %{
+            "id" => first_url,
+            "content" => "<p>The newest remote root.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      second =
+        insert(:note,
+          user: author,
+          data: %{
+            "id" => second_url,
+            "content" => "<p>The next remote root.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      _featured_activity = insert(:note_activity, user: author, note: featured, local: false)
+      first_activity = insert(:note_activity, user: author, note: first, local: false)
+      second_activity = insert(:note_activity, user: author, note: second, local: false)
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^api_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "posts" => [
+                  %{
+                    "post" => %{
+                      "ap_id" => featured_url,
+                      "name" => "Featured remote root",
+                      "published" => "2026-06-23T16:00:00Z",
+                      "featured_community" => true
+                    },
+                    "creator" => %{"actor_id" => author.ap_id},
+                    "counts" => %{"comments" => 6}
+                  },
+                  %{
+                    "post" => %{
+                      "ap_id" => first_url,
+                      "name" => "Newest remote root",
+                      "published" => "2026-06-23T15:00:00Z"
+                    },
+                    "creator" => %{"actor_id" => author.ap_id},
+                    "counts" => %{"comments" => 4}
+                  },
+                  %{
+                    "post" => %{
+                      "ap_id" => second_url,
+                      "name" => "Next remote root",
+                      "published" => "2026-06-23T14:00:00Z"
+                    },
+                    "creator" => %{"actor_id" => author.ap_id},
+                    "counts" => %{"comments" => 2}
+                  }
+                ]
+              })
+          }
+      end)
+
+      assert [
+               %{"id" => first_activity_id, "content" => first_content},
+               %{"id" => second_activity_id, "content" => second_content}
+             ] =
+               conn
+               |> get("/api/v1/timelines/group/#{group.id}")
+               |> json_response(200)
+
+      assert first_activity_id == to_string(first_activity.id)
+      assert second_activity_id == to_string(second_activity.id)
+      assert first_content =~ "The newest remote root"
+      assert second_content =~ "The next remote root"
+    end
+
+    test "returns preview item activities when a remote group has account-authored objects", %{
+      conn: conn
+    } do
+      group_url = "https://peertube.example/video-channels/root42"
+      outbox_url = "https://peertube.example/video-channels/root42/outbox"
+      video_url = "https://peertube.example/videos/watch/1"
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "root42@peertube.example",
+          ap_id: group_url,
+          name: "root42"
+        )
+
+      author =
+        insert(:user,
+          actor_type: "Person",
+          local: false,
+          nickname: "root_42@peertube.example",
+          ap_id: "https://peertube.example/accounts/root_42",
+          name: "root_42"
+        )
+
+      video =
+        insert(:note,
+          user: author,
+          data: %{
+            "id" => video_url,
+            "type" => "Video",
+            "actor" => author.ap_id,
+            "attributedTo" => author.ap_id,
+            "name" => "A cached channel video",
+            "content" => "<p>This was imported before the channel timeline.</p>"
+          }
+        )
+
+      activity = insert(:note_activity, user: author, note: video)
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^group_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => group_url,
+                "type" => "Group",
+                "name" => "root42",
+                "outbox" => outbox_url
+              })
+          }
+
+        %{method: :get, url: ^outbox_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => outbox_url,
+                "type" => "OrderedCollection",
+                "orderedItems" => [
+                  %{
+                    "id" => video_url,
+                    "type" => "Video",
+                    "name" => "A cached channel video",
+                    "content" => "<p>This was imported before the channel timeline.</p>"
+                  }
+                ]
+              })
+          }
+      end)
+
+      assert [
+               %{
+                 "id" => activity_id,
+                 "account" => %{"id" => author_id},
+                 "content" => content
+               }
+             ] =
+               conn
+               |> get("/api/v1/timelines/group/#{group.id}")
+               |> json_response(200)
+
+      assert activity_id == to_string(activity.id)
+      assert author_id == to_string(author.id)
+      assert content =~ "A cached channel video"
     end
   end
 end

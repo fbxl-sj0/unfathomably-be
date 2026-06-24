@@ -460,6 +460,14 @@ defmodule Pleroma.Web.ActivityPub.SideEffectsTest do
       {:ok, emoji_react, _} = SideEffects.handle(emoji_react)
       assert Repo.get_by(Notification, user_id: poster.id, activity_id: emoji_react.id)
     end
+
+    test "ignores reaction counters when the reacted object is not local", %{
+      emoji_react: emoji_react
+    } do
+      emoji_react = put_in(emoji_react.data["object"], "https://remote.example/objects/missing")
+
+      assert {:ok, ^emoji_react, _} = SideEffects.handle(emoji_react)
+    end
   end
 
   describe "Question objects" do
@@ -832,6 +840,12 @@ defmodule Pleroma.Web.ActivityPub.SideEffectsTest do
       object = Object.get_by_ap_id(announce.data["object"])
       assert object.data["announcement_count"] == 1
       assert user.ap_id in object.data["announcements"]
+    end
+
+    test "ignores announce counters when the announced object is not local", %{announce: announce} do
+      announce = put_in(announce.data["object"], "https://remote.example/activities/dislike/1")
+
+      assert {:ok, ^announce, _} = SideEffects.handle(announce)
     end
 
     test "does not add the announce to the original object if the actor is a service actor", %{

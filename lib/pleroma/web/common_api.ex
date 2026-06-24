@@ -4,6 +4,7 @@
 
 defmodule Pleroma.Web.CommonAPI do
   alias Pleroma.Activity
+  alias Pleroma.Config
   alias Pleroma.Conversation.Participation
   alias Pleroma.Formatter
   alias Pleroma.ModerationLog
@@ -12,12 +13,14 @@ defmodule Pleroma.Web.CommonAPI do
   alias Pleroma.ThreadMute
   alias Pleroma.User
   alias Pleroma.UserRelationship
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI.ActivityDraft
+  alias Pleroma.Web.Utils.Params
 
   import Pleroma.Web.Gettext
   import Pleroma.Web.CommonAPI.Utils
@@ -478,12 +481,77 @@ defmodule Pleroma.Web.CommonAPI do
     {visibility, get_replied_to_visibility(in_reply_to)}
   end
 
-  def get_visibility(_, in_reply_to, _) when not is_nil(in_reply_to) do
+  def get_visibility(params, in_reply_to, _) when not is_nil(in_reply_to) do
     visibility = get_replied_to_visibility(in_reply_to)
-    {visibility, visibility}
+    {default_group_visibility(params, in_reply_to, visibility), visibility}
   end
 
-  def get_visibility(_, in_reply_to, _), do: {"public", get_replied_to_visibility(in_reply_to)}
+  def get_visibility(params, in_reply_to, _) do
+    visibility = default_group_visibility("public", params, in_reply_to)
+    {visibility, get_replied_to_visibility(in_reply_to)}
+  end
+
+  defp default_group_visibility(fallback, params, in_reply_to) do
+    cond do
+      not public_group_context?(params, in_reply_to) ->
+        fallback
+
+      Params.truthy_param?(
+        Map.get(params, :group_timeline_visible, Map.get(params, "group_timeline_visible"))
+      ) ->
+        "public"
+
+      fallback in [nil, "public", "unlisted", "local"] ->
+        configured_group_post_visibility()
+
+      true ->
+        fallback
+    end
+  end
+
+  defp configured_group_post_visibility do
+    case Config.get([:instance, :group_post_default_visibility], "unlisted") do
+      visibility when visibility in ["public", "unlisted"] -> visibility
+      _ -> "unlisted"
+    end
+  end
+
+  defp public_group_context?(params, in_reply_to) do
+    has_group_targets?(params) || replied_to_group_context?(in_reply_to)
+  end
+
+  defp has_group_targets?(params) when is_map(params) do
+    params
+    |> group_target_values()
+    |> Enum.any?(&present_group_target?/1)
+  end
+
+  defp has_group_targets?(_), do: false
+
+  defp present_group_target?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_group_target?(value) when is_integer(value), do: true
+  defp present_group_target?(_), do: false
+
+  defp group_target_values(params) do
+    []
+    |> add_group_target_values(Map.get(params, :group_id, Map.get(params, "group_id")))
+    |> add_group_target_values(Map.get(params, :group_ids, Map.get(params, "group_ids")))
+    |> add_group_target_values(Map.get(params, "group_ids[]"))
+  end
+
+  defp add_group_target_values(values, value) when is_list(value), do: values ++ value
+  defp add_group_target_values(values, nil), do: values
+  defp add_group_target_values(values, value), do: values ++ [value]
+
+  defp replied_to_group_context?(%Activity{} = activity) do
+    with %Object{data: data} <- Object.normalize(activity, fetch: false) do
+      Addressing.group_addressing_context?(data)
+    else
+      _ -> false
+    end
+  end
+
+  defp replied_to_group_context?(_), do: false
 
   def get_replied_to_visibility(nil), do: nil
 

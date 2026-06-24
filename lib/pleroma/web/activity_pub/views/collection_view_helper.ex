@@ -7,10 +7,15 @@ defmodule Pleroma.Web.ActivityPub.CollectionViewHelper do
   alias Pleroma.Web.ActivityPub.Utils
 
   def collection_page_offset(collection, iri, page, show_items \\ true, total \\ nil) do
-    offset = (page - 1) * 10
-    items = Enum.slice(collection, offset, 10)
+    {items, total} =
+      if is_nil(total) do
+        offset = (page - 1) * 10
+        {Enum.slice(collection, offset, 10), length(collection)}
+      else
+        {collection, total}
+      end
+
     items = Enum.map(items, fn user -> user.ap_id end)
-    total = total || length(collection)
 
     map = %{
       "id" => "#{iri}?page=#{page}",
@@ -20,7 +25,7 @@ defmodule Pleroma.Web.ActivityPub.CollectionViewHelper do
       "orderedItems" => if(show_items, do: items, else: [])
     }
 
-    if offset + 10 < total do
+    if page * 10 < total do
       Map.put(map, "next", "#{iri}?page=#{page + 1}")
     else
       map

@@ -22,7 +22,7 @@ defmodule Pleroma.Language.Translation.Libretranslate do
            base_url() <> "/translate",
            Jason.encode!(%{
              q: content,
-             source: source_language |> String.upcase(),
+             source: normalize_source_language(content, source_language),
              target: target_language,
              format: "html",
              api_key: api_key()
@@ -38,11 +38,11 @@ defmodule Pleroma.Language.Translation.Libretranslate do
         {:error, :quota_exceeded}
 
       {:ok, %{status: 200} = res} ->
-        with {:ok, %{"translatedText" => content}} <- Jason.decode(res.body) do
+        with {:ok, %{"translatedText" => content} = data} <- Jason.decode(res.body) do
           {:ok,
            %{
              content: content,
-             detected_source_language: source_language,
+             detected_source_language: detected_source_language(data, source_language),
              provider: "LibreTranslate"
            }}
         else
@@ -93,4 +93,50 @@ defmodule Pleroma.Language.Translation.Libretranslate do
 
   defp language_code(%{"code" => code}) when is_binary(code), do: [code]
   defp language_code(_), do: []
+
+  defp normalize_source_language(_content, language) when is_binary(language) do
+    case String.trim(language) do
+      "" -> "auto"
+      language -> String.upcase(language)
+    end
+  end
+
+  defp normalize_source_language(content, _) do
+    infer_source_language(content) || "auto"
+  end
+
+  defp infer_source_language(content) when is_binary(content) do
+    cond do
+      String.match?(content, ~r/[\x{3040}-\x{30FF}\x{FF66}-\x{FF9F}]/u) -> "ja"
+      String.match?(content, ~r/[\x{AC00}-\x{D7AF}\x{1100}-\x{11FF}]/u) -> "ko"
+      String.match?(content, ~r/[\x{0600}-\x{06FF}]/u) -> "ar"
+      String.match?(content, ~r/[\x{0900}-\x{097F}]/u) -> "hi"
+      String.match?(content, ~r/[\x{0400}-\x{04FF}]/u) -> "ru"
+      String.match?(content, ~r/[\x{4E00}-\x{9FFF}]/u) -> "zh-Hans"
+      true -> nil
+    end
+  end
+
+  defp infer_source_language(_), do: nil
+
+  defp detected_source_language(data, fallback_language) do
+    case detected_language(data) do
+      language when is_binary(language) and language != "" -> String.downcase(language)
+      _ -> normalize_fallback_language(fallback_language)
+    end
+  end
+
+  defp detected_language(%{"detectedLanguage" => %{"language" => language}}), do: language
+  defp detected_language(%{"detectedLanguage" => language}), do: language
+  defp detected_language(%{"detected_source_language" => language}), do: language
+  defp detected_language(_), do: nil
+
+  defp normalize_fallback_language(language) when is_binary(language) do
+    case String.trim(language) do
+      "" -> "auto"
+      language -> String.downcase(language)
+    end
+  end
+
+  defp normalize_fallback_language(_), do: "auto"
 end

@@ -5,11 +5,14 @@
 defmodule Pleroma.Web.MastodonAPI.SourceController do
   use Pleroma.Web, :controller
 
+  alias Pleroma.FollowingRelationship
+  alias Pleroma.RSSFeed
   alias Pleroma.User
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.FederatedTargetView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
+  alias Pleroma.Workers.RSSFeedWorker
 
   plug(
     OAuthScopesPlug,
@@ -100,7 +103,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
   @doc "POST /api/v1/sources/:id/follow"
   def follow(%{assigns: %{user: user}} = conn, %{"id" => id}) do
     with {:ok, %User{} = source} <- FederatedTarget.resolve_source(id),
-         {:ok, _follower, followed, _activity} <- CommonAPI.follow(user, source) do
+         {:ok, followed} <- follow_source(user, source) do
       conn
       |> put_view(FederatedTargetView)
       |> render("source_relationship.json", user: user, source: followed)
@@ -113,13 +116,39 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
   @doc "POST /api/v1/sources/:id/unfollow"
   def unfollow(%{assigns: %{user: user}} = conn, %{"id" => id}) do
     with {:ok, %User{} = source} <- FederatedTarget.resolve_source(id),
-         {:ok, _follower} <- CommonAPI.unfollow(user, source) do
+         {:ok, _follower} <- unfollow_source(user, source) do
       conn
       |> put_view(FederatedTargetView)
       |> render("source_relationship.json", user: user, source: source)
     else
       {:error, :not_found} -> render_error(conn, :not_found, "Record not found")
       _ -> render_error(conn, :forbidden, "Could not unfollow source")
+    end
+  end
+
+  defp follow_source(%User{} = user, %User{} = source) do
+    if RSSFeed.rss_source?(source) do
+      with {:ok, _follower, followed} <-
+             FollowingRelationship.follow(user, source, :follow_accept) do
+        _ = RSSFeedWorker.enqueue(followed)
+        {:ok, followed}
+      end
+    else
+      with {:ok, _follower, followed, _activity} <- CommonAPI.follow(user, source) do
+        {:ok, followed}
+      end
+    end
+  end
+
+  defp unfollow_source(%User{} = user, %User{} = source) do
+    if RSSFeed.rss_source?(source) do
+      case FollowingRelationship.unfollow(user, source) do
+        {:ok, follower, _followed} -> {:ok, follower}
+        {:ok, follower} -> {:ok, follower}
+        error -> error
+      end
+    else
+      CommonAPI.unfollow(user, source)
     end
   end
 

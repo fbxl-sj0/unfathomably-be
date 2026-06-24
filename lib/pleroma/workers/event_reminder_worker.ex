@@ -17,7 +17,11 @@ defmodule Pleroma.Workers.EventReminderWorker do
   @impl Oban.Worker
   def perform(%Job{args: %{"op" => "event_reminder", "activity_id" => activity_id}}) do
     with %Activity{} = activity <- find_event_activity(activity_id) do
-      Notification.create_event_notifications(activity)
+      activity
+      |> Notification.create_event_notifications()
+      |> handle_notification_result()
+    else
+      {:error, :event_activity_not_found} -> {:cancel, :event_activity_not_found}
     end
   end
 
@@ -62,6 +66,10 @@ defmodule Pleroma.Workers.EventReminderWorker do
   def schedule_event_reminder(activity) do
     {:error, activity}
   end
+
+  defp handle_notification_result({:ok, _result}), do: :ok
+  defp handle_notification_result({:error, reason}), do: {:error, reason}
+  defp handle_notification_result(_result), do: :ok
 
   defp remove_event_reminders(activity_id) do
     from(j in Oban.Job,

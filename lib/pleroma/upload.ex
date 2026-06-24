@@ -112,7 +112,8 @@ defmodule Pleroma.Upload do
            |> Maps.put_if_present("width", upload.width)
            |> Maps.put_if_present("height", upload.height)
          ],
-         "name" => description
+         "name" => description,
+         "summary" => description
        }
        |> Maps.put_if_present("blurhash", upload.blurhash)}
     else

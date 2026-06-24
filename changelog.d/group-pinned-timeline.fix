@@ -1,0 +1,1 @@
+Group pinned timelines now return only actual pinned group objects instead of duplicating the normal group feed.

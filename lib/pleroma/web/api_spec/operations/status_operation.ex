@@ -616,10 +616,16 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
           nullable: true,
           anyOf: [
             VisibilityScope,
+            %Schema{
+              type: :string,
+              enum: ["group"],
+              description:
+                "Frontend group composer marker. The server resolves this to the configured group post default visibility unless group_timeline_visible is true."
+            },
             %Schema{type: :string, description: "`list:LIST_ID`", example: "LIST:123"}
           ],
           description:
-            "Visibility of the posted status. Besides standard MastoAPI values (`direct`, `private`, `unlisted` or `public`) it can be used to address a List by setting it to `list:LIST_ID`"
+            "Visibility of the posted status. Besides standard MastoAPI values (`direct`, `private`, `unlisted` or `public`) it can be used to address a List by setting it to `list:LIST_ID`. The `group` value is accepted as a group composer marker and is resolved by the server."
         },
         quoted_status_id: %Schema{
           nullable: true,
@@ -650,14 +656,20 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
           type: :string,
           nullable: true,
           description:
-            "ID, nickname, or ActivityPub actor id of a known group actor to address with this post."
+            "ID, nickname, or ActivityPub actor id of a known group actor to address with this post. If no standard visibility is explicitly selected, the configured group post default visibility is used."
         },
         group_ids: %Schema{
           type: :array,
           nullable: true,
           items: %Schema{type: :string},
           description:
-            "IDs, nicknames, or ActivityPub actor ids of known group actors to address with this post."
+            "IDs, nicknames, or ActivityPub actor ids of known group actors to address with this post. If no standard visibility is explicitly selected, the configured group post default visibility is used."
+        },
+        group_timeline_visible: %Schema{
+          allOf: [BooleanLike],
+          nullable: true,
+          description:
+            "When posting with group_id or group_ids and without a standard visibility, true opts the post into normal public timeline visibility. False or omitted uses the configured group post default visibility."
         },
         expires_in: %Schema{
           nullable: true,

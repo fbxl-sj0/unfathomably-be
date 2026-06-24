@@ -90,6 +90,11 @@ defmodule Pleroma.UserTest do
       {:ok, user: insert(:user)}
     end
 
+    test "nil AP IDs do not query the database unsafely" do
+      refute User.get_cached_by_ap_id(nil)
+      assert {:error, :not_found} = User.get_or_fetch_by_ap_id(nil)
+    end
+
     test "outgoing_relationships_ap_ids/1", %{user: user} do
       rel_types = [:block, :mute, :notification_mute, :reblog_mute, :inverse_subscription]
 
@@ -174,6 +179,12 @@ defmodule Pleroma.UserTest do
     expected_followers_collection = "#{User.ap_id(user)}/following"
 
     assert expected_followers_collection == User.ap_following(user)
+  end
+
+  test "image_description accepts Pleroma and Mastodon image description fields" do
+    assert User.image_description(%{"name" => "old field"}) == "old field"
+    assert User.image_description(%{"summary" => "mastodon field"}) == "mastodon field"
+    assert User.image_description(%{}, "fallback") == "fallback"
   end
 
   test "returns all pending follow requests" do

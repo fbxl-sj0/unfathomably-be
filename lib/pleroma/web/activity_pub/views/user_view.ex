@@ -9,6 +9,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.CollectionViewHelper
   alias Pleroma.Web.ActivityPub.ObjectView
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.ActivityPub.Utils
@@ -16,6 +17,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
   alias Pleroma.Web.Router.Helpers
 
   import Ecto.Query
+  require Pleroma.Constants
 
   def render("endpoints.json", %{user: %User{nickname: nil, local: true} = _user}) do
     %{"sharedInbox" => Helpers.activity_pub_url(Endpoint, :inbox)}
@@ -106,6 +108,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "inbox" => "#{user.ap_id}/inbox",
       "outbox" => "#{user.ap_id}/outbox",
       "featured" => "#{user.ap_id}/collections/featured",
+      "featuredCollections" => "#{user.ap_id}/collections",
       "preferredUsername" => user.nickname,
       "name" => user.name,
       "summary" => user.bio,
@@ -123,6 +126,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "discoverable" => user.is_discoverable,
       "capabilities" => capabilities,
       "alsoKnownAs" => user.also_known_as,
+      "interactionPolicy" => feature_interaction_policy(user),
       "vcard:bday" => birthday,
       "vcard:Address" => user.location
     }
@@ -139,24 +143,39 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       )
     )
     |> Map.merge(Utils.make_json_ld_header())
+    |> add_fep_7aa9_context()
   end
 
   def render("following.json", %{user: user, page: page} = opts) do
     showing_items = (opts[:for] && opts[:for] == user) || !user.hide_follows
     showing_count = showing_items || !user.hide_follows_count
 
-    query = User.get_friends_query(user)
-    query = from(user in query, select: [:ap_id])
-    following = Repo.all(query)
+    {following_page, total} =
+      cond do
+        showing_items ->
+          page_items =
+            user
+            |> User.get_friends_query()
+            |> select([u], [:ap_id])
+            |> User.Query.paginate(page, 10)
+            |> Repo.all()
 
-    total =
-      if showing_count do
-        length(following)
-      else
-        0
+          {page_items, if(showing_count, do: user.following_count, else: 0)}
+
+        showing_count ->
+          {[], user.following_count}
+
+        true ->
+          {[], 0}
       end
 
-    collection(following, "#{user.ap_id}/following", page, showing_items, total)
+    CollectionViewHelper.collection_page_offset(
+      following_page,
+      "#{user.ap_id}/following",
+      page,
+      showing_items,
+      total
+    )
     |> Map.merge(Utils.make_json_ld_header())
   end
 
@@ -164,15 +183,17 @@ defmodule Pleroma.Web.ActivityPub.UserView do
     showing_items = (opts[:for] && opts[:for] == user) || !user.hide_follows
     showing_count = showing_items || !user.hide_follows_count
 
-    query = User.get_friends_query(user)
-    query = from(user in query, select: [:ap_id])
-    following = Repo.all(query)
+    total = if showing_count, do: user.following_count, else: 0
 
-    total =
-      if showing_count do
-        length(following)
+    first_page =
+      if showing_items do
+        user
+        |> User.get_friends_query()
+        |> select([u], [:ap_id])
+        |> User.Query.paginate(1, 10)
+        |> Repo.all()
       else
-        0
+        []
       end
 
     %{
@@ -181,7 +202,13 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "totalItems" => total,
       "first" =>
         if showing_items do
-          collection(following, "#{user.ap_id}/following", 1, !user.hide_follows)
+          CollectionViewHelper.collection_page_offset(
+            first_page,
+            "#{user.ap_id}/following",
+            1,
+            !user.hide_follows,
+            total
+          )
         else
           "#{user.ap_id}/following?page=1"
         end
@@ -193,18 +220,32 @@ defmodule Pleroma.Web.ActivityPub.UserView do
     showing_items = (opts[:for] && opts[:for] == user) || !user.hide_followers
     showing_count = showing_items || !user.hide_followers_count
 
-    query = User.get_followers_query(user)
-    query = from(user in query, select: [:ap_id])
-    followers = Repo.all(query)
+    {followers_page, total} =
+      cond do
+        showing_items ->
+          page_items =
+            user
+            |> User.get_followers_query()
+            |> select([u], [:ap_id])
+            |> User.Query.paginate(page, 10)
+            |> Repo.all()
 
-    total =
-      if showing_count do
-        length(followers)
-      else
-        0
+          {page_items, if(showing_count, do: user.follower_count, else: 0)}
+
+        showing_count ->
+          {[], user.follower_count}
+
+        true ->
+          {[], 0}
       end
 
-    collection(followers, "#{user.ap_id}/followers", page, showing_items, total)
+    CollectionViewHelper.collection_page_offset(
+      followers_page,
+      "#{user.ap_id}/followers",
+      page,
+      showing_items,
+      total
+    )
     |> Map.merge(Utils.make_json_ld_header())
   end
 
@@ -212,15 +253,17 @@ defmodule Pleroma.Web.ActivityPub.UserView do
     showing_items = (opts[:for] && opts[:for] == user) || !user.hide_followers
     showing_count = showing_items || !user.hide_followers_count
 
-    query = User.get_followers_query(user)
-    query = from(user in query, select: [:ap_id])
-    followers = Repo.all(query)
+    total = if showing_count, do: user.follower_count, else: 0
 
-    total =
-      if showing_count do
-        length(followers)
+    first_page =
+      if showing_items do
+        user
+        |> User.get_followers_query()
+        |> select([u], [:ap_id])
+        |> User.Query.paginate(1, 10)
+        |> Repo.all()
       else
-        0
+        []
       end
 
     %{
@@ -228,7 +271,13 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "type" => "OrderedCollection",
       "first" =>
         if showing_items do
-          collection(followers, "#{user.ap_id}/followers", 1, showing_items, total)
+          CollectionViewHelper.collection_page_offset(
+            first_page,
+            "#{user.ap_id}/followers",
+            1,
+            showing_items,
+            total
+          )
         else
           "#{user.ap_id}/followers?page=1"
         end
@@ -283,33 +332,36 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "totalItems" => length(objects)
     }
     |> Map.merge(Utils.make_json_ld_header())
+    |> add_fep_7aa9_context()
+  end
+
+  def render("featured_collections.json", %{user: user, page: page}) do
+    %{
+      "id" => "#{user.ap_id}/collections?page=#{page}",
+      "type" => "CollectionPage",
+      "partOf" => "#{user.ap_id}/collections",
+      "totalItems" => 1,
+      "items" => [User.ap_featured_collection(user)]
+    }
+    |> Map.merge(Utils.make_json_ld_header())
+    |> add_fep_7aa9_context()
+  end
+
+  def render("featured_collections.json", %{user: user}) do
+    %{
+      "id" => "#{user.ap_id}/collections",
+      "type" => "Collection",
+      "totalItems" => 1,
+      "first" => "#{user.ap_id}/collections?page=1"
+    }
+    |> Map.merge(Utils.make_json_ld_header())
+    |> add_fep_7aa9_context()
   end
 
   defp maybe_put_total_items(map, false, _total), do: map
 
   defp maybe_put_total_items(map, true, total) do
     Map.put(map, "totalItems", total)
-  end
-
-  def collection(collection, iri, page, show_items \\ true, total \\ nil) do
-    offset = (page - 1) * 10
-    items = Enum.slice(collection, offset, 10)
-    items = Enum.map(items, fn user -> user.ap_id end)
-    total = total || length(collection)
-
-    map = %{
-      "id" => "#{iri}?page=#{page}",
-      "type" => "OrderedCollectionPage",
-      "partOf" => iri,
-      "totalItems" => total,
-      "orderedItems" => if(show_items, do: items, else: [])
-    }
-
-    if offset < total do
-      Map.put(map, "next", "#{iri}?page=#{page + 1}")
-    else
-      map
-    end
   end
 
   defp maybe_put_misskey_summary(data, raw_bio) when is_binary(raw_bio) and raw_bio != "" do
@@ -346,8 +398,57 @@ defmodule Pleroma.Web.ActivityPub.UserView do
   end
 
   defp maybe_put_description(map, description) when is_binary(description) do
-    Map.put(map, "name", description)
+    map
+    |> Map.put("name", description)
+    |> Map.put("summary", description)
   end
 
   defp maybe_put_description(map, _description), do: map
+
+  defp feature_interaction_policy(%User{} = user) do
+    %{
+      "canFeature" => %{
+        "automaticApproval" => [feature_approval_uri(user)]
+      }
+    }
+  end
+
+  defp feature_approval_uri(%User{is_locked: true} = user), do: User.ap_followers(user)
+  defp feature_approval_uri(%User{is_discoverable: false} = user), do: user.ap_id
+  defp feature_approval_uri(%User{}), do: Pleroma.Constants.as_public()
+
+  defp add_fep_7aa9_context(%{"@context" => context} = map) when is_list(context) do
+    Map.put(map, "@context", context ++ [fep_7aa9_context()])
+  end
+
+  defp add_fep_7aa9_context(map), do: map
+
+  defp fep_7aa9_context do
+    %{
+      "FeaturedCollection" => "https://w3id.org/fep/7aa9#FeaturedCollection",
+      "FeaturedItem" => "https://w3id.org/fep/7aa9#FeaturedItem",
+      "FeatureAuthorization" => "https://w3id.org/fep/7aa9#FeatureAuthorization",
+      "FeatureRequest" => "https://w3id.org/fep/7aa9#FeatureRequest",
+      "automaticApproval" => %{
+        "@id" => "https://gotosocial.org/ns#automaticApproval",
+        "@type" => "@id"
+      },
+      "canFeature" => %{"@id" => "https://w3id.org/fep/7aa9#canFeature", "@type" => "@id"},
+      "featureAuthorization" => %{
+        "@id" => "https://w3id.org/fep/7aa9#featureAuthorization",
+        "@type" => "@id"
+      },
+      "featuredCollections" => %{
+        "@id" => "https://w3id.org/fep/7aa9#featuredCollections",
+        "@type" => "@id"
+      },
+      "featuredObject" => %{"@id" => "https://w3id.org/fep/7aa9#featuredObject", "@type" => "@id"},
+      "interactionPolicy" => %{
+        "@id" => "https://gotosocial.org/ns#interactionPolicy",
+        "@type" => "@id"
+      },
+      "manualApproval" => %{"@id" => "https://gotosocial.org/ns#manualApproval", "@type" => "@id"},
+      "topic" => %{"@id" => "https://w3id.org/fep/7aa9#topic", "@type" => "@id"}
+    }
+  end
 end

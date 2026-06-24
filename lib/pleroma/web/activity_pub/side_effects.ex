@@ -25,6 +25,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   alias Pleroma.Web.Streamer
   alias Pleroma.Workers.EventReminderWorker
   alias Pleroma.Workers.PollWorker
+  alias Pleroma.Workers.RemoteRepliesFetcherWorker
 
   require Pleroma.Constants
   require Logger
@@ -222,6 +223,13 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
         end
       end
 
+      if not activity.local do
+        current_depth = meta[:depth] || 1
+
+        RemoteRepliesFetcherWorker.enqueue_for_object(object, reply_depth)
+        RemoteRepliesFetcherWorker.enqueue_for_reply_ancestors(object, current_depth)
+      end
+
       Pleroma.Web.RichMedia.Card.get_by_activity(activity)
 
       Pleroma.Search.add_to_index(Map.put(activity, :object, object))
@@ -254,9 +262,11 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     announced_object = Object.get_by_ap_id(object.data["object"])
     user = User.get_cached_by_ap_id(object.data["actor"])
 
-    Utils.add_announce_to_object(object, announced_object)
+    if announced_object do
+      Utils.add_announce_to_object(object, announced_object)
+    end
 
-    if !User.is_internal_user?(user) do
+    if announced_object && !User.is_internal_user?(user) do
       Notification.create_notifications(object)
 
       ap_streamer().stream_out(object)
@@ -279,9 +289,11 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   @impl true
   def handle(%{data: %{"type" => "EmojiReact"}} = object, meta) do
     reacted_object = Object.get_by_ap_id(object.data["object"])
-    Utils.add_emoji_reaction_to_object(object, reacted_object)
 
-    Notification.create_notifications(object)
+    if reacted_object do
+      Utils.add_emoji_reaction_to_object(object, reacted_object)
+      Notification.create_notifications(object)
+    end
 
     {:ok, object, meta}
   end
@@ -604,6 +616,8 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
   def handle_object_creation(%{"type" => objtype} = object, _activity, meta)
       when objtype in ~w[Audio Video Image Article Note Page] do
+    meta = Keyword.put(meta, :preserve_internal_replies_collection, true)
+
     with {:ok, object, meta} <- Pipeline.common_pipeline(object, meta) do
       {:ok, object, meta}
     end

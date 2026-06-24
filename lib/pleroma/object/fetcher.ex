@@ -17,9 +17,13 @@ defmodule Pleroma.Object.Fetcher do
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.Federator
 
+  require Pleroma.Constants
   require Logger
 
   @activity_types ~w(Accept Add Announce Block Create Delete Dislike EmojiReact Flag Follow Join Leave Like Listen Move Reject Remove Undo Update)
+  @activity_streams_profile "https://www.w3.org/ns/activitystreams"
+  @object_fetch_accept_header Pleroma.Constants.activity_json_accept_header() <>
+                                ", text/html;q=0.1"
 
   @spec reinject_object(struct(), map()) :: {:ok, Object.t()} | {:error, any()}
   defp reinject_object(%Object{data: %{}} = object, new_data) do
@@ -196,8 +200,18 @@ defmodule Pleroma.Object.Fetcher do
     Logger.debug("Remote object #{id} returned HTTP #{code} while fetching")
   end
 
+  defp log_fetch_error(id, {:error, {:transmogrifier, {:error, reason}}})
+       when reason in [:actor_not_found, :object_not_found] do
+    Logger.debug("Remote activity #{id} referenced unavailable #{reason} while fetching")
+  end
+
   defp log_fetch_error(id, {:error, {:http, code}}) do
     Logger.warning("Remote object #{id} returned HTTP #{code} while fetching")
+  end
+
+  defp log_fetch_error(id, {:error, reason})
+       when reason in [:closed, :timeout, :checkout_timeout] do
+    Logger.info("Transient remote fetch failure for #{id}: #{inspect(reason)}")
   end
 
   defp log_fetch_error(id, e) do
@@ -287,32 +301,27 @@ defmodule Pleroma.Object.Fetcher do
   def fetch_and_contain_remote_object_from_id(_id),
     do: {:error, "id must be a string"}
 
-  defp get_object(id) do
+  defp get_object(id, terminal? \\ false) do
     date = Pleroma.Signature.signed_date()
 
     headers =
-      [{"accept", "application/activity+json"}]
+      [{"accept", @object_fetch_accept_header}]
       |> maybe_date_fetch(date)
       |> sign_fetch(id, date)
 
     case HTTP.get(id, headers) do
       {:ok, %{body: body, status: code, headers: headers}} when code in 200..299 ->
-        case List.keyfind(headers, "content-type", 0) do
-          {_, content_type} ->
-            case Plug.Conn.Utils.media_type(content_type) do
-              {:ok, "application", "activity+json", _} ->
-                {:ok, body}
+        content_type = header_value(headers, "content-type")
 
-              {:ok, "application", "ld+json",
-               %{"profile" => "https://www.w3.org/ns/activitystreams"}} ->
-                {:ok, body}
+        cond do
+          activitypub_content_type?(content_type) ->
+            {:ok, body}
 
-              _ ->
-                {:error, {:content_type, content_type}}
-            end
+          terminal? ->
+            {:error, {:content_type, content_type}}
 
-          _ ->
-            {:error, {:content_type, nil}}
+          true ->
+            maybe_fetch_activitypub_alternate(id, body, headers, content_type)
         end
 
       {:ok, %{status: code}} when code in [404, 410] ->
@@ -327,6 +336,187 @@ defmodule Pleroma.Object.Fetcher do
       e ->
         {:error, e}
     end
+  end
+
+  defp maybe_fetch_activitypub_alternate(id, body, headers, content_type) do
+    with {:ok, alternate_id} <- activitypub_alternate_url(id, body, headers, content_type) do
+      get_object(alternate_id, true)
+    else
+      _ -> {:error, {:content_type, content_type}}
+    end
+  end
+
+  defp activitypub_alternate_url(id, body, headers, content_type) do
+    link_header_activitypub_alternate(id, headers) ||
+      html_activitypub_alternate(id, body, content_type) ||
+      {:error, :no_activitypub_alternate}
+  end
+
+  defp link_header_activitypub_alternate(id, headers) do
+    headers
+    |> header_values("link")
+    |> Enum.find_value(&activitypub_alternate_from_link_header(id, &1))
+  end
+
+  defp activitypub_alternate_from_link_header(id, header) when is_binary(header) do
+    ~r/<([^>]*)>\s*((?:\s*;\s*[^,]*)*)/
+    |> Regex.scan(header)
+    |> Enum.find_value(fn [_, href, params] ->
+      rel = link_header_param(params, "rel")
+      type = link_header_param(params, "type")
+
+      if alternate_rel?(rel) and activitypub_content_type?(type) do
+        validate_alternate_url(id, href)
+      end
+    end)
+  end
+
+  defp activitypub_alternate_from_link_header(_id, _header), do: nil
+
+  defp link_header_param(params, name) do
+    quoted = ~r/(?:^|;)\s*#{name}\s*=\s*"([^"]*)"/i
+    unquoted = ~r/(?:^|;)\s*#{name}\s*=\s*([^;,\s]+)/i
+
+    case Regex.run(quoted, params) || Regex.run(unquoted, params) do
+      [_, value] -> value
+      _ -> nil
+    end
+  end
+
+  defp alternate_rel?(rel) when is_binary(rel) do
+    rel
+    |> String.downcase()
+    |> String.split()
+    |> Enum.member?("alternate")
+  end
+
+  defp alternate_rel?(_rel), do: false
+
+  defp html_activitypub_alternate(id, body, content_type) do
+    with true <- html_content_type?(content_type),
+         {:ok, html} <- Floki.parse_document(body),
+         href when is_binary(href) <-
+           html
+           |> Floki.find("link[rel~=alternate]")
+           |> Enum.find_value(&activitypub_alternate_from_html_link/1) do
+      validate_alternate_url(id, href)
+    else
+      _ -> nil
+    end
+  end
+
+  defp activitypub_alternate_from_html_link(link) do
+    type =
+      [link]
+      |> Floki.attribute("type")
+      |> List.first()
+
+    if activitypub_content_type?(type) do
+      [link]
+      |> Floki.attribute("href")
+      |> List.first()
+    end
+  end
+
+  defp validate_alternate_url(base_id, href) do
+    with url when is_binary(url) <- absolute_alternate_url(base_id, href),
+         true <- same_origin?(base_id, url),
+         false <- url == base_id do
+      {:ok, url}
+    else
+      _ -> nil
+    end
+  end
+
+  defp absolute_alternate_url(base_id, href) when is_binary(href) do
+    href = String.trim(href)
+
+    cond do
+      href == "" ->
+        nil
+
+      String.starts_with?(href, "//") ->
+        base_id
+        |> URI.parse()
+        |> Map.get(:scheme)
+        |> Kernel.<>(":")
+        |> Kernel.<>(href)
+
+      true ->
+        href_uri = URI.parse(href)
+
+        if href_uri.scheme in ["http", "https"] do
+          href
+        else
+          base_id
+          |> URI.merge(href)
+          |> URI.to_string()
+        end
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp absolute_alternate_url(_base_id, _href), do: nil
+
+  defp same_origin?(left, right) do
+    left_uri = URI.parse(left)
+    right_uri = URI.parse(right)
+
+    left_uri.scheme == right_uri.scheme and
+      normalize_host(left_uri.host) == normalize_host(right_uri.host) and
+      effective_port(left_uri) == effective_port(right_uri)
+  end
+
+  defp normalize_host(host) when is_binary(host), do: String.downcase(host)
+  defp normalize_host(_host), do: nil
+
+  defp effective_port(%URI{port: nil, scheme: scheme}), do: URI.default_port(scheme)
+  defp effective_port(%URI{port: port}), do: port
+
+  defp html_content_type?(content_type) do
+    match?({:ok, "text", "html", _}, media_type(content_type))
+  end
+
+  defp activitypub_content_type?(content_type) do
+    case media_type(content_type) do
+      {:ok, "application", "activity+json", _} ->
+        true
+
+      {:ok, "application", "ld+json", %{"profile" => profile}} ->
+        profile
+        |> String.split()
+        |> Enum.member?(@activity_streams_profile)
+
+      _ ->
+        false
+    end
+  end
+
+  defp media_type(content_type) when is_binary(content_type),
+    do: Plug.Conn.Utils.media_type(content_type)
+
+  defp media_type(_content_type), do: :error
+
+  defp header_value(headers, name) do
+    headers
+    |> header_values(name)
+    |> List.first()
+  end
+
+  defp header_values(headers, name) do
+    name = String.downcase(name)
+
+    Enum.flat_map(headers, fn
+      {key, value} when is_binary(key) and is_binary(value) ->
+        if String.downcase(key) == name, do: [value], else: []
+
+      {key, values} when is_binary(key) and is_list(values) ->
+        if String.downcase(key) == name, do: Enum.filter(values, &is_binary/1), else: []
+
+      _ ->
+        []
+    end)
   end
 
   defp safe_json_decode(nil), do: {:ok, nil}

@@ -77,18 +77,31 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPI do
       |> Notification.normalize_grouped_types()
 
     query = notifications_query(user, params)
+    group_query = notification_group_base_query(user, params)
     {order, cursor_filters} = group_pagination(params)
 
     group_rows =
-      query
+      group_query
       |> notification_group_rows(grouped_types, grouped_limit(params), order, cursor_filters)
 
     group_rows = if order == :asc, do: Enum.reverse(group_rows), else: group_rows
 
-    page_notifications = representative_notifications(query, group_rows)
+    representative_notifications_by_id = representative_notifications_by_id(query, group_rows)
+
+    page_notifications =
+      group_rows
+      |> Enum.map(&Map.get(representative_notifications_by_id, to_string(&1.representative_id)))
+      |> Enum.filter(& &1)
 
     notification_groups =
-      Enum.map(group_rows, &notification_group_sample(user, params, &1.group_key))
+      group_rows
+      |> Enum.map(fn row ->
+        case Map.get(representative_notifications_by_id, to_string(row.representative_id)) do
+          %Notification{} = notification -> [notification]
+          _ -> notification_group_sample(user, params, row.group_key)
+        end
+      end)
+      |> Enum.reject(&Enum.empty?/1)
 
     {
       notification_groups,
@@ -201,7 +214,7 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPI do
     limit = unread_count_limit(params)
 
     user
-    |> notifications_query(params)
+    |> notification_group_base_query(params)
     # The grouped API docs define unread by the notifications marker, not by Pleroma's per-row
     # seen flag used by the v1 unread count. Keep this marker-based for Mastodon clients.
     |> restrict_after_marker(notification_marker_last_read_id(user))
@@ -278,20 +291,15 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPI do
     |> subquery()
   end
 
-  defp representative_notifications(_query, []), do: []
+  defp representative_notifications_by_id(_query, []), do: %{}
 
-  defp representative_notifications(query, group_rows) do
+  defp representative_notifications_by_id(query, group_rows) do
     representative_ids = Enum.map(group_rows, & &1.representative_id)
 
-    notifications_by_id =
-      query
-      |> where([n], n.id in ^representative_ids)
-      |> Repo.all()
-      |> Map.new(&{to_string(&1.id), &1})
-
-    group_rows
-    |> Enum.map(&Map.get(notifications_by_id, to_string(&1.representative_id)))
-    |> Enum.filter(& &1)
+    query
+    |> where([n], n.id in ^representative_ids)
+    |> Repo.all()
+    |> Map.new(&{to_string(&1.id), &1})
   end
 
   defp notification_group_counts(group_rows) do
@@ -386,6 +394,16 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPI do
     |> restrict(:account_ap_id, options)
   end
 
+  defp notification_group_base_query(user, params) do
+    options = notification_options(user, params)
+
+    Notification
+    |> where([n], n.user_id == ^user.id)
+    |> restrict_group(:types, options)
+    |> restrict_group(:exclude_types, options)
+    |> restrict_group(:account_ap_id, options)
+  end
+
   defp notification_options(user, params) do
     options =
       params
@@ -458,4 +476,20 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPI do
   end
 
   defp restrict(query, _, _), do: query
+
+  defp restrict_group(query, :types, %{types: mastodon_types = [_ | _]}) do
+    where(query, [n], n.type in ^mastodon_types)
+  end
+
+  defp restrict_group(query, :exclude_types, %{exclude_types: mastodon_types = [_ | _]}) do
+    where(query, [n], n.type not in ^mastodon_types)
+  end
+
+  defp restrict_group(query, :account_ap_id, %{account_ap_id: account_ap_id}) do
+    query
+    |> join(:inner, [n], activity in assoc(n, :activity))
+    |> where([_n, activity], activity.actor == ^account_ap_id)
+  end
+
+  defp restrict_group(query, _, _), do: query
 end

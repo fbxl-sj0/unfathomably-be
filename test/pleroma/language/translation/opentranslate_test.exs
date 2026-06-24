@@ -43,6 +43,36 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
            } = res
   end
 
+  test "it lets OpenTranslate detect an unknown source language" do
+    {:ok, res} =
+      Opentranslate.translate(
+        "Unknown source text",
+        nil,
+        "en"
+      )
+
+    assert %{
+             content: "Hello world",
+             detected_source_language: "fr",
+             provider: "OpenTranslate"
+           } = res
+  end
+
+  test "it infers Japanese source language before provider auto-detection" do
+    {:ok, res} =
+      Opentranslate.translate(
+        "14th\u8a87\u5f35\u3057\u305fDay1",
+        nil,
+        "en"
+      )
+
+    assert %{
+             content: "Day one has the exaggerated Tachibana.",
+             detected_source_language: "ja",
+             provider: "OpenTranslate"
+           } = res
+  end
+
   test "it only advertises English as a translation target" do
     assert {:ok, ["en"]} = Opentranslate.supported_languages(:target)
   end

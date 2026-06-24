@@ -152,7 +152,9 @@ config :mime, :types, %{
   "application/ld+json" => ["activity+json"]
 }
 
-config :tesla, adapter: Tesla.Adapter.Hackney
+config :tesla, adapter: Tesla.Adapter.Gun
+
+config :hackney, tls_session_resumption: false
 
 # Configures http settings, upstream proxy etc.
 config :pleroma, :http,
@@ -278,6 +280,7 @@ config :pleroma, :instance,
   birthday_required: false,
   birthday_min_age: 0,
   max_media_attachments: 1_000,
+  group_post_default_visibility: "unlisted",
   migration_cooldown_period: 30
 
 config :pleroma, :welcome,
@@ -375,6 +378,14 @@ config :pleroma, :activitypub,
   blockers_visible: true,
   follow_handshake_timeout: 500,
   note_replies_output_limit: 5,
+  remote_replies_collection_refresh: [
+    enabled: true,
+    schedule: [15 * 60, 60 * 60, 6 * 60 * 60],
+    triggered_refresh_delay: 5 * 60,
+    triggered_refresh_ancestor_depth: 3,
+    max_pages: 2,
+    max_items: 40
+  ],
   sign_object_fetches: true,
   authorized_fetch_mode: false,
   fetch_actor_origin: nil,
@@ -597,35 +608,54 @@ config :pleroma, Oban,
   repo: Pleroma.Repo,
   log: false,
   queues: [
-    activity_expiration: 10,
-    token_expiration: 5,
+    activity_expiration: 5,
+    token_expiration: 2,
     filter_expiration: 1,
     backup: 1,
-    federator_incoming: 50,
-    federator_outgoing: 50,
-    ingestion_queue: 50,
-    web_push: 50,
-    mailer: 10,
-    transmogrifier: 20,
-    scheduled_activities: 10,
-    poll_notifications: 10,
-    notifications: 20,
-    background: 5,
+    federator_incoming: 8,
+    federator_outgoing: 8,
+    ingestion_queue: 8,
+    web_push: 8,
+    mailer: 5,
+    transmogrifier: 5,
+    scheduled_activities: 5,
+    poll_notifications: 2,
+    event_reminders: 1,
+    notifications: 8,
+    background: 3,
     remote_fetcher: 2,
     attachments_cleanup: 1,
     new_users_digest: 1,
-    mute_expire: 5,
-    search_indexing: 10,
-    rich_media_expiration: 2
+    mute_expire: 2,
+    search_indexing: 4,
+    rich_media_expiration: 1
   ],
-  plugins: [Oban.Plugins.Pruner],
+  plugins: [Oban.Plugins.Pruner, Oban.Plugins.Lifeline],
   crontab: [
     {"0 0 * * 0", Pleroma.Workers.Cron.DigestEmailsWorker},
     {"0 0 * * *", Pleroma.Workers.Cron.NewUsersDigestWorker},
     {"*/10 * * * *", Pleroma.Workers.Cron.AppCleanupWorker},
+    {"17 * * * *", Pleroma.Workers.Cron.ObanCleanupWorker},
+    {"*/30 * * * *", Pleroma.Workers.Cron.RSSFeedRefreshWorker},
     {"0 3 * * *", Pleroma.Workers.Cron.ScheduleReachabilityWorker},
-    {"0 4 * * *", Pleroma.Workers.Cron.GroupDiscussionCleanupWorker}
+    {"0 4 * * *", Pleroma.Workers.Cron.RemotePostCleanupWorker},
+    {"30 4 * * *", Pleroma.Workers.Cron.GroupDiscussionCleanupWorker}
   ]
+
+config :pleroma, Pleroma.RSSFeed,
+  enabled: true,
+  refresh_interval_minutes: 30,
+  batch_size: 100,
+  import_limit: 20
+
+config :pleroma, Pleroma.Workers.Cron.RemotePostCleanupWorker,
+  enabled: true,
+  max_age_days: 365,
+  batch_size: 200,
+  candidate_scan_limit: 20_000,
+  query_timeout_ms: 60_000,
+  keep_threads_with_local_activity: true,
+  keep_direct_or_mentioned: true
 
 config :pleroma, Pleroma.Workers.Cron.GroupDiscussionCleanupWorker,
   enabled: true,

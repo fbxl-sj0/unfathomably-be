@@ -135,10 +135,13 @@ defmodule Pleroma.Web.Feed.FeedView do
 
   @spec to_rfc3339(String.t() | NativeDateTime.t()) :: String.t()
   def to_rfc3339(date) when is_binary(date) do
-    date
-    |> Timex.parse!("{ISO:Extended}")
-    |> to_rfc3339()
+    case Timex.parse(date, "{ISO:Extended}") do
+      {:ok, date} -> to_rfc3339(date)
+      _ -> to_rfc3339(DateTime.utc_now())
+    end
   end
+
+  def to_rfc3339(nil), do: to_rfc3339(DateTime.utc_now())
 
   def to_rfc3339(nd) do
     nd
@@ -148,10 +151,13 @@ defmodule Pleroma.Web.Feed.FeedView do
 
   @spec to_rfc2822(String.t() | DateTime.t() | NativeDateTime.t()) :: String.t()
   def to_rfc2822(datestr) when is_binary(datestr) do
-    datestr
-    |> Timex.parse!("{ISO:Extended}")
-    |> to_rfc2822()
+    case Timex.parse(datestr, "{ISO:Extended}") do
+      {:ok, date} -> to_rfc2822(date)
+      _ -> to_rfc2822(DateTime.utc_now())
+    end
   end
+
+  def to_rfc2822(nil), do: to_rfc2822(DateTime.utc_now())
 
   def to_rfc2822(%DateTime{} = date) do
     date

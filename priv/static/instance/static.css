@@ -1,0 +1,26 @@
+/*
+    Project: Unfathomably BE static assets
+    --------------------------------------
+
+    File: priv/static/instance/static.css
+
+    Purpose:
+
+        Provide the default stylesheet hook for backend-rendered pages that
+        link /instance/static.css.
+
+    Responsibilities:
+
+        - keep the stylesheet URL present on fresh installs
+        - provide a safe base file for instance-level CSS overrides
+
+    This file intentionally does NOT contain:
+
+        - frontend application styling
+        - theme-specific overrides
+        - generated bundle output
+*/
+
+/* Instance administrators can override this file from instance/static/. */
+
+/* end of priv/static/instance/static.css */

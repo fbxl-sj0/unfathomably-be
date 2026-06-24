@@ -16,6 +16,8 @@ defmodule HttpRequestMock do
           body: body
         } = _env
       ) do
+    headers = normalize_activitypub_accept_header(headers)
+
     with {:ok, res} <- apply(__MODULE__, method, [url, query, body, headers]) do
       res
     else
@@ -26,6 +28,20 @@ defmodule HttpRequestMock do
 
         {_, _r} = error
     end
+  end
+
+  defp normalize_activitypub_accept_header(headers) do
+    Enum.map(headers, fn
+      {"accept", accept} when is_binary(accept) ->
+        if String.contains?(accept, "application/activity+json") do
+          {"accept", "application/activity+json"}
+        else
+          {"accept", accept}
+        end
+
+      header ->
+        header
+    end)
   end
 
   # GET Requests
@@ -303,6 +319,15 @@ defmodule HttpRequestMock do
      %Tesla.Env{
        status: 200,
        body: File.read!("test/fixtures/tesla_mock/7even.json"),
+       headers: activitypub_object_headers()
+     }}
+  end
+
+  def get("https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e", _, _, _) do
+    {:ok,
+     %Tesla.Env{
+       status: 200,
+       body: File.read!("test/fixtures/tesla_mock/peertube.moe-channel.json"),
        headers: activitypub_object_headers()
      }}
   end
@@ -1779,11 +1804,23 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def post("http://127.0.0.1:5000/translate", _, _, _) do
+  def post("http://127.0.0.1:5000/translate", _, body, _) do
+    response_body =
+      case Jason.decode(body) do
+        {:ok, %{"source" => "auto"}} ->
+          ~s({"translatedText":"Hello world","detectedLanguage":{"language":"fr"}})
+
+        {:ok, %{"source" => "ja"}} ->
+          ~s({"translatedText":"Day one has the exaggerated Tachibana.","detectedLanguage":{"language":"ja"}})
+
+        _ ->
+          File.read!("test/fixtures/tesla_mock/opentranslate-translation.json")
+      end
+
     {:ok,
      %Tesla.Env{
        status: 200,
-       body: File.read!("test/fixtures/tesla_mock/opentranslate-translation.json"),
+       body: response_body,
        headers: [{"content-type", "application/json"}]
      }}
   end

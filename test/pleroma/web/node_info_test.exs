@@ -45,6 +45,20 @@ defmodule Pleroma.Web.NodeInfoTest do
     assert json_response(conn, 200)["version"] == "2.0"
   end
 
+  test "nodeinfo responses work without the json extension", %{conn: conn} do
+    conn = get(conn, "/nodeinfo/2.1")
+
+    assert [content_type] = get_resp_header(conn, "content-type")
+    assert content_type =~ "profile=http://nodeinfo.diaspora.software/ns/schema/2.1#"
+    assert json_response(conn, 200)["version"] == "2.1"
+
+    conn = get(build_conn(), "/nodeinfo/2.0")
+
+    assert [content_type] = get_resp_header(conn, "content-type")
+    assert content_type =~ "profile=http://nodeinfo.diaspora.software/ns/schema/2.0#"
+    assert json_response(conn, 200)["version"] == "2.0"
+  end
+
   test "nodeinfo shows staff accounts", %{conn: conn} do
     moderator = insert(:user, local: true, is_moderator: true)
     admin = insert(:user, local: true, is_admin: true)

@@ -75,11 +75,15 @@ defmodule Pleroma.FollowingRelationship do
   end
 
   def follow(%User{} = follower, %User{} = following, state \\ :follow_accept) do
-    with {:ok, _following_relationship} <-
+    with {:ok, following_relationship} <-
            %__MODULE__{}
            |> changeset(%{follower: follower, following: following, state: state})
-           |> Repo.insert(on_conflict: :nothing) do
-      after_update(state, follower, following)
+           |> Repo.insert(on_conflict: :nothing, returning: [:id]) do
+      if following_relationship.id do
+        after_update(state, follower, following)
+      else
+        {:ok, follower, following}
+      end
     end
   end
 

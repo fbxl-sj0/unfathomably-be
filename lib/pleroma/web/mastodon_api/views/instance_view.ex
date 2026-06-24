@@ -11,6 +11,8 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
   alias Pleroma.Web.MastodonAPI
 
   @mastodon_api_level "2.7.2"
+  # Mastodon reserves 23 characters per URL when counting status length.
+  @characters_reserved_per_url 23
 
   @block_severities %{
     federated_timeline_removal: "silence",
@@ -250,12 +252,14 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
 
   defp configuration do
     %{
-      accounts: %{},
+      accounts: accounts_configuration(),
       statuses: %{
         max_characters: Config.get([:instance, :limit]),
-        max_media_attachments: Config.get([:instance, :max_media_attachments])
+        max_media_attachments: Config.get([:instance, :max_media_attachments]),
+        characters_reserved_per_url: @characters_reserved_per_url
       },
       media_attachments: %{
+        description_limit: Config.get([:instance, :description_limit]),
         image_size_limit: Config.get([:instance, :upload_limit]),
         video_size_limit: Config.get([:instance, :upload_limit])
       },
@@ -268,18 +272,22 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
     }
   end
 
+  defp accounts_configuration do
+    %{
+      max_avatar_description_length: Config.get([:instance, :description_limit]),
+      max_display_name_length: Config.get([:instance, :user_name_length], 100),
+      max_featured_tags: 0,
+      max_header_description_length: Config.get([:instance, :description_limit]),
+      max_note_length: Config.get([:instance, :user_bio_length], 5000),
+      max_pinned_statuses: Config.get([:instance, :max_pinned_statuses], 0),
+      max_profile_fields: Config.get([:instance, :max_account_fields]),
+      profile_field_name_limit: Config.get([:instance, :account_field_name_length]),
+      profile_field_value_limit: Config.get([:instance, :account_field_value_length])
+    }
+  end
+
   defp configuration2 do
     configuration()
-    |> put_in([:accounts, :max_pinned_statuses], Config.get([:instance, :max_pinned_statuses], 0))
-    |> put_in([:accounts, :max_profile_fields], Config.get([:instance, :max_account_fields]))
-    |> put_in(
-      [:accounts, :profile_field_name_limit],
-      Config.get([:instance, :account_field_name_length])
-    )
-    |> put_in(
-      [:accounts, :profile_field_value_limit],
-      Config.get([:instance, :account_field_value_length])
-    )
     |> Map.merge(%{
       urls: %{streaming: Pleroma.Web.Endpoint.websocket_url()},
       translation: %{enabled: Pleroma.Language.Translation.configured?()},

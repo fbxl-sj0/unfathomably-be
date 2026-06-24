@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.6.50] - 2026-06-23
+
+### Added
+- Introduced Unfathomably backend branding, package metadata, documentation links, and GitHub repository links.
+- Added first-class group and source APIs for federated targets that do not behave like ordinary user accounts.
+- Added group and source preview/feed support for Threadiverse-style and media-source actors.
+- Added RSS and Atom feed following through synthetic source actors and scheduled refresh workers, so read-only feed entries can appear as posts that local users can boost or quote.
+- Added local group membership support and group moderation surfaces.
+- Added Mastodon-compatible websocket streaming support and broader streaming tests.
+- Added remote replies collection refresh jobs for public remote posts, including debounced refreshes when known ancestors receive remote replies.
+- Added ActivityPub alternate discovery from HTTP `Link` headers and HTML `rel="alternate"` links when object fetches land on human-readable pages.
+- Added Ed25519 HTTP Signature verification for remote actors that publish W3C Multikey `publicKeyMultibase` keys or OKP `publicKeyJwk` verification methods.
+- Added OpenTranslate/LibreTranslate-style translation provider documentation and Polish model coverage notes.
+- Added a complete source installation guide covering Unfathomably BE, Unfathomably FE, nginx, OpenTranslate, and optional Meilisearch.
+- Added a rehearsed upgrade guide for moving source installs from Rebased/Soapbox or Pleroma to Unfathomably BE and FE.
+- Added Meilisearch indexing and cleanup integration for post search.
+- Added janitor workers for stale remote group discussions, stale remote posts, old Oban jobs, and dormant remote-host reachability checks.
+
+### Changed
+- Updated project metadata to publish as `unfathomably-be` while retaining Pleroma-compatible module and OTP application names where clients and release tooling depend on them.
+- Updated ActivityPub follower and following collection rendering to use cached counters and SQL pagination instead of loading whole collections for page rendering.
+- Improved HTTP Signature key resolution for multi-key actors, separate key documents, and `verificationMethod`/`assertionMethod` style actor documents while preserving the existing RSA PEM path.
+- Scoped HTTP-only fetch-origin behavior to development and test use so public production deployments keep secure fetch-origin defaults.
+- Improved static-fe styling so backend-rendered post pages follow the configured site theme more closely.
+- Reworked NodeInfo compatibility so Mastodon-style consumers do not need to rely on fallback behavior.
+
+### Fixed
+- Fixed remote group and source display paths that could fall back to local profile timelines.
+- Fixed remote group and source item behavior so comments, likes, shares, and supported interactions can be exposed where the remote software allows them.
+- Fixed remote reply discovery for group discussions where comments existed remotely but were not visible locally.
+- Fixed incoming signature actor mapping for key IDs that point at separate key documents rather than the actor URL itself.
+- Fixed duplicate follow insertion handling so cached follow counters are not recalculated unnecessarily.
+- Fixed browser-facing issues around static asset MIME types, stale composer drafts, duplicate form IDs, and unsupported Permissions-Policy feature names.
+- Fixed profile and refresh-route handling that could return server errors on deep frontend routes.
+
 ## 2.6.0
 ### Security
 - Preload: Make generated JSON html-safe. It already was html safe because it only consists of config data that is base64 encoded, but this will keep it safe it that ever changes.

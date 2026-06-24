@@ -1,6 +1,8 @@
 # Summary
 
 * [Introduction](README.md)
+* [Installation](INSTALLATION.MD)
+* [Upgrading](UPGRADE.MD)
 
 * Administration
   * [Backing up](administration/backup.md)

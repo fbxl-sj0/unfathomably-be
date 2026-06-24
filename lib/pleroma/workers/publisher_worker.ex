@@ -15,10 +15,14 @@ defmodule Pleroma.Workers.PublisherWorker do
 
   @impl Oban.Worker
   def perform(%Job{args: %{"op" => "publish", "activity_id" => activity_id} = args}) do
-    activity = Activity.get_by_id(activity_id)
-    activity = maybe_restore_activity_data(activity, args["activity_data"])
+    case Activity.get_by_id(activity_id) do
+      %Activity{} = activity ->
+        activity = maybe_restore_activity_data(activity, args["activity_data"])
+        Federator.perform(:publish, activity)
 
-    Federator.perform(:publish, activity)
+      nil ->
+        {:cancel, :activity_not_found}
+    end
   end
 
   def perform(%Job{args: %{"op" => "publish_one", "module" => module_name, "params" => params}}) do
@@ -31,7 +35,7 @@ defmodule Pleroma.Workers.PublisherWorker do
   end
 
   @impl Oban.Worker
-  def timeout(_job), do: :timer.seconds(10)
+  def timeout(_job), do: :timer.seconds(30)
 
   defp validate_delivery_target(%{inbox: inbox} = params) when is_binary(inbox) do
     if Instances.dormant?(inbox) do

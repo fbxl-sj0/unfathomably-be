@@ -38,7 +38,7 @@ For an English-only target, install only the source-to-English models you want
 and then start the service without the broad `--update-models` startup option.
 
 The example below loads Arabic, German, Spanish, French, Irish, Hindi, Italian,
-Japanese, Korean, Portuguese, Russian, and Chinese as source languages.
+Japanese, Korean, Polish, Portuguese, Russian, and Chinese as source languages.
 
 First, create persistent storage and install the source-to-English models:
 
@@ -53,7 +53,7 @@ docker run --rm -i \
   libretranslate/libretranslate:latest - <<'PY'
 from argostranslate import package
 
-wanted = ["ar", "de", "es", "fr", "ga", "hi", "it", "ja", "ko", "pt", "ru", "zh"]
+wanted = ["ar", "de", "es", "fr", "ga", "hi", "it", "ja", "ko", "pl", "pt", "ru", "zh"]
 
 package.update_package_index()
 available = package.get_available_packages()
@@ -89,7 +89,7 @@ docker run -d \
   -p 0.0.0.0:5000:5000 \
   libretranslate/libretranslate:latest \
   --host 0.0.0.0 \
-  --load-only ar,de,en,es,fr,ga,hi,it,ja,ko,pt,ru,zh \
+  --load-only ar,de,en,es,fr,ga,hi,it,ja,ko,pl,pt,ru,zh \
   --disable-files-translation \
   --req-limit 60 \
   --hourly-req-limit 1000 \

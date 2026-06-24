@@ -16,6 +16,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
   alias Pleroma.Object
   alias Pleroma.Object.Containment
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidator
@@ -134,7 +135,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
            do_separate_with_history(object, fn object ->
              with {:ok, object} <-
                     object
-                    |> validator.cast_and_validate()
+                    |> cast_and_validate_object(validator, meta)
                     |> Ecto.Changeset.apply_action(:insert) do
                object = stringify_keys(object)
 
@@ -252,6 +253,17 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
 
   def cast_and_apply(o), do: {:error, {:validator_not_set, o}}
 
+  defp cast_and_validate_object(object, ArticleNotePageValidator, meta) do
+    ArticleNotePageValidator.cast_and_validate(object,
+      preserve_internal_replies_collection:
+        Access.get(meta, :preserve_internal_replies_collection, false)
+    )
+  end
+
+  defp cast_and_validate_object(object, validator, _meta) do
+    validator.cast_and_validate(object)
+  end
+
   def stringify_keys(object) when is_struct(object) do
     object
     |> Map.from_struct()
@@ -273,16 +285,43 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
 
   def fetch_actor(object) do
     with actor <- Containment.get_actor(object),
-         {:ok, actor} <- ObjectValidators.ObjectID.cast(actor) do
-      User.get_or_fetch_by_ap_id(actor)
+         {:ok, actor} <- ObjectValidators.ObjectID.cast(actor),
+         {:ok, %User{} = actor} <- User.get_or_fetch_by_ap_id(actor) do
+      {:ok, actor}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :actor_not_found}
     end
   end
 
   def fetch_actor_and_object(object) do
-    fetch_actor(object)
-    Object.normalize(object["object"], fetch: true)
-    :ok
+    with {:ok, %User{}} <- fetch_actor(object),
+         {:ok, object_id} <- object_id_from_activity(object["object"]),
+         {:ok, %Object{}} <- fetch_remote_object(object_id) do
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :object_not_found}
+    end
   end
+
+  defp object_id_from_activity(object) do
+    object
+    |> Utils.get_ap_id()
+    |> ObjectValidators.ObjectID.cast()
+  end
+
+  defp fetch_remote_object(object_id) when is_binary(object_id) do
+    case Object.get_cached_by_ap_id(object_id) do
+      %Object{} = object ->
+        {:ok, object}
+
+      _ ->
+        Pleroma.Object.Fetcher.fetch_object_from_id(object_id)
+    end
+  end
+
+  defp fetch_remote_object(_), do: {:error, :object_not_found}
 
   defp for_each_history_item(
          %{"type" => "OrderedCollection", "orderedItems" => items} = history,

@@ -2947,6 +2947,21 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
     end)
   end
 
+  test "pin_data_from_featured_collection ignores malformed collection items" do
+    assert %{"https://social.example/objects/1" => _} =
+             ActivityPub.pin_data_from_featured_collection(%{
+               "type" => "OrderedCollection",
+               "orderedItems" => [
+                 nil,
+                 %{},
+                 %{"id" => "https://social.example/objects/1"},
+                 "https://social.example/objects/2"
+               ]
+             })
+
+    assert %{} = ActivityPub.pin_data_from_featured_collection(nil)
+  end
+
   test "fetch_and_prepare_featured_from_ap_id handles embedded first collection pages" do
     featured_url = "https://social.example/users/alice/collections/featured"
     first_page_url = "#{featured_url}?page=true"

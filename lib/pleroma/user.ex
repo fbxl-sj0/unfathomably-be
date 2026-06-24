@@ -422,7 +422,8 @@ defmodule Pleroma.User do
 
   def image_description(image, default \\ "")
 
-  def image_description(%{"name" => name}, _default), do: name
+  def image_description(%{"name" => name}, _default) when is_binary(name), do: name
+  def image_description(%{"summary" => summary}, _default) when is_binary(summary), do: summary
   def image_description(_, default), do: default
 
   # Should probably be renamed or removed
@@ -521,6 +522,7 @@ defmodule Pleroma.User do
         :is_discoverable,
         :invisible,
         :actor_type,
+        :tags,
         :also_known_as,
         :accepts_chat_messages,
         :pinned_objects,
@@ -743,7 +745,8 @@ defmodule Pleroma.User do
          {:existing_image, %{"id" => id}} <-
            {:existing_image, Map.get(changeset.data, image_field)},
          {:object, %Object{} = object} <- {:object, Object.get_by_ap_id(id)},
-         {:ok, object} <- Object.update_data(object, %{"name" => description}) do
+         {:ok, object} <-
+           Object.update_data(object, %{"name" => description, "summary" => description}) do
       put_change(changeset, image_field, object.data)
     else
       _ -> changeset
@@ -1319,7 +1322,7 @@ defmodule Pleroma.User do
   end
 
   @spec get_cached_by_ap_id(String.t()) :: User.t() | nil
-  def get_cached_by_ap_id(ap_id) do
+  def get_cached_by_ap_id(ap_id) when is_binary(ap_id) do
     key = "ap_id:#{ap_id}"
 
     with {:ok, nil} <- @cachex.get(:user_cache, key),
@@ -1331,6 +1334,8 @@ defmodule Pleroma.User do
       nil -> nil
     end
   end
+
+  def get_cached_by_ap_id(_), do: nil
 
   def get_cached_by_id(id) do
     key = "id:#{id}"
@@ -2234,7 +2239,7 @@ defmodule Pleroma.User do
 
   def fetch_by_ap_id(ap_id), do: ActivityPub.make_user_from_ap_id(ap_id)
 
-  def get_or_fetch_by_ap_id(ap_id) do
+  def get_or_fetch_by_ap_id(ap_id) when is_binary(ap_id) do
     cached_user = get_cached_by_ap_id(ap_id)
 
     maybe_fetched_user = needs_update?(cached_user) && fetch_by_ap_id(ap_id)
@@ -2250,6 +2255,8 @@ defmodule Pleroma.User do
         {:error, :not_found}
     end
   end
+
+  def get_or_fetch_by_ap_id(_), do: {:error, :not_found}
 
   @doc """
   Creates an internal service actor by URI if missing.

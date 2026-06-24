@@ -1,0 +1,1 @@
+Disable Hackney TLS session resumption by default to avoid Erlang client ticket store crashes during federation.

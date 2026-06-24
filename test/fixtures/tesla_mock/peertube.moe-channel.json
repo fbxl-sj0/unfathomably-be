@@ -1,0 +1,60 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://w3id.org/security/v1",
+    {
+      "RsaSignature2017": "https://w3id.org/security#RsaSignature2017",
+      "Hashtag": "as:Hashtag",
+      "uuid": "http://schema.org/identifier",
+      "category": "http://schema.org/category",
+      "licence": "http://schema.org/license",
+      "sensitive": "as:sensitive",
+      "language": "http://schema.org/inLanguage",
+      "views": "http://schema.org/Number",
+      "size": "http://schema.org/Number",
+      "commentsEnabled": "http://schema.org/Boolean",
+      "support": "http://schema.org/Text"
+    },
+    {
+      "likes": {
+        "@id": "as:likes",
+        "@type": "@id"
+      },
+      "dislikes": {
+        "@id": "as:dislikes",
+        "@type": "@id"
+      },
+      "shares": {
+        "@id": "as:shares",
+        "@type": "@id"
+      },
+      "comments": {
+        "@id": "as:comments",
+        "@type": "@id"
+      }
+    }
+  ],
+  "type": "Group",
+  "id": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e",
+  "following": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e/following",
+  "followers": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e/followers",
+  "inbox": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e/inbox",
+  "outbox": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e/outbox",
+  "preferredUsername": "friday-night",
+  "url": "https://peertube.moe/video-channels/friday-night",
+  "name": "Friday Night",
+  "summary": null,
+  "endpoints": {
+    "sharedInbox": "https://peertube.moe/inbox"
+  },
+  "publicKey": {
+    "id": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e#main-key",
+    "owner": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwJpXqt5xKPu0tcih/Emx\nXa6GvJ03zntpV+pjO4E0I3KDCgcsP3MAk//HVlwSGe1U5JdO+6tm9Vu0u+N5oD1X\nNNCDk7dmC+PkNPnP2CUmPrDs3NJTe5Qwgmfqcx1S/bsdcnaOpuW8T6OjQxVX+j9A\nJynz5c3ckT9aFJ6TsmxT3sh9aKMo3VvjAxbnJpxzVCOUXqya+2UKszJaQ7wpUncw\n0ElF/8I16HqhReEoNlLfJruXVKiONrBwckIcPyvnk+x/QyTgqtwOu0THuOGQ8LhV\ncW0j9x6zAglKzqmiqSS1z+JggM1GqGpfeT6vPXfGkE7xM0zXto0YOgt/Sm2H/8yU\niwIDAQAB\n-----END PUBLIC KEY-----"
+  },
+  "icon": {
+    "type": "Image",
+    "mediaType": "image/png",
+    "url": "https://peertube.moe/static/avatars/0815978b-dd71-4797-ae3f-493a3445882a.png"
+  }
+}

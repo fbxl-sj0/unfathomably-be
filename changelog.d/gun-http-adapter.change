@@ -1,0 +1,1 @@
+Use the Gun HTTP adapter by default for outbound HTTP to avoid Hackney pool races during federation.

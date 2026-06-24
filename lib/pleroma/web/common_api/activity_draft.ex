@@ -8,6 +8,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   alias Pleroma.Language.LanguageDetector
   alias Pleroma.Object
   alias Pleroma.Repo
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI
@@ -33,6 +34,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
             emoji: %{},
             content_html: nil,
             mentions: [],
+            addressed_groups: [],
             tags: [],
             to: [],
             cc: [],
@@ -291,10 +293,15 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
           mentions
           |> Kernel.++(mentioned_ap_ids)
           |> Utils.get_addressed_users(draft.params[:to])
-          |> Kernel.++(group_ap_ids)
           |> Enum.uniq()
 
-        %__MODULE__{draft | content_html: content_html, mentions: mentions, tags: tags}
+        %__MODULE__{
+          draft
+          | content_html: content_html,
+            mentions: mentions,
+            addressed_groups: group_ap_ids,
+            tags: tags
+        }
 
       {:error, :group_not_found} ->
         add_error(draft, dgettext("errors", "Group target was not found"))
@@ -363,6 +370,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
 
     object =
       note_data
+      |> Addressing.put_addressed_groups(draft.addressed_groups)
       |> Map.put("emoji", emoji)
       |> Map.put("source", %{
         "content" => draft.status,

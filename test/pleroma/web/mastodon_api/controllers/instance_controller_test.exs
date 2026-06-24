@@ -120,12 +120,33 @@ defmodule Pleroma.Web.MastodonAPI.InstanceControllerTest do
 
   test "get instance configuration", %{conn: conn} do
     clear_config([:instance, :limit], 476)
+    clear_config([:instance, :description_limit], 1500)
+    clear_config([:instance, :max_account_fields], 12)
+    clear_config([:instance, :max_pinned_statuses], 3)
+    clear_config([:instance, :user_bio_length], 5001)
+    clear_config([:instance, :user_name_length], 101)
+    clear_config([:instance, :account_field_name_length], 255)
+    clear_config([:instance, :account_field_value_length], 2048)
 
     conn = get(conn, "/api/v1/instance")
 
     assert result = json_response_and_validate_schema(conn, 200)
 
+    accounts = result["configuration"]["accounts"]
+
+    assert accounts["max_avatar_description_length"] == 1500
+    assert accounts["max_display_name_length"] == 101
+    assert accounts["max_featured_tags"] == 0
+    assert accounts["max_header_description_length"] == 1500
+    assert accounts["max_note_length"] == 5001
+    assert accounts["max_pinned_statuses"] == 3
+    assert accounts["max_profile_fields"] == 12
+    assert accounts["profile_field_name_limit"] == 255
+    assert accounts["profile_field_value_limit"] == 2048
+
     assert result["configuration"]["statuses"]["max_characters"] == 476
+    assert result["configuration"]["statuses"]["characters_reserved_per_url"] == 23
+    assert result["configuration"]["media_attachments"]["description_limit"] == 1500
   end
 
   test "get oauth_consumer_strategies", %{conn: conn} do
@@ -158,6 +179,9 @@ defmodule Pleroma.Web.MastodonAPI.InstanceControllerTest do
 
     assert result["configuration"]["vapid"]["public_key"] ==
              Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key)
+
+    assert result["configuration"]["urls"]["streaming"]
+    assert result["configuration"]["accounts"]["max_display_name_length"]
   end
 
   describe "instance domain blocks" do

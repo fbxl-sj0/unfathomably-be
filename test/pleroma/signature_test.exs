@@ -11,6 +11,7 @@ defmodule Pleroma.SignatureTest do
   import Mock
 
   alias Pleroma.Signature
+  alias Pleroma.Signature.HTTPSignatures, as: SignatureHTTPSignatures
   alias Pleroma.StubbedHTTPSignaturesMock, as: HTTPSignaturesMock
 
   setup do
@@ -32,7 +33,95 @@ defmodule Pleroma.SignatureTest do
   defp make_fake_signature(key_id), do: "keyId=\"#{key_id}\""
 
   defp make_fake_conn(key_id),
-    do: %Plug.Conn{req_headers: %{"signature" => make_fake_signature(key_id <> "#main-key")}}
+    do: make_fake_conn_for_key_id(key_id <> "#main-key")
+
+  defp make_fake_conn_for_key_id(key_id),
+    do: %Plug.Conn{req_headers: %{"signature" => make_fake_signature(key_id)}}
+
+  defp activitypub_json(data) do
+    {:ok,
+     %Tesla.Env{
+       status: 200,
+       body: Jason.encode!(data),
+       headers: [{"content-type", "application/activity+json"}]
+     }}
+  end
+
+  defp actor_data(actor_id, public_key) do
+    %{
+      "@context" => ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id" => actor_id,
+      "type" => "Person",
+      "preferredUsername" => "multikey",
+      "name" => "Multi Key",
+      "summary" => "",
+      "url" => actor_id,
+      "inbox" => actor_id <> "/inbox",
+      "outbox" => actor_id <> "/outbox",
+      "followers" => actor_id <> "/followers",
+      "following" => actor_id <> "/following",
+      "publicKey" => public_key
+    }
+  end
+
+  @base58btc_alphabet ~c"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+  defp ed25519_multibase(public_key) when is_binary(public_key) do
+    "z" <> base58btc_encode(<<0xED, 0x01, public_key::binary>>)
+  end
+
+  defp base58btc_encode(value) when is_binary(value) do
+    leading_zeroes =
+      value
+      |> :binary.bin_to_list()
+      |> Enum.take_while(&(&1 == 0))
+      |> length()
+
+    :binary.copy("1", leading_zeroes) <>
+      base58btc_encode_number(:binary.decode_unsigned(value))
+  end
+
+  defp base58btc_encode_number(0), do: ""
+
+  defp base58btc_encode_number(number) do
+    next_number = div(number, 58)
+    digit = rem(number, 58)
+
+    base58btc_encode_number(next_number) <> <<Enum.at(@base58btc_alphabet, digit)>>
+  end
+
+  defp make_ed25519_signature_conn(key_id, private_key, opts \\ []) do
+    request_target = Keyword.get(opts, :request_target, "post /inbox")
+
+    headers = %{
+      "(request-target)" => request_target,
+      "host" => "social.example",
+      "date" => "Tue, 23 Jun 2026 12:00:00 GMT"
+    }
+
+    signed_headers = ["(request-target)", "host", "date"]
+    signing_string = HTTPSignatures.build_signing_string(headers, signed_headers)
+
+    signature =
+      :crypto.sign(:eddsa, :none, signing_string, [private_key, :ed25519])
+      |> Base.encode64()
+
+    signature_header =
+      [
+        ~s(keyId="#{key_id}"),
+        ~s(algorithm="ed25519"),
+        ~s(headers="#{Enum.join(signed_headers, " ")}"),
+        ~s(signature="#{signature}")
+      ]
+      |> Enum.join(",")
+
+    %Plug.Conn{
+      method: "POST",
+      request_path: "/inbox",
+      query_string: "",
+      req_headers: Map.to_list(Map.put(headers, "signature", signature_header))
+    }
+  end
 
   describe "fetch_public_key/1" do
     test "it returns key" do
@@ -54,6 +143,125 @@ defmodule Pleroma.SignatureTest do
       user = insert(:user, public_key: nil)
 
       assert Signature.fetch_public_key(make_fake_conn(user.ap_id)) == {:error, :error}
+    end
+
+    test "it returns a matching key from a multi-key actor document" do
+      actor_id = "https://multiple.example/users/alice"
+      key_id = actor_id <> "#secondary-key"
+
+      data =
+        actor_data(actor_id, [
+          %{
+            "id" => actor_id <> "#main-key",
+            "owner" => actor_id,
+            "publicKeyPem" => "not a valid pem"
+          },
+          %{
+            "id" => key_id,
+            "owner" => actor_id,
+            "publicKeyPem" => @public_key
+          }
+        ])
+
+      mock(fn
+        %{method: :get, url: ^actor_id} ->
+          activitypub_json(data)
+
+        env ->
+          apply(HttpRequestMock, :request, [env])
+      end)
+
+      assert Signature.fetch_public_key(make_fake_conn_for_key_id(key_id)) ==
+               {:ok, @rsa_public_key}
+    end
+
+    test "it returns a matching separate key document referenced by the actor" do
+      actor_id = "https://separate-key.example/users/alice"
+      key_id = "https://separate-key.example/keys/alice-secondary"
+
+      data = actor_data(actor_id, [key_id])
+
+      key_data = %{
+        "@context" => ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+        "id" => key_id,
+        "type" => "Key",
+        "owner" => actor_id,
+        "publicKeyPem" => @public_key
+      }
+
+      mock(fn
+        %{method: :get, url: ^actor_id} ->
+          activitypub_json(data)
+
+        %{method: :get, url: ^key_id} ->
+          activitypub_json(key_data)
+
+        env ->
+          apply(HttpRequestMock, :request, [env])
+      end)
+
+      assert Signature.fetch_public_key(make_fake_conn_for_key_id(key_id)) ==
+               {:ok, @rsa_public_key}
+    end
+
+    test "it returns a matching Ed25519 Multikey from an actor document" do
+      {public_key, _private_key} = :crypto.generate_key(:eddsa, :ed25519)
+      actor_id = "https://ed25519.example/users/alice"
+      key_id = actor_id <> "#ed25519-key"
+
+      data =
+        actor_data(actor_id, nil)
+        |> Map.put("verificationMethod", [
+          %{
+            "id" => key_id,
+            "controller" => actor_id,
+            "type" => "Multikey",
+            "publicKeyMultibase" => ed25519_multibase(public_key)
+          }
+        ])
+
+      mock(fn
+        %{method: :get, url: ^actor_id} ->
+          activitypub_json(data)
+
+        env ->
+          apply(HttpRequestMock, :request, [env])
+      end)
+
+      assert Signature.fetch_public_key(make_fake_conn_for_key_id(key_id)) ==
+               {:ok, {:ed25519_public_key, public_key}}
+    end
+
+    test "it returns a matching Ed25519 OKP JWK from an actor document" do
+      {public_key, _private_key} = :crypto.generate_key(:eddsa, :ed25519)
+      actor_id = "https://ed25519-jwk.example/users/alice"
+      key_id = actor_id <> "#jwk-key"
+
+      data =
+        actor_data(actor_id, nil)
+        |> Map.put("assertionMethod", [
+          %{
+            "id" => key_id,
+            "controller" => actor_id,
+            "type" => "JsonWebKey",
+            "publicKeyJwk" => %{
+              "kty" => "OKP",
+              "crv" => "Ed25519",
+              "x" => Base.url_encode64(public_key, padding: false)
+            }
+          }
+        ])
+
+      mock(fn
+        %{method: :get, url: ^actor_id} ->
+          activitypub_json(data)
+
+        env ->
+          apply(HttpRequestMock, :request, [env])
+      end)
+
+      assert Signature.fetch_public_key(make_fake_conn_for_key_id(key_id)) ==
+               {:ok, {:ed25519_public_key, public_key}}
     end
   end
 
@@ -109,6 +317,69 @@ defmodule Pleroma.SignatureTest do
 
       assert Signature.validate_signature(conn) == false
     end
+
+    test "validates Ed25519 Multikey HTTP signatures" do
+      {public_key, private_key} = :crypto.generate_key(:eddsa, :ed25519)
+      actor_id = "https://ed25519-signed.example/users/alice"
+      key_id = actor_id <> "#ed25519-key"
+
+      data =
+        actor_data(actor_id, nil)
+        |> Map.put("verificationMethod", [
+          %{
+            "id" => key_id,
+            "controller" => actor_id,
+            "type" => "Multikey",
+            "publicKeyMultibase" => ed25519_multibase(public_key)
+          }
+        ])
+
+      mock(fn
+        %{method: :get, url: ^actor_id} ->
+          activitypub_json(data)
+
+        env ->
+          apply(HttpRequestMock, :request, [env])
+      end)
+
+      conn = make_ed25519_signature_conn(key_id, private_key)
+
+      assert SignatureHTTPSignatures.validate_conn(conn)
+    end
+
+    test "rejects Ed25519 signatures when signed content is changed" do
+      {public_key, private_key} = :crypto.generate_key(:eddsa, :ed25519)
+      actor_id = "https://ed25519-reject.example/users/alice"
+      key_id = actor_id <> "#ed25519-key"
+
+      data =
+        actor_data(actor_id, nil)
+        |> Map.put("verificationMethod", [
+          %{
+            "id" => key_id,
+            "controller" => actor_id,
+            "type" => "Multikey",
+            "publicKeyMultibase" => ed25519_multibase(public_key)
+          }
+        ])
+
+      mock(fn
+        %{method: :get, url: ^actor_id} ->
+          activitypub_json(data)
+
+        env ->
+          apply(HttpRequestMock, :request, [env])
+      end)
+
+      conn =
+        key_id
+        |> make_ed25519_signature_conn(private_key, request_target: "post /inbox")
+        |> Map.update!(:req_headers, fn headers ->
+          List.keyreplace(headers, "(request-target)", 0, {"(request-target)", "post /changed"})
+        end)
+
+      refute SignatureHTTPSignatures.validate_conn(conn)
+    end
   end
 
   describe "key_id_to_actor_id/1" do
@@ -134,6 +405,31 @@ defmodule Pleroma.SignatureTest do
         assert Signature.key_id_to_actor_id("acct:raymoo@gensokyo.2hu") ==
                  {:ok, "https://gensokyo.2hu/users/raymoo"}
       end
+    end
+  end
+
+  describe "get_actor_id/1" do
+    test "returns the owner for a separate key document" do
+      actor_id = "https://separate-owner.example/users/alice"
+      key_id = "https://separate-owner.example/keys/alice-secondary"
+
+      key_data = %{
+        "@context" => ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+        "id" => key_id,
+        "type" => "Key",
+        "owner" => actor_id,
+        "publicKeyPem" => @public_key
+      }
+
+      mock(fn
+        %{method: :get, url: ^key_id} ->
+          activitypub_json(key_data)
+
+        env ->
+          apply(HttpRequestMock, :request, [env])
+      end)
+
+      assert Signature.get_actor_id(make_fake_conn_for_key_id(key_id)) == {:ok, actor_id}
     end
   end
 

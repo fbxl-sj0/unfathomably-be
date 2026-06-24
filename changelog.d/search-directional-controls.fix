@@ -1,0 +1,1 @@
+Ignore copied Unicode directional controls in account, WebFinger, group, and source lookups instead of returning search errors.
