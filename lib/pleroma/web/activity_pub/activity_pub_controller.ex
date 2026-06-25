@@ -634,30 +634,11 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
     end
   end
 
-  def featured_collections(conn, %{"nickname" => nickname, "page" => page}) do
+  def moderators(conn, %{"nickname" => nickname}) do
     with %User{} = user <- User.get_cached_by_nickname(nickname) do
       conn
       |> put_resp_header("content-type", "application/activity+json")
-      |> json(UserView.render("featured_collections.json", %{user: user, page: parse_page(page)}))
+      |> json(UserView.render("moderators.json", %{user: user}))
     end
   end
-
-  def featured_collections(conn, %{"nickname" => nickname}) do
-    with %User{} = user <- User.get_cached_by_nickname(nickname) do
-      conn
-      |> put_resp_header("content-type", "application/activity+json")
-      |> json(UserView.render("featured_collections.json", %{user: user}))
-    end
-  end
-
-  defp parse_page(page) when is_integer(page) and page > 0, do: page
-
-  defp parse_page(page) when is_binary(page) do
-    case Integer.parse(page) do
-      {page, ""} when page > 0 -> page
-      _ -> 1
-    end
-  end
-
-  defp parse_page(_page), do: 1
 end

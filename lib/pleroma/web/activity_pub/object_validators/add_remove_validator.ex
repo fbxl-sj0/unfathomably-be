@@ -6,10 +6,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
   use Ecto.Schema
 
   import Ecto.Changeset
+  import Ecto.Query
   import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   require Pleroma.Constants
 
+  alias Pleroma.Repo
   alias Pleroma.User
 
   @primary_key false
@@ -30,6 +32,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
     {:ok, actor} = User.get_or_fetch_by_ap_id(data["actor"])
 
     {:ok, actor} = maybe_refetch_user(actor)
+    maybe_fetch_collection_object(data)
 
     data
     |> maybe_fix_data_for_mastodon(actor)
@@ -55,18 +58,67 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
     |> validate_inclusion(:type, ~w(Add Remove))
     |> validate_actor_presence()
     |> validate_collection_belongs_to_actor(actor)
-    |> validate_object_presence()
+    |> validate_object_or_user_presence()
   end
 
   defp validate_collection_belongs_to_actor(changeset, actor) do
     validate_change(changeset, :target, fn :target, target ->
-      if target == actor.featured_address do
-        []
-      else
-        [target: "collection doesn't belong to actor"]
+      cond do
+        target == actor.featured_address ->
+          []
+
+        collection_owner(target) ->
+          []
+
+        group_collection_target?(target) ->
+          []
+
+        true ->
+          [target: "collection doesn't belong to actor or a known group"]
       end
     end)
   end
+
+  defp collection_owner(target) when is_binary(target) do
+    User
+    |> where([user], user.featured_address == ^target or user.attributed_to_address == ^target)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  defp collection_owner(_), do: nil
+
+  defp maybe_fetch_collection_object(%{"object" => object, "target" => target})
+       when is_binary(object) and is_binary(target) do
+    if moderator_collection_target?(target) do
+      User.get_or_fetch_by_ap_id(object)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp maybe_fetch_collection_object(_), do: {:ok, nil}
+
+  defp moderator_collection_target?(target) do
+    case collection_owner(target) do
+      %User{attributed_to_address: ^target} ->
+        true
+
+      _ ->
+        String.ends_with?(target, ["/moderators", "/collections/moderators"])
+    end
+  end
+
+  defp group_collection_target?(target) when is_binary(target) do
+    String.ends_with?(target, [
+      "/moderators",
+      "/collections/moderators",
+      "/pinned",
+      "/collections/featured"
+    ])
+  end
+
+  defp group_collection_target?(_), do: false
 
   defp maybe_refetch_user(%User{featured_address: address} = user) when is_binary(address) do
     {:ok, user}

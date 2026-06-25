@@ -119,7 +119,9 @@ defmodule Pleroma.Config.TransferTask do
     |> Kernel.||([])
     |> Enum.each(&LoggerBackends.remove(logger_backend(&1)))
 
-    Enum.each(merged, &LoggerBackends.add(logger_backend(&1)))
+    merged
+    |> Enum.reject(&default_logger_backend?/1)
+    |> Enum.each(&LoggerBackends.add(logger_backend(&1)))
 
     :ok = update_env(:logger, :backends, merged)
   end
@@ -148,6 +150,9 @@ defmodule Pleroma.Config.TransferTask do
 
   defp logger_backend(:console), do: LoggerBackends.Console
   defp logger_backend(backend), do: backend
+
+  defp default_logger_backend?(:console), do: true
+  defp default_logger_backend?(_), do: false
 
   defp update({group, key, value, merged}) do
     try do

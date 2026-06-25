@@ -83,6 +83,58 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       assert activity.data["cc"] == [user.ap_id]
     end
 
+    test "it unwraps Mbin group announces around Flag activities" do
+      user = insert(:user)
+      reporter = insert(:user, local: false)
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          ap_id: "https://mbin.example/m/main",
+          follower_address: "https://mbin.example/m/main/followers"
+        )
+
+      {:ok, reported_activity} = CommonAPI.post(user, %{status: "test post"})
+      object = Object.normalize(reported_activity, fetch: false)
+
+      note_obj = %{
+        "type" => "Note",
+        "id" => reported_activity.object.data["id"],
+        "content" => "test post",
+        "published" => object.data["published"],
+        "actor" => AccountView.render("show.json", %{user: user, skip_visibility_check: true})
+      }
+
+      flag = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "actor" => reporter.ap_id,
+        "content" => "reported from a magazine",
+        "object" => [user.ap_id, reported_activity.data["id"]],
+        "to" => [user.ap_id],
+        "cc" => [group.ap_id],
+        "type" => "Flag"
+      }
+
+      announce = %{
+        "id" => "https://mbin.example/activities/announce/flag/1",
+        "actor" => group.ap_id,
+        "object" => flag,
+        "published" => "2026-06-24T00:00:00Z",
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [group.follower_address],
+        "type" => "Announce"
+      }
+
+      assert {:ok, activity} = Transmogrifier.handle_incoming(announce)
+
+      assert activity.data["type"] == "Flag"
+      assert activity.data["object"] == [user.ap_id, note_obj]
+      assert activity.data["content"] == "reported from a magazine"
+      assert activity.data["actor"] == reporter.ap_id
+      assert activity.data["cc"] == [user.ap_id]
+    end
+
     test "it rejects Flag activities when both reporter and reported account are remote" do
       reporter = insert(:user, local: false, domain: "mastodon.cat")
       reported = insert(:user, local: false, domain: "nicecrew.digital")
@@ -98,6 +150,20 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       assert {:reject, reason} = Transmogrifier.handle_incoming(message)
       assert reason =~ "third-party report"
       refute "Flag" |> Pleroma.Activity.Queries.by_type() |> Pleroma.Repo.one()
+    end
+
+    test "it acknowledges View and Read activities without storing receipt state" do
+      for type <- ["View", "Read"] do
+        message = %{
+          "id" => "https://friendica.example/activities/#{String.downcase(type)}/1",
+          "actor" => "https://friendica.example/profile/alice",
+          "object" => "https://social.example/objects/1",
+          "type" => type
+        }
+
+        assert {:ok, :ignored} = Transmogrifier.handle_incoming(message)
+        refute Activity.get_by_ap_id(message["id"])
+      end
     end
 
     test "it accepts Move activities" do

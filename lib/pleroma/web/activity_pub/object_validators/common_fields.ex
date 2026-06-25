@@ -18,6 +18,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFields do
       field(:cc, ObjectValidators.Recipients, default: [])
       field(:bto, ObjectValidators.Recipients, default: [])
       field(:bcc, ObjectValidators.Recipients, default: [])
+      field(:audience, ObjectValidators.Recipients, default: [])
     end
   end
 
@@ -57,6 +58,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFields do
       field(:context, :string)
 
       field(:sensitive, :boolean, default: false)
+      field(:commentsEnabled, :boolean, default: true)
       field(:replies_count, :integer, default: 0)
       field(:like_count, :integer, default: 0)
       field(:announcement_count, :integer, default: 0)

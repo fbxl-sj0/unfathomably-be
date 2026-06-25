@@ -35,3 +35,14 @@ defenum(Pleroma.User.Backup.State,
   failed: 4,
   invalid: 5
 )
+
+defenum(Pleroma.User.PostArchiveImport.State,
+  pending: 1,
+  awaiting_review: 2,
+  approved: 3,
+  running: 4,
+  complete: 5,
+  failed: 6,
+  rejected: 7,
+  invalid: 8
+)

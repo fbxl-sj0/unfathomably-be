@@ -10,8 +10,10 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
 
   import Pleroma.Factory
 
+  alias Pleroma.GroupMembership
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Transmogrifier
+  alias Pleroma.Web.CommonAPI
 
   test "it accepts Add/Remove activities" do
     user =
@@ -178,5 +180,179 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     assert activity.data == message
     user = User.get_cached_by_ap_id(actor)
     assert user.pinned_objects[object_url]
+  end
+
+  test "Mbin-style Add/Remove pins objects on the target group collection" do
+    moderator =
+      insert(:user,
+        local: false,
+        ap_id: "https://mbin.example/u/mod",
+        follower_address: "https://mbin.example/u/mod/followers"
+      )
+
+    group =
+      insert(:user,
+        local: false,
+        actor_type: "Group",
+        ap_id: "https://mbin.example/m/main",
+        follower_address: "https://mbin.example/m/main/followers",
+        featured_address: "https://mbin.example/m/main/pinned",
+        attributed_to_address: "https://mbin.example/m/main/moderators"
+      )
+
+    author = insert(:user)
+    {:ok, post} = CommonAPI.post(author, %{status: "pin me for the magazine"})
+    object_id = post.data["object"]
+
+    add = %{
+      "id" => "https://mbin.example/activities/add/pin/1",
+      "actor" => moderator.ap_id,
+      "object" => object_id,
+      "target" => group.featured_address,
+      "type" => "Add",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "bcc" => [],
+      "bto" => []
+    }
+
+    assert {:ok, activity} = Transmogrifier.handle_incoming(add)
+    assert activity.data == add
+
+    group = User.get_cached_by_ap_id(group.ap_id)
+    assert group.pinned_objects[object_id]
+
+    remove = %{
+      "id" => "https://mbin.example/activities/remove/pin/1",
+      "actor" => moderator.ap_id,
+      "object" => object_id,
+      "target" => group.featured_address,
+      "type" => "Remove",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "bcc" => [],
+      "bto" => []
+    }
+
+    assert {:ok, activity} = Transmogrifier.handle_incoming(remove)
+    assert activity.data == remove
+
+    group = User.get_cached_by_ap_id(group.ap_id)
+    refute group.pinned_objects[object_id]
+  end
+
+  test "Mbin-style moderator collection activities are accepted without granting local roles" do
+    moderator =
+      insert(:user,
+        local: false,
+        ap_id: "https://mbin.example/u/mod",
+        follower_address: "https://mbin.example/u/mod/followers"
+      )
+
+    added = insert(:user, local: false, ap_id: "https://mbin.example/u/helper")
+
+    group =
+      insert(:user,
+        local: false,
+        actor_type: "Group",
+        ap_id: "https://mbin.example/m/main",
+        follower_address: "https://mbin.example/m/main/followers",
+        featured_address: "https://mbin.example/m/main/pinned",
+        attributed_to_address: "https://mbin.example/m/main/moderators"
+      )
+
+    add = %{
+      "id" => "https://mbin.example/activities/add/mod/1",
+      "actor" => moderator.ap_id,
+      "object" => added.ap_id,
+      "target" => group.attributed_to_address,
+      "type" => "Add",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "bcc" => [],
+      "bto" => []
+    }
+
+    assert {:ok, activity} = Transmogrifier.handle_incoming(add)
+    assert activity.data == add
+
+    group = User.get_cached_by_ap_id(group.ap_id)
+    assert group.pinned_objects == %{}
+  end
+
+  test "Mbin-style moderator collection activities update local group moderators when authorized" do
+    owner = insert(:user)
+    added = insert(:user)
+
+    group =
+      insert(:user,
+        local: true,
+        actor_type: "Group",
+        attributed_to_address: "https://#{Pleroma.Web.Endpoint.host()}/groups/modtest/moderators",
+        featured_address: "https://#{Pleroma.Web.Endpoint.host()}/groups/modtest/pinned"
+      )
+
+    {:ok, _membership} = GroupMembership.ensure_owner(group, owner)
+
+    add = %{
+      "id" => "https://#{Pleroma.Web.Endpoint.host()}/activities/add/local-mod/1",
+      "actor" => owner.ap_id,
+      "object" => added.ap_id,
+      "target" => group.attributed_to_address,
+      "type" => "Add",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "bcc" => [],
+      "bto" => []
+    }
+
+    assert {:ok, activity} = Transmogrifier.handle_incoming(add)
+    assert activity.data == add
+    assert GroupMembership.role(group, added) == "moderator"
+
+    remove = %{
+      "id" => "https://#{Pleroma.Web.Endpoint.host()}/activities/remove/local-mod/1",
+      "actor" => owner.ap_id,
+      "object" => added.ap_id,
+      "target" => group.attributed_to_address,
+      "type" => "Remove",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "bcc" => [],
+      "bto" => []
+    }
+
+    assert {:ok, activity} = Transmogrifier.handle_incoming(remove)
+    assert activity.data == remove
+    assert GroupMembership.role(group, added) == "user"
+  end
+
+  test "Mbin-style moderator collection activities do not let unrelated local users manage a local group" do
+    intruder = insert(:user)
+    added = insert(:user)
+
+    group =
+      insert(:user,
+        local: true,
+        actor_type: "Group",
+        attributed_to_address: "https://#{Pleroma.Web.Endpoint.host()}/groups/locked/moderators",
+        featured_address: "https://#{Pleroma.Web.Endpoint.host()}/groups/locked/pinned"
+      )
+
+    add = %{
+      "id" => "https://#{Pleroma.Web.Endpoint.host()}/activities/add/local-mod/2",
+      "actor" => intruder.ap_id,
+      "object" => added.ap_id,
+      "target" => group.attributed_to_address,
+      "type" => "Add",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "bcc" => [],
+      "bto" => []
+    }
+
+    assert {:ok, activity} = Transmogrifier.handle_incoming(add)
+    assert activity.data == add
+    assert GroupMembership.role(group, added) == "user"
   end
 end

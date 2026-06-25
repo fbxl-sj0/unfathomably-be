@@ -1,0 +1,1 @@
+Kept rate limiting active when forwarded IP parsing does not produce a replacement address, falling back to the connection IP instead of disabling the limiter.

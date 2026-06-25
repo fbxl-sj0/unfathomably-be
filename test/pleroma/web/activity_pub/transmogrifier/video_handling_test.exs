@@ -38,6 +38,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.VideoHandlingTest do
 
     assert object.data["content"] ==
              "<p>Après avoir mené avec un certain succès la campagne « Dégooglisons Internet » en 2014, l’association Framasoft annonce fin 2019 arrêter progressivement un certain nombre de ses services alternatifs aux GAFAM. Pourquoi ?</p><p>Transcription par @aprilorg ici : <a href=\"https://www.april.org/deframasoftisons-internet-pierre-yves-gosset-framasoft\">https://www.april.org/deframasoftisons-internet-pierre-yves-gosset-framasoft</a></p>"
+
+    assert object.data["replies_collection"] ==
+             "https://framatube.org/videos/watch/6050732a-8a7a-43d4-a6cd-809525a1d206/comments"
   end
 
   test "it remaps video URLs as attachments if necessary" do
@@ -89,6 +92,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.VideoHandlingTest do
 
     assert object.data["url"] ==
              "https://framatube.org/videos/watch/6050732a-8a7a-43d4-a6cd-809525a1d206"
+
+    assert object.data["replies_collection"] ==
+             "https://framatube.org/videos/watch/6050732a-8a7a-43d4-a6cd-809525a1d206/comments"
   end
 
   test "it works for peertube videos with only their mpegURL map" do
@@ -118,5 +124,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.VideoHandlingTest do
 
     assert object.data["url"] ==
              "https://peertube.stream/videos/watch/abece3c3-b9c6-47f4-8040-f3eed8c602e6"
+
+    assert object.data["replies_collection"] ==
+             "https://peertube.stream/videos/watch/abece3c3-b9c6-47f4-8040-f3eed8c602e6/comments"
   end
 end

@@ -26,6 +26,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.BlockValidationTest do
       assert {:ok, _block, []} = ObjectValidator.validate(valid_block, [])
     end
 
+    test "preserves Mbin-style scoped ban fields", %{
+      valid_block: valid_block
+    } do
+      group = insert(:user, actor_type: "Group", local: false)
+
+      block =
+        valid_block
+        |> Map.put("target", group.ap_id)
+        |> Map.put("audience", [group.ap_id])
+        |> Map.put("summary", "Off-topic in this magazine")
+        |> Map.put("expires", "2026-07-24T12:00:00Z")
+
+      assert {:ok, block, []} = ObjectValidator.validate(block, [])
+      assert block["target"] == group.ap_id
+      assert block["audience"] == [group.ap_id]
+      assert block["summary"] == "Off-topic in this magazine"
+      assert block["expires"] == "2026-07-24T12:00:00Z"
+    end
+
     test "returns an error if we don't know the blocked user", %{
       valid_block: valid_block
     } do

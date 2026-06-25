@@ -27,6 +27,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
 
     field(:context, :string)
     field(:content, :string)
+    field(:_misskey_reaction, :string)
   end
 
   def cast_and_validate(data) do
@@ -64,6 +65,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
         data
         |> CommonFixes.fix_activity_context(object)
         |> CommonFixes.fix_object_action_recipients(object)
+        |> CommonFixes.fix_object_action_audience(object)
 
       _ ->
         data

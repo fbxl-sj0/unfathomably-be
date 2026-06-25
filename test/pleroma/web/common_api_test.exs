@@ -1964,6 +1964,28 @@ defmodule Pleroma.Web.CommonAPITest do
       assert [] = get_announces_of_object(post.object)
     end
 
+    test "locked groups do not boost non-member mentions", %{poster: poster, group: group} do
+      group
+      |> Ecto.Changeset.change(is_locked: true)
+      |> Repo.update!()
+
+      {:ok, post} = CommonAPI.post(poster, %{status: "hey @#{group.nickname}"})
+
+      assert [] = get_announces_of_object(post.object)
+    end
+
+    test "locked groups boost member mentions", %{poster: poster, group: group} do
+      group =
+        group
+        |> Ecto.Changeset.change(is_locked: true)
+        |> Repo.update!()
+
+      {:ok, _membership} = Pleroma.GroupMembership.ensure_owner(group, poster)
+      {:ok, post} = CommonAPI.post(poster, %{status: "hey @#{group.nickname}"})
+
+      assert [_] = get_announces_of_object(post.object)
+    end
+
     test "group-targeted posts default to unlisted", %{poster: poster, group: group} do
       {:ok, post} = CommonAPI.post(poster, %{status: "community post", group_id: group.ap_id})
 

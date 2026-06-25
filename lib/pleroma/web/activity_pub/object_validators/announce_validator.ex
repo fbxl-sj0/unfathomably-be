@@ -62,6 +62,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidator do
       data
       |> CommonFixes.fix_activity_context(object)
       |> CommonFixes.fix_object_action_recipients(object)
+      |> CommonFixes.fix_object_action_audience(object)
     else
       _ -> data
     end

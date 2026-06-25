@@ -1,0 +1,1 @@
+Fixed stale following-list caches after follow, unfollow, and follow-accept changes so timeline filtering sees relationship updates immediately.

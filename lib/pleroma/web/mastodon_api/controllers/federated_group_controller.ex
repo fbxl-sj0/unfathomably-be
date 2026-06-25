@@ -264,7 +264,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
   @doc "GET /api/v1/groups/:id/preview"
   def preview(conn, %{"id" => id} = params) do
     with {:ok, %User{} = group} <- FederatedTarget.resolve_group(id),
-         {:ok, group_items} <- FederatedTarget.group_items_result(group, params) do
+         {:ok, group_items} <-
+           FederatedTarget.group_items_result(group, params, conn.assigns[:user]) do
       json(conn, group_items)
     else
       {:error, :not_found} ->

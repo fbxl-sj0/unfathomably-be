@@ -1,0 +1,1 @@
+Improved handling of known federation churn by marking remote actors inactive when validation reports them deactivated and downgrading PeerTube-style forwarded View signature mismatches.

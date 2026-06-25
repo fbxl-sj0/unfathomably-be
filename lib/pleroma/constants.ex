@@ -27,7 +27,6 @@ defmodule Pleroma.Constants do
       "participations",
       "participation_count",
       "participation_request_count",
-      "replies_collection",
       "location_id"
     ]
   )
@@ -109,11 +108,6 @@ defmodule Pleroma.Constants do
       "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
       "application/activity+json"
     ]
-  )
-
-  const(activity_json_accept_header,
-    do:
-      "application/activity+json, application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""
   )
 
   const(public_streams,

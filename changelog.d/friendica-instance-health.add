@@ -1,0 +1,1 @@
+Track remote instance failure counts, probe backoff, redirects, gone responses, and last success/failure metadata in federation health.

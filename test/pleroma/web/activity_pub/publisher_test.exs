@@ -50,14 +50,6 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
         %{
           "rel" => "http://ostatus.org/schema/1.0/subscribe",
           "template" => "#{Pleroma.Web.Endpoint.url()}/ostatus_subscribe?acct={uri}"
-        },
-        %{
-          "rel" => "https://w3id.org/fep/3b86/Create",
-          "template" => "#{Pleroma.Web.Endpoint.url()}/share?text={content}"
-        },
-        %{
-          "rel" => "https://w3id.org/fep/3b86/Object",
-          "template" => "#{Pleroma.Web.Endpoint.url()}/authorize_interaction?uri={object}"
         }
       ]
 
@@ -237,42 +229,6 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
              end) =~ "404"
 
       assert called(Instances.set_unreachable(inbox))
-    end
-
-    test_with_mock "discards permanent target inbox rejections instead of retrying them",
-                   Instances,
-                   [:passthrough],
-                   [] do
-      actor = insert(:user)
-      inbox = "http://405.site/users/nick1/inbox"
-
-      mock(fn %{method: :post, url: ^inbox} ->
-        {:ok, %Tesla.Env{status: 405, body: ""}}
-      end)
-
-      assert capture_log(fn ->
-               assert {:discard, :undeliverable} =
-                        Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 1})
-             end) =~ "terminal status 405"
-
-      assert called(Instances.set_unreachable(inbox))
-    end
-
-    test_with_mock "snoozes local HTTP pool saturation without marking the remote inbox unreachable",
-                   Instances,
-                   [:passthrough],
-                   [] do
-      actor = insert(:user)
-      inbox = "http://pool-full.site/users/nick1/inbox"
-
-      mock(fn %{method: :post, url: ^inbox} ->
-        {:error, :checkout_timeout}
-      end)
-
-      assert {:snooze, 30} =
-               Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 1})
-
-      refute called(Instances.set_unreachable(inbox))
     end
 
     test_with_mock "it calls `Instances.set_unreachable` on target inbox on request error of any kind",

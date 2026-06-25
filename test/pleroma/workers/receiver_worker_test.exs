@@ -41,31 +41,6 @@ defmodule Pleroma.Workers.ReceiverWorkerTest do
     end
   end
 
-  test "it does not retry permanent pipeline changeset failures" do
-    params = insert(:note_activity).data
-    changeset = %Ecto.Changeset{}
-
-    with_mock Pleroma.Web.ActivityPub.Transmogrifier,
-      handle_incoming: fn _ -> {:error, {:persist, {:error, changeset}}} end do
-      assert {:cancel, {:error, ^changeset}} =
-               ReceiverWorker.perform(%Oban.Job{
-                 args: %{"op" => "incoming_ap_doc", "params" => params}
-               })
-    end
-  end
-
-  test "it does not retry unsupported incoming activity types" do
-    params =
-      insert(:note_activity).data
-      |> Map.put("id", Pleroma.Web.ActivityPub.Utils.generate_activity_id())
-      |> Map.put("type", "View")
-
-    assert {:cancel, {:unsupported_activity_type, "View"}} =
-             ReceiverWorker.perform(%Oban.Job{
-               args: %{"op" => "incoming_ap_doc", "params" => params}
-             })
-  end
-
   test "it does not retry duplicates" do
     params = insert(:note_activity).data
 
@@ -73,44 +48,5 @@ defmodule Pleroma.Workers.ReceiverWorkerTest do
              ReceiverWorker.perform(%Oban.Job{
                args: %{"op" => "incoming_ap_doc", "params" => params}
              })
-  end
-
-  test "it does not retry permanent HTTP fetch failures" do
-    params = insert(:note_activity).data
-
-    with_mock Pleroma.Web.Federator,
-      perform: fn :incoming_ap_doc, _ -> {:error, {:http, 403}} end do
-      assert {:cancel, {:http, 403}} =
-               ReceiverWorker.perform(%Oban.Job{
-                 args: %{"op" => "incoming_ap_doc", "params" => params}
-               })
-    end
-  end
-
-  test "it does not retry opaque permanent incoming errors" do
-    params = insert(:note_activity).data
-
-    with_mock Pleroma.Web.Federator,
-      perform: fn :incoming_ap_doc, _ -> :error end do
-      assert {:cancel, :error} =
-               ReceiverWorker.perform(%Oban.Job{
-                 args: %{"op" => "incoming_ap_doc", "params" => params}
-               })
-    end
-  end
-
-  test "it handles JSON activity batches one document at a time" do
-    params = %{"_json" => [%{"id" => "known"}, %{"id" => "new"}]}
-
-    with_mock Pleroma.Web.Federator,
-      perform: fn
-        :incoming_ap_doc, %{"id" => "known"} -> {:error, :already_present}
-        :incoming_ap_doc, %{"id" => "new"} -> {:ok, :new}
-      end do
-      assert {:ok, :batch_processed} =
-               ReceiverWorker.perform(%Oban.Job{
-                 args: %{"op" => "incoming_ap_doc", "params" => params}
-               })
-    end
   end
 end

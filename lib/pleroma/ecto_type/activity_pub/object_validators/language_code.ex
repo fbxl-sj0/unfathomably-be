@@ -15,9 +15,6 @@ defmodule Pleroma.EctoType.ActivityPub.ObjectValidators.LanguageCode do
     end
   end
 
-  def cast(%{"identifier" => language}), do: cast(language)
-  def cast(%{identifier: language}), do: cast(language)
-
   def cast(_), do: :error
 
   def dump(data), do: {:ok, data}

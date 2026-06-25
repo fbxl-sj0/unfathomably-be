@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
   use Pleroma.Web.ConnCase
 
+  alias Pleroma.Instances
+
   import Pleroma.Factory
 
   setup do
@@ -76,7 +78,11 @@ defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
                       "type" => "Article",
                       "name" => "A useful community post",
                       "content" => "<p>This should show a meaningful body preview.</p>",
-                      "url" => post_url
+                      "url" => post_url,
+                      "replies" => %{
+                        "type" => "Collection",
+                        "totalItems" => 3
+                      }
                     }
                   }
                 ]
@@ -96,6 +102,7 @@ defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
                    "platform_family" => "longform",
                    "source_kind_label" => "Group",
                    "capabilities" => ["follow community", "read posts", "send replies"],
+                   "comments_count" => 3,
                    "render_hint" => %{
                      "layout" => "article",
                      "primary_action" => "read"
@@ -109,11 +116,166 @@ defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
                |> json_response(200)
     end
 
+    test "renders locally-known group preview items as statuses with reply counts", %{
+      conn: conn
+    } do
+      group_url = "https://peertube.example/video-channels/root42"
+      outbox_url = "https://peertube.example/video-channels/root42/outbox"
+      video_url = "https://peertube.example/videos/watch/1"
+      comments_url = "https://peertube.example/videos/watch/1/comments"
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "root42@peertube.example",
+          ap_id: group_url,
+          name: "root42"
+        )
+
+      author =
+        insert(:user,
+          actor_type: "Person",
+          local: false,
+          nickname: "root_42@peertube.example",
+          ap_id: "https://peertube.example/accounts/root_42",
+          name: "root_42"
+        )
+
+      video =
+        insert(:note,
+          user: author,
+          data: %{
+            "id" => video_url,
+            "type" => "Video",
+            "actor" => author.ap_id,
+            "attributedTo" => author.ap_id,
+            "name" => "A cached channel video",
+            "content" => "<p>This was imported before the channel preview.</p>",
+            "comments" => comments_url
+          }
+        )
+
+      activity = insert(:note_activity, user: author, note: video)
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^group_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => group_url,
+                "type" => "Group",
+                "name" => "root42",
+                "outbox" => outbox_url
+              })
+          }
+
+        %{method: :get, url: ^outbox_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => outbox_url,
+                "type" => "OrderedCollection",
+                "totalItems" => 1,
+                "orderedItems" => [
+                  %{
+                    "id" => video_url,
+                    "type" => "Video",
+                    "name" => "A cached channel video",
+                    "content" => "<p>This was imported before the channel preview.</p>",
+                    "comments" => comments_url
+                  }
+                ]
+              })
+          }
+
+        %{method: :get, url: ^video_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => video_url,
+                "type" => "Video",
+                "actor" => author.ap_id,
+                "attributedTo" => author.ap_id,
+                "name" => "A cached channel video",
+                "content" => "<p>This was imported before the channel preview.</p>",
+                "comments" => comments_url
+              })
+          }
+
+        %{method: :get, url: ^comments_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => comments_url,
+                "type" => "OrderedCollection",
+                "totalItems" => "2"
+              })
+          }
+      end)
+
+      assert %{
+               "items" => [
+                 %{
+                   "id" => ^video_url,
+                   "comments_count" => 2,
+                   "status" => %{
+                     "id" => status_id,
+                     "replies_count" => 2
+                   }
+                 }
+               ]
+             } =
+               conn
+               |> get("/api/v1/groups/#{group.id}/preview")
+               |> json_response(200)
+
+      assert status_id == to_string(activity.id)
+    end
+
     test "returns 404 when the group does not exist", %{conn: conn} do
       assert %{"error" => "Record not found"} =
                conn
                |> get("/api/v1/groups/404404/preview")
                |> json_response(404)
+    end
+
+    test "marks the host unreachable when the remote group returns invalid ActivityPub JSON", %{
+      conn: conn
+    } do
+      group_url = "https://parked.example/video-channels/dead"
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "dead@parked.example",
+          ap_id: group_url,
+          name: "Dead channel"
+        )
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^group_url} ->
+          %Tesla.Env{
+            status: 200,
+            body: "<!DOCTYPE html><html><body>parked domain</body></html>"
+          }
+      end)
+
+      assert %{"error" => "Remote group returned invalid ActivityPub JSON"} =
+               conn
+               |> get("/api/v1/groups/#{group.id}/preview")
+               |> json_response(502)
+
+      refute Instances.reachable?("parked.example")
     end
   end
 

@@ -19,7 +19,7 @@ defmodule TranslationMock do
     {:ok,
      %{
        content: content |> String.reverse(),
-       detected_source_language: source_language || "auto",
+       detected_source_language: source_language,
        provider: @name
      }}
   end

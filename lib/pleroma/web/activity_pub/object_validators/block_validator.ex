@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.BlockValidator do
   use Ecto.Schema
 
+  alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Elixir.Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   import Ecto.Changeset
@@ -20,6 +21,10 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.BlockValidator do
         activity_fields()
       end
     end
+
+    field(:target, ObjectValidators.ObjectID)
+    field(:summary, :string)
+    field(:expires, ObjectValidators.DateTime)
   end
 
   def cast_data(data) do

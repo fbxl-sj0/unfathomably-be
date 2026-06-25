@@ -211,6 +211,191 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       assert user.actor_type == "Group"
     end
 
+    test "stores threadiverse group collection metadata" do
+      user_id = "https://mbin.example/m/main"
+
+      actor = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => user_id,
+        "type" => "Group",
+        "preferredUsername" => "main",
+        "name" => "Main",
+        "summary" => "Mbin magazine",
+        "inbox" => "https://mbin.example/m/main/inbox",
+        "outbox" => "https://mbin.example/m/main/outbox",
+        "followers" => "https://mbin.example/m/main/followers",
+        "following" => "https://mbin.example/m/main/following",
+        "featured" => %{
+          "id" => "https://mbin.example/m/main/pinned",
+          "type" => "OrderedCollection",
+          "orderedItems" => []
+        },
+        "attributedTo" => %{
+          "id" => "https://mbin.example/m/main/moderators",
+          "type" => "OrderedCollection",
+          "totalItems" => "3"
+        },
+        "postingRestrictedToMods" => true,
+        "discoverable" => true,
+        "indexable" => false,
+        "endpoints" => %{
+          "sharedInbox" => "https://mbin.example/inbox"
+        }
+      }
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^user_id} ->
+          %Tesla.Env{
+            status: 200,
+            body: Jason.encode!(actor),
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      {:ok, user} = ActivityPub.make_user_from_ap_id(user_id)
+
+      assert user.actor_type == "Group"
+      assert user.outbox_address == "https://mbin.example/m/main/outbox"
+      assert user.featured_address == "https://mbin.example/m/main/pinned"
+      assert user.attributed_to_address == "https://mbin.example/m/main/moderators"
+      assert user.moderator_count == 3
+      assert user.follower_address == "https://mbin.example/m/main/followers"
+      assert user.shared_inbox == "https://mbin.example/inbox"
+      assert user.posting_restricted_to_mods
+      assert user.is_discoverable
+      assert user.is_indexable == false
+    end
+
+    test "imports NodeBB-style actor custom fields" do
+      user_id = "https://forums.example.org/uid/7"
+
+      actor = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => user_id,
+        "type" => "Person",
+        "preferredUsername" => "alice",
+        "name" => "Alice",
+        "summary" => "NodeBB user",
+        "inbox" => "https://forums.example.org/uid/7/inbox",
+        "followers" => "https://forums.example.org/uid/7/followers",
+        "attachment" => [
+          %{"type" => "PropertyValue", "name" => "Forum", "value" => "NodeBB"},
+          %{
+            "type" => "Link",
+            "name" => "Website",
+            "href" => "https://example.org/<b>profile</b>"
+          },
+          %{
+            "type" => "Note",
+            "name" => "About",
+            "content" => "<p>Forum profile</p>"
+          },
+          "malformed"
+        ]
+      }
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^user_id} ->
+          %Tesla.Env{
+            status: 200,
+            body: Jason.encode!(actor),
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      {:ok, user} = ActivityPub.make_user_from_ap_id(user_id)
+
+      assert user.fields == [
+               %{"name" => "Forum", "value" => "NodeBB"},
+               %{"name" => "Website", "value" => "https://example.org/profile"},
+               %{"name" => "About", "value" => "Forum profile"}
+             ]
+    end
+
+    test "caches remote group moderator counts from attributedTo collection URLs" do
+      user_id = "https://mbin.example/m/meta"
+      moderators_url = "https://mbin.example/m/meta/moderators"
+
+      actor = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => user_id,
+        "type" => "Group",
+        "preferredUsername" => "meta",
+        "name" => "Meta",
+        "summary" => "Mbin meta magazine",
+        "inbox" => "https://mbin.example/m/meta/inbox",
+        "followers" => "https://mbin.example/m/meta/followers",
+        "featured" => %{
+          "id" => "https://mbin.example/m/meta/pinned",
+          "type" => "OrderedCollection",
+          "orderedItems" => []
+        },
+        "attributedTo" => moderators_url,
+        "endpoints" => %{
+          "sharedInbox" => "https://mbin.example/inbox"
+        }
+      }
+
+      moderators = %{
+        "id" => moderators_url,
+        "type" => "OrderedCollection",
+        "totalItems" => "4",
+        "orderedItems" => []
+      }
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^user_id} ->
+          %Tesla.Env{
+            status: 200,
+            body: Jason.encode!(actor),
+            headers: [{"content-type", "application/activity+json"}]
+          }
+
+        %{method: :get, url: ^moderators_url} ->
+          %Tesla.Env{
+            status: 200,
+            body: Jason.encode!(moderators),
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      {:ok, user} = ActivityPub.make_user_from_ap_id(user_id)
+
+      assert user.actor_type == "Group"
+      assert user.attributed_to_address == moderators_url
+      assert user.moderator_count == 4
+    end
+
+    test "deactivates a cached remote actor when refresh returns Tombstone" do
+      user_id = "https://minds.example/users/gone"
+
+      user =
+        insert(:user,
+          local: false,
+          ap_id: user_id,
+          nickname: "gone@minds.example",
+          is_active: true
+        )
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^user_id} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => user_id,
+                "type" => "Tombstone"
+              }),
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      assert {:ok, updated_user} = ActivityPub.make_user_from_ap_id(user_id)
+      refute updated_user.is_active
+      refute User.get_cached_by_ap_id(user.ap_id).is_active
+    end
+
     test "works for bridgy actors" do
       user_id = "https://fed.brid.gy/jk.nipponalba.scot"
 
@@ -319,6 +504,36 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       {:ok, user} = ActivityPub.make_user_from_ap_id(user_id)
 
       assert user.also_known_as == [also_known_as]
+    end
+
+    test "combines alsoKnownAs and copiedTo nomadic identity hints" do
+      user_id = "https://example.com/users/nomadic"
+      old_identity = "https://example.com/channel/old-hubzilla-identity"
+      clone_identity = "https://clone.example/channel/nomadic"
+      second_clone = "https://other-clone.example/channel/nomadic"
+
+      user_data =
+        "test/fixtures/users_mock/user.json"
+        |> File.read!()
+        |> String.replace("{{nickname}}", "nomadic")
+        |> Jason.decode!()
+        |> Map.delete("featured")
+        |> Map.put("alsoKnownAs", [old_identity, clone_identity])
+        |> Map.put("copiedTo", [clone_identity, %{"id" => second_clone}, %{"id" => 42}, user_id])
+        |> Jason.encode!()
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^user_id} ->
+          %Tesla.Env{
+            status: 200,
+            body: user_data,
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      {:ok, user} = ActivityPub.make_user_from_ap_id(user_id)
+
+      assert user.also_known_as == [old_identity, clone_identity, second_clone]
     end
 
     test "stores Misskey source profile text separately from the HTML summary" do
@@ -598,6 +813,66 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
                assert Map.has_key?(user.pinned_objects, object_url)
                assert %{data: %{"id" => ^object_url}} = Object.get_by_ap_id(object_url)
              end) =~ "Could not parse featured collection"
+    end
+
+    test "fetches user featured collection from an embedded collection" do
+      ap_id = "https://example.com/users/lain"
+      featured_url = "https://example.com/users/lain/collections/featured"
+      object_id = Ecto.UUID.generate()
+      object_url = "https://example.com/objects/#{object_id}"
+
+      featured_data = %{
+        "id" => featured_url,
+        "type" => "OrderedCollection",
+        "orderedItems" => [%{"id" => object_url}]
+      }
+
+      user_data =
+        "test/fixtures/users_mock/user.json"
+        |> File.read!()
+        |> String.replace("{{nickname}}", "lain")
+        |> Jason.decode!()
+        |> Map.put("featured", featured_data)
+        |> Jason.encode!()
+
+      object_data =
+        "test/fixtures/statuses/note.json"
+        |> File.read!()
+        |> String.replace("{{object_id}}", object_id)
+        |> String.replace("{{nickname}}", "lain")
+
+      Tesla.Mock.mock(fn
+        %{
+          method: :get,
+          url: ^ap_id
+        } ->
+          %Tesla.Env{
+            status: 200,
+            body: user_data,
+            headers: [{"content-type", "application/activity+json"}]
+          }
+
+        %{
+          method: :get,
+          url: ^object_url
+        } ->
+          %Tesla.Env{
+            status: 200,
+            body: object_data,
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      {:ok, user} = ActivityPub.make_user_from_ap_id(ap_id)
+      Pleroma.Tests.ObanHelpers.perform_all()
+
+      assert user.featured_address == featured_url
+      assert Map.has_key?(user.pinned_objects, object_url)
+
+      in_db = Pleroma.User.get_by_ap_id(ap_id)
+      assert in_db.featured_address == featured_url
+      assert Map.has_key?(in_db.pinned_objects, object_url)
+      assert %{data: %{"id" => ^object_url}} = Object.get_by_ap_id(object_url)
     end
 
     test "fetches user birthday information from misskey" do
@@ -2756,6 +3031,17 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
              end) =~ "Follower/Following counter update for #{user.ap_id} failed"
     end
 
+    test "does not warn when remote follow collections are unavailable", %{user: user} do
+      with_mock Pleroma.Object.Fetcher,
+        fetch_and_contain_remote_collection_from_id: fn _ ->
+          {:error, "Object has been deleted"}
+        end do
+        refute capture_log([level: :warning], fn ->
+                 ActivityPub.maybe_update_follow_information(user)
+               end) =~ "Follower/Following counter update for #{user.ap_id} failed"
+      end
+    end
+
     test "just returns the input if the user type is Application", %{
       user: user
     } do
@@ -2945,21 +3231,6 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
                  "first" => "https://social.example/users/alice/collections/featured?page=true"
                })
     end)
-  end
-
-  test "pin_data_from_featured_collection ignores malformed collection items" do
-    assert %{"https://social.example/objects/1" => _} =
-             ActivityPub.pin_data_from_featured_collection(%{
-               "type" => "OrderedCollection",
-               "orderedItems" => [
-                 nil,
-                 %{},
-                 %{"id" => "https://social.example/objects/1"},
-                 "https://social.example/objects/2"
-               ]
-             })
-
-    assert %{} = ActivityPub.pin_data_from_featured_collection(nil)
   end
 
   test "fetch_and_prepare_featured_from_ap_id handles embedded first collection pages" do

@@ -37,8 +37,8 @@ defmodule Pleroma.Web.Plugs.RateLimiterTest do
     end
   end
 
-  test "it is disabled if it remote ip plug is enabled but no remote ip is found" do
-    assert RateLimiter.disabled?(Conn.assign(build_conn(), :remote_ip_found, false))
+  test "it remains enabled if remote ip plug cannot derive a forwarded IP" do
+    refute RateLimiter.disabled?(Conn.assign(build_conn(), :remote_ip_found, false))
   end
 
   test "it is enabled if remote ip found" do

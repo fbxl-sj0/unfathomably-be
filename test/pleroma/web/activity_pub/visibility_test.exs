@@ -94,6 +94,18 @@ defmodule Pleroma.Web.ActivityPub.VisibilityTest do
     refute Visibility.is_private?(list)
   end
 
+  test "treats missing or malformed recipient lists as empty", %{
+    user: user,
+    unrelated: unrelated
+  } do
+    activity = %Activity{data: %{"actor" => user.ap_id, "to" => nil, "cc" => nil}}
+    object = %Object{data: %{"actor" => user.ap_id, "to" => nil, "cc" => %{"bad" => "data"}}}
+
+    refute Visibility.is_private?(activity)
+    refute Visibility.visible_for_user?(activity, unrelated)
+    assert Visibility.get_visibility(object) == "direct"
+  end
+
   test "is_list?", %{
     public: public,
     private: private,

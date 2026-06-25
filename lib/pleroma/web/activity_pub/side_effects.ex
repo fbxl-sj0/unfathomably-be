@@ -9,10 +9,13 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   liked object, a `Follow` activity will add the user to the follower
   collection, and so on.
   """
+  import Ecto.Query, only: [from: 2]
+
   alias Pleroma.Activity
   alias Pleroma.Chat
   alias Pleroma.Chat.MessageReference
   alias Pleroma.FollowingRelationship
+  alias Pleroma.GroupMembership
   alias Pleroma.Notification
   alias Pleroma.Object
   alias Pleroma.Repo
@@ -135,9 +138,11 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
           object,
         meta
       ) do
-    with %User{} = blocker <- User.get_cached_by_ap_id(blocking_user),
-         %User{} = blocked <- User.get_cached_by_ap_id(blocked_user) do
-      User.block(blocker, blocked)
+    unless scoped_block?(object) do
+      with %User{} = blocker <- User.get_cached_by_ap_id(blocking_user),
+           %User{} = blocked <- User.get_cached_by_ap_id(blocked_user) do
+        User.block(blocker, blocked)
+      end
     end
 
     {:ok, object, meta}
@@ -218,7 +223,8 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
         for reply_id <- object.data["replies"] do
           Pleroma.Workers.RemoteFetcherWorker.enqueue("fetch_remote", %{
             "id" => reply_id,
-            "depth" => reply_depth
+            "depth" => reply_depth,
+            "thread" => true
           })
         end
       end
@@ -262,14 +268,18 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     announced_object = Object.get_by_ap_id(object.data["object"])
     user = User.get_cached_by_ap_id(object.data["actor"])
 
-    if announced_object do
+    if announced_object && !group_actor?(user) do
       Utils.add_announce_to_object(object, announced_object)
     end
 
-    if announced_object && !User.is_internal_user?(user) do
+    if announced_object && !User.is_internal_user?(user) && !group_actor?(user) do
       Notification.create_notifications(object)
 
       ap_streamer().stream_out(object)
+    else
+      if announced_object && group_actor?(user) do
+        ap_streamer().stream_out(object)
+      end
     end
 
     {:ok, object, meta}
@@ -363,8 +373,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - removes expiration job for pinned activity, if was set for expiration
   @impl true
   def handle(%{data: %{"type" => "Add"} = data} = object, meta) do
-    with %User{} = user <- User.get_cached_by_ap_id(data["actor"]),
-         {:ok, _user} <- User.add_pinned_object_id(user, data["object"]) do
+    with {:ok, _user} <- add_collection_object(data) do
       # if pinned activity was scheduled for deletion, we remove job
       if expiration = Pleroma.Workers.PurgeExpiredActivity.get_expiration(meta[:activity_id]) do
         Oban.cancel_job(expiration.id)
@@ -372,8 +381,8 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
       {:ok, object, meta}
     else
-      nil ->
-        {:error, :user_not_found}
+      {:ignore, _reason} ->
+        {:ok, object, meta}
 
       {:error, changeset} ->
         if changeset.errors[:pinned_objects] do
@@ -390,8 +399,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - if activity had expiration, recreates activity expiration job
   @impl true
   def handle(%{data: %{"type" => "Remove"} = data} = object, meta) do
-    with %User{} = user <- User.get_cached_by_ap_id(data["actor"]),
-         {:ok, _user} <- User.remove_pinned_object_id(user, data["object"]) do
+    with {:ok, user} <- remove_collection_object(data) do
       data["object"]
       |> Activity.add_by_params_query(user.ap_id, user.featured_address)
       |> Repo.delete_all()
@@ -410,7 +418,16 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
       {:ok, object, meta}
     else
-      nil -> {:error, :user_not_found}
+      {:ignore, _reason} -> {:ok, object, meta}
+      error -> error
+    end
+  end
+
+  @impl true
+  def handle(%{data: %{"type" => "Lock"} = data} = object, meta) do
+    case set_comments_enabled(data, false) do
+      :ok -> {:ok, object, meta}
+      {:ignore, _reason} -> {:ok, object, meta}
       error -> error
     end
   end
@@ -457,6 +474,188 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   def handle(object, meta) do
     {:ok, object, meta}
   end
+
+  defp add_collection_object(data) do
+    with %User{} = actor <- User.get_cached_by_ap_id(data["actor"]) do
+      case collection_target(data["target"], actor) do
+        {:featured, %User{} = group} ->
+          if collection_actor_allowed?(actor, group) do
+            User.add_pinned_object_id(group, collection_object_id(data["object"]))
+          else
+            {:ignore, :unauthorized_group_collection_actor}
+          end
+
+        {:moderators, %User{} = group} ->
+          if collection_actor_allowed?(actor, group) do
+            add_group_moderator(group, actor, data["object"])
+          else
+            {:ignore, :unauthorized_group_collection_actor}
+          end
+
+        :unsupported ->
+          {:ignore, :unsupported_collection}
+      end
+    else
+      nil -> {:error, :user_not_found}
+    end
+  end
+
+  defp remove_collection_object(data) do
+    with %User{} = actor <- User.get_cached_by_ap_id(data["actor"]) do
+      case collection_target(data["target"], actor) do
+        {:featured, %User{} = group} ->
+          if collection_actor_allowed?(actor, group) do
+            User.remove_pinned_object_id(group, collection_object_id(data["object"]))
+          else
+            {:ignore, :unauthorized_group_collection_actor}
+          end
+
+        {:moderators, %User{} = group} ->
+          if collection_actor_allowed?(actor, group) do
+            remove_group_moderator(group, actor, data["object"])
+          else
+            {:ignore, :unauthorized_group_collection_actor}
+          end
+
+        :unsupported ->
+          {:ignore, :unsupported_collection}
+      end
+    else
+      nil -> {:error, :user_not_found}
+    end
+  end
+
+  defp collection_target(target, %User{} = actor) do
+    cond do
+      target == actor.featured_address ->
+        {:featured, actor}
+
+      group = featured_collection_owner(target) ->
+        {:featured, group}
+
+      group = moderator_collection_owner(target) ->
+        {:moderators, group}
+
+      true ->
+        :unsupported
+    end
+  end
+
+  defp featured_collection_owner(target) when is_binary(target) do
+    Repo.one(from(user in User, where: user.featured_address == ^target, limit: 1))
+  end
+
+  defp featured_collection_owner(_), do: nil
+
+  defp moderator_collection_owner(target) when is_binary(target) do
+    Repo.one(from(user in User, where: user.attributed_to_address == ^target, limit: 1))
+  end
+
+  defp moderator_collection_owner(_), do: nil
+
+  defp add_group_moderator(%User{local: false}, _actor, _object) do
+    {:ignore, :remote_moderator_collection}
+  end
+
+  defp add_group_moderator(%User{} = group, %User{} = actor, object) do
+    with %User{} = account <- collection_object_user(object),
+         {:ok, _memberships} <- GroupMembership.promote(actor, group, [account], "moderator") do
+      {:ok, group}
+    else
+      nil -> {:ignore, :missing_moderator_actor}
+      {:error, reason} -> {:ignore, reason}
+    end
+  end
+
+  defp remove_group_moderator(%User{local: false}, _actor, _object) do
+    {:ignore, :remote_moderator_collection}
+  end
+
+  defp remove_group_moderator(%User{} = group, %User{} = actor, object) do
+    with %User{} = account <- collection_object_user(object),
+         {:ok, _memberships} <- GroupMembership.demote(actor, group, [account], "user") do
+      {:ok, group}
+    else
+      nil -> {:ignore, :missing_moderator_actor}
+      {:error, reason} -> {:ignore, reason}
+    end
+  end
+
+  defp collection_object_user(object) do
+    object
+    |> collection_object_id()
+    |> User.get_cached_by_ap_id()
+  end
+
+  defp collection_actor_allowed?(
+         %User{} = actor,
+         %User{
+           actor_type: "Group",
+           local: true
+         } = collection_owner
+       ) do
+    actor.ap_id == collection_owner.ap_id || GroupMembership.manager?(actor, collection_owner)
+  end
+
+  defp collection_actor_allowed?(%User{} = actor, %User{} = collection_owner) do
+    actor.ap_id == collection_owner.ap_id ||
+      same_origin?(actor.ap_id, collection_owner.ap_id)
+  end
+
+  defp collection_actor_allowed?(_, _), do: false
+
+  defp group_actor?(%User{actor_type: "Group"}), do: true
+  defp group_actor?(_), do: false
+
+  defp collection_object_id(%{"id" => id}) when is_binary(id), do: id
+  defp collection_object_id(object_id), do: object_id
+
+  defp set_comments_enabled(data, enabled) do
+    with object_id when is_binary(object_id) <- collection_object_id(data["object"]),
+         %Object{} = target <- Object.get_by_ap_id(object_id),
+         %User{} = actor <- User.get_cached_by_ap_id(data["actor"]),
+         true <- lock_actor_allowed?(actor, target),
+         {:ok, _object} <- Object.update_data(target, %{"commentsEnabled" => enabled}) do
+      :ok
+    else
+      nil -> {:ignore, :missing_lock_target}
+      false -> {:ignore, :unauthorized_lock_actor}
+      error -> error
+    end
+  end
+
+  defp lock_actor_allowed?(%User{} = actor, %Object{} = target) do
+    actor.ap_id == target.data["actor"] ||
+      same_origin?(actor.ap_id, target.data["actor"]) ||
+      Enum.any?(object_group_candidates(target), fn group_ap_id ->
+        actor.ap_id == group_ap_id || same_origin?(actor.ap_id, group_ap_id)
+      end)
+  end
+
+  defp object_group_candidates(%Object{data: data}) do
+    ["audience", "to", "cc"]
+    |> Enum.flat_map(&data_ap_ids(Map.get(data, &1)))
+    |> Enum.uniq()
+  end
+
+  defp data_ap_ids(values) when is_list(values), do: Enum.flat_map(values, &data_ap_ids/1)
+  defp data_ap_ids(value) when is_binary(value), do: [value]
+  defp data_ap_ids(_), do: []
+
+  defp same_origin?(left, right) when is_binary(left) and is_binary(right) do
+    case {URI.parse(left), URI.parse(right)} do
+      {%URI{host: left_host}, %URI{host: right_host}}
+      when is_binary(left_host) and is_binary(right_host) ->
+        String.downcase(left_host) == String.downcase(right_host)
+
+      _ ->
+        false
+    end
+  rescue
+    URI.Error -> false
+  end
+
+  defp same_origin?(_, _), do: false
 
   defp handle_accepted(
          %Activity{actor: follower_id, data: %{"type" => "Follow"}} = follow_activity,
@@ -658,14 +857,20 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     end
   end
 
+  def handle_undoing(%{data: %{"type" => "Lock"} = data} = object) do
+    with :ok <- set_comments_enabled(data, true),
+         {:ok, _} <- Repo.delete(object) do
+      :ok
+    end
+  end
+
   def handle_undoing(
         %{data: %{"type" => "Block", "actor" => blocker, "object" => blocked}} = object
       ) do
-    with %User{} = blocker <- User.get_cached_by_ap_id(blocker),
-         %User{} = blocked <- User.get_cached_by_ap_id(blocked),
-         {:ok, _} <- User.unblock(blocker, blocked),
-         {:ok, _} <- Repo.delete(object) do
-      :ok
+    if scoped_block?(object) do
+      delete_object(object)
+    else
+      undo_user_block(object, blocker, blocked)
     end
   end
 
@@ -680,6 +885,18 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   end
 
   def handle_undoing(object), do: {:error, ["don't know how to handle", object]}
+
+  defp scoped_block?(%{data: %{"target" => target}}) when is_binary(target), do: target != ""
+  defp scoped_block?(_), do: false
+
+  defp undo_user_block(object, blocker, blocked) do
+    with %User{} = blocker <- User.get_cached_by_ap_id(blocker),
+         %User{} = blocked <- User.get_cached_by_ap_id(blocked),
+         {:ok, _} <- User.unblock(blocker, blocked),
+         {:ok, _} <- Repo.delete(object) do
+      :ok
+    end
+  end
 
   @spec delete_object(Object.t()) :: :ok | {:error, Ecto.Changeset.t()}
   defp delete_object(object) do

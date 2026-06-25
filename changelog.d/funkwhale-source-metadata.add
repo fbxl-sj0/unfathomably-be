@@ -1,0 +1,1 @@
+Expose richer Funkwhale audio source metadata, including album, artist, license, MusicBrainz, bitrate, size, and older mimeType audio links.

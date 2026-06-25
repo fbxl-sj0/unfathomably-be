@@ -6,13 +6,13 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
   use Pleroma.Web, :controller
 
   alias Pleroma.FollowingRelationship
-  alias Pleroma.RSSFeed
+  alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.FederatedTargetView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
-  alias Pleroma.Workers.RSSFeedWorker
+  alias Pleroma.Workers.Cron.RssSourceIngestWorker
 
   plug(
     OAuthScopesPlug,
@@ -102,54 +102,99 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
 
   @doc "POST /api/v1/sources/:id/follow"
   def follow(%{assigns: %{user: user}} = conn, %{"id" => id}) do
-    with {:ok, %User{} = source} <- FederatedTarget.resolve_source(id),
-         {:ok, followed} <- follow_source(user, source) do
-      conn
-      |> put_view(FederatedTargetView)
-      |> render("source_relationship.json", user: user, source: followed)
-    else
+    case FederatedTarget.resolve_source(id) do
+      {:ok, %User{} = source} -> follow_source(conn, user, source)
       {:error, :not_found} -> render_error(conn, :not_found, "Record not found")
-      _ -> render_error(conn, :forbidden, "Could not follow source")
     end
   end
 
   @doc "POST /api/v1/sources/:id/unfollow"
   def unfollow(%{assigns: %{user: user}} = conn, %{"id" => id}) do
-    with {:ok, %User{} = source} <- FederatedTarget.resolve_source(id),
-         {:ok, _follower} <- unfollow_source(user, source) do
-      conn
-      |> put_view(FederatedTargetView)
-      |> render("source_relationship.json", user: user, source: source)
-    else
+    case FederatedTarget.resolve_source(id) do
+      {:ok, %User{} = source} -> unfollow_source(conn, user, source)
       {:error, :not_found} -> render_error(conn, :not_found, "Record not found")
-      _ -> render_error(conn, :forbidden, "Could not unfollow source")
     end
   end
 
-  defp follow_source(%User{} = user, %User{} = source) do
-    if RSSFeed.rss_source?(source) do
-      with {:ok, _follower, followed} <-
-             FollowingRelationship.follow(user, source, :follow_accept) do
-        _ = RSSFeedWorker.enqueue(followed)
-        {:ok, followed}
+  defp follow_source(conn, user, source) do
+    if FederatedTarget.rss_source?(source) do
+      case follow_rss_source(user, source) do
+        {:ok, _user} ->
+          schedule_rss_source_ingest(source)
+          render_source_relationship(conn, user, source)
+
+        _ ->
+          render_error(conn, :forbidden, "Could not follow source")
       end
     else
-      with {:ok, _follower, followed, _activity} <- CommonAPI.follow(user, source) do
-        {:ok, followed}
+      case CommonAPI.follow(user, source) do
+        {:ok, _follower, followed, _activity} ->
+          render_source_relationship(conn, user, followed)
+
+        _ ->
+          render_error(conn, :forbidden, "Could not follow source")
       end
     end
   end
 
-  defp unfollow_source(%User{} = user, %User{} = source) do
-    if RSSFeed.rss_source?(source) do
-      case FollowingRelationship.unfollow(user, source) do
-        {:ok, follower, _followed} -> {:ok, follower}
-        {:ok, follower} -> {:ok, follower}
-        error -> error
+  defp unfollow_source(conn, user, source) do
+    if FederatedTarget.rss_source?(source) do
+      case unfollow_rss_source(user, source) do
+        {:ok, _user} ->
+          render_source_relationship(conn, user, source)
+
+        _ ->
+          render_error(conn, :forbidden, "Could not unfollow source")
       end
     else
-      CommonAPI.unfollow(user, source)
+      case CommonAPI.unfollow(user, source) do
+        {:ok, _follower} ->
+          render_source_relationship(conn, user, source)
+
+        _ ->
+          render_error(conn, :forbidden, "Could not unfollow source")
+      end
     end
+  end
+
+  defp follow_rss_source(user, source) do
+    with {:ok, _relationship} <-
+           %FollowingRelationship{}
+           |> FollowingRelationship.changeset(%{
+             follower: user,
+             following: source,
+             state: :follow_accept
+           })
+           |> Repo.insert(on_conflict: :nothing) do
+      User.update_following_count(user)
+    end
+  end
+
+  defp unfollow_rss_source(user, source) do
+    case FollowingRelationship.get(user, source) do
+      %FollowingRelationship{} = relationship ->
+        with {:ok, _relationship} <- Repo.delete(relationship) do
+          User.update_following_count(user)
+        end
+
+      nil ->
+        User.update_following_count(user)
+    end
+  end
+
+  defp render_source_relationship(conn, user, source) do
+    conn
+    |> put_view(FederatedTargetView)
+    |> render("source_relationship.json", user: user, source: source)
+  end
+
+  defp schedule_rss_source_ingest(source) do
+    RssSourceIngestWorker.schedule_source(source)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   defp relationship_ids(params) do

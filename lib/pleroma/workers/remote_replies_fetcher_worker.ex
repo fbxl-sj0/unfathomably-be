@@ -227,7 +227,7 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
   end
 
   defp enqueue_reply_fetch(reply_id, depth) do
-    %{"op" => "fetch_remote", "id" => reply_id, "depth" => depth}
+    %{"op" => "fetch_remote", "id" => reply_id, "depth" => depth, "thread" => true}
     |> RemoteFetcherWorker.new()
     |> Oban.insert()
   end

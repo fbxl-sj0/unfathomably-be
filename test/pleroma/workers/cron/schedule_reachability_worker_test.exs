@@ -48,6 +48,14 @@ defmodule Pleroma.Workers.Cron.ScheduleReachabilityWorkerTest do
     assert reachability_job_exists?("maybe-back.example")
   end
 
+  test "does not schedule reachability checks while a host is still backed off" do
+    Instances.set_unreachable("backed-off.example", Instances.reachability_datetime_threshold())
+    Instances.record_failure("backed-off.example", :timeout, source: "test")
+
+    assert 0 = ScheduleReachabilityWorker.schedule_reachability_checks()
+    refute reachability_job_exists?("backed-off.example")
+  end
+
   test "only discards incomplete publish_one jobs" do
     Instances.set_unreachable("dead.example", Instances.dormant_datetime_threshold())
 

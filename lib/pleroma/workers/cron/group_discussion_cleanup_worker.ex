@@ -18,7 +18,7 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   remote discussion forever.
   """
 
-  use Oban.Worker, queue: "background"
+  use Oban.Worker, queue: "background", max_attempts: 3
 
   import Ecto.Query
 
@@ -29,8 +29,11 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
 
   @default_max_age_days 183
   @default_batch_size 200
+  @default_query_timeout_ms 60_000
   @seconds_per_day 86_400
   @group_service_actor_regex "fedigroups|gancio|gup\\.pe|buzzrelay|tootgroup"
+
+  require Logger
 
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
@@ -42,16 +45,20 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   end
 
   @impl Oban.Worker
-  def timeout(_job), do: :timer.minutes(30)
+  def timeout(_job), do: :timer.minutes(10)
 
   defp purge_candidates do
     cutoff = cutoff()
     batch_size = batch_size()
 
-    cutoff
-    |> candidates_query(batch_size)
-    |> Repo.all(timeout: :infinity)
-    |> Enum.reduce(0, &delete_object/2)
+    case cutoff |> candidates_query(batch_size) |> safe_repo_all() do
+      {:ok, objects} ->
+        Enum.reduce(objects, 0, &delete_object/2)
+
+      {:error, reason} ->
+        Logger.warning("Group discussion cleanup skipped after query failure: #{inspect(reason)}")
+        0
+    end
   end
 
   defp delete_object(%Object{} = object, count) do
@@ -207,6 +214,22 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
     __MODULE__
     |> config_integer(:batch_size, @default_batch_size)
     |> max(1)
+  end
+
+  defp query_timeout_ms do
+    __MODULE__
+    |> config_integer(:query_timeout_ms, @default_query_timeout_ms)
+    |> max(1_000)
+  end
+
+  defp safe_repo_all(query) do
+    {:ok, Repo.all(query, timeout: query_timeout_ms())}
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      {:error, error}
+  catch
+    :exit, reason ->
+      {:error, {:exit, reason}}
   end
 
   defp config_integer(module, key, default) do

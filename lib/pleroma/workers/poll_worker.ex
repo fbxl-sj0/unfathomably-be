@@ -9,8 +9,11 @@ defmodule Pleroma.Workers.PollWorker do
   use Pleroma.Workers.WorkerHelper, queue: "poll_notifications"
 
   alias Pleroma.Activity
+  alias Pleroma.Config
   alias Pleroma.Notification
   alias Pleroma.Object
+
+  @default_max_poll_schedule_seconds 365 * 24 * 60 * 60
 
   @impl Oban.Worker
   def perform(%Job{args: %{"op" => "poll_end", "activity_id" => activity_id}}) do
@@ -32,7 +35,9 @@ defmodule Pleroma.Workers.PollWorker do
     with %Object{data: %{"type" => "Question", "closed" => closed}} when is_binary(closed) <-
            Object.normalize(activity),
          {:ok, end_time} <- NaiveDateTime.from_iso8601(closed),
-         :gt <- NaiveDateTime.compare(end_time, NaiveDateTime.utc_now()) do
+         now <- NaiveDateTime.utc_now(),
+         :gt <- NaiveDateTime.compare(end_time, now),
+         true <- poll_end_within_schedule_window?(end_time, now) do
       %{
         op: "poll_end",
         activity_id: activity_id
@@ -45,4 +50,17 @@ defmodule Pleroma.Workers.PollWorker do
   end
 
   def schedule_poll_end(activity), do: {:error, activity}
+
+  defp poll_end_within_schedule_window?(end_time, now) do
+    max_end_time = NaiveDateTime.add(now, max_poll_schedule_seconds(), :second)
+
+    NaiveDateTime.compare(end_time, max_end_time) in [:lt, :eq]
+  end
+
+  defp max_poll_schedule_seconds do
+    case Config.get([:instance, :poll_limits, :max_expiration]) do
+      seconds when is_integer(seconds) and seconds > 0 -> seconds
+      _ -> @default_max_poll_schedule_seconds
+    end
+  end
 end

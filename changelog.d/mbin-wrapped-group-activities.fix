@@ -1,0 +1,1 @@
+Fixed Mbin-style group Announce wrappers for Create, Add, Remove, Like, Dislike, Undo, and Lock activities so they are handled as group operations instead of ordinary boosts.

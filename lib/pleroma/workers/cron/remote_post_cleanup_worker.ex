@@ -23,16 +23,21 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
 
   alias Pleroma.Activity
   alias Pleroma.Config
+  alias Pleroma.FollowingRelationship
   alias Pleroma.Object
   alias Pleroma.Repo
+  alias Pleroma.User
 
   require Logger
   require Pleroma.Constants
 
   @default_max_age_days 365
-  @default_batch_size 200
-  @default_candidate_scan_limit 20_000
+  @default_batch_size 50
+  @default_candidate_scan_limit 1_000
+  @default_max_scan_pages 10
   @default_query_timeout_ms 60_000
+  @default_remote_actor_max_age_days 730
+  @default_remote_actor_batch_size 50
   @seconds_per_day 86_400
   @prunable_object_types ~w(Note Article Page Question Event Audio Video)
 
@@ -46,7 +51,7 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
   end
 
   @impl Oban.Worker
-  def timeout(_job), do: :timer.minutes(5)
+  def timeout(_job), do: :timer.minutes(10)
 
   defp prune_candidates do
     cutoff = cutoff()
@@ -54,20 +59,36 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
     keep_threads? = keep_threads_with_local_activity?()
     keep_direct? = keep_direct_or_mentioned?()
 
-    case candidate_objects(cutoff, batch_size, keep_threads?, keep_direct?) do
-      {:ok, objects} ->
-        count = Enum.reduce(objects, 0, &prune_object/2)
+    count =
+      case candidate_objects(cutoff, batch_size, keep_threads?, keep_direct?) do
+        {:ok, object_ids, scanned_count} ->
+          count =
+            object_ids
+            |> objects_by_ids()
+            |> Enum.reduce(0, &prune_object/2)
 
-        if count > 0 do
-          prune_unused_hashtags()
-        end
+          if count > 0 do
+            prune_unused_hashtags()
+          end
 
-        count
+          Logger.info(
+            "Remote post cleanup pruned #{count} objects after scanning #{scanned_count} old remote candidates"
+          )
 
-      {:error, reason} ->
-        Logger.warning("Remote post cleanup skipped after query failure: #{inspect(reason)}")
-        0
+          count
+
+        {:error, reason} ->
+          Logger.warning("Remote post cleanup skipped after query failure: #{inspect(reason)}")
+          0
+      end
+
+    stale_actor_count = prune_stale_remote_actors()
+
+    if stale_actor_count > 0 do
+      Logger.info("Remote post cleanup hid #{stale_actor_count} stale remote actors")
     end
+
+    count
   end
 
   defp prune_object(%Object{} = object, count) do
@@ -82,31 +103,112 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
 
         count
     end
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning(
+        "Could not prune stale remote object #{inspect(object.data["id"])}: #{inspect(error)}"
+      )
+
+      count
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "Could not prune stale remote object #{inspect(object.data["id"])}: #{inspect({:exit, reason})}"
+      )
+
+      count
   end
 
   defp candidate_objects(cutoff, batch_size, keep_threads?, keep_direct?) do
-    case candidate_object_ids(cutoff) do
+    collect_candidate_objects(
+      cutoff,
+      batch_size,
+      keep_threads?,
+      keep_direct?,
+      nil,
+      [],
+      0,
+      max_scan_pages()
+    )
+  end
+
+  defp collect_candidate_objects(_, _, _, _, _, objects, scanned_count, 0) do
+    {:ok, Enum.reverse(objects), scanned_count}
+  end
+
+  defp collect_candidate_objects(_, batch_size, _, _, _, objects, scanned_count, _)
+       when length(objects) >= batch_size do
+    {:ok, Enum.reverse(objects), scanned_count}
+  end
+
+  defp collect_candidate_objects(
+         cutoff,
+         batch_size,
+         keep_threads?,
+         keep_direct?,
+         after_id,
+         objects,
+         scanned_count,
+         pages_left
+       ) do
+    case candidate_object_ids(cutoff, after_id) do
       {:ok, []} ->
-        {:ok, []}
+        {:ok, Enum.reverse(objects), scanned_count}
 
       {:ok, object_ids} ->
-        object_ids
-        |> candidates_query(cutoff, batch_size, keep_threads?, keep_direct?)
-        |> safe_repo_all()
+        remaining_count = batch_size - length(objects)
+
+        page_result =
+          object_ids
+          |> candidates_query(cutoff, remaining_count, keep_threads?, keep_direct?)
+          |> safe_repo_all()
+
+        case page_result do
+          {:ok, page_object_ids} ->
+            mark_retained_candidates(object_ids, page_object_ids)
+
+            collect_candidate_objects(
+              cutoff,
+              batch_size,
+              keep_threads?,
+              keep_direct?,
+              List.last(object_ids),
+              Enum.reverse(page_object_ids) ++ objects,
+              scanned_count + length(object_ids),
+              pages_left - 1
+            )
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp candidate_object_ids(cutoff) do
-    Object
+  defp candidate_object_ids(cutoff, after_id) do
+    query =
+      Object
+      |> maybe_after_object_id(after_id)
+
+    query
     |> where([object], object.inserted_at < ^cutoff)
-    |> where([object], fragment("?->>'type' = ANY (?)", object.data, ^@prunable_object_types))
+    |> where([object], object.updated_at < ^cutoff)
+    |> where(
+      [object],
+      fragment("?->>'type' = ANY (?::text[])", object.data, ^@prunable_object_types)
+    )
     |> order_by([object], asc: object.id)
     |> limit(^candidate_scan_limit())
     |> select([object], object.id)
     |> safe_repo_all()
+  end
+
+  defp maybe_after_object_id(query, nil), do: query
+
+  defp maybe_after_object_id(query, after_id) do
+    where(query, [object], object.id > ^after_id)
   end
 
   defp candidates_query(object_ids, cutoff, batch_size, keep_threads?, keep_direct?) do
@@ -131,7 +233,29 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
     |> distinct([object, _activity], object.id)
     |> order_by([object, _activity], asc: object.id)
     |> limit(^batch_size)
-    |> select([object, _activity], object)
+    |> select([object, _activity], object.id)
+  end
+
+  defp objects_by_ids([]), do: []
+
+  defp objects_by_ids(object_ids) do
+    Object
+    |> where([object], object.id in ^object_ids)
+    |> Repo.all(timeout: query_timeout_ms())
+  end
+
+  defp mark_retained_candidates(scanned_ids, prunable_ids) do
+    retained_ids = scanned_ids -- prunable_ids
+
+    if retained_ids != [] do
+      # Old protected rows can otherwise pin every future cleanup run to the
+      # same small ID range. Touching only the retained rows lets the janitor
+      # continue walking the remote cache while still revisiting retained rows
+      # after the configured age window.
+      Object
+      |> where([object], object.id in ^retained_ids)
+      |> Repo.update_all(set: [updated_at: NaiveDateTime.utc_now()])
+    end
   end
 
   defp maybe_keep_direct_or_mentioned(query, true) do
@@ -362,6 +486,137 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
     end
   end
 
+  defp prune_stale_remote_actors do
+    if remote_actor_cleanup_enabled?() do
+      remote_actor_cleanup_cutoff()
+      |> stale_remote_actor_ids()
+      |> case do
+        {:ok, user_ids} ->
+          hide_stale_remote_actors(user_ids)
+
+        {:error, reason} ->
+          Logger.warning("Remote actor cleanup skipped after query failure: #{inspect(reason)}")
+          0
+      end
+    else
+      0
+    end
+  end
+
+  defp stale_remote_actor_ids(cutoff) do
+    sql = """
+    SELECT remote_user.id
+    FROM users AS remote_user
+    WHERE remote_user.local = false
+      AND remote_user.is_active = true
+      AND COALESCE(remote_user.invisible, false) = false
+      AND remote_user.updated_at < $1
+      AND (
+        remote_user.last_refreshed_at IS NULL
+        OR remote_user.last_refreshed_at < $1
+      )
+      AND (
+        remote_user.last_status_at IS NULL
+        OR remote_user.last_status_at < $1
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM following_relationships AS relationship
+        JOIN users AS local_user
+          ON local_user.local = true
+         AND (
+           local_user.id = relationship.follower_id
+           OR local_user.id = relationship.following_id
+         )
+        WHERE relationship.state = $2
+          AND (
+            relationship.follower_id = remote_user.id
+            OR relationship.following_id = remote_user.id
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM activities AS local_activity
+        JOIN users AS local_actor ON local_actor.ap_id = local_activity.actor
+        WHERE local_activity.local = true
+          AND local_actor.local = true
+          AND (
+            local_activity.data->>'object' = remote_user.ap_id
+            OR local_activity.data->'to' ? remote_user.ap_id
+            OR local_activity.data->'cc' ? remote_user.ap_id
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM notifications AS notification
+        JOIN users AS notification_user ON notification_user.id = notification.user_id
+        JOIN activities AS notification_activity ON notification_activity.id = notification.activity_id
+        WHERE notification_user.local = true
+          AND notification_activity.actor = remote_user.ap_id
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM bookmarks AS bookmark
+        JOIN users AS bookmark_user ON bookmark_user.id = bookmark.user_id
+        JOIN activities AS bookmarked_activity ON bookmarked_activity.id = bookmark.activity_id
+        WHERE bookmark_user.local = true
+          AND bookmarked_activity.actor = remote_user.ap_id
+      )
+    ORDER BY remote_user.updated_at ASC
+    LIMIT $3
+    """
+
+    case safe_repo_query(sql, [
+           cutoff,
+           FollowingRelationship.accept_state_code(),
+           remote_actor_batch_size()
+         ]) do
+      {:ok, %{rows: rows}} ->
+        {:ok, Enum.map(rows, fn [id] -> id end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp hide_stale_remote_actors([]), do: 0
+
+  defp hide_stale_remote_actors(user_ids) do
+    User
+    |> where([user], user.id in ^user_ids)
+    |> Repo.all(timeout: query_timeout_ms())
+    |> Enum.reduce(0, fn user, count ->
+      case hide_stale_remote_actor(user) do
+        {:ok, _user} -> count + 1
+        _ -> count
+      end
+    end)
+  rescue
+    error in [DBConnection.ConnectionError, Postgrex.Error] ->
+      Logger.warning("Remote actor cleanup could not load stale actors: #{inspect(error)}")
+      0
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "Remote actor cleanup could not load stale actors: #{inspect({:exit, reason})}"
+      )
+
+      0
+  end
+
+  defp hide_stale_remote_actor(%User{} = user) do
+    user
+    |> Ecto.Changeset.change(%{
+      invisible: true,
+      is_discoverable: false,
+      avatar: %{},
+      banner: %{},
+      tags: [],
+      emoji: %{}
+    })
+    |> User.update_and_set_cache()
+  end
+
   defp safe_repo_all(query) do
     {:ok, Repo.all(query, timeout: query_timeout_ms())}
   rescue
@@ -390,6 +645,10 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
     config_boolean(:keep_direct_or_mentioned, true)
   end
 
+  defp remote_actor_cleanup_enabled? do
+    config_boolean(:remote_actor_cleanup_enabled, true)
+  end
+
   defp cutoff do
     NaiveDateTime.utc_now()
     |> NaiveDateTime.add(-max_age_days() * @seconds_per_day, :second)
@@ -410,9 +669,29 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
     |> max(batch_size())
   end
 
+  defp max_scan_pages do
+    config_integer(:max_scan_pages, @default_max_scan_pages)
+    |> max(1)
+  end
+
   defp query_timeout_ms do
     config_integer(:query_timeout_ms, @default_query_timeout_ms)
     |> max(1_000)
+  end
+
+  defp remote_actor_cleanup_cutoff do
+    NaiveDateTime.utc_now()
+    |> NaiveDateTime.add(-remote_actor_max_age_days() * @seconds_per_day, :second)
+  end
+
+  defp remote_actor_max_age_days do
+    config_integer(:remote_actor_max_age_days, @default_remote_actor_max_age_days)
+    |> max(1)
+  end
+
+  defp remote_actor_batch_size do
+    config_integer(:remote_actor_batch_size, @default_remote_actor_batch_size)
+    |> max(1)
   end
 
   defp config_integer(key, default) do

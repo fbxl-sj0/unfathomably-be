@@ -421,7 +421,7 @@ defmodule Pleroma.Object do
   def update_data(%Object{data: data} = object, attrs \\ %{}) do
     object
     |> Object.change(%{data: Map.merge(data || %{}, attrs)})
-    |> Repo.update()
+    |> update_and_set_cache()
   end
 
   def local?(%Object{data: %{"id" => id}}) do

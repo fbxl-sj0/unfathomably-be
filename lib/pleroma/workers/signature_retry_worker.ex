@@ -7,6 +7,7 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
   alias Pleroma.Signature
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Utils
+  alias Pleroma.Web.Federation.Churn
   alias Pleroma.Web.Federator
   alias Pleroma.Web.Plugs.EnsureHostMatchesPlug
   alias Pleroma.Web.Plugs.MappedSignatureToIdentityPlug
@@ -236,30 +237,24 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
   end
 
   defp log_signature_retry_rejection({:cancel, reason}, context)
-       when reason in [
-              :actor_signature_mismatch,
-              :host_header_mismatch,
-              :invalid_signature,
-              :origin_containment_failed
-            ] do
-    log_signature_retry_rejection(:info, reason, context)
-  end
-
-  defp log_signature_retry_rejection({:cancel, reason}, context)
-       when reason in [
-              :invalid_signature_retry_metadata,
-              :missing_signature_retry_metadata
-            ] do
-    log_signature_retry_rejection(:warning, reason, context)
+       when is_atom(reason) do
+    if Churn.logged_signature_retry_reason?(reason) do
+      reason
+      |> Churn.signature_retry_log_level(context)
+      |> log_signature_retry_rejection(reason, context)
+    end
   end
 
   defp log_signature_retry_rejection(_result, _context), do: :ok
 
   defp log_signature_retry_rejection(level, reason, context) do
+    category = Churn.signature_retry_category(reason, context)
+
     Logger.log(
       level,
       "Failed-signature inbox retry rejected " <>
         "reason=#{inspect(reason)} " <>
+        "category=#{inspect(category)} " <>
         "payload_actor=#{inspect(context[:payload_actor])} " <>
         "signature_actor=#{inspect(context[:signature_actor])} " <>
         "activity_id=#{inspect(context[:activity_id])} " <>

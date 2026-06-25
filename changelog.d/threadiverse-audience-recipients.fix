@@ -1,0 +1,1 @@
+Preserve ActivityPub `audience` on validated activities and objects, include it when storing activity recipients, and copy known group audience from target objects onto object-action activities so Mbin-style group posts, likes, reacts, and announces stay attached to group timelines.

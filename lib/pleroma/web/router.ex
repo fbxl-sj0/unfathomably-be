@@ -293,6 +293,9 @@ defmodule Pleroma.Web.Router do
     post("/frontends/install", FrontendController, :install)
 
     post("/backups", AdminAPIController, :create_backup)
+    get("/post_archive_imports", PostArchiveImportController, :index)
+    post("/post_archive_imports/:id/approve", PostArchiveImportController, :approve)
+    post("/post_archive_imports/:id/reject", PostArchiveImportController, :reject)
 
     get("/email_list/subscribers.csv", EmailListController, :subscribers)
     get("/email_list/unsubscribers.csv", EmailListController, :unsubscribers)
@@ -302,6 +305,8 @@ defmodule Pleroma.Web.Router do
     post("/rules", RuleController, :create)
     patch("/rules/:id", RuleController, :update)
     delete("/rules/:id", RuleController, :delete)
+
+    get("/federation/health", FederationHealthController, :show)
 
     get("/webhooks", WebhookController, :index)
     get("/webhooks/:id", WebhookController, :show)
@@ -559,6 +564,8 @@ defmodule Pleroma.Web.Router do
     post("/mutes_import", UserImportController, :mutes)
     post("/blocks_import", UserImportController, :blocks)
     post("/follow_import", UserImportController, :follow)
+    get("/post_archive_imports", UserImportController, :post_archive_imports)
+    post("/post_archive_import", UserImportController, :post_archive)
 
     get("/accounts/mfa", TwoFactorAuthenticationController, :settings)
     get("/accounts/mfa/backup_codes", TwoFactorAuthenticationController, :backup_codes)
@@ -644,6 +651,8 @@ defmodule Pleroma.Web.Router do
 
       get("/backups", BackupController, :index)
       post("/backups", BackupController, :create)
+      get("/post_archive_imports", UserImportController, :post_archive_imports)
+      post("/post_archive_import", UserImportController, :post_archive)
 
       get("/bookmark_folders", BookmarkFolderController, :index)
       post("/bookmark_folders", BookmarkFolderController, :create)
@@ -1130,6 +1139,7 @@ defmodule Pleroma.Web.Router do
     get("/users/:nickname/followers", ActivityPubController, :followers)
     get("/users/:nickname/following", ActivityPubController, :following)
     get("/users/:nickname/collections/featured", ActivityPubController, :pinned)
+    get("/users/:nickname/collections/moderators", ActivityPubController, :moderators)
     get("/objects/:uuid/replies", ActivityPubController, :object_replies)
   end
 

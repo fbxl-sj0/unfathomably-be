@@ -1,58 +1,106 @@
 # unfathomably-be
 
+> Your corner of the Fediverse is the whole thing
+
 **unfathomably-be** is a Fediverse backend written in Elixir.
 
-It descends from Rebased and Pleroma, keeps Mastodon API compatibility, and is the backend half of the Unfathomably stack alongside unfathomably-fe.
+It descends from Rebased and Pleroma, keeps Mastodon API compatibility, and is
+the backend half of the Unfathomably stack alongside unfathomably-fe.
 
 ## Your social media server
 
 unfathomably-be empowers people to take control of their social media experience.
 Hosting your own server means that *you* get to decide the rules.
 
-It is designed to connect deeply across the Fediverse while staying practical for real communities to operate.
+It is designed to connect deeply across the Fediverse while staying practical
+for real communities to operate.
 
 ## What Makes It Different
 
-Pleroma is the upstream foundation for much of the ActivityPub, Mastodon API, and operational model. Rebased added a Soapbox-oriented backend profile and its own compatibility choices. unfathomably-be keeps that lineage, but the project has moved in a more interoperability-focused direction.
+Pleroma and Rebased are the foundation, but unfathomably-be has moved in a more
+interoperability-focused direction. The goal is not only to talk to Mastodon-like
+microblogging servers. The goal is to make one small-to-medium instance useful
+across the Fediverse, the Threadiverse, media platforms, publishing feeds, and
+other ActivityPub software that does not fit neatly into a single profile-feed
+model.
 
-The central goal is to make a small-to-medium Fediverse server useful across more kinds of software, not just across Mastodon-like microblogging instances.
+Important areas of work include:
 
-Notable areas of work include:
-
-- group-like actors from Lemmy, PieFed, Mbin, Lotide, PeerTube, and other Threadiverse-style systems
-- source-like actors for feeds that are not ordinary user accounts, such as media, music, image, and publishing platforms
-- bidirectional follow, post, comment, like, unlike, delete, and unfollow flows for compatible remote group software
-- Mastodon-compatible streaming and websocket behavior, including public, direct, notification, list, and remote stream support
-- richer ActivityPub normalization for quotes, reply collections, language metadata, actor metadata, and cross-platform edge cases
-- remote reply collection refreshes so group discussions and remote posts can discover comments that were not pushed directly to the local instance
-- cached ActivityPub follower/following collection counters with paginated rendering, so large relationship sets do not need to be loaded just to render collection pages
-- search and translation provider support, including Meilisearch and LibreTranslate/OpenTranslate-style deployments
-- janitor and reachability work for stale remote hosts, abandoned cached discussions, old Oban jobs, and remote content that no local user interacted with
-- stricter browser-facing security defaults, while keeping local smoke-test allowances scoped to development and test configuration
+- **Groups and Threadiverse compatibility.** unfathomably-be understands
+  group-like actors from Lemmy, PieFed, Mbin, Lotide, PeerTube, NodeBB,
+  Discourse, FediGroups, Hubzilla, Friendica, and similar software where their
+  ActivityPub shape can be mapped safely.
+- **Source-style feeds.** Sources cover actors and feeds that are not ordinary
+  user profiles, including RSS feeds, WordPress-style publishers, Funkwhale
+  libraries, PeerTube channels, Pixelfed-style media sources, and other
+  feed-like targets.
+- **Remote discussion hydration.** The backend can refresh remote reply
+  collections and thread chains so group discussions, PeerTube comments, and
+  other remote conversations do not depend only on replies that happened to be
+  delivered directly to the local inbox.
+- **Threadiverse-aware audience handling.** Replies and posts aimed at group
+  software use target-aware audience and recipient behavior so they look more
+  natural on Lemmy-like and Mbin-like platforms.
+- **Mastodon-compatible streaming.** Websocket streaming support covers common
+  Mastodon client expectations, including notification, public, direct, list,
+  and related stream behavior exposed through the Mastodon API surface.
+- **Translation support.** LibreTranslate, OpenTranslate-compatible services,
+  and related language metadata can be exposed to clients so translation buttons
+  appear only when they make sense.
+- **Search and feed discovery.** Meilisearch support, RSS source ingestion,
+  redirect/gone handling, and remote source discovery are part of the current
+  operator-facing stack.
+- **Post archive portability.** Account history export and import support has
+  begun, with instance policy controls for disabled imports, admin-reviewed
+  imports, or automatic imports.
+- **Federation health and janitor work.** Remote host health, stale actor
+  cleanup, cached remote post cleanup, old job cleanup, and reachability checks
+  help long-running instances keep themselves from filling up with unreachable
+  or unused remote history.
+- **Broader ActivityPub normalization.** Recent compatibility work includes
+  Misskey reaction shapes, Mbin wrapped activities, NodeBB attributed groups and
+  profile fields, Hubzilla nomadic identity hints, Discourse context handling,
+  FediGroups locked group mentions, Friendica source discovery, and Funkwhale
+  source metadata.
 
 ## Relationship To Upstream
 
-unfathomably-be is not a clean rebrand of Pleroma or Rebased. It is a fork with substantial compatibility, operations, frontend-integration, and maintenance changes.
+unfathomably-be intentionally keeps many inherited names. The OTP application is
+still `:pleroma`, many modules are still under `Pleroma.*`, and many commands
+still begin with `mix pleroma.*`. Existing clients also still expect Mastodon,
+Pleroma, and Soapbox API conventions.
 
-The code still deliberately preserves many upstream names and API shapes. The OTP application is still `:pleroma`, many modules remain under `Pleroma.*`, and compatibility endpoints continue to use Mastodon, Pleroma, and Soapbox conventions where existing clients expect them. Those names are compatibility surfaces, not a statement that the project is unchanged from upstream.
+Those compatibility names are deliberate. They keep existing deployments,
+admin tools, clients, and documentation paths working while the behavior evolves
+into something broader than the original Rebased installation.
 
-The intent is to remain source-readable for people familiar with Pleroma while making the runtime behavior better suited to mixed Fediverse and Threadiverse environments.
+## Frontend Pairing
 
-## Current Focus
+unfathomably-be is designed to pair with
+`https://github.com/fbxl-sj0/unfathomably-fe`.
 
-The current release line is focused on:
+The backend owns accounts, federation, moderation, timelines, search,
+translation, websocket streams, post archive jobs, media proxying, and cleanup
+workers. The frontend owns the browser UI, group and source navigation, docked
+media player, archive import/export screens, admin federation health views, and
+thread display.
 
-- making group and source feeds first-class enough to use every day
-- reducing stale remote-host and stale-cache costs on long-running instances
-- improving compatibility with Mastodon, Pleroma, Akkoma, Rebased, Lemmy, PieFed, Mbin, Lotide, PeerTube, Pixelfed, Misskey-family software, and other ActivityPub implementations where practical
-- keeping public APIs and NodeInfo close enough to Mastodon expectations that common clients and indexers do not need special fallbacks
-- tightening lint, test, and smoke-test coverage around the parts of federation that tend to regress silently
+Other Mastodon-compatible clients should continue to work where they use common
+API surfaces, but the full groups, sources, translation, and admin experience is
+best exposed through unfathomably-fe.
 
 ## Installation
 
-Installation notes are being updated for the Unfathomably stack. Existing Pleroma/Rebased source-install and OTP-release knowledge is still useful, but operators should expect Unfathomably-specific configuration for the frontend, translation, search, websocket proxying, and optional compatibility jobs.
+See `docs/INSTALLATION.MD` for a from-scratch source installation and
+OpenTranslate setup.
 
-See the `docs/` directory for inherited Pleroma documentation and the Unfathomably-specific notes that have been added so far.
+See `docs/UPGRADE.MD` for upgrade notes from Rebased/Soapbox or from a more
+standard Pleroma source installation.
+
+The code still follows Pleroma-style deployment conventions in many places.
+That means a production install may still use a `pleroma` Unix user, a
+`pleroma` database, `pleroma.service`, and Mix tasks with `pleroma` in the
+command name.
 
 ## License
 

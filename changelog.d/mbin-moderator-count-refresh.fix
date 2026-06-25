@@ -1,0 +1,1 @@
+Refresh remote group moderator counts from `attributedTo` collection URLs during ActivityPub actor fetches instead of waiting for the group API to lazily resolve them.

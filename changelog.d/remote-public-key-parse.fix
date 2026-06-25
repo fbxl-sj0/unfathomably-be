@@ -1,0 +1,1 @@
+Malformed cached remote public keys now fail cleanly during HTTP Signature verification so actor refresh and retry handling can proceed.

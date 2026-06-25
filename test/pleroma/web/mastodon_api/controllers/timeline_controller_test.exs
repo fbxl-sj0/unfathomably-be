@@ -10,6 +10,7 @@ defmodule Pleroma.Web.MastodonAPI.TimelineControllerTest do
 
   alias Pleroma.User
   alias Pleroma.Web.CommonAPI
+  alias Pleroma.Workers.Cron.RssSourceIngestWorker
 
   setup do
     mock(fn env -> apply(HttpRequestMock, :request, [env]) end)
@@ -173,6 +174,46 @@ defmodule Pleroma.Web.MastodonAPI.TimelineControllerTest do
         |> json_response_and_validate_schema(200)
 
       assert [%{"id" => ^activity2_id}] = response
+    end
+
+    test "home timeline includes ingested followed RSS source entries", %{
+      user: user,
+      conn: conn
+    } do
+      feed_url = "https://cms.example.org/fullrss2.xml"
+      item_url = "https://cms.example.org/news/first-post"
+
+      source =
+        insert(:user,
+          actor_type: "Service",
+          local: false,
+          nickname: "rss-1111222233334444@cms.example.org",
+          ap_id: feed_url,
+          name: "ZeroHedge News"
+        )
+
+      {:ok, _user, _source} = Pleroma.FollowingRelationship.follow(user, source, :follow_accept)
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^feed_url} ->
+          %Tesla.Env{
+            status: 200,
+            body: rss_feed(feed_url, item_url)
+          }
+      end)
+
+      assert {:ok, %{sources: 1, items: 1}} = RssSourceIngestWorker.perform(%Oban.Job{})
+
+      response =
+        conn
+        |> get("/api/v1/timelines/home")
+        |> json_response_and_validate_schema(200)
+
+      assert Enum.any?(response, fn status ->
+               status["content"] =~ "A feed entry." and
+                 get_in(status, ["account", "acct"]) ==
+                   "rss-1111222233334444@cms.example.org"
+             end)
     end
   end
 
@@ -1091,5 +1132,25 @@ defmodule Pleroma.Web.MastodonAPI.TimelineControllerTest do
       recipients: ["https://www.w3.org/ns/activitystreams#Public", User.ap_followers(user)],
       user: user
     })
+  end
+
+  defp rss_feed(feed_url, item_url) do
+    """
+    <?xml version="1.0" encoding="utf-8"?>
+    <rss version="2.0">
+      <channel>
+        <title>ZeroHedge News</title>
+        <description>News and market commentary.</description>
+        <link>https://cms.example.org/</link>
+        <item>
+          <title>First post</title>
+          <link>#{item_url}</link>
+          <guid>#{feed_url}#item-1</guid>
+          <description>&lt;p&gt;A feed entry.&lt;/p&gt;</description>
+          <pubDate>Wed, 24 Jun 2026 12:00:00 GMT</pubDate>
+        </item>
+      </channel>
+    </rss>
+    """
   end
 end

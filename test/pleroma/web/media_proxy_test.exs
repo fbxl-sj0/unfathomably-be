@@ -28,6 +28,16 @@ defmodule Pleroma.Web.MediaProxyTest do
       assert MediaProxy.url("/") == "/"
     end
 
+    test "ignores non-HTTP urls" do
+      data_url = "data:image/svg+xml,<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"
+
+      assert MediaProxy.url(data_url) == data_url
+      assert MediaProxy.preview_url(data_url) == data_url
+      refute MediaProxy.url_proxiable?(data_url)
+      refute MediaProxy.remote_http_url?(data_url)
+      assert MediaProxy.verify_remote_http_url(data_url) == {:error, :unsupported_remote_url}
+    end
+
     test "ignores local url" do
       local_url = Endpoint.url() <> "/hello"
       local_root = Endpoint.url()

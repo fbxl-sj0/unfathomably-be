@@ -22,6 +22,16 @@ defmodule Pleroma.Instances do
   def set_unreachable(url_or_host, unreachable_since \\ nil),
     do: Instance.set_unreachable(url_or_host, unreachable_since)
 
+  def record_success(url_or_host, opts \\ []), do: Instance.record_success(url_or_host, opts)
+
+  def record_failure(url_or_host, reason \\ :failure, opts \\ []),
+    do: Instance.record_failure(url_or_host, reason, opts)
+
+  def record_redirect(url_or_host, target, opts \\ []),
+    do: Instance.record_redirect(url_or_host, target, opts)
+
+  def record_gone(url_or_host, opts \\ []), do: Instance.record_gone(url_or_host, opts)
+
   def get_consistently_unreachable, do: Instance.get_consistently_unreachable()
 
   def set_consistently_unreachable(url_or_host),

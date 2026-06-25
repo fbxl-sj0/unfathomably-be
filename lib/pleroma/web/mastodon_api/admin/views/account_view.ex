@@ -16,6 +16,7 @@ defmodule Pleroma.Web.MastodonAPI.Admin.AccountView do
   def render("show.json", %{user: user}) do
     account =
       MastodonAPI.AccountView.render("show.json", %{user: user, skip_visibility_check: true})
+      |> put_staff_role(user)
 
     %{
       id: user.id,
@@ -61,5 +62,11 @@ defmodule Pleroma.Web.MastodonAPI.Admin.AccountView do
 
   defp role(_user) do
     nil
+  end
+
+  defp put_staff_role(account, %User{} = user) do
+    account
+    |> Kernel.put_in([:pleroma, :is_admin], user.is_admin)
+    |> Kernel.put_in([:pleroma, :is_moderator], user.is_moderator)
   end
 end

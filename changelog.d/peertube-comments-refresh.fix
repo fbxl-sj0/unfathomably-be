@@ -1,0 +1,1 @@
+Preserved PeerTube media comment collections as reply collections so video comments can be refreshed by the existing remote replies worker.

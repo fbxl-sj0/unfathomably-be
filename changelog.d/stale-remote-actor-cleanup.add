@@ -1,0 +1,1 @@
+Hide stale unused remote actors and clear cached avatar, banner, emoji, and tag presentation data during remote cache cleanup.

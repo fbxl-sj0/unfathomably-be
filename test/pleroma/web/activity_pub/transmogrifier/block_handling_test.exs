@@ -60,4 +60,67 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.BlockHandlingTest do
     refute User.following?(blocker, blocked)
     refute User.following?(blocked, blocker)
   end
+
+  test "incoming scoped blocks do not create personal user blocks" do
+    moderator = insert(:user, local: false)
+    banned = insert(:user, local: false)
+    group = insert(:user, actor_type: "Group", local: false)
+
+    data =
+      File.read!("test/fixtures/mastodon-block-activity.json")
+      |> Jason.decode!()
+      |> Map.put("id", "#{group.ap_id}/activities/ban-user")
+      |> Map.put("actor", moderator.ap_id)
+      |> Map.put("object", banned.ap_id)
+      |> Map.put("target", group.ap_id)
+      |> Map.put("audience", [group.ap_id])
+      |> Map.put("summary", "Banned from this magazine")
+      |> Map.put("expires", "2026-07-24T12:00:00Z")
+
+    {:ok, %Activity{data: data, local: false}} = Transmogrifier.handle_incoming(data)
+
+    assert data["type"] == "Block"
+    assert data["actor"] == moderator.ap_id
+    assert data["object"] == banned.ap_id
+    assert data["target"] == group.ap_id
+    assert data["audience"] == [group.ap_id]
+    assert data["summary"] == "Banned from this magazine"
+    assert data["expires"] == "2026-07-24T12:00:00Z"
+
+    refute User.blocks?(moderator, banned)
+  end
+
+  test "incoming scoped block undos do not undo personal user blocks" do
+    moderator = insert(:user, local: false)
+    banned = insert(:user, local: false)
+    group = insert(:user, actor_type: "Group", local: false)
+
+    {:ok, _user_relationship} = User.block(moderator, banned)
+
+    data =
+      File.read!("test/fixtures/mastodon-block-activity.json")
+      |> Jason.decode!()
+      |> Map.put("id", "#{group.ap_id}/activities/ban-user")
+      |> Map.put("actor", moderator.ap_id)
+      |> Map.put("object", banned.ap_id)
+      |> Map.put("target", group.ap_id)
+      |> Map.put("audience", [group.ap_id])
+      |> Map.put("summary", "Banned from this magazine")
+
+    {:ok, %Activity{data: data, local: false}} = Transmogrifier.handle_incoming(data)
+
+    undo_data = %{
+      "id" => "#{data["id"]}/undo",
+      "type" => "Undo",
+      "actor" => moderator.ap_id,
+      "object" => data
+    }
+
+    {:ok, %Activity{data: undo_data, local: false}} = Transmogrifier.handle_incoming(undo_data)
+
+    assert undo_data["type"] == "Undo"
+    assert undo_data["object"] == data["id"]
+    refute Activity.get_by_ap_id(data["id"])
+    assert User.blocks?(moderator, banned)
+  end
 end

@@ -197,29 +197,10 @@ defmodule Pleroma.Web.ApiSpec.InstanceOperation do
           type: :object,
           description: "Instance configuration",
           properties: %{
-            accounts: %Schema{
-              type: :object,
-              description: "A map with limits for local accounts",
-              properties: %{
-                max_avatar_description_length: %Schema{type: :integer},
-                max_display_name_length: %Schema{type: :integer},
-                max_featured_tags: %Schema{type: :integer},
-                max_header_description_length: %Schema{type: :integer},
-                max_note_length: %Schema{type: :integer},
-                max_pinned_statuses: %Schema{type: :integer},
-                max_profile_fields: %Schema{type: :integer},
-                profile_field_name_limit: %Schema{type: :integer},
-                profile_field_value_limit: %Schema{type: :integer}
-              }
-            },
             statuses: %Schema{
               type: :object,
               description: "A map with poll limits for local statuses",
               properties: %{
-                characters_reserved_per_url: %Schema{
-                  type: :integer,
-                  description: "Characters reserved per URL when counting status length"
-                },
                 max_characters: %Schema{
                   type: :integer,
                   description: "Posts character limit (CW/Subject included in the counter)"
@@ -234,10 +215,6 @@ defmodule Pleroma.Web.ApiSpec.InstanceOperation do
               type: :object,
               description: "A map with poll limits for media attachments",
               properties: %{
-                description_limit: %Schema{
-                  type: :integer,
-                  description: "Maximum length of a media description"
-                },
                 image_size_limit: %Schema{
                   type: :integer,
                   description: "File size limit of uploaded images"
@@ -402,21 +379,6 @@ defmodule Pleroma.Web.ApiSpec.InstanceOperation do
           type: :object,
           description: "Instance configuration",
           properties: %{
-            accounts: %Schema{
-              type: :object,
-              description: "A map with limits for local accounts",
-              properties: %{
-                max_avatar_description_length: %Schema{type: :integer},
-                max_display_name_length: %Schema{type: :integer},
-                max_featured_tags: %Schema{type: :integer},
-                max_header_description_length: %Schema{type: :integer},
-                max_note_length: %Schema{type: :integer},
-                max_pinned_statuses: %Schema{type: :integer},
-                max_profile_fields: %Schema{type: :integer},
-                profile_field_name_limit: %Schema{type: :integer},
-                profile_field_value_limit: %Schema{type: :integer}
-              }
-            },
             urls: %Schema{
               type: :object,
               properties: %{
@@ -430,10 +392,6 @@ defmodule Pleroma.Web.ApiSpec.InstanceOperation do
               type: :object,
               description: "A map with poll limits for local statuses",
               properties: %{
-                characters_reserved_per_url: %Schema{
-                  type: :integer,
-                  description: "Characters reserved per URL when counting status length"
-                },
                 max_characters: %Schema{
                   type: :integer,
                   description: "Posts character limit (CW/Subject included in the counter)"
@@ -448,10 +406,6 @@ defmodule Pleroma.Web.ApiSpec.InstanceOperation do
               type: :object,
               description: "A map with poll limits for media attachments",
               properties: %{
-                description_limit: %Schema{
-                  type: :integer,
-                  description: "Maximum length of a media description"
-                },
                 image_size_limit: %Schema{
                   type: :integer,
                   description: "File size limit of uploaded images"

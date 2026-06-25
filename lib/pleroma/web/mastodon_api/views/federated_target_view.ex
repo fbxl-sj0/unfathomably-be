@@ -34,14 +34,29 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
       header_static: account[:header_static],
       locked: group.is_locked,
       membership_required: group.is_locked,
-      members_count: group.follower_count || 0,
+      members_count: FederatedTarget.group_member_count(group),
+      moderators_count: FederatedTarget.group_moderator_count(group),
       note: account[:note] || "",
       owner: %{id: to_string(group.id)},
+      posting_restricted_to_mods: group.posting_restricted_to_mods,
       relationship: relationship,
       slug: to_string(group.id),
       source: %{
         note: get_in(account, [:source, :note]) || "",
-        pleroma: %{actor_type: group.actor_type}
+        pleroma: %{
+          actor_type: group.actor_type,
+          activitypub: %{
+            attributed_to: group.attributed_to_address,
+            discoverable: group.is_discoverable,
+            featured: group.featured_address,
+            followers: group.follower_address,
+            following: group.following_address,
+            indexable: group.is_indexable,
+            outbox: group.outbox_address,
+            posting_restricted_to_mods: group.posting_restricted_to_mods,
+            shared_inbox: group.shared_inbox
+          }
+        }
       },
       statuses_visibility: "public",
       tags: [],
@@ -56,6 +71,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
       target_profile: FederatedTarget.group_profile(group),
       target_kind: target_kind,
       target_kind_label: FederatedTarget.group_kind_label(group),
+      interaction_score: FederatedTarget.contact_interaction_score(group),
       capabilities: FederatedTarget.group_capabilities(group)
     }
   end
@@ -129,6 +145,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
       source_profile: FederatedTarget.source_profile(source),
       source_kind: source_kind,
       source_kind_label: FederatedTarget.source_kind_label(source),
+      interaction_score: FederatedTarget.contact_interaction_score(source),
       capabilities: FederatedTarget.source_capabilities(source),
       uri: source.ap_id,
       url: account[:url],

@@ -198,139 +198,6 @@ defmodule Pleroma.Object.FetcherTest do
       assert object == object_again
     end
 
-    test "it asks for ActivityPub JSON and JSON-LD ActivityStreams objects" do
-      id = "https://mastodon.example.org/objects/jsonld-accept"
-
-      mock(fn
-        %{method: :get, url: ^id, headers: headers} ->
-          send(self(), {:fetch_headers, headers})
-
-          %Tesla.Env{
-            status: 200,
-            headers: [{"content-type", "application/activity+json"}],
-            body:
-              Jason.encode!(%{
-                "id" => id,
-                "type" => "Note",
-                "attributedTo" => "https://mastodon.example.org/users/alice",
-                "to" => [Pleroma.Constants.as_public()]
-              })
-          }
-      end)
-
-      assert {:ok, %{"id" => ^id}} = Fetcher.fetch_and_contain_remote_object_from_id(id)
-
-      assert_receive {:fetch_headers,
-                      [
-                        {"accept",
-                         "application/activity+json, application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", text/html;q=0.1"}
-                      ]}
-    end
-
-    test "it follows ActivityPub alternates from Link headers" do
-      html_id = "https://mastodon.example.org/@alice/objects/1"
-      object_id = "https://mastodon.example.org/users/alice/statuses/1"
-
-      mock(fn
-        %{method: :get, url: ^html_id, headers: headers} ->
-          send(self(), {:html_fetch_headers, headers})
-
-          %Tesla.Env{
-            status: 200,
-            headers: [
-              {"content-type", "text/html; charset=utf-8"},
-              {"link", "<#{object_id}>; rel=\"alternate\"; type=\"application/activity+json\""}
-            ],
-            body: "<html><head><title>Alice</title></head><body></body></html>"
-          }
-
-        %{method: :get, url: ^object_id} ->
-          %Tesla.Env{
-            status: 200,
-            headers: HttpRequestMock.activitypub_object_headers(),
-            body:
-              Jason.encode!(%{
-                "id" => object_id,
-                "type" => "Note",
-                "attributedTo" => "https://mastodon.example.org/users/alice",
-                "to" => [Pleroma.Constants.as_public()]
-              })
-          }
-      end)
-
-      assert {:ok, %{"id" => ^object_id}} =
-               Fetcher.fetch_and_contain_remote_object_from_id(html_id)
-
-      assert_receive {:html_fetch_headers,
-                      [
-                        {"accept",
-                         "application/activity+json, application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", text/html;q=0.1"}
-                      ]}
-    end
-
-    test "it follows ActivityPub alternates from HTML link tags" do
-      html_id = "https://mastodon.example.org/@alice/objects/2"
-      object_id = "https://mastodon.example.org/users/alice/statuses/2"
-
-      mock(fn
-        %{method: :get, url: ^html_id} ->
-          %Tesla.Env{
-            status: 200,
-            headers: [{"content-type", "text/html"}],
-            body: """
-            <html>
-              <head>
-                <link rel="alternate" type="application/activity+json" href="/users/alice/statuses/2">
-              </head>
-              <body></body>
-            </html>
-            """
-          }
-
-        %{method: :get, url: ^object_id} ->
-          %Tesla.Env{
-            status: 200,
-            headers: HttpRequestMock.activitypub_object_headers(),
-            body:
-              Jason.encode!(%{
-                "id" => object_id,
-                "type" => "Note",
-                "attributedTo" => "https://mastodon.example.org/users/alice",
-                "to" => [Pleroma.Constants.as_public()]
-              })
-          }
-      end)
-
-      assert {:ok, %{"id" => ^object_id}} =
-               Fetcher.fetch_and_contain_remote_object_from_id(html_id)
-    end
-
-    test "it does not follow ActivityPub alternates to another origin" do
-      html_id = "https://mastodon.example.org/@alice/objects/3"
-      object_id = "https://evil.example/users/alice/statuses/3"
-
-      mock(fn
-        %{method: :get, url: ^html_id} ->
-          %Tesla.Env{
-            status: 200,
-            headers: [
-              {"content-type", "text/html"},
-              {"link", "<#{object_id}>; rel=\"alternate\"; type=\"application/activity+json\""}
-            ],
-            body: "<html></html>"
-          }
-
-        %{method: :get, url: ^object_id} ->
-          send(self(), :cross_origin_alternate_fetched)
-          %Tesla.Env{status: 500}
-      end)
-
-      assert {:error, {:content_type, "text/html"}} =
-               Fetcher.fetch_and_contain_remote_object_from_id(html_id)
-
-      refute_receive :cross_origin_alternate_fetched
-    end
-
     test "Return MRF reason when fetched status is rejected by one" do
       clear_config([:mrf_keyword, :reject], ["yeah"])
       clear_config([:mrf, :policies], [Pleroma.Web.ActivityPub.MRF.KeywordPolicy])
@@ -377,6 +244,12 @@ defmodule Pleroma.Object.FetcherTest do
         )
 
       assert object
+
+      assert object.data["actor"] ==
+               "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e"
+
+      assert object.data["attributedTo"] ==
+               "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e"
     end
 
     test "it can fetch Mobilizon events" do

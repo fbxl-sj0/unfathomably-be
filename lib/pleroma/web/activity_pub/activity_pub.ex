@@ -42,21 +42,65 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   @behaviour Pleroma.Web.ActivityPub.ActivityPub.Streaming
 
   defp get_recipients(%{"type" => "Create"} = data) do
-    to = Map.get(data, "to", [])
-    cc = Map.get(data, "cc", [])
-    bcc = Map.get(data, "bcc", [])
-    actor = Map.get(data, "actor", [])
-    recipients = [to, cc, bcc, [actor]] |> Enum.concat() |> Enum.uniq()
+    to = recipient_values(data, "to")
+    cc = recipient_values(data, "cc")
+    bcc = recipient_values(data, "bcc")
+    audience = recipient_values(data, "audience")
+    actor = recipient_values(data, "actor")
+    nested_recipients = nested_object_recipient_values(data)
+
+    recipients =
+      [to, cc, bcc, audience, actor, nested_recipients]
+      |> List.flatten()
+      |> Enum.uniq()
+
     {recipients, to, cc}
   end
 
   defp get_recipients(data) do
-    to = Map.get(data, "to", [])
-    cc = Map.get(data, "cc", [])
-    bcc = Map.get(data, "bcc", [])
-    recipients = Enum.concat([to, cc, bcc])
+    to = recipient_values(data, "to")
+    cc = recipient_values(data, "cc")
+    bcc = recipient_values(data, "bcc")
+    audience = recipient_values(data, "audience")
+    nested_recipients = nested_object_recipient_values(data)
+    recipients = Enum.concat([to, cc, bcc, audience, nested_recipients])
     {recipients, to, cc}
   end
+
+  defp recipient_values(data, field) when is_map(data) do
+    data
+    |> Map.get(field, [])
+    |> normalize_recipient_values()
+  end
+
+  defp recipient_values(_data, _field), do: []
+
+  defp nested_object_recipient_values(%{"object" => object}) do
+    nested_object_recipient_values(object)
+  end
+
+  defp nested_object_recipient_values(objects) when is_list(objects) do
+    Enum.flat_map(objects, &nested_object_recipient_values/1)
+  end
+
+  defp nested_object_recipient_values(object) when is_map(object) do
+    object
+    |> recipient_values("to")
+    |> Kernel.++(recipient_values(object, "cc"))
+    |> Kernel.++(recipient_values(object, "bcc"))
+    |> Kernel.++(recipient_values(object, "audience"))
+  end
+
+  defp nested_object_recipient_values(_), do: []
+
+  defp normalize_recipient_values(values) when is_list(values) do
+    Enum.flat_map(values, &normalize_recipient_values/1)
+  end
+
+  defp normalize_recipient_values(value) when is_binary(value), do: [value]
+  defp normalize_recipient_values(%{"id" => id}) when is_binary(id), do: [id]
+  defp normalize_recipient_values(%{"href" => href}) when is_binary(href), do: [href]
+  defp normalize_recipient_values(_), do: []
 
   defp check_actor_can_insert(%{"type" => "Delete"}), do: true
   defp check_actor_can_insert(%{"type" => "Undo"}), do: true
@@ -124,9 +168,12 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     with local <- Keyword.fetch!(meta, :local),
          {recipients, _, _} <- get_recipients(object),
          {:ok, activity} <-
-           %Activity{local: local, actor: object["actor"]}
-           |> Activity.change(%{data: object, recipients: recipients})
-           |> Repo.insert(),
+           Repo.insert(%Activity{
+             data: object,
+             local: local,
+             recipients: recipients,
+             actor: object["actor"]
+           }),
          # Expiration creation stays here so non-object activities keep the same
          # behavior as the older insertion path.
          {:ok, _} <- maybe_create_activity_expiration(activity) do
@@ -189,11 +236,14 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   defp insert_activity_with_expiration(data, local, recipients) do
-    changeset =
-      %Activity{local: local, actor: data["actor"]}
-      |> Activity.change(%{data: data, recipients: recipients})
+    struct = %Activity{
+      data: data,
+      local: local,
+      actor: data["actor"],
+      recipients: recipients
+    }
 
-    with {:ok, activity} <- Repo.insert(changeset) do
+    with {:ok, activity} <- Repo.insert(struct) do
       maybe_create_activity_expiration(activity)
     end
   end
@@ -980,6 +1030,18 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp restrict_actor(query, _), do: query
 
+  defp restrict_imported_archives(query, %{include_imported_archives: true}), do: query
+
+  defp restrict_imported_archives(query, %{actor_id: actor_id}) when is_binary(actor_id),
+    do: query
+
+  defp restrict_imported_archives(query, _opts) do
+    from(
+      activity in query,
+      where: fragment("NOT jsonb_exists(?, ?)", activity.data, "_unfathomably_import")
+    )
+  end
+
   defp restrict_type(query, %{type: type}) when is_binary(type) do
     from(activity in query, where: fragment("?->>'type' = ?", activity.data, ^type))
   end
@@ -1158,7 +1220,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     blocked_ap_ids = opts[:blocked_users_ap_ids] || User.blocked_users_ap_ids(user)
     domain_blocks = user.domain_blocks || []
 
-    following_ap_ids = User.get_friends_ap_ids(user)
+    following_ap_ids = opts[:following_ap_ids] || User.get_cached_user_friends_ap_ids(user)
 
     query =
       if has_named_binding?(query, :object), do: query, else: Activity.with_joined_object(query)
@@ -1505,7 +1567,21 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
     preloaded_ap_ids = User.outgoing_relationships_ap_ids(source_user, ap_id_relationships)
 
-    restrict_blocked_opts = Map.merge(%{blocked_users_ap_ids: preloaded_ap_ids[:block]}, opts)
+    following_ap_ids =
+      case opts[:blocking_user] do
+        %User{} = blocking_user -> User.get_cached_user_friends_ap_ids(blocking_user)
+        _ -> nil
+      end
+
+    restrict_blocked_opts =
+      Map.merge(
+        %{
+          blocked_users_ap_ids: preloaded_ap_ids[:block],
+          following_ap_ids: following_ap_ids
+        },
+        opts
+      )
+
     restrict_muted_opts = Map.merge(%{muted_users_ap_ids: preloaded_ap_ids[:mute]}, opts)
 
     restrict_muted_reblogs_opts =
@@ -1538,6 +1614,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       |> restrict_local(opts)
       |> restrict_remote(opts)
       |> restrict_actor(opts)
+      |> restrict_imported_archives(opts)
       |> restrict_type(opts)
       |> restrict_state(opts)
       |> restrict_assigned_account(opts)
@@ -1683,33 +1760,34 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp normalize_image(_), do: nil
 
   defp maybe_put_image_description(map, %{"name" => description}) when is_binary(description) do
-    put_image_description(map, description)
-  end
-
-  defp maybe_put_image_description(map, %{"summary" => description})
-       when is_binary(description) do
-    put_image_description(map, description)
+    Map.put(map, "name", description)
   end
 
   defp maybe_put_image_description(map, _), do: map
 
-  defp put_image_description(map, description) do
-    map
-    |> Map.put("name", description)
-    |> Map.put("summary", description)
+  defp normalize_actor_aliases(data) do
+    [data["alsoKnownAs"], data["copiedTo"]]
+    |> Enum.flat_map(&normalize_actor_alias_value/1)
+    |> Enum.reject(&(&1 == data["id"]))
+    |> Enum.uniq()
   end
 
-  defp normalize_also_known_as(urls) when is_list(urls), do: urls
-  defp normalize_also_known_as(url) when is_binary(url), do: [url]
-  defp normalize_also_known_as(nil), do: []
+  defp normalize_actor_alias_value(urls) when is_list(urls) do
+    Enum.flat_map(urls, &normalize_actor_alias_value/1)
+  end
+
+  defp normalize_actor_alias_value(url) when is_binary(url), do: [url]
+  defp normalize_actor_alias_value(%{"id" => url}) when is_binary(url), do: [url]
+  defp normalize_actor_alias_value(%{"href" => url}) when is_binary(url), do: [url]
+  defp normalize_actor_alias_value(%{"url" => url}) when is_binary(url), do: [url]
+  defp normalize_actor_alias_value(_), do: []
 
   defp object_to_user_data(data, additional) do
     fields =
       data
       |> Map.get("attachment", [])
       |> List.wrap()
-      |> Enum.filter(fn %{"type" => t} -> t == "PropertyValue" end)
-      |> Enum.map(fn fields -> Map.take(fields, ["name", "value"]) end)
+      |> Enum.flat_map(&actor_field_from_attachment/1)
 
     emojis =
       data
@@ -1736,10 +1814,17 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     invisible = data["invisible"] || false
     actor_type = data["type"] || "Person"
 
-    featured_address = data["featured"]
-    {:ok, pinned_objects} = fetch_and_prepare_featured_from_ap_id(featured_address)
+    featured_collection = data["featured"]
+    featured_address = collection_address(featured_collection)
+    {:ok, pinned_objects} = fetch_and_prepare_featured_from_ap_id(featured_collection)
+    outbox_address = collection_address(data["outbox"])
+    attributed_to_address = collection_address(data["attributedTo"])
+    moderator_count = collection_count(data["attributedTo"])
 
-    public_key = public_key_pem(data["publicKey"])
+    public_key =
+      if is_map(data["publicKey"]) && is_binary(data["publicKey"]["publicKeyPem"]) do
+        data["publicKey"]["publicKeyPem"]
+      end
 
     shared_inbox =
       if is_map(data["endpoints"]) && is_binary(data["endpoints"]["sharedInbox"]) do
@@ -1772,13 +1857,18 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
          follower_address: data["followers"],
          following_address: data["following"],
          featured_address: featured_address,
+         outbox_address: outbox_address,
+         attributed_to_address: attributed_to_address,
+         moderator_count: moderator_count,
          bio: data["summary"] || "",
          raw_bio: data["_misskey_summary"],
          actor_type: actor_type,
-         also_known_as: normalize_also_known_as(data["alsoKnownAs"]),
+         also_known_as: normalize_actor_aliases(data),
          public_key: public_key,
          inbox: data["inbox"],
          shared_inbox: shared_inbox,
+         is_indexable: normalize_optional_boolean(data["indexable"]),
+         posting_restricted_to_mods: normalize_boolean(data["postingRestrictedToMods"]),
          accepts_chat_messages: accepts_chat_messages,
          birthday: birthday,
          show_birthday: show_birthday,
@@ -1788,16 +1878,6 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
        }}
     end
   end
-
-  defp public_key_pem(keys) when is_list(keys) do
-    Enum.find_value(keys, &public_key_pem/1)
-  end
-
-  defp public_key_pem(%{"publicKeyPem" => public_key}) when is_binary(public_key), do: public_key
-
-  defp public_key_pem(%{"publicKey" => public_key}), do: public_key_pem(public_key)
-
-  defp public_key_pem(_), do: nil
 
   defp nickname_from_actor(data, additional) do
     generated = generated_nickname(data)
@@ -1868,31 +1948,95 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp generate_nickname(_), do: nil
 
   def fetch_follow_information_for_user(user) do
-    with {:ok, following_data} <-
-           Fetcher.fetch_and_contain_remote_object_from_id(user.following_address),
-         {:ok, hide_follows} <- collection_private(following_data),
-         {:ok, followers_data} <-
-           Fetcher.fetch_and_contain_remote_object_from_id(user.follower_address),
-         {:ok, hide_followers} <- collection_private(followers_data) do
-      {:ok,
-       %{
-         hide_follows: hide_follows,
-         follower_count: normalize_counter(followers_data["totalItems"]),
-         following_count: normalize_counter(following_data["totalItems"]),
-         hide_followers: hide_followers
-       }}
+    results = [
+      fetch_follow_collection(user, :following),
+      fetch_follow_collection(user, :followers)
+    ]
+
+    info =
+      results
+      |> Enum.flat_map(fn
+        {:ok, data} -> [data]
+        {:error, _} -> []
+      end)
+      |> Enum.reduce(%{}, &Map.merge(&2, &1))
+
+    if map_size(info) > 0 do
+      {:ok, info}
     else
-      {:error, _} = e -> e
-      e -> {:error, e}
+      case Enum.find(results, &match?({:error, _}, &1)) do
+        {:error, reason} -> {:error, reason}
+        _ -> {:error, :no_follow_information}
+      end
     end
   end
 
   defp normalize_counter(counter) when is_integer(counter), do: counter
+
+  defp normalize_counter(counter) when is_binary(counter) do
+    case Integer.parse(counter) do
+      {value, _} -> value
+      _ -> 0
+    end
+  end
+
   defp normalize_counter(_), do: 0
+
+  defp fetch_follow_collection(user, :following) do
+    user.following_address
+    |> fetch_counter_collection(user.ap_id, :following)
+    |> follow_collection_info(:following)
+  end
+
+  defp fetch_follow_collection(user, :followers) do
+    user.follower_address
+    |> fetch_counter_collection(user.ap_id, :followers)
+    |> follow_collection_info(:followers)
+  end
+
+  defp fetch_counter_collection(address, _ap_id, _field) when address in [nil, ""] do
+    {:error, :missing_collection}
+  end
+
+  defp fetch_counter_collection(address, ap_id, field) do
+    case Fetcher.fetch_and_contain_remote_collection_from_id(address) do
+      {:ok, data} ->
+        {:ok, data}
+
+      {:error, reason} = error ->
+        Logger.debug(
+          "Could not refresh #{field} collection for #{ap_id} at #{address}: #{inspect(reason)}"
+        )
+
+        error
+    end
+  end
+
+  defp follow_collection_info({:ok, data}, :following) do
+    with {:ok, hide_follows} <- collection_private(data) do
+      {:ok,
+       %{
+         hide_follows: hide_follows,
+         following_count: normalize_counter(data["totalItems"])
+       }}
+    end
+  end
+
+  defp follow_collection_info({:ok, data}, :followers) do
+    with {:ok, hide_followers} <- collection_private(data) do
+      {:ok,
+       %{
+         hide_followers: hide_followers,
+         follower_count: normalize_counter(data["totalItems"])
+       }}
+    end
+  end
+
+  defp follow_collection_info({:error, reason}, _field), do: {:error, reason}
 
   def maybe_update_follow_information(user_data) do
     with {:enabled, true} <- {:enabled, Config.get([:instance, :external_user_synchronization])},
-         {_, true} <- {:user_type_check, user_data[:type] in ["Person", "Service"]},
+         {_, true} <- {:user_type_check, user_data[:actor_type] in ["Person", "Service", "Group"]},
          {_, true} <-
            {:collections_available,
             !!(user_data[:following_address] && user_data[:follower_address])},
@@ -1913,27 +2057,54 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         user_data
 
       e ->
-        Logger.error(
-          "Follower/Following counter update for #{user_data.ap_id} failed.\n" <> inspect(e)
-        )
+        log_follow_information_refresh_error(user_data.ap_id, e)
 
         user_data
     end
   end
 
+  defp log_follow_information_refresh_error(ap_id, {:error, reason}) do
+    log_follow_information_refresh_error(ap_id, reason)
+  end
+
+  defp log_follow_information_refresh_error(ap_id, reason) do
+    message = "Follower/Following counter update for #{ap_id} failed.\n#{inspect(reason)}"
+
+    if expected_remote_collection_unavailable?(reason) do
+      Logger.debug(message)
+    else
+      Logger.warning(message)
+    end
+  end
+
+  defp expected_remote_collection_unavailable?("Object has been deleted"), do: true
+
+  defp expected_remote_collection_unavailable?({:http, status})
+       when status in [401, 403, 404, 410],
+       do: true
+
+  defp expected_remote_collection_unavailable?(_), do: false
+
   defp collection_private(%{"first" => %{"type" => type}})
        when type in ["CollectionPage", "OrderedCollectionPage"],
        do: {:ok, false}
 
+  defp collection_private(%{"type" => type, "totalItems" => counter})
+       when type in ["Collection", "OrderedCollection"] and is_integer(counter),
+       do: {:ok, false}
+
   defp collection_private(%{"first" => first}) do
     with {:ok, %{"type" => type}} when type in ["CollectionPage", "OrderedCollectionPage"] <-
-           Fetcher.fetch_and_contain_remote_object_from_id(first) do
+           Fetcher.fetch_and_contain_remote_collection_from_id(first) do
       {:ok, false}
     else
       {:error, _} -> {:ok, true}
       e -> {:error, e}
     end
   end
+
+  defp collection_private(%{"orderedItems" => items}) when is_list(items), do: {:ok, false}
+  defp collection_private(%{"items" => items}) when is_list(items), do: {:ok, false}
 
   defp collection_private(_data), do: {:ok, true}
 
@@ -1949,9 +2120,14 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp fetch_and_prepare_user_from_ap_id(ap_id, additional) do
     with {:ok, data} <- Fetcher.fetch_and_contain_remote_object_from_id(ap_id),
+         :ok <- reject_tombstone_actor(data),
          {:ok, data} <- user_data_from_user_object(data, additional) do
       {:ok, maybe_update_follow_information(data)}
     else
+      {:error, :actor_tombstone} ->
+        Logger.debug("Remote actor at #{ap_id} is a Tombstone")
+        {:error, :actor_tombstone}
+
       # If this has been deleted, only log a debug and not an error
       {:error, "Object has been deleted" = e} ->
         Logger.debug("Could not decode user at fetch #{ap_id}, #{inspect(e)}")
@@ -1961,14 +2137,33 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         Logger.info("Rejected user #{ap_id}: #{inspect(reason)}")
         {:error, e}
 
-      {:error, {:http, code} = e} when code in [401, 403, 404, 410] ->
-        Logger.debug("Could not decode user at fetch #{ap_id}, #{inspect(e)}")
-        {:error, e}
-
       {:error, e} ->
-        Logger.error("Could not decode user at fetch #{ap_id}, #{inspect(e)}")
+        log_remote_fetch_error("Could not decode user", ap_id, e)
         {:error, e}
     end
+  end
+
+  defp reject_tombstone_actor(%{"type" => "Tombstone"}), do: {:error, :actor_tombstone}
+  defp reject_tombstone_actor(_), do: :ok
+
+  defp log_remote_fetch_error(message, ap_id, {:http, code}) when code in [401, 403, 404, 410] do
+    Logger.debug("#{message} at fetch #{ap_id}, remote returned HTTP #{code}")
+  end
+
+  defp log_remote_fetch_error(message, ap_id, {:content_type, content_type}) do
+    Logger.debug("#{message} at fetch #{ap_id}, remote returned content-type #{content_type}")
+  end
+
+  defp log_remote_fetch_error(message, ap_id, "Object has been deleted") do
+    Logger.debug("#{message} at fetch #{ap_id}, \"Object has been deleted\"")
+  end
+
+  defp log_remote_fetch_error(message, ap_id, {:http, code}) do
+    Logger.warning("#{message} at fetch #{ap_id}, remote returned HTTP #{code}")
+  end
+
+  defp log_remote_fetch_error(message, ap_id, reason) do
+    Logger.warning("#{message} at fetch #{ap_id}, #{inspect(reason)}")
   end
 
   def maybe_handle_clashing_nickname(data) do
@@ -2001,24 +2196,15 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         "type" => type,
         "orderedItems" => objects
       })
-      when type in @featured_collection_item_types and is_list(objects) do
-    objects
-    |> Enum.reduce(%{}, fn
-      %{"id" => object_ap_id}, acc when is_binary(object_ap_id) ->
-        Map.put(acc, object_ap_id, NaiveDateTime.utc_now())
-
-      object_ap_id, acc when is_binary(object_ap_id) ->
-        Map.put(acc, object_ap_id, NaiveDateTime.utc_now())
-
-      _, acc ->
-        acc
+      when type in @featured_collection_item_types do
+    Map.new(objects, fn
+      %{"id" => object_ap_id} -> {object_ap_id, NaiveDateTime.utc_now()}
+      object_ap_id when is_binary(object_ap_id) -> {object_ap_id, NaiveDateTime.utc_now()}
     end)
   end
 
-  def pin_data_from_featured_collection(nil), do: %{}
-
   def pin_data_from_featured_collection(obj) do
-    Logger.debug("Could not parse featured collection #{inspect(obj)}")
+    Logger.warning("Could not parse featured collection #{inspect(obj)}")
     %{}
   end
 
@@ -2026,15 +2212,68 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     {:ok, %{}}
   end
 
-  def fetch_and_prepare_featured_from_ap_id(ap_id) do
+  def fetch_and_prepare_featured_from_ap_id(%{} = data) do
+    {:ok, prepare_featured_collection(data)}
+  end
+
+  def fetch_and_prepare_featured_from_ap_id(ap_id) when is_binary(ap_id) do
     with {:ok, data} <- Fetcher.fetch_and_contain_remote_object_from_id(ap_id) do
       {:ok, prepare_featured_collection(data)}
     else
       e ->
-        Logger.debug("Could not decode featured collection at fetch #{ap_id}, #{inspect(e)}")
+        log_remote_fetch_error("Could not decode featured collection", ap_id, unwrap_error(e))
         {:ok, %{}}
     end
   end
+
+  def fetch_and_prepare_featured_from_ap_id(_), do: {:ok, %{}}
+
+  defp collection_address(address) when is_binary(address), do: address
+  defp collection_address(%{"id" => address}) when is_binary(address), do: address
+  defp collection_address(_), do: nil
+
+  defp collection_count(address) when is_binary(address) do
+    case Fetcher.fetch_and_contain_remote_collection_from_id(address) do
+      {:ok, data} ->
+        collection_count(data)
+
+      e ->
+        log_remote_fetch_error("Could not decode actor collection", address, unwrap_error(e))
+        0
+    end
+  end
+
+  defp collection_count(%{"totalItems" => count}), do: normalize_counter(count)
+  defp collection_count(%{"total_items" => count}), do: normalize_counter(count)
+  defp collection_count(_), do: 0
+
+  defp normalize_optional_boolean(value) when is_boolean(value), do: value
+  defp normalize_optional_boolean(value) when value in ["true", "1", 1], do: true
+  defp normalize_optional_boolean(value) when value in ["false", "0", 0], do: false
+  defp normalize_optional_boolean(_), do: nil
+
+  defp normalize_boolean(value), do: normalize_optional_boolean(value) || false
+
+  defp actor_field_from_attachment(%{
+         "type" => "PropertyValue",
+         "name" => name,
+         "value" => value
+       })
+       when is_binary(name) and is_binary(value) do
+    [%{"name" => name, "value" => value}]
+  end
+
+  defp actor_field_from_attachment(%{"type" => "Link", "name" => name, "href" => href})
+       when is_binary(name) and is_binary(href) do
+    [%{"name" => name, "value" => Pleroma.HTML.strip_tags(href)}]
+  end
+
+  defp actor_field_from_attachment(%{"type" => "Note", "name" => name, "content" => content})
+       when is_binary(name) and is_binary(content) do
+    [%{"name" => name, "value" => Pleroma.HTML.strip_tags(content)}]
+  end
+
+  defp actor_field_from_attachment(_), do: []
 
   defp prepare_featured_collection(%{"orderedItems" => objects} = data) when is_list(objects) do
     pin_data_from_featured_collection(data)
@@ -2055,7 +2294,12 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         pin_data_from_featured_collection(data)
 
       e ->
-        Logger.debug("Could not decode featured collection page at fetch #{first}, #{inspect(e)}")
+        log_remote_fetch_error(
+          "Could not decode featured collection page",
+          first,
+          unwrap_error(e)
+        )
+
         %{}
     end
   end
@@ -2063,6 +2307,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp prepare_featured_collection(data) do
     pin_data_from_featured_collection(data)
   end
+
+  defp unwrap_error({:error, reason}), do: reason
 
   def enqueue_pin_fetches(%{pinned_objects: pins}) do
     # enqueue a task to fetch all pinned objects
@@ -2096,23 +2342,35 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   def make_user_from_ap_id(ap_id, additional \\ []) do
     user = User.get_cached_by_ap_id(ap_id)
 
-    with {:ok, data} <- fetch_and_prepare_user_from_ap_id(ap_id, additional) do
-      enqueue_pin_fetches(data)
+    case fetch_and_prepare_user_from_ap_id(ap_id, additional) do
+      {:ok, data} ->
+        enqueue_pin_fetches(data)
 
-      if user do
-        user
-        |> User.remote_user_changeset(data)
-        |> User.update_and_set_cache()
-      else
-        maybe_handle_clashing_nickname(data)
+        if user do
+          user
+          |> User.remote_user_changeset(data)
+          |> User.update_and_set_cache()
+        else
+          maybe_handle_clashing_nickname(data)
 
-        data
-        |> User.remote_user_changeset()
-        |> Repo.insert()
-        |> User.set_cache()
-      end
+          data
+          |> User.remote_user_changeset()
+          |> Repo.insert()
+          |> User.set_cache()
+        end
+
+      {:error, :actor_tombstone} ->
+        handle_tombstone_user_fetch(user)
+
+      error ->
+        error
     end
   end
+
+  defp handle_tombstone_user_fetch(%User{local: false} = user),
+    do: User.set_remote_deactivated(user)
+
+  defp handle_tombstone_user_fetch(_), do: {:error, "Object has been deleted"}
 
   def make_user_from_nickname(nickname) do
     with {:ok, %{"ap_id" => ap_id, "subject" => "acct:" <> acct}} when not is_nil(ap_id) <-

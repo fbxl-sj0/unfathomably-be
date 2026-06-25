@@ -1859,48 +1859,6 @@ config :pleroma, :config_description, [
           "The number of Note replies' URIs to be included with outgoing federation (`5` to match Mastodon hardcoded value, `0` to disable the output)"
       },
       %{
-        key: :remote_replies_collection_refresh,
-        type: :keyword,
-        description:
-          "Settings for delayed refreshes of remote public posts' advertised replies collections.",
-        children: [
-          %{
-            key: :enabled,
-            type: :boolean,
-            description:
-              "Enable delayed fetching of advertised replies collections for remote public posts."
-          },
-          %{
-            key: :schedule,
-            type: {:list, :integer},
-            description:
-              "Seconds after an incoming remote post when its replies collection should be refreshed."
-          },
-          %{
-            key: :triggered_refresh_delay,
-            type: :integer,
-            description:
-              "Seconds to debounce refreshes triggered by incoming remote replies to a known post."
-          },
-          %{
-            key: :triggered_refresh_ancestor_depth,
-            type: :integer,
-            description:
-              "Maximum number of known replied-to ancestors to refresh when an incoming remote reply arrives (`0` to disable triggered ancestor refreshes)."
-          },
-          %{
-            key: :max_pages,
-            type: :integer,
-            description: "Maximum number of collection/page documents to fetch per refresh."
-          },
-          %{
-            key: :max_items,
-            type: :integer,
-            description: "Maximum number of reply object fetches to enqueue per refresh."
-          }
-        ]
-      },
-      %{
         key: :follow_handshake_timeout,
         type: :integer,
         description: "Following handshake timeout",
@@ -2070,6 +2028,7 @@ config :pleroma, :config_description, [
           mailer: 5,
           scheduled_activities: 5,
           poll_notifications: 2,
+          reachability: 3,
           notifications: 8,
           transmogrifier: 5,
           web_push: 8
@@ -2134,6 +2093,13 @@ config :pleroma, :config_description, [
             type: :integer,
             description: "Creates notifications for activities in the background",
             suggestions: [8]
+          },
+          %{
+            key: :reachability,
+            type: :integer,
+            description:
+              "Checks whether previously unreachable federated hosts are reachable again",
+            suggestions: [3]
           },
           %{
             key: :transmogrifier,
@@ -2206,14 +2172,21 @@ config :pleroma, :config_description, [
         key: :batch_size,
         type: :integer,
         description: "Maximum number of remote post objects to prune per cleanup run.",
-        suggestions: [200, 500, 1000]
+        suggestions: [50, 200, 500]
       },
       %{
         key: :candidate_scan_limit,
         type: :integer,
         description:
           "Maximum number of old remote post objects to inspect before applying the expensive local-interaction checks.",
-        suggestions: [20_000, 50_000]
+        suggestions: [1_000, 5_000, 20_000]
+      },
+      %{
+        key: :max_scan_pages,
+        type: :integer,
+        description:
+          "Maximum number of old remote post candidate windows to scan per cleanup run.",
+        suggestions: [10, 20, 50]
       },
       %{
         key: :query_timeout_ms,
@@ -2263,6 +2236,29 @@ config :pleroma, :config_description, [
         type: :integer,
         description: "Maximum number of group discussion objects to purge per cleanup run.",
         suggestions: [200]
+      },
+      %{
+        key: :query_timeout_ms,
+        type: :integer,
+        description:
+          "Maximum time, in milliseconds, for the database query used by the group discussion cleanup worker.",
+        suggestions: [60_000, 120_000]
+      }
+    ]
+  },
+  %{
+    group: :pleroma,
+    key: Pleroma.Workers.RemoteFetcherWorker,
+    type: :group,
+    description:
+      "Fetches remote objects and reply threads in the background when they were referenced but not available locally.",
+    children: [
+      %{
+        key: :timeout_ms,
+        type: :integer,
+        description:
+          "Maximum time, in milliseconds, for a single remote object or thread fetch worker. Slow but valid federated services may need more than the historical 10 second timeout.",
+        suggestions: [30_000, 60_000]
       }
     ]
   },
@@ -3623,6 +3619,34 @@ config :pleroma, :config_description, [
   },
   %{
     group: :pleroma,
+    key: Pleroma.User.PostArchiveImport,
+    type: :group,
+    description: "Post Archive Import",
+    children: [
+      %{
+        key: :policy,
+        type: :atom,
+        description:
+          "Controls whether users can import old posts from an ActivityPub archive. Use :disabled to reject imports, :moderated to require admin approval, or :open to queue imports immediately.",
+        suggestions: [:disabled, :moderated, :open]
+      },
+      %{
+        key: :max_file_size,
+        type: :integer,
+        description: "Maximum accepted post archive ZIP size, in bytes.",
+        suggestions: [100 * 1024 * 1024]
+      },
+      %{
+        key: :dir,
+        type: :string,
+        description:
+          "Directory used to store post archive ZIP files while they are waiting for review or import. Defaults to the system temporary directory.",
+        suggestions: [nil]
+      }
+    ]
+  },
+  %{
+    group: :pleroma,
     key: ConcurrentLimiter,
     type: :group,
     description: "Limits configuration for background tasks.",
@@ -3764,7 +3788,7 @@ config :pleroma, :config_description, [
         type: :string,
         suggestions: [
           "http://127.0.0.1:5000",
-          "http://127.0.0.1:5000",
+          "http://192.168.250.99:5000",
           "https://opentranslate.devol.it"
         ]
       },

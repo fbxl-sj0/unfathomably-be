@@ -8,6 +8,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidationTest do
   alias Pleroma.Object
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.ObjectValidator
+  alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.CommonAPI
 
   import Pleroma.Factory
@@ -27,6 +28,37 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidationTest do
       {:ok, valid_post_delete, _} = ObjectValidator.validate(valid_post_delete, [])
 
       assert valid_post_delete["deleted_activity_id"]
+    end
+
+    test "it is valid when the object was pruned but the Create activity remains", %{
+      user: user,
+      valid_post_delete: valid_post_delete
+    } do
+      object_id = valid_post_delete["object"]
+      object = Object.get_by_ap_id(object_id)
+
+      {:ok, _object} = Object.prune(object)
+      {:ok, pruned_delete, _} = Builder.delete(user, object_id)
+
+      assert {:ok, _delete, meta} = ObjectValidator.validate(pruned_delete, [])
+      assert %{state: :pruned_object_with_create, object_id: ^object_id} = meta[:delete_target]
+    end
+
+    test "it marks a repeated delete for a tombstoned object as idempotent", %{
+      valid_post_delete: valid_post_delete
+    } do
+      {:ok, first_delete, _meta} = Pipeline.common_pipeline(valid_post_delete, local: true)
+
+      duplicate_delete =
+        valid_post_delete
+        |> Map.put("id", "#{valid_post_delete["id"]}/duplicate")
+
+      assert {:ok, _delete, meta} = ObjectValidator.validate(duplicate_delete, [])
+
+      assert %{state: :tombstone_duplicate, existing_delete: existing_delete} =
+               meta[:delete_target]
+
+      assert existing_delete.id == first_delete.id
     end
 
     test "it is invalid if the object isn't in a list of certain types", %{

@@ -6,10 +6,14 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   use Ecto.Schema
 
   alias Pleroma.Activity
+  alias Pleroma.Activity.Queries
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
+  alias Pleroma.Object
+  alias Pleroma.Repo
   alias Pleroma.User
 
   import Ecto.Changeset
+  import Ecto.Query
   import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
@@ -36,15 +40,13 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
       cng
       |> get_field(:object)
 
-    with %Activity{id: id} <- Activity.get_create_by_object_ap_id(object) do
-      cng
-      |> put_change(:deleted_activity_id, id)
-    else
+    case get_create_by_object_ap_id(object) do
+      %Activity{id: id} -> put_change(cng, :deleted_activity_id, id)
       _ -> cng
     end
   end
 
-  @deletable_types ~w{
+  @deletable_object_types ~w{
     Answer
     Article
     Audio
@@ -53,16 +55,16 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     Note
     Page
     Question
-    Tombstone
     Video
   }
+
   defp validate_data(cng) do
     cng
     |> validate_required([:id, :type, :actor, :to, :cc, :object])
     |> validate_inclusion(:type, ["Delete"])
     |> validate_delete_actor(:actor)
     |> validate_modification_rights(:messages_delete)
-    |> validate_object_or_user_presence(allowed_types: @deletable_types)
+    |> validate_delete_target()
     |> add_deleted_activity_id()
   end
 
@@ -74,6 +76,100 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     data
     |> cast_data
     |> validate_data
+  end
+
+  def classify_target(target, options \\ [])
+
+  def classify_target(%{"object" => object_id}, options), do: classify_target(object_id, options)
+  def classify_target(%{"id" => object_id}, options), do: classify_target(object_id, options)
+
+  def classify_target(object_id, options) when is_binary(object_id) do
+    case User.get_cached_by_ap_id(object_id) do
+      %User{} = user ->
+        %{state: :user, object_id: object_id, user: user}
+
+      _ ->
+        classify_object_target(object_id, options)
+    end
+  end
+
+  def classify_target(object_id, _options), do: %{state: :missing, object_id: object_id}
+
+  defp classify_object_target(object_id, options) do
+    case Object.get_cached_by_ap_id(object_id) do
+      %Object{data: %{"type" => "Tombstone"}} = object ->
+        case get_latest_delete_by_object_ap_id(object_id, options[:ignore_activity_id]) do
+          %Activity{} = existing_delete ->
+            %{
+              state: :tombstone_duplicate,
+              object_id: object_id,
+              object: object,
+              existing_delete: existing_delete
+            }
+
+          _ ->
+            %{state: :live_object, object_id: object_id, object: object}
+        end
+
+      %Object{data: %{"type" => type}} = object when type in @deletable_object_types ->
+        %{state: :live_object, object_id: object_id, object: object}
+
+      %Object{} = object ->
+        %{state: :invalid_type, object_id: object_id, object: object}
+
+      nil ->
+        case get_create_by_object_ap_id(object_id) do
+          %Activity{} = create_activity ->
+            %{
+              state: :pruned_object_with_create,
+              object_id: object_id,
+              create_activity: create_activity
+            }
+
+          _ ->
+            %{state: :missing, object_id: object_id}
+        end
+    end
+  end
+
+  defp get_latest_delete_by_object_ap_id(object_id, ignored_activity_id) do
+    query =
+      Activity
+      |> Queries.by_object_id(object_id)
+      |> Queries.by_type("Delete")
+
+    query =
+      if ignored_activity_id do
+        where(query, [activity], activity.id != ^ignored_activity_id)
+      else
+        query
+      end
+
+    query
+    |> order_by([activity], desc: activity.id)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  defp get_create_by_object_ap_id(object_id) when is_binary(object_id) do
+    Activity
+    |> Queries.by_object_id(object_id)
+    |> Queries.by_type("Create")
+    |> order_by([activity], desc: activity.id)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  defp get_create_by_object_ap_id(_), do: nil
+
+  defp validate_delete_target(cng) do
+    validate_change(cng, :object, fn field_name, object_id ->
+      case classify_target(object_id) do
+        %{state: :missing} -> [{field_name, "can't find object"}]
+        %{state: :invalid_type} -> [{field_name, "object not in allowed types"}]
+        _ -> []
+      end
+    end)
   end
 
   defp validate_delete_actor(cng, field_name) do

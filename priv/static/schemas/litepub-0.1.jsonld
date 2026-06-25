@@ -32,6 +32,7 @@
             "quoteUri": "fedibird:quoteUri",
             "_misskey_quote": "misskey:_misskey_quote",
             "_misskey_summary": "misskey:_misskey_summary",
+            "_misskey_reaction": "misskey:_misskey_reaction",
             "oauthRegistrationEndpoint": {
                 "@id": "litepub:oauthRegistrationEndpoint",
                 "@type": "@id"

@@ -1,6 +1,6 @@
 defmodule Soapbox do
   @name "unfathomably-fe"
-  @version "3.0.0"
+  @version "3.2.1"
 
   def name, do: @name
   def version, do: @version

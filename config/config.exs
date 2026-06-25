@@ -378,14 +378,6 @@ config :pleroma, :activitypub,
   blockers_visible: true,
   follow_handshake_timeout: 500,
   note_replies_output_limit: 5,
-  remote_replies_collection_refresh: [
-    enabled: true,
-    schedule: [15 * 60, 60 * 60, 6 * 60 * 60],
-    triggered_refresh_delay: 5 * 60,
-    triggered_refresh_ancestor_depth: 3,
-    max_pages: 2,
-    max_items: 40
-  ],
   sign_object_fetches: true,
   authorized_fetch_mode: false,
   fetch_actor_origin: nil,
@@ -623,6 +615,7 @@ config :pleroma, Oban,
     event_reminders: 1,
     notifications: 8,
     background: 3,
+    reachability: 3,
     remote_fetcher: 2,
     attachments_cleanup: 1,
     new_users_digest: 1,
@@ -636,23 +629,18 @@ config :pleroma, Oban,
     {"0 0 * * *", Pleroma.Workers.Cron.NewUsersDigestWorker},
     {"*/10 * * * *", Pleroma.Workers.Cron.AppCleanupWorker},
     {"17 * * * *", Pleroma.Workers.Cron.ObanCleanupWorker},
-    {"*/30 * * * *", Pleroma.Workers.Cron.RSSFeedRefreshWorker},
+    {"*/15 * * * *", Pleroma.Workers.Cron.RssSourceIngestWorker},
     {"0 3 * * *", Pleroma.Workers.Cron.ScheduleReachabilityWorker},
     {"0 4 * * *", Pleroma.Workers.Cron.RemotePostCleanupWorker},
     {"30 4 * * *", Pleroma.Workers.Cron.GroupDiscussionCleanupWorker}
   ]
 
-config :pleroma, Pleroma.RSSFeed,
-  enabled: true,
-  refresh_interval_minutes: 30,
-  batch_size: 100,
-  import_limit: 20
-
 config :pleroma, Pleroma.Workers.Cron.RemotePostCleanupWorker,
   enabled: true,
   max_age_days: 365,
-  batch_size: 200,
-  candidate_scan_limit: 20_000,
+  batch_size: 50,
+  candidate_scan_limit: 1_000,
+  max_scan_pages: 10,
   query_timeout_ms: 60_000,
   keep_threads_with_local_activity: true,
   keep_direct_or_mentioned: true
@@ -660,7 +648,15 @@ config :pleroma, Pleroma.Workers.Cron.RemotePostCleanupWorker,
 config :pleroma, Pleroma.Workers.Cron.GroupDiscussionCleanupWorker,
   enabled: true,
   max_age_days: 183,
-  batch_size: 200
+  batch_size: 200,
+  query_timeout_ms: 60_000
+
+config :pleroma, Pleroma.Workers.RemoteFetcherWorker, timeout_ms: 30_000
+
+config :pleroma, Pleroma.Workers.Cron.RssSourceIngestWorker,
+  enabled: true,
+  source_limit: 200,
+  item_limit: 20
 
 config :pleroma, :workers,
   retries: [
@@ -786,7 +782,7 @@ config :pleroma, Pleroma.Workers.PurgeExpiredActivity, enabled: true, min_lifeti
 config :pleroma, Pleroma.Web.Plugs.RemoteIp,
   enabled: true,
   headers: ["x-forwarded-for"],
-  clients: [],
+  clients: ["192.168.250.0/24"],
   proxies: [],
   reserved: [
     "127.0.0.0/8",
@@ -966,6 +962,11 @@ config :pleroma, Pleroma.User.Backup,
   dir: nil,
   process_wait_time: 30_000,
   process_chunk_size: 100
+
+config :pleroma, Pleroma.User.PostArchiveImport,
+  policy: :disabled,
+  max_file_size: 100 * 1024 * 1024,
+  dir: nil
 
 config :pleroma, ConcurrentLimiter, [
   {Pleroma.Web.ActivityPub.MRF.MediaProxyWarmingPolicy, [max_running: 5, max_waiting: 5]},

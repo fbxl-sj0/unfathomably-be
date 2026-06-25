@@ -46,13 +46,25 @@ defmodule Pleroma.Web.ActivityPub.Pipeline do
   def do_common_pipeline(message, meta) do
     with {_, {:ok, message, meta}} <- {:validate, object_validator().validate(message, meta)},
          {_, {:ok, message, meta}} <- {:mrf, mrf().pipeline_filter(message, meta)},
+         {_, :continue} <- {:idempotent_delete, maybe_skip_idempotent_delete(meta)},
          {_, {:ok, message, meta}} <- {:persist, activity_pub().persist(message, meta)},
          {_, {:ok, message, meta}} <- {:side_effects, side_effects().handle(message, meta)},
          {_, {:ok, _}} <- {:federation, maybe_federate(message, meta)} do
       {:ok, message, meta}
     else
       {:mrf, {:reject, message, _}} -> {:reject, message}
+      {:idempotent_delete, {:ok, activity, meta}} -> {:ok, activity, meta}
       e -> {:error, e}
+    end
+  end
+
+  defp maybe_skip_idempotent_delete(meta) do
+    case Keyword.get(meta, :delete_target) do
+      %{state: :tombstone_duplicate, existing_delete: %Activity{} = activity} ->
+        {:ok, activity, meta}
+
+      _ ->
+        :continue
     end
   end
 

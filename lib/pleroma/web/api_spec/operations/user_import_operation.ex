@@ -58,6 +58,39 @@ defmodule Pleroma.Web.ApiSpec.UserImportOperation do
     }
   end
 
+  def post_archive_imports_operation do
+    %Operation{
+      tags: ["Data import"],
+      summary: "List post archive imports",
+      operationId: "UserImportController.post_archive_imports",
+      responses: %{
+        200 =>
+          Operation.response("Post archive imports", "application/json", %Schema{
+            type: :array,
+            items: post_archive_import()
+          })
+      },
+      security: [%{"oAuth" => ["read:accounts"]}]
+    }
+  end
+
+  def post_archive_operation do
+    %Operation{
+      tags: ["Data import"],
+      summary: "Import posts from an ActivityPub archive",
+      operationId: "UserImportController.post_archive",
+      requestBody: request_body("Parameters", post_archive_request(), required: true),
+      responses: %{
+        200 =>
+          Operation.response("Post archive import", "application/json", post_archive_import()),
+        400 => Operation.response("Error", "application/json", ApiError),
+        403 => Operation.response("Error", "application/json", ApiError),
+        500 => Operation.response("Error", "application/json", ApiError)
+      },
+      security: [%{"oAuth" => ["write:statuses"]}]
+    }
+  end
+
   defp import_request do
     %Schema{
       type: :object,
@@ -71,6 +104,52 @@ defmodule Pleroma.Web.ApiSpec.UserImportOperation do
             %Schema{type: :string}
           ]
         }
+      }
+    }
+  end
+
+  defp post_archive_request do
+    %Schema{
+      type: :object,
+      required: [:archive],
+      properties: %{
+        archive: %Schema{
+          description: "ZIP archive containing actor.json and outbox.json.",
+          type: :string,
+          format: :binary
+        }
+      }
+    }
+  end
+
+  defp post_archive_import do
+    %Schema{
+      type: :object,
+      properties: %{
+        id: %Schema{type: :integer},
+        content_type: %Schema{type: :string},
+        file_name: %Schema{type: :string},
+        file_size: %Schema{type: :integer},
+        state: %Schema{
+          type: :string,
+          enum: [
+            "pending",
+            "awaiting_review",
+            "approved",
+            "running",
+            "complete",
+            "failed",
+            "rejected",
+            "invalid"
+          ]
+        },
+        processed_number: %Schema{type: :integer},
+        total_items: %Schema{type: :integer},
+        imported_count: %Schema{type: :integer},
+        original_actor: %Schema{type: :string, nullable: true},
+        error: %Schema{type: :string, nullable: true},
+        approved_at: %Schema{type: :string, nullable: true},
+        inserted_at: %Schema{type: :string}
       }
     }
   end

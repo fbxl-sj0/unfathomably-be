@@ -8,11 +8,13 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   alias Pleroma.Activity
   alias Pleroma.Config
   alias Pleroma.EctoType.ActivityPub.ObjectValidators.ObjectID
+  alias Pleroma.GroupMembership
   alias Pleroma.Maps
   alias Pleroma.Notification
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.AdminAPI.AccountView
@@ -581,6 +583,19 @@ defmodule Pleroma.Web.ActivityPub.Utils do
     |> Repo.one()
   end
 
+  def get_existing_emoji_reaction(actor, %{data: %{"id" => object_ap_id}}, emoji) do
+    emoji = Pleroma.Emoji.maybe_quote(emoji)
+
+    "EmojiReact"
+    |> Activity.Queries.by_type()
+    |> where(actor: ^actor)
+    |> custom_emoji_discriminator(emoji)
+    |> Activity.Queries.by_object_id(object_ap_id)
+    |> order_by([activity], fragment("? desc nulls last", activity.id))
+    |> limit(1)
+    |> Repo.one()
+  end
+
   defp custom_emoji_discriminator(query, emoji) do
     if String.contains?(emoji, "@") do
       stripped = Pleroma.Emoji.maybe_strip_name(emoji)
@@ -1072,17 +1087,16 @@ defmodule Pleroma.Web.ActivityPub.Utils do
     end
   end
 
-  def maybe_handle_group_posts(%Activity{data: %{"to" => to}} = activity) when is_list(to) do
+  def maybe_handle_group_posts(%Activity{} = activity) do
     if Visibility.is_public?(activity) do
       poster = User.get_cached_by_ap_id(activity.actor)
 
-      to
+      activity.data
+      |> Addressing.addressed_group_ap_ids()
       |> Enum.reject(&(&1 == activity.actor))
       |> User.get_all_by_ap_id()
       |> Enum.filter(fn user ->
-        user.actor_type == "Group" and
-          user.local and
-          not User.blocks?(user, poster)
+        group_mention_allowed?(user, poster)
       end)
       |> Enum.each(fn group ->
         Pleroma.Web.CommonAPI.repeat(activity.id, group)
@@ -1092,5 +1106,15 @@ defmodule Pleroma.Web.ActivityPub.Utils do
     :ok
   end
 
-  def maybe_handle_group_posts(_activity), do: :ok
+  defp group_mention_allowed?(
+         %User{actor_type: "Group", local: true, is_locked: is_locked} = group,
+         %User{} = poster
+       ) do
+    relationship = GroupMembership.relationship(poster, group)
+
+    not User.blocks?(group, poster) and
+      (not is_locked or Map.get(relationship, :member, false))
+  end
+
+  defp group_mention_allowed?(_group, _poster), do: false
 end

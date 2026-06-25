@@ -1,0 +1,3 @@
+Improve Misskey-family emoji reaction compatibility by emitting `_misskey_reaction`
+on outgoing `EmojiReact` activities and accepting incoming reaction values from
+Misskey-style `Like.content` or `Like.name` fields.

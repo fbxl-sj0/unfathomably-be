@@ -24,7 +24,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactHandlingTest do
     end
 
     test "it validates a valid EmojiReact", %{valid_emoji_react: valid_emoji_react} do
-      assert {:ok, _, _} = ObjectValidator.validate(valid_emoji_react, [])
+      assert valid_emoji_react["_misskey_reaction"] == valid_emoji_react["content"]
+
+      assert {:ok, %{"_misskey_reaction" => reaction}, _} =
+               ObjectValidator.validate(valid_emoji_react, [])
+
+      assert reaction == valid_emoji_react["content"]
     end
 
     test "it is not valid without a 'content' field", %{valid_emoji_react: valid_emoji_react} do

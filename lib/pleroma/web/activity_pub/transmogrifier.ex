@@ -8,6 +8,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   """
   alias Pleroma.Activity
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
+  alias Pleroma.Emoji
   alias Pleroma.Language.LanguageDetector
   alias Pleroma.Maps
   alias Pleroma.Object
@@ -164,6 +165,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     # sync with attributedTo prevents downstream validators from seeing a split
     # identity for the same object.
     object
+    |> Addressing.put_attributed_groups()
     |> Map.put("actor", actor)
     |> Map.put("attributedTo", actor)
   end
@@ -415,6 +417,43 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   defp reject_third_party_report(_, _), do: :ok
 
+  @misskey_reactions %{
+    "like" => "👍",
+    "love" => "❤️",
+    "laugh" => "😆",
+    "hmm" => "🤔",
+    "surprise" => "😮",
+    "congrats" => "🎉",
+    "angry" => "💢",
+    "confused" => "😥",
+    "rip" => "😇",
+    "pudding" => "🍮",
+    "star" => "⭐"
+  }
+
+  defp misskey_like_reaction(%{"_misskey_reaction" => reaction})
+       when is_binary(reaction),
+       do: reaction
+
+  defp misskey_like_reaction(%{"content" => reaction}) when is_binary(reaction) do
+    misskey_like_fallback_reaction(reaction)
+  end
+
+  defp misskey_like_reaction(%{"name" => reaction}) when is_binary(reaction) do
+    misskey_like_fallback_reaction(reaction)
+  end
+
+  defp misskey_like_reaction(_), do: nil
+
+  defp misskey_like_fallback_reaction(reaction) do
+    cond do
+      Map.has_key?(@misskey_reactions, reaction) -> reaction
+      Emoji.is_unicode_emoji?(reaction) -> reaction
+      Emoji.is_custom_emoji?(reaction) -> reaction
+      true -> nil
+    end
+  end
+
   def handle_incoming(data, options \\ [])
 
   # Flag objects are placed ahead of the ID check because Mastodon 2.8 and earlier send them
@@ -448,6 +487,13 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def handle_incoming(%{"id" => id}, _options) when is_binary(id) and byte_size(id) < 8,
     do: :error
 
+  # Some implementations send View or Read as lightweight receipts.  We do not
+  # currently store per-object remote read state, but treating these activities
+  # as successfully consumed prevents harmless receipts from becoming inbox
+  # retry noise.
+  def handle_incoming(%{"type" => type}, _options) when type in ~w{View Read},
+    do: {:ok, :ignored}
+
   def handle_incoming(
         %{"type" => "Listen", "object" => %{"type" => "Audio"} = object} = data,
         options
@@ -479,32 +525,24 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     end
   end
 
-  @misskey_reactions %{
-    "like" => "👍",
-    "love" => "❤️",
-    "laugh" => "😆",
-    "hmm" => "🤔",
-    "surprise" => "😮",
-    "congrats" => "🎉",
-    "angry" => "💢",
-    "confused" => "😥",
-    "rip" => "😇",
-    "pudding" => "🍮",
-    "star" => "⭐"
-  }
-
   # Rewrite misskey likes into EmojiReacts.
-  def handle_incoming(
-        %{
-          "type" => "Like",
-          "_misskey_reaction" => reaction
-        } = data,
-        options
-      ) do
-    data
-    |> Map.put("type", "EmojiReact")
-    |> Map.put("content", @misskey_reactions[reaction] || reaction)
-    |> handle_incoming(options)
+  def handle_incoming(%{"type" => "Like"} = data, options) do
+    case misskey_like_reaction(data) do
+      reaction when is_binary(reaction) ->
+        data
+        |> Map.put("type", "EmojiReact")
+        |> Map.put("content", @misskey_reactions[reaction] || reaction)
+        |> handle_incoming(options)
+
+      _ ->
+        with :ok <- ObjectValidator.fetch_actor_and_object(data),
+             {:ok, activity, _meta} <-
+               Pipeline.common_pipeline(data, local: false) do
+          {:ok, activity}
+        else
+          e -> {:error, e}
+        end
+    end
   end
 
   # Rewrite Dislike activities into thumbs-down EmojiReacts.
@@ -526,7 +564,18 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         %{"type" => "Announce", "object" => %{"type" => type} = object},
         options
       )
-      when type in ["Create", "Like", "Undo", "Delete"] do
+      when type in [
+             "Create",
+             "Like",
+             "Dislike",
+             "Undo",
+             "Delete",
+             "Update",
+             "Add",
+             "Remove",
+             "Flag",
+             "Lock"
+           ] do
     handle_incoming(object, options)
   end
 
@@ -559,14 +608,26 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   end
 
   def handle_incoming(%{"type" => type} = data, _options)
-      when type in ~w{Like EmojiReact Announce Add Remove} do
+      when type in ~w{Like EmojiReact Announce Add Remove Lock} do
     with :ok <- ObjectValidator.fetch_actor_and_object(data),
          {:ok, activity, _meta} <-
            Pipeline.common_pipeline(data, local: false) do
       {:ok, activity}
     else
-      {:error, _} = error -> error
       e -> {:error, e}
+    end
+  end
+
+  def handle_incoming(
+        %{"type" => "Block"} = data,
+        _options
+      ) do
+    with {:ok, %User{}} <- ObjectValidator.fetch_actor(data),
+         {:ok, %User{}} <- fetch_blocked_actor(data),
+         :ok <- maybe_fetch_block_target(data),
+         {:ok, activity, _} <-
+           Pipeline.common_pipeline(data, local: false) do
+      {:ok, activity}
     end
   end
 
@@ -574,7 +635,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         %{"type" => type} = data,
         _options
       )
-      when type in ~w{Update Block Follow Accept Reject Join Leave} do
+      when type in ~w{Update Follow Accept Reject Join Leave} do
     with {:ok, %User{}} <- ObjectValidator.fetch_actor(data),
          {:ok, activity, _} <-
            Pipeline.common_pipeline(data, local: false) do
@@ -631,7 +692,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         } = data,
         _options
       )
-      when type in ["Like", "EmojiReact", "Announce", "Block", "Join"] do
+      when type in ["Like", "EmojiReact", "Announce", "Block", "Join", "Lock"] do
     data = fix_undo_object_id(data)
 
     with {:ok, activity, _} <- Pipeline.common_pipeline(data, local: false) do
@@ -673,10 +734,6 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     else
       _e -> :error
     end
-  end
-
-  def handle_incoming(%{"type" => type}, _options) when is_binary(type) do
-    {:error, {:unsupported_activity_type, type}}
   end
 
   def handle_incoming(_, _), do: :error
@@ -962,6 +1019,25 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     end
   end
 
+  defp fix_undo_object_id(
+         %{
+           "object" => %{
+             "type" => "EmojiReact",
+             "actor" => actor,
+             "object" => object_id,
+             "content" => content
+           }
+         } = data
+       ) do
+    case Utils.get_existing_emoji_reaction(actor, %{data: %{"id" => object_id}}, content) do
+      %Activity{data: %{"id" => reaction_id}} ->
+        put_in(data, ["object", "id"], reaction_id)
+
+      _ ->
+        data
+    end
+  end
+
   defp fix_undo_object_id(data), do: data
 
   def add_hashtags(object) do
@@ -1081,6 +1157,25 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def maybe_fix_user_url(data), do: data
 
   def maybe_fix_user_object(data), do: maybe_fix_user_url(data)
+
+  defp fetch_blocked_actor(%{"object" => object}) when is_binary(object) do
+    with {:ok, object} <- ObjectValidators.ObjectID.cast(object) do
+      User.get_or_fetch_by_ap_id(object)
+    end
+  end
+
+  defp fetch_blocked_actor(_), do: {:error, :not_found}
+
+  defp maybe_fetch_block_target(%{"target" => target}) when is_binary(target) do
+    case ObjectValidators.ObjectID.cast(target) do
+      {:ok, target} -> User.get_or_fetch_by_ap_id(target)
+      _ -> :ok
+    end
+
+    :ok
+  end
+
+  defp maybe_fetch_block_target(_), do: :ok
 
   defp maybe_add_content_map(%{"language" => language, "content" => content} = object)
        when not_empty_string(language) do

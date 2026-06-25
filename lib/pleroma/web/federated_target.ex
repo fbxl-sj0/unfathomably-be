@@ -13,17 +13,23 @@ defmodule Pleroma.Web.FederatedTarget do
   """
 
   import Ecto.Query
+  import SweetXml, only: [sigil_x: 2]
+
+  require Pleroma.Constants
 
   alias Pleroma.Activity
   alias Pleroma.FollowingRelationship
   alias Pleroma.GroupMembership
   alias Pleroma.HTTP
+  alias Pleroma.HTTP.AdapterHelper
   alias Pleroma.Instances
+  alias Pleroma.Notification
   alias Pleroma.Object.Fetcher
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.RemoteReplies
+  alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.Federation.Platform
   alias Pleroma.Web.MastodonAPI.StatusView
@@ -32,21 +38,40 @@ defmodule Pleroma.Web.FederatedTarget do
   @group_service_actor_types ["Application", "Service"]
   @group_service_actor_regex "fedigroups|gancio|gup\\.pe|buzzrelay|tootgroup"
   @group_service_platform_fragments ["fedigroups", "gancio", "gup.pe", "buzzrelay", "tootgroup"]
+  @iceshrimp_instance_hosts ["torsi.ca", "tuit.fr", "yuustan.space", "iceshrimp.de"]
   @non_content_activity_types [
+    "ApproveReply",
     "Block",
     "Delete",
     "Dislike",
+    "Download",
     "Flag",
     "Follow",
     "Like",
     "Reject",
-    "Undo"
+    "RejectReply",
+    "Undo",
+    "View"
+  ]
+  @source_item_status_types [
+    "Note",
+    "Article",
+    "Page",
+    "Question",
+    "Audio",
+    "Video",
+    "Image",
+    "Event"
   ]
   @default_limit 40
   @max_limit 80
   @max_target_identifier_bytes 2048
   @source_item_title_limit 240
   @source_item_summary_limit 1_000
+  @rss_source_nickname_prefix "rss-"
+  @rss_feed_redirect_limit 3
+  @rss_feed_redirect_statuses [301, 302, 303, 307, 308]
+  @rss_feed_gone_statuses [410, 451]
 
   def group?(%User{
         actor_type: @group_actor_type,
@@ -86,6 +111,19 @@ defmodule Pleroma.Web.FederatedTarget do
 
   def source?(_), do: false
 
+  def rss_source?(%User{
+        actor_type: "Service",
+        local: false,
+        nickname: nickname,
+        ap_id: ap_id
+      })
+      when is_binary(ap_id) do
+    (is_binary(nickname) and String.starts_with?(nickname, @rss_source_nickname_prefix)) or
+      rss_feed_url?(ap_id)
+  end
+
+  def rss_source?(_), do: false
+
   def list_groups(user, params), do: list_targets(:group, user, params)
   def list_sources(user, params), do: list_targets(:source, user, params)
 
@@ -111,6 +149,53 @@ defmodule Pleroma.Web.FederatedTarget do
 
   def followed_source_ap_ids(_user), do: []
 
+  @doc "Return reachable RSS sources followed by at least one local user."
+  def followed_rss_sources(limit \\ 200) do
+    reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+    limit = followed_rss_sources_limit(limit)
+    rss_nickname = @rss_source_nickname_prefix <> "%"
+
+    FollowingRelationship
+    |> join(:inner, [r], follower in User, on: r.follower_id == follower.id)
+    |> join(:inner, [r, _follower], source in User, on: r.following_id == source.id)
+    |> where([r, _follower, _source], r.state == ^:follow_accept)
+    |> where([_r, follower, _source], follower.local == true and follower.is_active == true)
+    |> where(
+      [_r, _follower, source],
+      source.actor_type == "Service" and source.local == false and source.is_active == true and
+        source.invisible == false and fragment("? ~ ?", source.ap_id, "^https?://")
+    )
+    |> where(
+      [_r, _follower, source],
+      like(source.nickname, ^rss_nickname) or
+        fragment(
+          "lower(coalesce(?, '')) ~ ?",
+          source.ap_id,
+          "(/(rss|atom|feeds?)([-_.0-9/]|$)|\\.(xml|rss|atom)(\\?|#|$))"
+        )
+    )
+    |> where(
+      [_r, _follower, source],
+      fragment(
+        """
+        not exists (
+          select 1 from instances i
+          where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+            and i.unreachable_since <= ?
+        )
+        """,
+        source.ap_id,
+        ^reachability_datetime_threshold
+      )
+    )
+    |> distinct([_r, _follower, source], source.id)
+    |> order_by([_r, _follower, source], desc: source.updated_at)
+    |> select([_r, _follower, source], source)
+    |> limit(^limit)
+    |> Repo.all()
+    |> Enum.filter(&rss_source?/1)
+  end
+
   def search_groups(params), do: search_targets(:group, params)
   def search_sources(params), do: search_targets(:source, params)
 
@@ -129,14 +214,20 @@ defmodule Pleroma.Web.FederatedTarget do
   def resolve_source(identifier) do
     with {:ok, identifier} <- normalize_identifier(identifier),
          false <- unsafe_remote_identifier?(identifier) do
-      case resolve_kind(identifier, :source) do
+      case resolve_existing_source(identifier) do
         {:ok, %User{} = source} ->
           {:ok, source}
 
         _ ->
           case resolve_collection_source(identifier) do
-            {:ok, %User{} = source} -> {:ok, source}
-            _ -> resolve_actor_source(identifier)
+            {:ok, %User{} = source} ->
+              {:ok, source}
+
+            _ ->
+              case resolve_actor_source(identifier) do
+                {:ok, %User{} = source} -> {:ok, source}
+                _ -> resolve_rss_source(identifier)
+              end
           end
       end
     else
@@ -180,6 +271,30 @@ defmodule Pleroma.Web.FederatedTarget do
 
   def resolve_target(_), do: {:error, :not_found}
 
+  defp resolve_existing_source(identifier) do
+    case resolve_kind(identifier, :source) do
+      {:ok, %User{} = source} -> maybe_refresh_existing_rss_source(identifier, source)
+      error -> error
+    end
+  end
+
+  defp maybe_refresh_existing_rss_source(identifier, %User{} = source) do
+    if url?(identifier) and rss_feed_url?(identifier) and rss_source?(source) do
+      case resolve_rss_source(identifier) do
+        {:ok, %User{} = refreshed_source} ->
+          {:ok, refreshed_source}
+
+        _ ->
+          case Repo.get(User, source.id) do
+            %User{is_active: true, invisible: false} = source -> {:ok, source}
+            _ -> {:error, :not_found}
+          end
+      end
+    else
+      {:ok, source}
+    end
+  end
+
   def group_profile(%User{} = user) do
     host = host(user) || ""
     path = path(user) || ""
@@ -216,6 +331,9 @@ defmodule Pleroma.Web.FederatedTarget do
     path = path(user) || ""
 
     cond do
+      rss_source?(user) ->
+        "rss_feed"
+
       String.contains?(path, "wp-json") or String.contains?(host, "wordpress") ->
         "blog_publisher"
 
@@ -272,6 +390,27 @@ defmodule Pleroma.Web.FederatedTarget do
 
   def group_member_count(%User{} = group), do: group.follower_count || 0
 
+  def group_moderator_count(%User{local: true, actor_type: "Group"} = group) do
+    group
+    |> GroupMembership.local_group_moderator_ap_ids()
+    |> length()
+  end
+
+  def group_moderator_count(%User{local: false, moderator_count: count})
+      when is_integer(count) and count > 0,
+      do: count
+
+  def group_moderator_count(%User{local: false} = group) do
+    group
+    |> fetch_remote_group_moderator_count()
+    |> case do
+      count when is_integer(count) -> count
+      _ -> group.moderator_count || 0
+    end
+  end
+
+  def group_moderator_count(_), do: 0
+
   def source_platform(%User{} = user) do
     user
     |> source_platform_classification()
@@ -310,8 +449,15 @@ defmodule Pleroma.Web.FederatedTarget do
   defp platform_name_hint(%User{} = user, profile) do
     host = String.downcase(host(user) || "")
     path = String.downcase(path(user) || "")
+    uri_path = String.downcase(path(user.uri) || "")
+    inbox_path = String.downcase(path(user.inbox) || "")
+    shared_inbox_path = String.downcase(path(user.shared_inbox) || "")
+    paths = Enum.join([path, uri_path, inbox_path, shared_inbox_path], " ")
 
     cond do
+      profile == "rss_feed" ->
+        "rss"
+
       String.contains?(host, "funkwhale") or String.contains?(path, "/music/libraries/") ->
         "funkwhale"
 
@@ -321,19 +467,19 @@ defmodule Pleroma.Web.FederatedTarget do
       String.contains?(host, "event-bridge") or String.contains?(path, "event-bridge") ->
         "wordpress_event_bridge"
 
-      String.contains?(host, "wordpress") or String.contains?(path, "wp-json") ->
+      String.contains?(host, "wordpress") or String.contains?(paths, "wp-json/activitypub") ->
         "wordpress"
 
-      String.contains?(host, "writefreely") ->
+      String.contains?(host, "writefreely") or String.contains?(paths, "/api/collections/") ->
         "writefreely"
 
       String.contains?(host, "postmarks") ->
         "postmarks"
 
-      String.contains?(host, "gotosocial") ->
+      String.contains?(host, "gotosocial") or String.starts_with?(host, "gts.") ->
         "gotosocial"
 
-      String.contains?(host, "iceshrimp") ->
+      String.contains?(host, "iceshrimp") or host in @iceshrimp_instance_hosts ->
         "iceshrimp"
 
       String.contains?(host, "pixelfed") ->
@@ -342,10 +488,10 @@ defmodule Pleroma.Web.FederatedTarget do
       String.contains?(host, "mitra") ->
         "mitra"
 
-      String.contains?(host, "owncast") ->
+      String.contains?(host, "owncast") or String.contains?(path, "/federation/user/") ->
         "owncast"
 
-      String.contains?(host, "misskey") ->
+      String.contains?(host, ["misskey", "calckey"]) ->
         "misskey"
 
       String.contains?(host, "sharkey") ->
@@ -357,13 +503,16 @@ defmodule Pleroma.Web.FederatedTarget do
       String.contains?(host, "wafrn") ->
         "wafrn"
 
+      String.contains?(host, "snac") or String.contains?(path, "/snac/") ->
+        "snac"
+
       String.contains?(host, "mastodon") ->
         "mastodon"
 
       String.contains?(host, ["pleroma", "akkoma"]) ->
         "pleroma"
 
-      String.contains?(host, "lotide") ->
+      String.contains?(host, ["lotide", "narwhal.city"]) ->
         "lotide"
 
       String.contains?(host, "piefed") ->
@@ -381,10 +530,11 @@ defmodule Pleroma.Web.FederatedTarget do
       String.contains?(host, "nodebb") ->
         "nodebb"
 
-      String.contains?(host, "discourse") or String.contains?(path, "/category/") ->
+      String.contains?(host, "discourse") or String.contains?(path, "/category/") or
+          (String.contains?(path, "/ap/actor/") and String.contains?(uri_path, "/c/")) ->
         "discourse"
 
-      String.contains?(host, "friendica") ->
+      String.contains?(host, ["friendica", "friendi.ca"]) ->
         "friendica"
 
       String.contains?(host, "hubzilla") ->
@@ -417,7 +567,7 @@ defmodule Pleroma.Web.FederatedTarget do
       String.contains?(host, "streams") ->
         "streams_forte"
 
-      String.contains?(host, "gancio") ->
+      String.contains?(host, "gancio") or String.contains?(path, "/federation/u/") ->
         "gancio"
 
       String.contains?(host, "peertube") or String.contains?(path, "/video-channels/") ->
@@ -442,6 +592,7 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_kind_for_platform(%User{} = user, %{platform: platform}) do
     case source_profile(user) do
+      "rss_feed" -> "rss_feed"
       "library" when platform == "funkwhale" -> "funkwhale_library"
       "library" -> "collection"
       "collection_channel" -> "ordered_collection"
@@ -455,6 +606,7 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_kind_label_for_kind("ordered_collection"), do: "Ordered collection"
   defp source_kind_label_for_kind("collection"), do: "Collection"
   defp source_kind_label_for_kind("actor_feed"), do: "Actor feed"
+  defp source_kind_label_for_kind("rss_feed"), do: "RSS feed"
   defp source_kind_label_for_kind("service"), do: "Service"
   defp source_kind_label_for_kind("group"), do: "Group"
   defp source_kind_label_for_kind(kind), do: humanize_key(kind)
@@ -467,6 +619,9 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_capability_labels("funkwhale_library", _platform),
     do: ["follow library", "preview tracks", "owner inbox"]
+
+  defp source_capability_labels("rss_feed", _platform),
+    do: ["follow feed", "read items", "share links"]
 
   defp source_capability_labels(_kind, platform)
        when platform in [
@@ -585,6 +740,14 @@ defmodule Pleroma.Web.FederatedTarget do
     |> Map.get(:path)
   end
 
+  defp path(url) when is_binary(url) do
+    url
+    |> parse_uri()
+    |> Map.get(:path)
+  end
+
+  defp path(_), do: nil
+
   defp list_targets(kind, %User{} = user, params) do
     case search_param(params) do
       "" ->
@@ -685,6 +848,69 @@ defmodule Pleroma.Web.FederatedTarget do
     |> List.flatten()
     |> Enum.uniq_by(& &1.id)
     |> Enum.filter(&matches_kind?(&1, kind))
+    |> Enum.sort_by(&target_search_sort_key/1)
+    |> Enum.take(limit_param(params))
+  end
+
+  def contact_interaction_score(%User{ap_id: ap_id} = user) when is_binary(ap_id) do
+    local_follow_score(user) * 100 +
+      local_notification_score(user) * 20 +
+      local_direct_activity_score(user) * 15 +
+      min(cached_remote_post_score(user), 50)
+  end
+
+  def contact_interaction_score(_), do: 0
+
+  defp target_search_sort_key(%User{} = user) do
+    {
+      -contact_interaction_score(user),
+      -sortable_datetime(user.updated_at),
+      user.nickname || user.name || user.ap_id || ""
+    }
+  end
+
+  defp sortable_datetime(%NaiveDateTime{} = datetime) do
+    NaiveDateTime.diff(datetime, ~N[1970-01-01 00:00:00], :second)
+  end
+
+  defp sortable_datetime(_), do: 0
+
+  defp local_follow_score(%User{id: id}) do
+    FollowingRelationship
+    |> join(:inner, [r], follower in User, on: r.follower_id == follower.id)
+    |> where([r, follower], r.following_id == ^id and r.state == ^:follow_accept)
+    |> where([_r, follower], follower.local == true and follower.is_active == true)
+    |> Repo.aggregate(:count, :id)
+  end
+
+  defp local_notification_score(%User{ap_id: ap_id}) do
+    Notification
+    |> join(:inner, [notification], activity in Activity,
+      on: notification.activity_id == activity.id
+    )
+    |> join(:inner, [notification, _activity], user in User, on: notification.user_id == user.id)
+    |> where([_notification, activity, user], activity.actor == ^ap_id and user.local == true)
+    |> Repo.aggregate(:count, :id)
+  end
+
+  defp local_direct_activity_score(%User{ap_id: ap_id}) do
+    Activity
+    |> join(:inner, [activity], user in User, on: user.ap_id == activity.actor)
+    |> where([activity, user], activity.local == true and user.local == true)
+    |> where(
+      [activity, _user],
+      fragment("?->>'object' = ?", activity.data, ^ap_id) or
+        fragment("?->'to' \\? ?", activity.data, ^ap_id) or
+        fragment("?->'cc' \\? ?", activity.data, ^ap_id)
+    )
+    |> Repo.aggregate(:count, :id)
+  end
+
+  defp cached_remote_post_score(%User{ap_id: ap_id}) do
+    Activity
+    |> where([activity], activity.local == false and activity.actor == ^ap_id)
+    |> where([activity], fragment("?->>'type' = 'Create'", activity.data))
+    |> Repo.aggregate(:count, :id)
   end
 
   defp kind_query(:group) do
@@ -752,9 +978,33 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp resolve_by_id_or_nickname(identifier) do
-    case User.get_cached_by_id(identifier) || User.get_cached_by_nickname(identifier) do
+    case safe_get_cached_by_id(identifier) ||
+           get_by_display_id(identifier) ||
+           User.get_cached_by_nickname(identifier) do
       %User{} = user -> {:ok, user}
       _ -> {:error, :not_found}
+    end
+  end
+
+  defp safe_get_cached_by_id(identifier) do
+    User.get_cached_by_id(identifier)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp get_by_display_id(identifier) when is_binary(identifier) do
+    User
+    |> where([u], fragment("?::text = ?", u.id, ^identifier))
+    |> Repo.one()
+    |> case do
+      %User{} = user ->
+        User.set_cache(user)
+        user
+
+      _ ->
+        nil
     end
   end
 
@@ -832,6 +1082,19 @@ defmodule Pleroma.Web.FederatedTarget do
          {:ok, attrs} <- actor_source_attrs(data),
          {:ok, %User{} = source} <- upsert_collection_source(attrs),
          true <- source?(source) do
+      {:ok, source}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp resolve_rss_source(identifier) when is_binary(identifier) do
+    with true <- url?(identifier),
+         true <- safe_fetch_url?(identifier),
+         {:ok, feed} <- fetch_rss_feed(identifier),
+         canonical_url <- Map.get(feed, :canonical_url, identifier),
+         {:ok, attrs} <- rss_source_attrs(canonical_url, feed),
+         {:ok, %User{} = source} <- upsert_collection_source(attrs) do
       {:ok, source}
     else
       _ -> {:error, :not_found}
@@ -1075,6 +1338,26 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp actor_source_attrs(_), do: {:error, :not_found}
 
+  defp rss_source_attrs(url, feed) when is_binary(url) do
+    with %URI{host: host} when is_binary(host) <- parse_uri(url) do
+      {:ok,
+       %{
+         ap_id: url,
+         uri: url,
+         nickname: rss_source_nickname(url, host),
+         name: feed[:title] || host,
+         bio: feed[:description] || "",
+         raw_bio: feed[:description] || "",
+         actor_type: "Service",
+         follower_address: url <> "#followers",
+         following_address: url <> "#following",
+         is_discoverable: true
+       }}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
   defp upsert_collection_source(%{ap_id: ap_id} = attrs) do
     case User.get_cached_by_ap_id(ap_id) do
       %User{} = source ->
@@ -1163,6 +1446,16 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp actor_source_public_key(_), do: nil
 
+  defp rss_source_nickname(url, host) do
+    local =
+      url
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 16)
+
+    @rss_source_nickname_prefix <> local <> "@" <> host
+  end
+
   defp actor_source_discoverable(%{"discoverable" => discoverable}) when is_boolean(discoverable),
     do: discoverable
 
@@ -1170,6 +1463,32 @@ defmodule Pleroma.Web.FederatedTarget do
     do: indexable
 
   defp actor_source_discoverable(_), do: true
+
+  defp rss_feed_url?(url) when is_binary(url) do
+    uri = parse_uri(url)
+
+    path =
+      uri
+      |> Map.get(:path, "")
+      |> to_string()
+      |> String.downcase()
+
+    query =
+      uri
+      |> Map.get(:query, "")
+      |> to_string()
+      |> String.downcase()
+
+    path
+    |> String.split("/", trim: true)
+    |> Enum.any?(&rss_feed_path_segment?/1)
+    |> Kernel.||(String.ends_with?(path, [".xml", ".rss", ".atom"]))
+    |> Kernel.||(Regex.match?(~r/(^|[&;])(format|type)=(rss|atom|feed)(&|$)/, query))
+  end
+
+  defp rss_feed_path_segment?(segment) do
+    Regex.match?(~r/^(rss|atom|feeds?)([-_.0-9]|$)/, segment)
+  end
 
   defp url?(identifier) do
     String.starts_with?(identifier, ["http://", "https://"])
@@ -1209,6 +1528,21 @@ defmodule Pleroma.Web.FederatedTarget do
   defp clamp_limit(limit) when limit > @max_limit, do: @max_limit
   defp clamp_limit(limit), do: limit
 
+  defp followed_rss_sources_limit(limit) when is_integer(limit) do
+    limit
+    |> max(1)
+    |> min(1_000)
+  end
+
+  defp followed_rss_sources_limit(limit) when is_binary(limit) do
+    case Integer.parse(limit) do
+      {limit, _} -> followed_rss_sources_limit(limit)
+      _ -> 200
+    end
+  end
+
+  defp followed_rss_sources_limit(_), do: 200
+
   defp actor_url(%User{} = user), do: user.ap_id || user.uri || ""
 
   defp parse_uri(url) do
@@ -1232,6 +1566,7 @@ defmodule Pleroma.Web.FederatedTarget do
         ap_id: ap_id,
         bio: note,
         email: nil,
+        attributed_to_address: ap_id <> "/collections/moderators",
         featured_address: ap_id <> "/collections/featured",
         follower_address: ap_id <> "/followers",
         following_address: ap_id <> "/following",
@@ -1240,12 +1575,16 @@ defmodule Pleroma.Web.FederatedTarget do
         is_approved: true,
         is_confirmed: true,
         is_discoverable: local_group_truthy_param(params, "discoverable", true),
+        is_indexable: local_group_truthy_param(params, "indexable", true),
         is_locked: local_group_locked_param(params),
         keys: keys,
         last_refreshed_at: NaiveDateTime.utc_now(),
         local: true,
         name: display_name,
         nickname: nickname,
+        outbox_address: ap_id <> "/outbox",
+        posting_restricted_to_mods:
+          local_group_truthy_param(params, "posting_restricted_to_mods", false),
         raw_bio: note,
         uri: ap_id
       }
@@ -1286,6 +1625,18 @@ defmodule Pleroma.Web.FederatedTarget do
       |> maybe_put(
         :is_discoverable,
         local_group_truthy_param(params, "discoverable", group.is_discoverable)
+      )
+      |> maybe_put(
+        :is_indexable,
+        local_group_truthy_param(params, "indexable", group.is_indexable)
+      )
+      |> maybe_put(
+        :posting_restricted_to_mods,
+        local_group_truthy_param(
+          params,
+          "posting_restricted_to_mods",
+          group.posting_restricted_to_mods
+        )
       )
       |> maybe_put(:is_locked, local_group_locked_param(params, group.is_locked))
 
@@ -1441,6 +1792,14 @@ defmodule Pleroma.Web.FederatedTarget do
       |> Map.get("limit", Map.get(params, :limit, 20))
       |> parse_source_item_limit()
 
+    if rss_source?(source) do
+      rss_source_items_result(source, source_context, limit, reading_user)
+    else
+      activitypub_source_items_result(source, source_context, limit, reading_user)
+    end
+  end
+
+  defp activitypub_source_items_result(source, source_context, limit, reading_user) do
     with {:ok, collection} <- source_items_collection(source),
          {:ok, page} <- first_source_item_page(collection) do
       items =
@@ -1470,6 +1829,28 @@ defmodule Pleroma.Web.FederatedTarget do
     else
       {:error, reason} ->
         source_actor_fallback_items(source, source_context, reason, nil)
+    end
+  end
+
+  defp rss_source_items_result(%User{} = source, source_context, limit, reading_user) do
+    with {:ok, feed} <- fetch_rss_feed(source.ap_id || source.uri) do
+      items =
+        feed.items
+        |> Enum.take(preview_candidate_limit(limit))
+        |> Enum.map(&render_source_item(&1, source_context, reading_user))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.take(limit)
+
+      if items == [] do
+        {:error, :empty_collection}
+      else
+        {:ok,
+         %{
+           items: items,
+           next: nil,
+           total_items: length(feed.items)
+         }}
+      end
     end
   end
 
@@ -1535,7 +1916,7 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_items_fetch_json(_), do: {:error, :invalid_source}
 
   defp mark_source_items_fetch_reachable(url) do
-    Instances.set_reachable(url)
+    Instances.record_success(url, source: "source_items")
     :ok
   rescue
     _ -> :ok
@@ -1545,6 +1926,7 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp mark_source_items_fetch_invalid(url) do
     Instances.set_consistently_unreachable(url)
+    Instances.record_failure(url, :invalid_body, source: "source_items")
     :ok
   rescue
     _ -> :ok
@@ -1553,7 +1935,13 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp safe_signed_fetch(url) do
-    Fetcher.fetch_and_contain_remote_object_from_id(url)
+    case Fetcher.fetch_and_contain_remote_object_from_id(url) do
+      {:ok, %{} = data} ->
+        {:ok, data}
+
+      _ ->
+        Fetcher.fetch_and_contain_remote_collection_from_id(url)
+    end
   rescue
     _ ->
       {:error, :signed_fetch_failed}
@@ -1595,6 +1983,331 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp decode_source_items_body(_), do: {:error, :invalid_body}
 
+  defp fetch_rss_feed(url) when is_binary(url) do
+    fetch_rss_feed(url, url, @rss_feed_redirect_limit)
+  end
+
+  defp fetch_rss_feed(_), do: {:error, :invalid_source}
+
+  defp fetch_rss_feed(url, original_url, redirects_left)
+       when is_binary(url) and is_binary(original_url) and redirects_left >= 0 do
+    headers = [
+      {"accept",
+       "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1"}
+    ]
+
+    case rss_http_get(url, headers) do
+      {:ok, %{status: status, body: body} = response} when status in 200..299 ->
+        with {:ok, feed} <- parse_rss_feed(body),
+             true <- rss_feed_valid?(feed) do
+          canonical_url = rss_response_url(response, url)
+          feed = Map.put(feed, :canonical_url, canonical_url)
+          mark_source_items_fetch_reachable(canonical_url)
+          maybe_mark_rss_feed_redirect(original_url, canonical_url, feed)
+          {:ok, feed}
+        else
+          _ -> {:error, :invalid_body}
+        end
+
+      {:ok, %{status: status, headers: response_headers}}
+      when status in @rss_feed_redirect_statuses and redirects_left > 0 ->
+        with location when is_binary(location) <- header_value(response_headers, "location"),
+             redirected_url when is_binary(redirected_url) <- rss_redirect_url(url, location),
+             true <- safe_fetch_url?(redirected_url) do
+          fetch_rss_feed(redirected_url, original_url, redirects_left - 1)
+        else
+          _ -> {:error, :invalid_body}
+        end
+
+      {:ok, %{status: status}} when status in @rss_feed_gone_statuses ->
+        mark_rss_feed_gone(original_url)
+        {:error, :gone}
+
+      _ ->
+        {:error, :invalid_body}
+    end
+  rescue
+    _ -> {:error, :invalid_body}
+  catch
+    _, _ -> {:error, :invalid_body}
+  end
+
+  defp rss_http_get(url, headers) do
+    uri = URI.parse(url)
+    adapter = Application.get_env(:tesla, :adapter)
+
+    adapter_opts =
+      uri
+      |> AdapterHelper.options(pool: :media, follow_redirect: false, force_redirect: false)
+
+    []
+    |> Tesla.client(adapter)
+    |> Tesla.get(url, headers: headers, opts: [adapter: adapter_opts])
+  end
+
+  defp header_value(headers, name) when is_list(headers) do
+    name = String.downcase(name)
+
+    Enum.find_value(headers, fn
+      {key, value} when is_binary(key) and is_binary(value) ->
+        if String.downcase(key) == name, do: value
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp header_value(_, _), do: nil
+
+  defp rss_redirect_url(base_url, location) do
+    if String.starts_with?(location, ["http://", "https://"]) do
+      location
+    else
+      base_url
+      |> URI.merge(location)
+      |> to_string()
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp rss_response_url(%{url: response_url}, request_url) when is_binary(response_url) do
+    if url?(response_url), do: response_url, else: request_url
+  end
+
+  defp rss_response_url(_response, request_url), do: request_url
+
+  defp maybe_mark_rss_feed_redirect(url, url, _feed), do: :ok
+
+  defp maybe_mark_rss_feed_redirect(original_url, canonical_url, feed)
+       when is_binary(original_url) and is_binary(canonical_url) do
+    Instances.record_redirect(original_url, canonical_url, source: "rss_feed")
+    update_rss_source_url(original_url, canonical_url, feed)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp mark_rss_feed_gone(url) when is_binary(url) do
+    Instances.record_gone(url, source: "rss_feed")
+    retire_rss_source_url(url)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp update_rss_source_url(original_url, canonical_url, feed) do
+    with %User{} = source <- User.get_cached_by_ap_id(original_url),
+         nil <- User.get_cached_by_ap_id(canonical_url),
+         {:ok, attrs} <- rss_source_attrs(canonical_url, feed) do
+      source
+      |> User.remote_user_changeset(attrs)
+      |> User.update_and_set_cache()
+    else
+      %User{} ->
+        retire_rss_source_url(original_url)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp retire_rss_source_url(url) do
+    User
+    |> where([u], u.local == false and (u.ap_id == ^url or u.uri == ^url))
+    |> Repo.all()
+    |> Enum.each(fn source ->
+      source
+      |> Ecto.Changeset.change(%{
+        is_active: false,
+        invisible: true,
+        is_discoverable: false,
+        avatar: %{},
+        banner: %{},
+        tags: [],
+        emoji: %{}
+      })
+      |> User.update_and_set_cache()
+    end)
+  end
+
+  defp parse_rss_feed(body) when is_binary(body) do
+    doc = SweetXml.parse(body, dtd: :none)
+    rss_items = SweetXml.xpath(doc, ~x"//channel/item"l)
+    atom_items = SweetXml.xpath(doc, ~x"//*[local-name()='entry']"l)
+
+    feed = %{
+      title: rss_feed_title(doc),
+      description: rss_feed_description(doc),
+      items: rss_feed_items(rss_items, atom_items)
+    }
+
+    {:ok, feed}
+  rescue
+    _ -> {:error, :invalid_body}
+  catch
+    _, _ -> {:error, :invalid_body}
+  end
+
+  defp parse_rss_feed(_), do: {:error, :invalid_body}
+
+  defp rss_feed_valid?(%{title: title, items: items}) when is_list(items) do
+    present_binary?(title) or items != []
+  end
+
+  defp rss_feed_valid?(_), do: false
+
+  defp rss_feed_title(doc) do
+    rss_xml_text(doc, ~x"//channel/title/text()"s) ||
+      rss_xml_text(doc, ~x"//*[local-name()='feed']/*[local-name()='title']/text()"s) ||
+      "RSS feed"
+  end
+
+  defp rss_feed_description(doc) do
+    rss_xml_text(doc, ~x"//channel/description/text()"s) ||
+      rss_xml_text(doc, ~x"//*[local-name()='feed']/*[local-name()='subtitle']/text()"s)
+  end
+
+  defp rss_feed_items(rss_items, _atom_items) when is_list(rss_items) and rss_items != [] do
+    rss_items
+    |> Enum.map(&rss_item/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp rss_feed_items(_rss_items, atom_items) when is_list(atom_items) do
+    atom_items
+    |> Enum.map(&atom_item/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp rss_feed_items(_, _), do: []
+
+  defp rss_item(item) do
+    title = rss_xml_text(item, ~x"./title/text()"s)
+    link = rss_xml_text(item, ~x"./link/text()"s)
+    guid = rss_xml_text(item, ~x"./guid/text()"s)
+    summary = rss_xml_text(item, ~x"./description/text()"s)
+    published = rss_datetime(rss_xml_text(item, ~x"./pubDate/text()"s))
+    image = rss_enclosure_image(item)
+
+    rss_item_map(%{
+      "id" => guid || link,
+      "type" => "Article",
+      "name" => title,
+      "summary" => summary,
+      "url" => link,
+      "published" => published,
+      "image" => image
+    })
+  end
+
+  defp atom_item(item) do
+    title = rss_xml_text(item, ~x"./*[local-name()='title']/text()"s)
+    link = atom_item_link(item)
+
+    summary =
+      rss_xml_text(item, ~x"./*[local-name()='summary']/text()"s) ||
+        rss_xml_text(item, ~x"./*[local-name()='content']/text()"s)
+
+    published =
+      rss_xml_text(item, ~x"./*[local-name()='published']/text()"s) ||
+        rss_xml_text(item, ~x"./*[local-name()='updated']/text()"s)
+
+    rss_item_map(%{
+      "id" => rss_xml_text(item, ~x"./*[local-name()='id']/text()"s) || link,
+      "type" => "Article",
+      "name" => title,
+      "summary" => summary,
+      "url" => link,
+      "published" => rss_datetime(published)
+    })
+  end
+
+  defp rss_item_map(item) do
+    if Enum.any?(["id", "name", "summary", "url"], &present_binary?(item[&1])) do
+      item
+      |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+      |> Map.new()
+    end
+  end
+
+  defp atom_item_link(item) do
+    rss_xml_text(item, ~x"./*[local-name()='link'][@rel='alternate']/@href"s) ||
+      rss_xml_text(item, ~x"./*[local-name()='link'][1]/@href"s)
+  end
+
+  defp rss_enclosure_image(item) do
+    url = rss_xml_text(item, ~x"./enclosure/@url"s)
+    media_type = rss_xml_text(item, ~x"./enclosure/@type"s)
+
+    cond do
+      !is_binary(url) ->
+        nil
+
+      is_binary(media_type) and String.starts_with?(media_type, "image/") ->
+        url
+
+      is_nil(media_type) and String.match?(url, ~r/\.(avif|gif|jpe?g|png|webp)(\?|$)/i) ->
+        url
+
+      true ->
+        nil
+    end
+  end
+
+  defp rss_xml_text(node, xpath) do
+    node
+    |> SweetXml.xpath(xpath)
+    |> rss_normalize_text()
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp rss_normalize_text(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> empty_string_to_nil()
+    |> html_unescape()
+  end
+
+  defp rss_normalize_text(_), do: nil
+
+  defp rss_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} ->
+        DateTime.to_iso8601(datetime)
+
+      _ ->
+        rss_http_datetime(value)
+    end
+  end
+
+  defp rss_datetime(_), do: nil
+
+  defp rss_http_datetime(value) do
+    case :httpd_util.convert_request_date(String.to_charlist(value)) do
+      {{year, month, day}, {hour, minute, second}} ->
+        with {:ok, date} <- Date.new(year, month, day),
+             {:ok, time} <- Time.new(hour, minute, second),
+             {:ok, datetime} <- DateTime.new(date, time, "Etc/UTC") do
+          DateTime.to_iso8601(datetime)
+        else
+          _ -> value
+        end
+
+      _ ->
+        value
+    end
+  rescue
+    _ -> value
+  catch
+    _, _ -> value
+  end
+
   defp first_source_item_page(%{"first" => first}) when is_binary(first) do
     source_items_fetch_json(first)
   end
@@ -1629,6 +2342,7 @@ defmodule Pleroma.Web.FederatedTarget do
     kind = source_kind_for_platform(source, platform)
 
     %{
+      source: source,
       platform: platform,
       source_kind: kind,
       source_kind_label: source_kind_label_for_kind(kind),
@@ -1661,11 +2375,36 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp fetch_remote_group_member_count(_), do: nil
 
+  defp fetch_remote_group_moderator_count(%User{attributed_to_address: moderators_url} = group)
+       when is_binary(moderators_url) do
+    with {:ok, %{} = moderators} <- source_items_fetch_json(moderators_url),
+         count when is_integer(count) <- collection_total_items(moderators) do
+      maybe_cache_group_moderator_count(group, count)
+      count
+    else
+      _ -> nil
+    end
+  end
+
+  defp fetch_remote_group_moderator_count(_), do: nil
+
   defp maybe_cache_group_member_count(%User{follower_count: count}, count), do: :ok
 
   defp maybe_cache_group_member_count(%User{} = group, count) when is_integer(count) do
     group
     |> Ecto.Changeset.change(%{follower_count: count})
+    |> Repo.update()
+    |> case do
+      {:ok, group} -> User.set_cache(group)
+      _ -> :ok
+    end
+  end
+
+  defp maybe_cache_group_moderator_count(%User{moderator_count: count}, count), do: :ok
+
+  defp maybe_cache_group_moderator_count(%User{} = group, count) when is_integer(count) do
+    group
+    |> Ecto.Changeset.change(%{moderator_count: count})
     |> Repo.update()
     |> case do
       {:ok, group} -> User.set_cache(group)
@@ -1679,17 +2418,31 @@ defmodule Pleroma.Web.FederatedTarget do
         {:ok, collection}
 
       _ ->
-        with {:ok, %{} = actor} <- source_items_fetch_json(group.ap_id || group.uri) do
-          case first_source_item_page(actor) do
-            {:ok, _page} ->
-              {:ok, actor}
+        case stored_group_outbox_collection(group) do
+          {:ok, %{} = collection} ->
+            {:ok, collection}
 
-            {:error, _reason} ->
-              group_outbox_collection(actor)
-          end
+          {:error, _} ->
+            with {:ok, %{} = actor} <- source_items_fetch_json(group.ap_id || group.uri) do
+              case first_source_item_page(actor) do
+                {:ok, _page} ->
+                  {:ok, actor}
+
+                {:error, _reason} ->
+                  group_outbox_collection(actor)
+              end
+            end
         end
     end
   end
+
+  defp stored_group_outbox_collection(%User{outbox_address: outbox}) when is_binary(outbox) do
+    with {:ok, %{} = collection} <- source_items_fetch_json(outbox) do
+      {:ok, collection}
+    end
+  end
+
+  defp stored_group_outbox_collection(_), do: {:error, :missing_outbox}
 
   defp group_platform_items_collection(%User{} = group, params) do
     case group_platform(group).platform do
@@ -1844,8 +2597,10 @@ defmodule Pleroma.Web.FederatedTarget do
           |> URI.merge(href)
           |> to_string()
 
+        id = mbin_activity_url(url) || url
+
         %{
-          "id" => url,
+          "id" => id,
           "type" => "Page",
           "name" => title,
           "summary" => mbin_html_post_summary(article),
@@ -1881,6 +2636,21 @@ defmodule Pleroma.Web.FederatedTarget do
       end
     end)
   end
+
+  defp mbin_activity_url(url) when is_binary(url) do
+    uri = parse_uri(url)
+
+    case String.split(uri.path || "", "/", trim: true) do
+      ["m", magazine, "t", thread | _] ->
+        %{uri | path: "/m/#{magazine}/t/#{thread}", query: nil, fragment: nil}
+        |> URI.to_string()
+
+      _ ->
+        nil
+    end
+  end
+
+  defp mbin_activity_url(_), do: nil
 
   defp mbin_html_post_summary(article) do
     case Regex.run(
@@ -2072,9 +2842,39 @@ defmodule Pleroma.Web.FederatedTarget do
          total_items: total_items
        }}
     else
-      _ -> {:error, reason}
+      _ -> cached_source_fallback_items(source, source_context, reason, total_items)
     end
   end
+
+  defp cached_source_fallback_items(
+         %User{actor_type: "Person"} = source,
+         source_context,
+         reason,
+         total_items
+       ) do
+    item_data = %{
+      "id" => source.ap_id || source.uri,
+      "type" => source.actor_type,
+      "name" => source.name || source.nickname,
+      "summary" => source.bio || source.raw_bio,
+      "url" => source.uri || source.ap_id
+    }
+
+    case render_source_item(item_data, source_context) do
+      %{} = item ->
+        {:ok,
+         %{
+           items: [Map.put(item, :preview_warning, source_preview_warning(reason))],
+           next: nil,
+           total_items: total_items
+         }}
+
+      _ ->
+        {:error, reason}
+    end
+  end
+
+  defp cached_source_fallback_items(_, _, reason, _), do: {:error, reason}
 
   defp source_preview_warning(:empty_collection),
     do: "Remote source did not expose preview items."
@@ -2100,6 +2900,17 @@ defmodule Pleroma.Web.FederatedTarget do
       published: nil,
       thumbnail_url: nil,
       duration: nil,
+      media_bitrate: nil,
+      media_size: nil,
+      album: nil,
+      album_url: nil,
+      artists: [],
+      license: nil,
+      copyright: nil,
+      disc: nil,
+      position: nil,
+      musicbrainz_id: nil,
+      musicbrainz_url: nil,
       event_start: nil,
       location: nil,
       comments_count: nil,
@@ -2130,6 +2941,17 @@ defmodule Pleroma.Web.FederatedTarget do
       published: item["published"],
       thumbnail_url: source_item_thumbnail(item, media),
       duration: source_item_duration(item),
+      media_bitrate: source_item_media_bitrate(item, media),
+      media_size: source_item_media_size(item, media),
+      album: source_item_album(item),
+      album_url: source_item_album_url(item),
+      artists: source_item_artists(item),
+      license: source_item_license(item),
+      copyright: source_item_copyright(item),
+      disc: source_item_disc(item),
+      position: source_item_position(item),
+      musicbrainz_id: source_item_musicbrainz_id(item),
+      musicbrainz_url: source_item_musicbrainz_url(item),
       event_start: source_item_event_start(item),
       location: source_item_location(item),
       comments_count: comments_count,
@@ -2139,12 +2961,33 @@ defmodule Pleroma.Web.FederatedTarget do
       capabilities: source_context.capabilities
     }
     |> Map.merge(platform)
-    |> maybe_put(:status, source_item_status(item, reading_user, comments_count))
+    |> maybe_put(:status, source_item_status(item, source_context, reading_user, comments_count))
   end
 
   defp render_source_item(_, _, _), do: nil
 
-  defp source_item_status(%{} = item, reading_user, comments_count) do
+  defp source_item_status(
+         %{} = item,
+         %{source_kind: "rss_feed", source: %User{} = source},
+         reading_user,
+         comments_count
+       ) do
+    with id when is_binary(id) <- rss_source_item_object_id(source, item),
+         %Activity{} = activity <- rss_source_item_activity(source, item, id),
+         true <- Visibility.visible_for_user?(activity, reading_user),
+         status when is_map(status) <-
+           StatusView.render("show.json", %{activity: activity, for: reading_user}) do
+      maybe_put_status_replies_count(status, comments_count)
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp source_item_status(%{} = item, _source_context, reading_user, comments_count) do
     with id when is_binary(id) <- source_item_object_id(item),
          %Activity{} = activity <- source_item_activity(item, id),
          true <- Visibility.visible_for_user?(activity, reading_user),
@@ -2188,11 +3031,12 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_item_activity(item, id) do
     Activity.get_create_by_object_ap_id_with_object(id) ||
-      maybe_fetch_source_item_activity(item, id)
+      maybe_fetch_source_item_activity(item, id) ||
+      maybe_fetch_source_item_activity_with_resolved_id(item, id)
   end
 
   defp maybe_fetch_source_item_activity(%{"type" => type}, id)
-       when type in ["Note", "Article", "Page", "Question", "Audio", "Video", "Image", "Event"] do
+       when type in @source_item_status_types do
     with {:ok, _object} <- Fetcher.fetch_object_from_id(id, depth: 0) do
       Activity.get_create_by_object_ap_id_with_object(id)
     else
@@ -2202,8 +3046,204 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp maybe_fetch_source_item_activity(_, _), do: nil
 
+  defp maybe_fetch_source_item_activity_with_resolved_id(%{"type" => type}, id)
+       when type in @source_item_status_types do
+    with {:ok, %{"id" => resolved_id} = object} <- source_items_fetch_json(id),
+         true <- is_binary(resolved_id) and resolved_id != id,
+         resolved_type <- object["type"] || type,
+         true <- resolved_type in @source_item_status_types do
+      Activity.get_create_by_object_ap_id_with_object(resolved_id) ||
+        maybe_fetch_source_item_activity(%{"type" => resolved_type}, resolved_id) ||
+        maybe_create_source_item_activity(object, resolved_id)
+    else
+      _ -> nil
+    end
+  end
+
+  defp maybe_fetch_source_item_activity_with_resolved_id(_, _), do: nil
+
+  defp maybe_create_source_item_activity(%{"type" => type} = object, id)
+       when type in @source_item_status_types do
+    with actor when is_binary(actor) <- source_item_actor(object),
+         %{} = create <- source_item_create_activity(object, actor, id),
+         {:ok, %Activity{}} <- Transmogrifier.handle_incoming(create) do
+      Activity.get_create_by_object_ap_id_with_object(id)
+    else
+      _ -> nil
+    end
+  end
+
+  defp maybe_create_source_item_activity(_, _), do: nil
+
+  defp source_item_actor(%{"actor" => actor}) when is_binary(actor), do: actor
+  defp source_item_actor(%{"attributedTo" => actor}) when is_binary(actor), do: actor
+
+  defp source_item_actor(%{"attributedTo" => actors}) when is_list(actors) do
+    Enum.find(actors, &is_binary/1)
+  end
+
+  defp source_item_actor(_), do: nil
+
+  defp source_item_create_activity(object, actor, id) do
+    published = object["published"] || DateTime.utc_now() |> DateTime.to_iso8601()
+
+    %{
+      "id" => id <> "#create",
+      "type" => "Create",
+      "actor" => actor,
+      "object" => object,
+      "published" => published,
+      "to" => source_item_recipients(object["to"], [Pleroma.Constants.as_public()]),
+      "cc" => source_item_recipients(object["cc"], [])
+    }
+  end
+
+  defp source_item_recipients(recipients, _default) when is_list(recipients), do: recipients
+  defp source_item_recipients(recipient, _default) when is_binary(recipient), do: [recipient]
+  defp source_item_recipients(_, default), do: default
+
   defp source_item_object_id(%{"id" => id}) when is_binary(id), do: id
   defp source_item_object_id(_), do: nil
+
+  defp rss_source_item_object_id(%User{} = source, %{} = item) do
+    [item["id"], item["url"]]
+    |> Enum.find(&same_host_url?(&1, source.ap_id))
+    |> case do
+      id when is_binary(id) ->
+        id
+
+      _ ->
+        rss_source_item_synthetic_id(source, item)
+    end
+  end
+
+  defp same_host_url?(value, actor_id) when is_binary(value) and is_binary(actor_id) do
+    with true <- url?(value),
+         %URI{host: host} when is_binary(host) <- parse_uri(value),
+         %URI{host: actor_host} when is_binary(actor_host) <- parse_uri(actor_id) do
+      String.downcase(host) == String.downcase(actor_host)
+    else
+      _ -> false
+    end
+  end
+
+  defp same_host_url?(_, _), do: false
+
+  defp rss_source_item_synthetic_id(%User{ap_id: ap_id}, item) when is_binary(ap_id) do
+    if url?(ap_id) do
+      ap_id <> "#item-" <> rss_source_item_hash(item)
+    end
+  end
+
+  defp rss_source_item_synthetic_id(_, _), do: nil
+
+  defp rss_source_item_hash(item) do
+    [
+      item["id"],
+      item["url"],
+      item["published"],
+      item["name"],
+      item["summary"]
+    ]
+    |> Enum.find(&is_binary/1)
+    |> Kernel.||(inspect(item))
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 32)
+  end
+
+  defp rss_source_item_activity(%User{} = source, item, id) do
+    Activity.get_create_by_object_ap_id_with_object(id) ||
+      maybe_create_rss_source_item_activity(source, item, id)
+  end
+
+  defp maybe_create_rss_source_item_activity(%User{} = source, item, id) do
+    with %{} = create <- rss_source_item_create(source, item, id),
+         {:ok, %Activity{}} <- Transmogrifier.handle_incoming(create) do
+      Activity.get_create_by_object_ap_id_with_object(id)
+    else
+      _ -> nil
+    end
+  end
+
+  defp rss_source_item_create(%User{} = source, item, id) do
+    url = source_item_best_url(item) || id
+    published = rss_source_item_published(item)
+    context = id <> "#context"
+    to = [Pleroma.Constants.as_public()]
+    cc = [source.follower_address || source.ap_id]
+
+    object =
+      %{
+        "id" => id,
+        "type" => "Article",
+        "actor" => source.ap_id,
+        "attributedTo" => source.ap_id,
+        "context" => context,
+        "name" => source_item_title(item, source_item_summary(item), url),
+        "content" => rss_source_item_content(item, url),
+        "url" => url,
+        "published" => published,
+        "to" => to,
+        "cc" => cc
+      }
+      |> maybe_put("image", source_item_image_url(item["image"]))
+      |> maybe_put("source", rss_source_item_source(item))
+      |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+      |> Map.new()
+
+    %{
+      "id" => id <> "#create",
+      "type" => "Create",
+      "actor" => source.ap_id,
+      "object" => object,
+      "published" => published,
+      "to" => to,
+      "cc" => cc
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+    |> Map.new()
+  end
+
+  defp rss_source_item_content(item, url) do
+    content =
+      item["summary"] ||
+        item["content"] ||
+        item["name"] ||
+        url ||
+        "RSS feed item"
+
+    content
+    |> Pleroma.HTML.filter_tags()
+    |> maybe_append_rss_source_item_link(url)
+  end
+
+  defp maybe_append_rss_source_item_link(content, url)
+       when is_binary(content) and is_binary(url) do
+    if String.contains?(content, url) do
+      content
+    else
+      href =
+        url
+        |> Phoenix.HTML.html_escape()
+        |> Phoenix.HTML.safe_to_string()
+
+      content <> ~s(<p><a href="#{href}" rel="ugc">Read original</a></p>)
+    end
+  end
+
+  defp maybe_append_rss_source_item_link(content, _url), do: content
+
+  defp rss_source_item_source(%{"summary" => summary}) when is_binary(summary) do
+    %{"content" => summary, "mediaType" => "text/html"}
+  end
+
+  defp rss_source_item_source(_), do: nil
+
+  defp rss_source_item_published(%{"published" => published}) when is_binary(published),
+    do: published
+
+  defp rss_source_item_published(_), do: DateTime.utc_now() |> DateTime.to_iso8601()
 
   defp source_item_platform(%{} = item, source_platform) do
     item
@@ -2243,10 +3283,26 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp source_item_title(item, summary, url) do
-    [item["name"], item["title"], summary, url, item["id"], "Remote item"]
+    [
+      item["name"],
+      item["title"],
+      source_item_track_title(item),
+      summary,
+      url,
+      item["id"],
+      "Remote item"
+    ]
     |> Enum.find(&present_binary?/1)
     |> source_item_text_limit(@source_item_title_limit)
   end
+
+  defp source_item_track_title(%{} = item) do
+    track = source_item_nested(item, ["track"])
+
+    source_item_named_value(track)
+  end
+
+  defp source_item_track_title(_), do: nil
 
   defp source_item_summary(%{"summary" => summary}) when is_binary(summary) do
     source_item_strip_html(summary)
@@ -2297,12 +3353,12 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_item_html_url(urls) when is_list(urls) do
     urls
     |> Enum.find_value(fn
-      %{"href" => href, "mediaType" => media_type}
-      when is_binary(href) and media_type == "text/html" ->
-        href
-
-      %{"href" => href, "type" => "Link"} when is_binary(href) ->
-        href
+      %{"href" => href} = url when is_binary(href) ->
+        cond do
+          source_item_url_media_type(url) == "text/html" -> href
+          url["type"] == "Link" and is_nil(source_item_url_media_type(url)) -> href
+          true -> nil
+        end
 
       _ ->
         nil
@@ -2310,6 +3366,9 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp source_item_html_url(%{"href" => href, "mediaType" => "text/html"}) when is_binary(href),
+    do: href
+
+  defp source_item_html_url(%{"href" => href, "mimeType" => "text/html"}) when is_binary(href),
     do: href
 
   defp source_item_html_url(_), do: nil
@@ -2330,11 +3389,17 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_item_media(%{"url" => urls}) when is_list(urls) do
     urls
-    |> Enum.find_value(%{href: nil, media_type: nil}, fn
-      %{"href" => href, "mediaType" => media_type}
-      when is_binary(href) and is_binary(media_type) ->
+    |> Enum.find_value(%{href: nil, media_type: nil, bitrate: nil, size: nil}, fn
+      %{"href" => href} = url when is_binary(href) ->
+        media_type = source_item_url_media_type(url)
+
         if source_item_media_type?(media_type) do
-          %{href: href, media_type: media_type}
+          %{
+            href: href,
+            media_type: media_type,
+            bitrate: normalized_integer(url["bitrate"]),
+            size: normalized_integer(url["size"])
+          }
         end
 
       _ ->
@@ -2342,21 +3407,37 @@ defmodule Pleroma.Web.FederatedTarget do
     end)
   end
 
-  defp source_item_media(%{"url" => %{"href" => href, "mediaType" => media_type}})
-       when is_binary(href) and is_binary(media_type) do
+  defp source_item_media(%{"url" => %{"href" => href} = url}) when is_binary(href) do
+    media_type = source_item_url_media_type(url)
+
     if source_item_media_type?(media_type) do
-      %{href: href, media_type: media_type}
+      %{
+        href: href,
+        media_type: media_type,
+        bitrate: normalized_integer(url["bitrate"]),
+        size: normalized_integer(url["size"])
+      }
     else
-      %{href: nil, media_type: nil}
+      %{href: nil, media_type: nil, bitrate: nil, size: nil}
     end
   end
 
-  defp source_item_media(_), do: %{href: nil, media_type: nil}
+  defp source_item_media(_), do: %{href: nil, media_type: nil, bitrate: nil, size: nil}
 
-  defp source_item_media_type?(media_type) do
+  defp source_item_url_media_type(%{"mediaType" => media_type}) when is_binary(media_type),
+    do: media_type
+
+  defp source_item_url_media_type(%{"mimeType" => media_type}) when is_binary(media_type),
+    do: media_type
+
+  defp source_item_url_media_type(_), do: nil
+
+  defp source_item_media_type?(media_type) when is_binary(media_type) do
     String.starts_with?(media_type, "audio/") or String.starts_with?(media_type, "video/") or
       String.starts_with?(media_type, "image/")
   end
+
+  defp source_item_media_type?(_), do: false
 
   defp source_item_thumbnail(item, %{href: href, media_type: media_type})
        when is_binary(href) and is_binary(media_type) do
@@ -2371,7 +3452,9 @@ defmodule Pleroma.Web.FederatedTarget do
     source_item_image_url(item["image"]) ||
       source_item_image_url(item["icon"]) ||
       source_item_image_url(item["attachment"]) ||
-      source_item_image_url(item["preview"])
+      source_item_image_url(item["preview"]) ||
+      source_item_image_url(source_item_nested(item, ["track", "image"])) ||
+      source_item_image_url(source_item_nested(item, ["track", "album", "image"]))
   end
 
   defp source_item_image_url(value) when is_binary(value), do: value
@@ -2393,6 +3476,141 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_item_duration(%{"length" => duration}) when is_binary(duration), do: duration
   defp source_item_duration(%{"runtime" => duration}) when is_binary(duration), do: duration
   defp source_item_duration(_), do: nil
+
+  defp source_item_media_bitrate(item, media) do
+    media[:bitrate] ||
+      normalized_integer(source_item_nested(item, ["bitrate"])) ||
+      normalized_integer(source_item_nested(item, ["track", "bitrate"]))
+  end
+
+  defp source_item_media_size(item, media) do
+    media[:size] ||
+      normalized_integer(source_item_nested(item, ["size"])) ||
+      normalized_integer(source_item_nested(item, ["track", "size"]))
+  end
+
+  defp source_item_album(item) do
+    source_item_named_value(source_item_nested(item, ["track", "album"])) ||
+      source_item_named_value(source_item_nested(item, ["album"]))
+  end
+
+  defp source_item_album_url(item) do
+    source_item_object_url(source_item_nested(item, ["track", "album"])) ||
+      source_item_object_url(source_item_nested(item, ["album"]))
+  end
+
+  defp source_item_artists(item) do
+    [
+      source_item_artist_values(source_item_nested(item, ["track", "artist_credit"])),
+      source_item_artist_values(source_item_nested(item, ["artist_credit"])),
+      source_item_artist_values(source_item_nested(item, ["track", "artist"])),
+      source_item_artist_values(source_item_nested(item, ["artist"])),
+      source_item_artist_values(source_item_nested(item, ["artists"]))
+    ]
+    |> List.flatten()
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp source_item_artist_values(values) when is_list(values) do
+    Enum.flat_map(values, &source_item_artist_values/1)
+  end
+
+  defp source_item_artist_values(%{"credit" => credit}) when is_binary(credit) do
+    [credit]
+  end
+
+  defp source_item_artist_values(%{"artist" => artist}) do
+    source_item_artist_values(artist)
+  end
+
+  defp source_item_artist_values(%{} = artist) do
+    case source_item_named_value(artist) do
+      name when is_binary(name) -> [name]
+      _ -> []
+    end
+  end
+
+  defp source_item_artist_values(value) when is_binary(value) do
+    if url?(value), do: [], else: [value]
+  end
+
+  defp source_item_artist_values(_), do: []
+
+  defp source_item_license(item) do
+    source_item_string(source_item_nested(item, ["track", "license"])) ||
+      source_item_string(source_item_nested(item, ["license"]))
+  end
+
+  defp source_item_copyright(item) do
+    source_item_string(source_item_nested(item, ["track", "copyright"])) ||
+      source_item_string(source_item_nested(item, ["copyright"]))
+  end
+
+  defp source_item_disc(item) do
+    normalized_integer(source_item_nested(item, ["track", "disc"])) ||
+      normalized_integer(source_item_nested(item, ["disc"]))
+  end
+
+  defp source_item_position(item) do
+    normalized_integer(source_item_nested(item, ["track", "position"])) ||
+      normalized_integer(source_item_nested(item, ["position"]))
+  end
+
+  defp source_item_musicbrainz_id(item) do
+    [
+      source_item_nested(item, ["track", "musicbrainzId"]),
+      source_item_nested(item, ["track", "musicbrainz_id"]),
+      source_item_nested(item, ["musicbrainzId"]),
+      source_item_nested(item, ["musicbrainz_id"])
+    ]
+    |> Enum.find_value(&source_item_string/1)
+  end
+
+  defp source_item_musicbrainz_url(item) do
+    with id when is_binary(id) <- source_item_musicbrainz_id(item) do
+      "https://musicbrainz.org/" <> source_item_musicbrainz_entity(item) <> "/" <> id
+    end
+  end
+
+  defp source_item_musicbrainz_entity(%{"type" => "Artist"}), do: "artist"
+
+  defp source_item_musicbrainz_entity(%{"type" => type}) when type in ["Album", "Release"],
+    do: "release"
+
+  defp source_item_musicbrainz_entity(_), do: "recording"
+
+  defp source_item_named_value(%{"name" => name}) when is_binary(name), do: name
+  defp source_item_named_value(%{"title" => title}) when is_binary(title), do: title
+
+  defp source_item_named_value(%{"preferredUsername" => username}) when is_binary(username),
+    do: username
+
+  defp source_item_named_value(%{"username" => username}) when is_binary(username), do: username
+  defp source_item_named_value(_), do: nil
+
+  defp source_item_object_url(%{"id" => id}) when is_binary(id), do: id
+  defp source_item_object_url(%{"url" => url}), do: source_item_any_url(url)
+  defp source_item_object_url(value) when is_binary(value), do: if(url?(value), do: value)
+  defp source_item_object_url(_), do: nil
+
+  defp source_item_string(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> empty_string_to_nil()
+  end
+
+  defp source_item_string(_), do: nil
+
+  defp source_item_nested(%{} = item, keys) when is_list(keys) do
+    Enum.reduce_while(keys, item, fn
+      key, %{} = map -> {:cont, Map.get(map, key)}
+      _key, _ -> {:halt, nil}
+    end)
+  end
+
+  defp source_item_nested(_, _), do: nil
 
   defp source_item_event_start(%{"startTime" => start_time}) when is_binary(start_time),
     do: start_time

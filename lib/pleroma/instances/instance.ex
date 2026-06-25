@@ -8,6 +8,7 @@ defmodule Pleroma.Instances.Instance do
   alias Pleroma.Instances
   alias Pleroma.Instances.Instance
   alias Pleroma.Maps
+  alias Pleroma.Config
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Workers.BackgroundWorker
@@ -25,10 +26,18 @@ defmodule Pleroma.Instances.Instance do
     field(:favicon, :string)
     field(:favicon_updated_at, :naive_datetime)
 
-    embeds_one :metadata, Pleroma.Instances.Metadata, primary_key: false do
+    embeds_one :metadata, Pleroma.Instances.Metadata, primary_key: false, on_replace: :update do
       field(:software_name, :string)
       field(:software_version, :string)
       field(:software_repository, :string)
+      field(:failure_count, :integer, default: 0)
+      field(:last_failure_at, :utc_datetime)
+      field(:last_failure_reason, :string)
+      field(:last_success_at, :utc_datetime)
+      field(:last_status, :string)
+      field(:backoff_until, :utc_datetime)
+      field(:redirect_target, :string)
+      field(:gone_at, :utc_datetime)
     end
 
     field(:metadata_updated_at, :utc_datetime)
@@ -48,7 +57,19 @@ defmodule Pleroma.Instances.Instance do
 
   def metadata_changeset(struct, params \\ %{}) do
     struct
-    |> cast(params, [:software_name, :software_version, :software_repository])
+    |> cast(params, [
+      :software_name,
+      :software_version,
+      :software_repository,
+      :failure_count,
+      :last_failure_at,
+      :last_failure_reason,
+      :last_success_at,
+      :last_status,
+      :backoff_until,
+      :redirect_target,
+      :gone_at
+    ])
   end
 
   def filter_reachable([]), do: %{}
@@ -125,6 +146,93 @@ defmodule Pleroma.Instances.Instance do
 
   def set_reachable(_), do: {:error, nil}
 
+  def record_success(url_or_host, opts \\ [])
+
+  def record_success(url_or_host, opts) when is_binary(url_or_host) do
+    update_instance_health(url_or_host, opts, fn instance, now ->
+      %{
+        unreachable_since: nil,
+        metadata:
+          merge_metadata(instance, %{
+            failure_count: 0,
+            last_success_at: now,
+            last_status: metadata_status(opts, "reachable"),
+            backoff_until: nil,
+            redirect_target: nil,
+            gone_at: nil
+          })
+      }
+    end)
+  end
+
+  def record_success(_, _), do: {:error, nil}
+
+  def record_failure(url_or_host, reason \\ :failure, opts \\ [])
+
+  def record_failure(url_or_host, reason, opts) when is_binary(url_or_host) do
+    update_instance_health(url_or_host, opts, fn instance, now ->
+      failure_count = metadata_integer(instance, :failure_count) + 1
+
+      %{
+        unreachable_since: instance.unreachable_since || DateTime.to_naive(now),
+        metadata:
+          merge_metadata(instance, %{
+            failure_count: failure_count,
+            last_failure_at: now,
+            last_failure_reason: metadata_reason(reason, opts),
+            last_status: metadata_status(opts, "unreachable"),
+            backoff_until: backoff_until(now, failure_count)
+          })
+      }
+    end)
+  end
+
+  def record_failure(_, _, _), do: {:error, nil}
+
+  def record_redirect(url_or_host, target, opts \\ [])
+
+  def record_redirect(url_or_host, target, opts)
+      when is_binary(url_or_host) and is_binary(target) do
+    update_instance_health(url_or_host, opts, fn instance, now ->
+      %{
+        unreachable_since: nil,
+        metadata:
+          merge_metadata(instance, %{
+            failure_count: 0,
+            last_success_at: now,
+            last_status: metadata_status(opts, "redirect"),
+            backoff_until: nil,
+            redirect_target: target,
+            gone_at: nil
+          })
+      }
+    end)
+  end
+
+  def record_redirect(_, _, _), do: {:error, nil}
+
+  def record_gone(url_or_host, opts \\ [])
+
+  def record_gone(url_or_host, opts) when is_binary(url_or_host) do
+    update_instance_health(url_or_host, opts, fn instance, now ->
+      failure_count = metadata_integer(instance, :failure_count) + 1
+
+      %{
+        metadata:
+          merge_metadata(instance, %{
+            failure_count: failure_count,
+            last_failure_at: now,
+            last_failure_reason: metadata_reason(:gone, opts),
+            last_status: metadata_status(opts, "gone"),
+            gone_at: now,
+            backoff_until: backoff_until(now, failure_count)
+          })
+      }
+    end)
+  end
+
+  def record_gone(_, _), do: {:error, nil}
+
   def set_unreachable(url_or_host, unreachable_since \\ nil)
 
   def set_unreachable(url_or_host, unreachable_since) when is_binary(url_or_host) do
@@ -159,18 +267,145 @@ defmodule Pleroma.Instances.Instance do
     query =
       from(i in Instance,
         where: ^reachability_datetime_threshold > i.unreachable_since,
-        order_by: i.unreachable_since,
-        select: {i.host, i.unreachable_since}
+        order_by: i.unreachable_since
       )
 
-    Repo.all(query)
+    query
+    |> Repo.all()
+    |> Enum.filter(&backoff_due?/1)
+    |> Enum.map(&{&1.host, &1.unreachable_since})
+  end
+
+  def backoff_due?(%Instance{} = instance) do
+    case metadata_value(instance, :backoff_until) do
+      %DateTime{} = backoff_until ->
+        DateTime.compare(backoff_until, DateTime.utc_now()) != :gt
+
+      _ ->
+        true
+    end
   end
 
   defp parse_datetime(datetime) when is_binary(datetime) do
-    NaiveDateTime.from_iso8601(datetime)
+    case NaiveDateTime.from_iso8601(datetime) do
+      {:ok, datetime} -> datetime
+      _ -> nil
+    end
   end
 
   defp parse_datetime(datetime), do: datetime
+
+  defp update_instance_health(url_or_host, opts, fun) when is_function(fun, 2) do
+    with host when is_binary(host) <- normalize_host(url_or_host) do
+      instance = Repo.get_by(Instance, %{host: host}) || %Instance{host: host}
+      changes = fun.(instance, now())
+
+      instance
+      |> changeset(Map.put_new(changes, :host, host))
+      |> insert_or_update()
+      |> tap_log_health_update(host, opts)
+    else
+      _ -> {:error, nil}
+    end
+  end
+
+  defp insert_or_update(%Ecto.Changeset{data: %Instance{id: nil}} = changeset),
+    do: Repo.insert(changeset)
+
+  defp insert_or_update(changeset), do: Repo.update(changeset)
+
+  defp tap_log_health_update({:ok, instance} = result, host, opts) do
+    if Keyword.get(opts, :log, false) do
+      Logger.debug("Recorded instance health for #{host}: #{inspect(instance.metadata)}")
+    end
+
+    result
+  end
+
+  defp tap_log_health_update(result, _host, _opts), do: result
+
+  defp normalize_host(url_or_host) when is_binary(url_or_host) do
+    case host(url_or_host) do
+      host when is_binary(host) ->
+        host
+        |> String.trim()
+        |> String.downcase()
+        |> case do
+          "" -> nil
+          host -> host
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp merge_metadata(%Instance{} = instance, changes) do
+    instance
+    |> metadata_map()
+    |> Map.merge(changes)
+  end
+
+  defp metadata_map(%Instance{metadata: nil}), do: %{}
+  defp metadata_map(%Instance{metadata: metadata}), do: Map.from_struct(metadata)
+
+  defp metadata_integer(%Instance{} = instance, key) do
+    case metadata_value(instance, key) do
+      value when is_integer(value) -> value
+      _ -> 0
+    end
+  end
+
+  defp metadata_value(%Instance{metadata: nil}, _key), do: nil
+  defp metadata_value(%Instance{metadata: metadata}, key), do: Map.get(metadata, key)
+
+  defp metadata_status(opts, default) do
+    opts
+    |> Keyword.get(:status, default)
+    |> to_string()
+  end
+
+  defp metadata_reason(reason, opts) do
+    source = Keyword.get(opts, :source)
+
+    [source, reason]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
+    |> Enum.join(":")
+  end
+
+  defp backoff_until(now, failure_count) do
+    minutes =
+      reachability_backoff_base_minutes()
+      |> Kernel.*(:math.pow(2, max(failure_count - 1, 0)))
+      |> round()
+      |> min(reachability_backoff_max_minutes())
+
+    DateTime.add(now, minutes * 60, :second)
+  end
+
+  defp reachability_backoff_base_minutes do
+    Config.get([:instances, :reachability_backoff_base_minutes], 15)
+    |> normalize_positive_integer(15)
+  end
+
+  defp reachability_backoff_max_minutes do
+    Config.get([:instances, :reachability_backoff_max_minutes], 1_440)
+    |> normalize_positive_integer(1_440)
+  end
+
+  defp normalize_positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+
+  defp normalize_positive_integer(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} when integer > 0 -> integer
+      _ -> default
+    end
+  end
+
+  defp normalize_positive_integer(_, default), do: default
+
+  defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
 
   def get_or_update_favicon(%URI{host: host} = instance_uri) do
     existing_record = Repo.get_by(Instance, %{host: host})

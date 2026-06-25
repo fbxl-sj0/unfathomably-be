@@ -81,40 +81,23 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
         unless params[:unreachable_since], do: Instances.set_unreachable(inbox)
 
         Logger.metadata(activity: id, inbox: inbox, status: code)
-        log_delivery_status(inbox, code)
+        Logger.debug("Publisher failed to inbox #{inbox} with status #{code}")
 
         case response do
-          %{status: 403} ->
-            {:discard, :forbidden}
-
-          %{status: code} when code in [400, 401, 405, 406, 422, 451, 501] ->
-            {:discard, :undeliverable}
-
-          %{status: 404} ->
-            {:discard, :not_found}
-
-          %{status: 410} ->
-            {:discard, :not_found}
-
-          _ ->
-            {:error, response}
+          %{status: 403} -> {:discard, :forbidden}
+          %{status: 404} -> {:discard, :not_found}
+          %{status: 410} -> {:discard, :not_found}
+          _ -> {:error, response}
         end
 
-      {:error, reason} = e ->
-        if local_pool_error?(reason) do
-          Logger.debug("Publisher snoozing worker job due to full connection pool")
-          {:snooze, 30}
-        else
-          unless params[:unreachable_since], do: Instances.set_unreachable(inbox)
-          Logger.metadata(activity: id, inbox: inbox)
-          Logger.error("Publisher failed to inbox #{inbox}: #{inspect(e)}")
-          {:error, e}
-        end
+      {:error, :pool_full} ->
+        Logger.debug("Publisher snoozing worker job due to full connection pool")
+        {:snooze, 30}
 
       e ->
         unless params[:unreachable_since], do: Instances.set_unreachable(inbox)
         Logger.metadata(activity: id, inbox: inbox)
-        Logger.error("Publisher failed to inbox #{inbox}: #{inspect(e)}")
+        Logger.debug("Publisher failed to inbox #{inbox}: #{inspect(e)}")
         {:error, e}
     end
   end
@@ -127,26 +110,6 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     |> Map.put(:actor, actor)
     |> publish_one()
   end
-
-  defp log_delivery_status(inbox, code)
-       when code in [400, 401, 403, 404, 405, 406, 410, 422, 451, 501] do
-    Logger.warning("Publisher discarded delivery to inbox #{inbox} with terminal status #{code}")
-  end
-
-  defp log_delivery_status(inbox, code) do
-    Logger.error("Publisher failed to inbox #{inbox} with status #{code}")
-  end
-
-  defp local_pool_error?(reason)
-       when reason in [:pool_full, :checkout_failure, :checkout_timeout] do
-    true
-  end
-
-  defp local_pool_error?({reason, _}) when reason in [:checkout_failure, :checkout_timeout] do
-    true
-  end
-
-  defp local_pool_error?(_), do: false
 
   defp signature_host(%URI{port: port, scheme: scheme, host: host}) do
     if port == URI.default_port(scheme) do
@@ -410,14 +373,6 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
       %{
         "rel" => "http://ostatus.org/schema/1.0/subscribe",
         "template" => "#{Pleroma.Web.Endpoint.url()}/ostatus_subscribe?acct={uri}"
-      },
-      %{
-        "rel" => "https://w3id.org/fep/3b86/Create",
-        "template" => "#{Pleroma.Web.Endpoint.url()}/share?text={content}"
-      },
-      %{
-        "rel" => "https://w3id.org/fep/3b86/Object",
-        "template" => "#{Pleroma.Web.Endpoint.url()}/authorize_interaction?uri={object}"
       }
     ]
   end

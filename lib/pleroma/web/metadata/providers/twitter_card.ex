@@ -52,11 +52,13 @@ defmodule Pleroma.Web.Metadata.Providers.TwitterCard do
     {:meta, [name: "twitter:image", content: MediaProxy.preview_url(User.avatar_url(user))], []}
   end
 
-  defp build_attachments(id, %{data: %{"attachment" => attachments}}) do
+  defp build_attachments(id, %{data: %{"attachment" => attachments}}) when is_list(attachments) do
     Enum.reduce(attachments, [], fn attachment, acc ->
       rendered_tags =
-        Enum.reduce(attachment["url"], [], fn url, acc ->
-          case Utils.fetch_media_type(@media_types, url["mediaType"]) do
+        attachment
+        |> attachment_urls()
+        |> Enum.reduce([], fn url, acc ->
+          case fetch_media_type(url) do
             "audio" ->
               [
                 {:meta, [name: "twitter:card", content: "player"], []},
@@ -111,6 +113,16 @@ defmodule Pleroma.Web.Metadata.Providers.TwitterCard do
   end
 
   defp build_attachments(_id, _object), do: []
+
+  defp attachment_urls(%{"url" => urls}) when is_list(urls), do: urls
+  defp attachment_urls(%{"url" => url}) when is_map(url), do: [url]
+  defp attachment_urls(_), do: []
+
+  defp fetch_media_type(%{"mediaType" => media_type}) when is_binary(media_type) do
+    Utils.fetch_media_type(@media_types, media_type)
+  end
+
+  defp fetch_media_type(_), do: nil
 
   defp player_url(id) do
     Pleroma.Web.Router.Helpers.o_status_url(Pleroma.Web.Endpoint, :notice_player, id)

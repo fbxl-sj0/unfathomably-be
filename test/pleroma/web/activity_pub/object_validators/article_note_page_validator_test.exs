@@ -39,88 +39,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest 
       %{valid?: false} = ArticleNotePageValidator.cast_and_validate(note)
     end
 
-    test "accepts a Lemmy language object", %{note: note} do
-      note = Map.put(note, "language", %{"identifier" => "en", "name" => "English"})
-
-      assert {:ok, validated_note} = ArticleNotePageValidator.cast_and_apply(note)
-      assert validated_note.language == "en"
-    end
-
     test "a note from factory validates" do
       note = insert(:note)
       %{valid?: true} = ArticleNotePageValidator.cast_and_validate(note.data)
-    end
-
-    test "keeps an advertised replies collection URL", %{note: note} do
-      replies_collection = note["id"] <> "/replies"
-
-      note = Map.put(note, "replies", replies_collection)
-
-      assert {:ok, validated_note} = ArticleNotePageValidator.cast_and_apply(note)
-      assert validated_note.replies == []
-      assert validated_note.replies_collection == replies_collection
-    end
-
-    test "keeps the collection URL while normalizing inline reply IDs", %{note: note} do
-      replies_collection = note["id"] <> "/replies"
-      reply = "https://remote.example/objects/reply"
-
-      note =
-        Map.put(note, "replies", %{
-          "id" => replies_collection,
-          "type" => "OrderedCollection",
-          "first" => %{"type" => "OrderedCollectionPage", "orderedItems" => [reply]}
-        })
-
-      assert {:ok, validated_note} = ArticleNotePageValidator.cast_and_apply(note)
-      assert validated_note.replies == [reply]
-      assert validated_note.replies_collection == replies_collection
-    end
-
-    test "accepts a remote likes collection without treating it as internal likes", %{note: note} do
-      note =
-        Map.put(note, "likes", %{
-          "id" => note["id"] <> "/likes",
-          "type" => "Collection",
-          "totalItems" => 4
-        })
-
-      assert {:ok, validated_note} = ArticleNotePageValidator.cast_and_apply(note)
-      assert validated_note.likes == []
-      assert validated_note.like_count == 4
-    end
-
-    test "drops a remote likes collection URL", %{note: note} do
-      note = Map.put(note, "likes", note["id"] <> "/likes")
-
-      assert {:ok, validated_note} = ArticleNotePageValidator.cast_and_apply(note)
-      assert validated_note.likes == []
-    end
-
-    test "does not trust an inbound internal replies collection field", %{note: note} do
-      note = Map.put(note, "replies_collection", note["id"] <> "/replies")
-
-      assert {:ok, validated_note} = ArticleNotePageValidator.cast_and_apply(note)
-      assert validated_note.replies_collection == nil
-    end
-
-    test "can preserve an internal replies collection field with inline replies", %{note: note} do
-      reply = "https://remote.example/objects/reply"
-      replies_collection = note["id"] <> "/replies"
-
-      note =
-        Map.merge(note, %{
-          "replies" => [reply],
-          "replies_collection" => replies_collection
-        })
-
-      assert {:ok, validated_note} =
-               ArticleNotePageValidator.cast_and_apply(note,
-                 preserve_internal_replies_collection: true
-               )
-
-      assert validated_note.replies == [reply]
-      assert validated_note.replies_collection == replies_collection
     end
   end
 
@@ -230,6 +151,27 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest 
 
     assert cng.valid?
     assert cng.changes.quoteUrl == "https://misskey.io/notes/8vs6wxufd0"
+  end
+
+  test "Hubzilla quote post with quote field" do
+    user = insert(:user, ap_id: "https://hubzilla.example/channel/alice")
+
+    data = %{
+      "id" => "https://hubzilla.example/item/1",
+      "type" => "Note",
+      "actor" => user.ap_id,
+      "attributedTo" => user.ap_id,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [user.follower_address],
+      "content" => "Hubzilla-style quote.",
+      "context" => "https://hubzilla.example/conversation/1",
+      "quote" => "https://hubzilla.example/item/quoted"
+    }
+
+    cng = ArticleNotePageValidator.cast_and_validate(data)
+
+    assert cng.valid?
+    assert cng.changes.quoteUrl == "https://hubzilla.example/item/quoted"
   end
 
   test "Parse tag as quote" do

@@ -32,11 +32,28 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
     end
   end
 
+  def put_attributed_groups(object) when is_map(object) do
+    object
+    |> attributed_to_group_ap_ids()
+    |> then(&put_addressed_groups(object, &1))
+  end
+
+  def put_attributed_groups(object), do: object
+
   def filter_implicit_mention_ap_ids(ap_ids, object) when is_list(ap_ids) do
     Enum.reject(ap_ids, &suppress_implicit_mention_ap_id?(&1, object))
   end
 
   def filter_implicit_mention_ap_ids(_, _object), do: []
+
+  def addressed_group_ap_ids(object) when is_map(object) do
+    object
+    |> group_context_ap_ids()
+    |> Enum.filter(&group_actor_ap_id?/1)
+    |> Enum.uniq()
+  end
+
+  def addressed_group_ap_ids(_), do: []
 
   def group_addressing_context?(object) when is_map(object) do
     object
@@ -93,6 +110,8 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
     |> Kernel.++(audience_ap_ids(object))
     |> Kernel.++(recipient_group_ap_ids(object))
     |> Kernel.++(actor_group_ap_ids(object))
+    |> Kernel.++(attributed_to_group_ap_ids(object))
+    |> Kernel.++(nested_object_group_ap_ids(object))
     |> Enum.uniq()
   end
 
@@ -122,6 +141,45 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
   end
 
   defp actor_group_ap_ids(_), do: []
+
+  defp attributed_to_group_ap_ids(%{"attributedTo" => attributed_to}) do
+    attributed_to
+    |> attributed_to_group_ap_ids()
+  end
+
+  defp attributed_to_group_ap_ids(values) when is_list(values) do
+    values
+    |> Enum.flat_map(&attributed_to_group_ap_ids/1)
+    |> Enum.uniq()
+  end
+
+  defp attributed_to_group_ap_ids(%{"type" => "Group", "id" => id}) when is_binary(id) do
+    [id]
+  end
+
+  defp attributed_to_group_ap_ids(value) when is_binary(value) do
+    value
+    |> normalize_ap_ids()
+    |> Enum.filter(&group_actor_ap_id?/1)
+  end
+
+  defp attributed_to_group_ap_ids(%{} = value) do
+    value
+    |> normalize_ap_ids()
+    |> Enum.filter(&group_actor_ap_id?/1)
+  end
+
+  defp attributed_to_group_ap_ids(_), do: []
+
+  defp nested_object_group_ap_ids(%{"object" => object}) when is_map(object) do
+    group_context_ap_ids(object)
+  end
+
+  defp nested_object_group_ap_ids(%{"object" => objects}) when is_list(objects) do
+    Enum.flat_map(objects, &nested_object_group_ap_ids(%{"object" => &1}))
+  end
+
+  defp nested_object_group_ap_ids(_), do: []
 
   defp group_actor_ap_id?(ap_id) when is_binary(ap_id) do
     case User.get_cached_by_ap_id(ap_id) do

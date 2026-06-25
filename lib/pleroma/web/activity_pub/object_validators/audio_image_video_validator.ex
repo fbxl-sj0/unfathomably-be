@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
   use Ecto.Schema
 
+  alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
   alias Pleroma.Web.ActivityPub.Transmogrifier
@@ -23,6 +24,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
         status_object_fields()
       end
     end
+
+    field(:replies, {:array, ObjectValidators.ObjectID}, default: [])
+    field(:replies_collection, ObjectValidators.ObjectID)
   end
 
   def cast_and_apply(data) do
@@ -95,6 +99,71 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
 
   defp fix_content(data), do: data
 
+  defp fix_replies_collection(data) do
+    collection_id =
+      replies_collection_id(data["replies"]) ||
+        replies_collection_id(data["comments"]) ||
+        data["replies_collection"]
+
+    data = Map.delete(data, "replies_collection")
+
+    with collection_id when is_binary(collection_id) <- collection_id,
+         {:ok, collection_id} <- ObjectValidators.ObjectID.cast(collection_id),
+         true <- same_origin?(collection_id, data["id"]) do
+      Map.put(data, "replies_collection", collection_id)
+    else
+      _ -> data
+    end
+  end
+
+  defp replies_collection_id(collection) when is_binary(collection), do: collection
+
+  defp replies_collection_id(%{"id" => id}) when is_binary(id), do: id
+
+  defp replies_collection_id(%{"first" => %{"partOf" => id}}) when is_binary(id), do: id
+
+  defp replies_collection_id(_), do: nil
+
+  defp fix_replies(%{"replies" => replies} = data) when is_list(replies), do: data
+
+  defp fix_replies(%{"replies" => %{"first" => %{"items" => replies}}} = data)
+       when is_list(replies),
+       do: Map.put(data, "replies", replies)
+
+  defp fix_replies(%{"replies" => %{"first" => %{"orderedItems" => replies}}} = data)
+       when is_list(replies),
+       do: Map.put(data, "replies", replies)
+
+  defp fix_replies(%{"replies" => %{"items" => replies}} = data) when is_list(replies),
+    do: Map.put(data, "replies", replies)
+
+  defp fix_replies(%{"replies" => %{"orderedItems" => replies}} = data) when is_list(replies),
+    do: Map.put(data, "replies", replies)
+
+  defp fix_replies(%{"comments" => comments} = data) do
+    data
+    |> Map.delete("comments")
+    |> Map.put("replies", comments)
+    |> fix_replies()
+  end
+
+  defp fix_replies(data), do: Map.delete(data, "replies")
+
+  defp same_origin?(left, right) when is_binary(left) and is_binary(right) do
+    left = URI.parse(left)
+    right = URI.parse(right)
+
+    is_binary(left.scheme) and is_binary(left.host) and is_binary(right.scheme) and
+      is_binary(right.host) and left.scheme == right.scheme and
+      String.downcase(left.host) == String.downcase(right.host) and
+      uri_port(left) == uri_port(right)
+  end
+
+  defp same_origin?(_, _), do: false
+
+  defp uri_port(%URI{port: nil, scheme: scheme}), do: URI.default_port(scheme)
+  defp uri_port(%URI{port: port}), do: port
+
   defp fix(data) do
     data
     |> CommonFixes.fix_actor()
@@ -103,6 +172,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
     |> Transmogrifier.fix_emoji()
     |> fix_url()
     |> fix_content()
+    |> fix_replies_collection()
+    |> fix_replies()
   end
 
   def changeset(struct, data) do

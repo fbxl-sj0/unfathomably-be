@@ -75,88 +75,6 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
     assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, recent_incoming.id)
   end
 
-  test "discards terminal publisher retries" do
-    now = DateTime.utc_now()
-
-    terminal_error = %{
-      "at" => DateTime.to_iso8601(now),
-      "attempt" => 3,
-      "error" =>
-        "** (Oban.PerformError) Pleroma.Workers.PublisherWorker failed with {:error, %Tesla.Env{status: 405, body: \"\"}}"
-    }
-
-    transient_error = %{
-      "at" => DateTime.to_iso8601(now),
-      "attempt" => 3,
-      "error" =>
-        "** (Oban.PerformError) Pleroma.Workers.PublisherWorker failed with {:error, %Tesla.Env{status: 502, body: \"\"}}"
-    }
-
-    terminal_job =
-      PublisherWorker.new(%{"op" => "publish_one"})
-      |> insert_job(now, state: "retryable", errors: [terminal_error])
-
-    transient_job =
-      PublisherWorker.new(%{"op" => "publish_one"})
-      |> insert_job(now, state: "retryable", errors: [transient_error])
-
-    assert 1 = ObanCleanupWorker.discard_terminal_publisher_retries()
-
-    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, terminal_job.id)
-    assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, transient_job.id)
-  end
-
-  test "discards duplicate receiver retries" do
-    now = DateTime.utc_now()
-
-    duplicate_error = %{
-      "at" => DateTime.to_iso8601(now),
-      "attempt" => 12,
-      "error" =>
-        "** (Ecto.ConstraintError) constraint error when attempting to insert struct:\n\n    * \"activities_unique_apid_index\" (unique_constraint)"
-    }
-
-    transient_error = %{
-      "at" => DateTime.to_iso8601(now),
-      "attempt" => 3,
-      "error" => "** (DBConnection.ConnectionError) connection not available"
-    }
-
-    duplicate_job =
-      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
-      |> insert_job(now, state: "retryable", errors: [duplicate_error])
-
-    transient_job =
-      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
-      |> insert_job(now, state: "retryable", errors: [transient_error])
-
-    assert 1 = ObanCleanupWorker.discard_duplicate_receiver_retries()
-
-    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, duplicate_job.id)
-    assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, transient_job.id)
-  end
-
-  test "counts terminal publisher retries in the regular cleanup result" do
-    now = DateTime.utc_now()
-
-    PublisherWorker.new(%{"op" => "publish_one"})
-    |> insert_job(
-      now,
-      state: "retryable",
-      errors: [
-        %{
-          "at" => DateTime.to_iso8601(now),
-          "attempt" => 2,
-          "error" =>
-            "** (Oban.PerformError) Pleroma.Workers.PublisherWorker failed with {:error, %Tesla.Env{status: 501, body: \"\"}}"
-        }
-      ]
-    )
-
-    assert {:ok, %{discarded_terminal_publisher_retries: 1}} =
-             ObanCleanupWorker.perform(%Oban.Job{})
-  end
-
   test "discards stale cleanup retries" do
     now = DateTime.utc_now()
 
@@ -178,14 +96,12 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
 
   defp insert_job(changeset, scheduled_at, opts \\ []) do
     state = Keyword.get(opts, :state, "scheduled")
-    errors = Keyword.get(opts, :errors, [])
 
     {:ok, job} =
       changeset
       |> Ecto.Changeset.put_change(:scheduled_at, scheduled_at)
       |> Ecto.Changeset.put_change(:inserted_at, scheduled_at)
       |> Ecto.Changeset.put_change(:state, state)
-      |> Ecto.Changeset.put_change(:errors, errors)
       |> Oban.insert()
 
     job

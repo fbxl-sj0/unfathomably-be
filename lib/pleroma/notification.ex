@@ -814,6 +814,7 @@ defmodule Pleroma.Notification do
     []
     |> Utils.maybe_notify_to_recipients(activity)
     |> Utils.maybe_notify_mentioned_recipients(activity)
+    |> Utils.maybe_notify_replied_to_author(activity)
     |> Utils.maybe_notify_followers(activity)
     |> Enum.uniq()
   end

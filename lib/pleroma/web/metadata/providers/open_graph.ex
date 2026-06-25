@@ -67,13 +67,15 @@ defmodule Pleroma.Web.Metadata.Providers.OpenGraph do
     end
   end
 
-  defp build_attachments(%{data: %{"attachment" => attachments}}) do
+  defp build_attachments(%{data: %{"attachment" => attachments}}) when is_list(attachments) do
     Enum.reduce(attachments, [], fn attachment, acc ->
       rendered_tags =
-        Enum.reduce(attachment["url"], [], fn url, acc ->
+        attachment
+        |> attachment_urls()
+        |> Enum.reduce([], fn url, acc ->
           # Some link preview consumers only use JPEG or PNG og:image entries.
           # Videos get a preview image below when media preview proxy is enabled.
-          case Utils.fetch_media_type(@media_types, url["mediaType"]) do
+          case fetch_media_type(url) do
             "audio" ->
               [
                 {:meta, [property: "og:audio", content: MediaProxy.url(url["href"])], []}
@@ -111,6 +113,16 @@ defmodule Pleroma.Web.Metadata.Providers.OpenGraph do
   end
 
   defp build_attachments(_), do: []
+
+  defp attachment_urls(%{"url" => urls}) when is_list(urls), do: urls
+  defp attachment_urls(%{"url" => url}) when is_map(url), do: [url]
+  defp attachment_urls(_), do: []
+
+  defp fetch_media_type(%{"mediaType" => media_type}) when is_binary(media_type) do
+    Utils.fetch_media_type(@media_types, media_type)
+  end
+
+  defp fetch_media_type(_), do: nil
 
   # We can use url["mediaType"] to dynamically fill the metadata
   defp maybe_add_dimensions(metadata, url) do

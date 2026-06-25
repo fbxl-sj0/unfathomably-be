@@ -75,15 +75,11 @@ defmodule Pleroma.FollowingRelationship do
   end
 
   def follow(%User{} = follower, %User{} = following, state \\ :follow_accept) do
-    with {:ok, following_relationship} <-
+    with {:ok, _following_relationship} <-
            %__MODULE__{}
            |> changeset(%{follower: follower, following: following, state: state})
-           |> Repo.insert(on_conflict: :nothing, returning: [:id]) do
-      if following_relationship.id do
-        after_update(state, follower, following)
-      else
-        {:ok, follower, following}
-      end
+           |> Repo.insert(on_conflict: :nothing) do
+      after_update(state, follower, following)
     end
   end
 
@@ -100,6 +96,8 @@ defmodule Pleroma.FollowingRelationship do
   end
 
   defp after_update(state, %User{} = follower, %User{} = following) do
+    User.invalidate_cache(follower)
+
     with {:ok, following} <- User.update_follower_count(following),
          {:ok, follower} <- User.update_following_count(follower) do
       Pleroma.Web.Streamer.stream("follow_relationship", %{

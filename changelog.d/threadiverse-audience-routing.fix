@@ -1,0 +1,1 @@
+Improved Threadiverse group audience detection so public posts addressed through audience, cc, nested objects, or PeerTube-style attributedTo group arrays can be associated with the right local group.

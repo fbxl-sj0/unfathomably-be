@@ -54,6 +54,16 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
              } = get(conn, "/proxy/hhgfh/eeee/fff")
     end
 
+    test "it returns 404 for unsupported remote URL schemes", %{conn: conn} do
+      url = MediaProxy.encode_url("data:image/svg+xml,<svg></svg>")
+
+      with_mock Pleroma.ReverseProxy,
+        call: fn _conn, _url, _opts -> %Conn{status: :success} end do
+        assert %Conn{status: 404, resp_body: "Not Found"} = get(conn, url)
+        refute called(Pleroma.ReverseProxy.call(:_, :_, :_))
+      end
+    end
+
     test "redirects to valid url when filename is invalidated", %{conn: conn, url: url} do
       invalid_url = String.replace(url, "test.png", "test-file.png")
       response = get(conn, invalid_url)
@@ -159,6 +169,12 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
                status: 403,
                resp_body: "Forbidden"
              } = get(conn, "/proxy/preview/hhgfh/eeee/fff")
+    end
+
+    test "returns 404 for unsupported remote URL schemes", %{conn: conn} do
+      url = MediaProxy.encode_preview_url("data:image/svg+xml,<svg></svg>")
+
+      assert %Conn{status: 404, resp_body: "Not Found"} = get(conn, url)
     end
 
     test "redirects to valid url when filename is invalidated", %{conn: conn, url: url} do

@@ -8,9 +8,9 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   alias Pleroma.Language.LanguageDetector
   alias Pleroma.Object
   alias Pleroma.Repo
-  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Visibility
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.CommonAPI.Utils
 

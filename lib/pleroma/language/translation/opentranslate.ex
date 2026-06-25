@@ -73,7 +73,7 @@ defmodule Pleroma.Language.Translation.Opentranslate do
   defp request_body(content, source_language, target_language) do
     %{
       q: content,
-      source: normalize_source_language(content, source_language),
+      source: normalize_language(source_language),
       target: normalize_language(target_language),
       format: "html"
     }
@@ -96,7 +96,7 @@ defmodule Pleroma.Language.Translation.Opentranslate do
         {:ok,
          %{
            content: translated_content,
-           detected_source_language: detected_source_language(body, source_language),
+           detected_source_language: source_language,
            provider: @name
          }}
 
@@ -128,45 +128,6 @@ defmodule Pleroma.Language.Translation.Opentranslate do
     |> to_string()
     |> String.downcase()
   end
-
-  defp normalize_source_language(_content, language) when is_binary(language) do
-    case normalize_language(language) do
-      "" -> "auto"
-      language -> language
-    end
-  end
-
-  defp normalize_source_language(content, _) do
-    infer_source_language(content) || "auto"
-  end
-
-  defp infer_source_language(content) when is_binary(content) do
-    cond do
-      String.match?(content, ~r/[\x{3040}-\x{30FF}\x{FF66}-\x{FF9F}]/u) -> "ja"
-      String.match?(content, ~r/[\x{AC00}-\x{D7AF}\x{1100}-\x{11FF}]/u) -> "ko"
-      String.match?(content, ~r/[\x{0600}-\x{06FF}]/u) -> "ar"
-      String.match?(content, ~r/[\x{0900}-\x{097F}]/u) -> "hi"
-      String.match?(content, ~r/[\x{0400}-\x{04FF}]/u) -> "ru"
-      String.match?(content, ~r/[\x{4E00}-\x{9FFF}]/u) -> "zh-Hans"
-      true -> nil
-    end
-  end
-
-  defp infer_source_language(_), do: nil
-
-  defp detected_source_language(body, fallback_language) do
-    with {:ok, data} <- Jason.decode(body),
-         language when is_binary(language) and language != "" <- detected_language(data) do
-      normalize_language(language)
-    else
-      _ -> normalize_source_language(nil, fallback_language)
-    end
-  end
-
-  defp detected_language(%{"detectedLanguage" => %{"language" => language}}), do: language
-  defp detected_language(%{"detectedLanguage" => language}), do: language
-  defp detected_language(%{"detected_source_language" => language}), do: language
-  defp detected_language(_), do: nil
 
   defp base_url do
     case Pleroma.Config.get([__MODULE__, :base_url]) do

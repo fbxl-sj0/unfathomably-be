@@ -1,0 +1,1 @@
+Reject non-HTTP(S) media proxy URLs before they reach the HTTP client.

@@ -530,6 +530,29 @@ defmodule Pleroma.Web.CommonAPI.Utils do
 
   def maybe_notify_mentioned_recipients(recipients, _), do: recipients
 
+  def maybe_notify_replied_to_author(
+        recipients,
+        %Activity{data: %{"type" => "Create"}} = activity
+      ) do
+    with %Object{data: %{"inReplyTo" => in_reply_to}} = object <-
+           Object.normalize(activity, fetch: false),
+         replied_to_id when is_binary(replied_to_id) <- normalize_in_reply_to(in_reply_to),
+         %Object{data: %{"actor" => actor}} <- Object.get_cached_by_ap_id(replied_to_id),
+         %User{local: true} = user <- User.get_cached_by_ap_id(actor),
+         true <- Visibility.visible_for_user?(object, user) do
+      recipients ++ [user.ap_id]
+    else
+      _ -> recipients
+    end
+  end
+
+  def maybe_notify_replied_to_author(recipients, _), do: recipients
+
+  defp normalize_in_reply_to(in_reply_to) when is_binary(in_reply_to), do: in_reply_to
+  defp normalize_in_reply_to(%{"id" => id}) when is_binary(id), do: id
+  defp normalize_in_reply_to([id | _]) when is_binary(id), do: id
+  defp normalize_in_reply_to(_), do: nil
+
   def maybe_notify_subscribers(
         recipients,
         %Activity{data: %{"actor" => actor, "type" => "Create"}} = activity

@@ -45,23 +45,18 @@ defmodule Pleroma.FollowingRelationshipTest do
                user.follower_address
              ]
     end
-  end
 
-  describe "follow/3" do
-    test "does not inflate counters when the follow already exists" do
-      follower = insert(:user)
-      following = insert(:user)
+    test "refreshes cached following AP IDs after relationship changes" do
+      user = insert(:user)
+      followed = insert(:user)
 
-      assert {:ok, _, _} = FollowingRelationship.follow(follower, following, :follow_accept)
-      assert {:ok, _, _} = FollowingRelationship.follow(follower, following, :follow_accept)
+      assert User.get_cached_user_friends_ap_ids(user) == []
 
-      follower = User.get_by_id(follower.id)
-      following = User.get_by_id(following.id)
+      FollowingRelationship.follow(user, followed, :follow_accept)
+      assert User.get_cached_user_friends_ap_ids(user) == [followed.ap_id]
 
-      assert follower.following_count == 1
-      assert following.follower_count == 1
-      assert FollowingRelationship.following_count(follower) == 1
-      assert FollowingRelationship.follower_count(following) == 1
+      FollowingRelationship.unfollow(user, followed)
+      assert User.get_cached_user_friends_ap_ids(user) == []
     end
   end
 

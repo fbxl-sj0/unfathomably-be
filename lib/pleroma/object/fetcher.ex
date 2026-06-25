@@ -15,15 +15,13 @@ defmodule Pleroma.Object.Fetcher do
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.RemoteReplies
   alias Pleroma.Web.ActivityPub.Transmogrifier
+  alias Pleroma.Web.Federation.Churn
   alias Pleroma.Web.Federator
 
-  require Pleroma.Constants
   require Logger
 
-  @activity_types ~w(Accept Add Announce Block Create Delete Dislike EmojiReact Flag Follow Join Leave Like Listen Move Reject Remove Undo Update)
-  @activity_streams_profile "https://www.w3.org/ns/activitystreams"
-  @object_fetch_accept_header Pleroma.Constants.activity_json_accept_header() <>
-                                ", text/html;q=0.1"
+  @activity_types ~w(Accept Add Announce Block Create Delete Dislike EmojiReact Flag Follow Join Leave Like Listen Lock Move Reject Remove Undo Update)
+  @collection_types ~w(Collection OrderedCollection CollectionPage OrderedCollectionPage)
 
   @spec reinject_object(struct(), map()) :: {:ok, Object.t()} | {:error, any()}
   defp reinject_object(%Object{data: %{}} = object, new_data) do
@@ -91,6 +89,9 @@ defmodule Pleroma.Object.Fetcher do
       {:transmogrifier, {:reject, e}} ->
         {:reject, e}
 
+      {:transmogrifier, {:error, {:persist, {:error, %Ecto.Changeset{} = changeset}}} = error} ->
+        maybe_return_existing_object(id, changeset, {:transmogrifier, error})
+
       {:transmogrifier, _} = e ->
         {:error, e}
 
@@ -109,6 +110,26 @@ defmodule Pleroma.Object.Fetcher do
       e ->
         e
     end
+  end
+
+  defp maybe_return_existing_object(id, changeset, error) do
+    with true <- object_unique_ap_id_error?(changeset),
+         %Object{} = object <- Object.get_by_ap_id(id) do
+      Object.set_cache(object)
+    else
+      _ -> {:error, error}
+    end
+  end
+
+  defp object_unique_ap_id_error?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {:ap_id, {_message, opts}} ->
+        Keyword.get(opts, :constraint_name) == "objects_unique_apid_index" or
+          Keyword.get(opts, :constraint) == :unique
+
+      _ ->
+        false
+    end)
   end
 
   defp prepare_activity_params(%{"type" => type} = data) when type in @activity_types, do: data
@@ -200,22 +221,20 @@ defmodule Pleroma.Object.Fetcher do
     Logger.debug("Remote object #{id} returned HTTP #{code} while fetching")
   end
 
-  defp log_fetch_error(id, {:error, {:transmogrifier, {:error, reason}}})
-       when reason in [:actor_not_found, :object_not_found] do
-    Logger.debug("Remote activity #{id} referenced unavailable #{reason} while fetching")
-  end
-
   defp log_fetch_error(id, {:error, {:http, code}}) do
     Logger.warning("Remote object #{id} returned HTTP #{code} while fetching")
   end
 
-  defp log_fetch_error(id, {:error, reason})
-       when reason in [:closed, :timeout, :checkout_timeout] do
-    Logger.info("Transient remote fetch failure for #{id}: #{inspect(reason)}")
-  end
-
   defp log_fetch_error(id, e) do
-    Logger.warning("Error while fetching #{id}: #{inspect(e)}")
+    case Churn.mark_deactivated_actor(e, id) do
+      {:ok, actor_id} ->
+        Logger.info(
+          "Remote actor #{actor_id} is deactivated; marked local user inactive while fetching #{id}"
+        )
+
+      :noop ->
+        Logger.warning("Error while fetching #{id}: #{inspect(e)}")
+    end
   end
 
   defp make_signature(id, date) do
@@ -301,34 +320,21 @@ defmodule Pleroma.Object.Fetcher do
   def fetch_and_contain_remote_object_from_id(_id),
     do: {:error, "id must be a string"}
 
-  defp get_object(id, terminal? \\ false) do
-    date = Pleroma.Signature.signed_date()
+  def fetch_and_contain_remote_collection_from_id(id) when is_binary(id) do
+    Logger.debug("Fetching collection #{id} via AP")
 
-    headers =
-      [{"accept", @object_fetch_accept_header}]
-      |> maybe_date_fetch(date)
-      |> sign_fetch(id, date)
+    with {:scheme, true} <- {:scheme, String.starts_with?(id, "http")},
+         {:ok, body} <- get_object(id),
+         {:ok, data} <- safe_json_decode(body),
+         :ok <- contain_collection_origin(id, data) do
+      if not Instances.reachable?(id) do
+        Instances.set_reachable(id)
+      end
 
-    case HTTP.get(id, headers) do
-      {:ok, %{body: body, status: code, headers: headers}} when code in 200..299 ->
-        content_type = header_value(headers, "content-type")
-
-        cond do
-          activitypub_content_type?(content_type) ->
-            {:ok, body}
-
-          terminal? ->
-            {:error, {:content_type, content_type}}
-
-          true ->
-            maybe_fetch_activitypub_alternate(id, body, headers, content_type)
-        end
-
-      {:ok, %{status: code}} when code in [404, 410] ->
-        {:error, "Object has been deleted"}
-
-      {:ok, %{status: code}} ->
-        {:error, {:http, code}}
+      {:ok, data}
+    else
+      {:scheme, _} ->
+        {:error, "Unsupported URI scheme"}
 
       {:error, e} ->
         {:error, e}
@@ -338,126 +344,27 @@ defmodule Pleroma.Object.Fetcher do
     end
   end
 
-  defp maybe_fetch_activitypub_alternate(id, body, headers, content_type) do
-    with {:ok, alternate_id} <- activitypub_alternate_url(id, body, headers, content_type) do
-      get_object(alternate_id, true)
-    else
-      _ -> {:error, {:content_type, content_type}}
-    end
+  def fetch_and_contain_remote_collection_from_id(_id),
+    do: {:error, "id must be a string"}
+
+  defp contain_collection_origin(id, %{"id" => _} = data) do
+    Containment.contain_origin_from_id(id, data)
   end
 
-  defp activitypub_alternate_url(id, body, headers, content_type) do
-    link_header_activitypub_alternate(id, headers) ||
-      html_activitypub_alternate(id, body, content_type) ||
-      {:error, :no_activitypub_alternate}
+  defp contain_collection_origin(id, %{"partOf" => part_of, "type" => type})
+       when is_binary(part_of) and type in @collection_types do
+    if same_origin?(id, part_of), do: :ok, else: :error
   end
 
-  defp link_header_activitypub_alternate(id, headers) do
-    headers
-    |> header_values("link")
-    |> Enum.find_value(&activitypub_alternate_from_link_header(id, &1))
+  defp contain_collection_origin(_id, %{"type" => type} = data) when type in @collection_types do
+    if collection_shape?(data), do: :ok, else: :error
   end
 
-  defp activitypub_alternate_from_link_header(id, header) when is_binary(header) do
-    ~r/<([^>]*)>\s*((?:\s*;\s*[^,]*)*)/
-    |> Regex.scan(header)
-    |> Enum.find_value(fn [_, href, params] ->
-      rel = link_header_param(params, "rel")
-      type = link_header_param(params, "type")
+  defp contain_collection_origin(_id, _data), do: :error
 
-      if alternate_rel?(rel) and activitypub_content_type?(type) do
-        validate_alternate_url(id, href)
-      end
-    end)
+  defp collection_shape?(data) do
+    Enum.any?(~w(first items orderedItems totalItems partOf), &Map.has_key?(data, &1))
   end
-
-  defp activitypub_alternate_from_link_header(_id, _header), do: nil
-
-  defp link_header_param(params, name) do
-    quoted = ~r/(?:^|;)\s*#{name}\s*=\s*"([^"]*)"/i
-    unquoted = ~r/(?:^|;)\s*#{name}\s*=\s*([^;,\s]+)/i
-
-    case Regex.run(quoted, params) || Regex.run(unquoted, params) do
-      [_, value] -> value
-      _ -> nil
-    end
-  end
-
-  defp alternate_rel?(rel) when is_binary(rel) do
-    rel
-    |> String.downcase()
-    |> String.split()
-    |> Enum.member?("alternate")
-  end
-
-  defp alternate_rel?(_rel), do: false
-
-  defp html_activitypub_alternate(id, body, content_type) do
-    with true <- html_content_type?(content_type),
-         {:ok, html} <- Floki.parse_document(body),
-         href when is_binary(href) <-
-           html
-           |> Floki.find("link[rel~=alternate]")
-           |> Enum.find_value(&activitypub_alternate_from_html_link/1) do
-      validate_alternate_url(id, href)
-    else
-      _ -> nil
-    end
-  end
-
-  defp activitypub_alternate_from_html_link(link) do
-    type =
-      [link]
-      |> Floki.attribute("type")
-      |> List.first()
-
-    if activitypub_content_type?(type) do
-      [link]
-      |> Floki.attribute("href")
-      |> List.first()
-    end
-  end
-
-  defp validate_alternate_url(base_id, href) do
-    with url when is_binary(url) <- absolute_alternate_url(base_id, href),
-         true <- same_origin?(base_id, url),
-         false <- url == base_id do
-      {:ok, url}
-    else
-      _ -> nil
-    end
-  end
-
-  defp absolute_alternate_url(base_id, href) when is_binary(href) do
-    href = String.trim(href)
-
-    cond do
-      href == "" ->
-        nil
-
-      String.starts_with?(href, "//") ->
-        base_id
-        |> URI.parse()
-        |> Map.get(:scheme)
-        |> Kernel.<>(":")
-        |> Kernel.<>(href)
-
-      true ->
-        href_uri = URI.parse(href)
-
-        if href_uri.scheme in ["http", "https"] do
-          href
-        else
-          base_id
-          |> URI.merge(href)
-          |> URI.to_string()
-        end
-    end
-  rescue
-    _ -> nil
-  end
-
-  defp absolute_alternate_url(_base_id, _href), do: nil
 
   defp same_origin?(left, right) do
     left_uri = URI.parse(left)
@@ -474,49 +381,46 @@ defmodule Pleroma.Object.Fetcher do
   defp effective_port(%URI{port: nil, scheme: scheme}), do: URI.default_port(scheme)
   defp effective_port(%URI{port: port}), do: port
 
-  defp html_content_type?(content_type) do
-    match?({:ok, "text", "html", _}, media_type(content_type))
-  end
+  defp get_object(id) do
+    date = Pleroma.Signature.signed_date()
 
-  defp activitypub_content_type?(content_type) do
-    case media_type(content_type) do
-      {:ok, "application", "activity+json", _} ->
-        true
+    headers =
+      [{"accept", "application/activity+json"}]
+      |> maybe_date_fetch(date)
+      |> sign_fetch(id, date)
 
-      {:ok, "application", "ld+json", %{"profile" => profile}} ->
-        profile
-        |> String.split()
-        |> Enum.member?(@activity_streams_profile)
+    case HTTP.get(id, headers) do
+      {:ok, %{body: body, status: code, headers: headers}} when code in 200..299 ->
+        case List.keyfind(headers, "content-type", 0) do
+          {_, content_type} ->
+            case Plug.Conn.Utils.media_type(content_type) do
+              {:ok, "application", "activity+json", _} ->
+                {:ok, body}
 
-      _ ->
-        false
+              {:ok, "application", "ld+json",
+               %{"profile" => "https://www.w3.org/ns/activitystreams"}} ->
+                {:ok, body}
+
+              _ ->
+                {:error, {:content_type, content_type}}
+            end
+
+          _ ->
+            {:error, {:content_type, nil}}
+        end
+
+      {:ok, %{status: code}} when code in [404, 410] ->
+        {:error, "Object has been deleted"}
+
+      {:ok, %{status: code}} ->
+        {:error, {:http, code}}
+
+      {:error, e} ->
+        {:error, e}
+
+      e ->
+        {:error, e}
     end
-  end
-
-  defp media_type(content_type) when is_binary(content_type),
-    do: Plug.Conn.Utils.media_type(content_type)
-
-  defp media_type(_content_type), do: :error
-
-  defp header_value(headers, name) do
-    headers
-    |> header_values(name)
-    |> List.first()
-  end
-
-  defp header_values(headers, name) do
-    name = String.downcase(name)
-
-    Enum.flat_map(headers, fn
-      {key, value} when is_binary(key) and is_binary(value) ->
-        if String.downcase(key) == name, do: [value], else: []
-
-      {key, values} when is_binary(key) and is_list(values) ->
-        if String.downcase(key) == name, do: Enum.filter(values, &is_binary/1), else: []
-
-      _ ->
-        []
-    end)
   end
 
   defp safe_json_decode(nil), do: {:ok, nil}

@@ -1,0 +1,3 @@
+Group timeline and home timeline statuses now include group metadata when the
+post is addressed to a known group, allowing clients to display where group
+posts came from.

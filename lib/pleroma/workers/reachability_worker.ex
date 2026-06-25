@@ -20,7 +20,7 @@ defmodule Pleroma.Workers.ReachabilityWorker do
   import Ecto.Query
 
   use Oban.Worker,
-    queue: "background",
+    queue: "reachability",
     max_attempts: 3,
     unique: [period: :infinity, states: :incomplete]
 
@@ -32,8 +32,9 @@ defmodule Pleroma.Workers.ReachabilityWorker do
     domain = Instances.host(domain)
 
     if nodeinfo_reachable?(domain) or webfinger_reachable?(domain) do
-      Instances.set_reachable(domain)
+      Instances.record_success(domain, source: "reachability")
     else
+      Instances.record_failure(domain, :probe_failed, source: "reachability")
       {:error, :unreachable}
     end
   end
@@ -43,8 +44,11 @@ defmodule Pleroma.Workers.ReachabilityWorker do
   defp nodeinfo_reachable?(domain) do
     url = "https://#{domain}/.well-known/nodeinfo"
 
-    case HTTP.get(url, @nodeinfo_headers, receive_timeout: :timer.seconds(5)) do
-      {:ok, %{status: status}} when status in 200..299 -> true
+    with {:ok, %{status: status, body: body}} when status in 200..299 <-
+           HTTP.get(url, @nodeinfo_headers, receive_timeout: :timer.seconds(5)),
+         {:ok, %{} = data} <- decode_json_body(body) do
+      nodeinfo_document?(data)
+    else
       _ -> false
     end
   end
@@ -53,13 +57,42 @@ defmodule Pleroma.Workers.ReachabilityWorker do
     with nickname when is_binary(nickname) <- known_actor_nickname(domain),
          encoded_resource <- URI.encode_www_form("acct:#{nickname}"),
          url <- "https://#{domain}/.well-known/webfinger?resource=#{encoded_resource}",
-         {:ok, %{status: status}} when status in 200..299 <-
-           HTTP.get(url, @webfinger_headers, receive_timeout: :timer.seconds(5)) do
-      true
+         {:ok, %{status: status, body: body}} when status in 200..299 <-
+           HTTP.get(url, @webfinger_headers, receive_timeout: :timer.seconds(5)),
+         {:ok, %{} = data} <- decode_json_body(body) do
+      webfinger_document?(data)
     else
       _ -> false
     end
   end
+
+  defp decode_json_body(%{} = body), do: {:ok, body}
+
+  defp decode_json_body(body) when is_binary(body) do
+    Jason.decode(body)
+  end
+
+  defp decode_json_body(_), do: {:error, :invalid_body}
+
+  defp nodeinfo_document?(%{"links" => links}) when is_list(links) do
+    Enum.any?(links, fn
+      %{"href" => href} when is_binary(href) -> true
+      _ -> false
+    end)
+  end
+
+  defp nodeinfo_document?(_), do: false
+
+  defp webfinger_document?(%{"subject" => "acct:" <> _}), do: true
+
+  defp webfinger_document?(%{"links" => links}) when is_list(links) do
+    Enum.any?(links, fn
+      %{"rel" => "self", "href" => href} when is_binary(href) -> true
+      _ -> false
+    end)
+  end
+
+  defp webfinger_document?(_), do: false
 
   defp known_actor_nickname(domain) do
     normalized_domain = String.downcase(domain)

@@ -1,0 +1,3 @@
+RSS/Atom sources followed by local users are now polled in the background so
+new feed entries are materialized as statuses and can appear in normal home
+timelines.

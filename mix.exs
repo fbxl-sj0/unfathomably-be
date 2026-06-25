@@ -8,7 +8,7 @@ defmodule Pleroma.Mixfile do
       app: :pleroma,
       name: "unfathomably-be",
       compat_name: "unfathomably-be",
-      version: version("2.6.50"),
+      version: version("2.6.51"),
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
       compilers: Mix.compilers(),

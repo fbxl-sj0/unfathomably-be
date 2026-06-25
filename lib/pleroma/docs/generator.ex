@@ -12,10 +12,21 @@ defmodule Pleroma.Docs.Generator do
 
   @spec list_behaviour_implementations(behaviour :: module()) :: [module()]
   def list_behaviour_implementations(behaviour) do
-    :code.all_loaded()
-    |> Enum.filter(fn {module, _} ->
+    application_modules =
+      case :application.get_key(:pleroma, :modules) do
+        {:ok, modules} -> modules
+        :undefined -> []
+      end
+
+    loaded_modules = Enum.map(:code.all_loaded(), fn {module, _} -> module end)
+
+    (application_modules ++ loaded_modules)
+    |> Enum.uniq()
+    |> Enum.filter(fn module ->
+      Code.ensure_loaded(module)
+
       # This shouldn't be needed as all modules are expected to have module_info/1,
-      # but in test enviroments some transient modules `:elixir_compiler_XX`
+      # but in test environments some transient modules `:elixir_compiler_XX`
       # are loaded for some reason (where XX is a random integer).
       if function_exported?(module, :module_info, 1) do
         module.module_info(:attributes)
@@ -24,7 +35,6 @@ defmodule Pleroma.Docs.Generator do
         |> Enum.member?(behaviour)
       end
     end)
-    |> Enum.map(fn {module, _} -> module end)
   end
 
   @doc """

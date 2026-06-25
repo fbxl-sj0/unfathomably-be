@@ -174,6 +174,204 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
       assert user.note_count == 1
     end
 
+    test "it records audience-only group recipients on incoming thread roots" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "tech@mbin.example",
+          ap_id: "https://mbin.example/m/tech"
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          nickname: "alice@mbin.example",
+          ap_id: "https://mbin.example/u/alice"
+        )
+
+      data = %{
+        "id" => "https://mbin.example/activities/create/1",
+        "type" => "Create",
+        "actor" => author.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [author.follower_address],
+        "object" => %{
+          "id" => "https://mbin.example/m/tech/t/1",
+          "type" => "Page",
+          "attributedTo" => author.ap_id,
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [author.follower_address],
+          "audience" => group.ap_id,
+          "content" => "<p>Mbin-style group root.</p>",
+          "published" => "2026-06-24T12:00:00Z"
+        }
+      }
+
+      assert {:ok, %Activity{recipients: recipients} = activity} =
+               Transmogrifier.handle_incoming(data)
+
+      object = Object.normalize(activity, fetch: false)
+
+      assert group.ap_id in recipients
+      assert object.data["audience"] == [group.ap_id]
+    end
+
+    test "it records group actors from attributedTo arrays as audience" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "nodebb@forums.example",
+          ap_id: "https://forums.example/category/nodebb"
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          nickname: "alice@forums.example",
+          ap_id: "https://forums.example/uid/7"
+        )
+
+      data = %{
+        "id" => "https://forums.example/activity/1",
+        "type" => "Create",
+        "actor" => author.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [author.follower_address],
+        "object" => %{
+          "id" => "https://forums.example/post/1",
+          "type" => "Note",
+          "attributedTo" => [
+            %{"type" => "Group", "id" => group.ap_id},
+            %{"type" => "Person", "id" => author.ap_id}
+          ],
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [author.follower_address],
+          "content" => "<p>NodeBB-style forum root.</p>",
+          "published" => "2026-06-24T12:00:00Z"
+        }
+      }
+
+      assert {:ok, %Activity{recipients: recipients} = activity} =
+               Transmogrifier.handle_incoming(data)
+
+      object = Object.normalize(activity, fetch: false)
+
+      assert group.ap_id in recipients
+      assert object.data["actor"] == author.ap_id
+      assert object.data["attributedTo"] == author.ap_id
+      assert object.data["audience"] == [group.ap_id]
+    end
+
+    test "it uses target collection ids as context when explicit context is absent" do
+      author =
+        insert(:user,
+          local: false,
+          nickname: "alice@discourse.example",
+          ap_id: "https://discourse.example/u/alice"
+        )
+
+      collection_id = "https://discourse.example/t/activitypub-topic/activity"
+
+      data = %{
+        "id" => "https://discourse.example/ap/activity/1",
+        "type" => "Create",
+        "actor" => author.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [author.follower_address],
+        "object" => %{
+          "id" => "https://discourse.example/ap/object/1",
+          "type" => "Note",
+          "attributedTo" => author.ap_id,
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [author.follower_address],
+          "target" => collection_id,
+          "content" => "<p>Discourse-style topic root.</p>",
+          "published" => "2026-06-24T12:00:00Z"
+        }
+      }
+
+      assert {:ok, %Activity{} = activity} = Transmogrifier.handle_incoming(data)
+
+      object = Object.normalize(activity, fetch: false)
+
+      assert object.data["context"] == collection_id
+      assert activity.data["context"] == collection_id
+    end
+
+    test "it uses target object ids as context when explicit context is absent" do
+      author =
+        insert(:user,
+          local: false,
+          nickname: "bob@discourse.example",
+          ap_id: "https://discourse.example/u/bob"
+        )
+
+      collection_id = "https://discourse.example/t/another-topic/activity"
+
+      data = %{
+        "id" => "https://discourse.example/ap/activity/2",
+        "type" => "Create",
+        "actor" => author.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [author.follower_address],
+        "object" => %{
+          "id" => "https://discourse.example/ap/object/2",
+          "type" => "Note",
+          "attributedTo" => author.ap_id,
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [author.follower_address],
+          "target" => %{"id" => collection_id, "type" => "OrderedCollection"},
+          "content" => "<p>Discourse-style target object.</p>",
+          "published" => "2026-06-24T12:00:00Z"
+        }
+      }
+
+      assert {:ok, %Activity{} = activity} = Transmogrifier.handle_incoming(data)
+
+      object = Object.normalize(activity, fetch: false)
+
+      assert object.data["context"] == collection_id
+      assert activity.data["context"] == collection_id
+    end
+
+    test "it uses contextHistory as context when explicit context is absent" do
+      author =
+        insert(:user,
+          local: false,
+          nickname: "carol@hubzilla.example",
+          ap_id: "https://hubzilla.example/channel/carol"
+        )
+
+      context_id = "https://hubzilla.example/conversation/1"
+
+      data = %{
+        "id" => "https://hubzilla.example/activity/1",
+        "type" => "Create",
+        "actor" => author.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [author.follower_address],
+        "object" => %{
+          "id" => "https://hubzilla.example/item/1",
+          "type" => "Note",
+          "attributedTo" => author.ap_id,
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [author.follower_address],
+          "contextHistory" => context_id,
+          "content" => "<p>Hubzilla-style conversation context.</p>",
+          "published" => "2026-06-24T12:00:00Z"
+        }
+      }
+
+      assert {:ok, %Activity{} = activity} = Transmogrifier.handle_incoming(data)
+
+      object = Object.normalize(activity, fetch: false)
+
+      assert object.data["context"] == context_id
+      assert activity.data["context"] == context_id
+    end
+
     test "it works for incoming notices without the sensitive property but an nsfw hashtag" do
       data = File.read!("test/fixtures/mastodon-post-activity-nsfw.json") |> Jason.decode!()
 
@@ -528,7 +726,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
       assert object.data["replies_collection"] == data["object"]["replies"]["id"]
 
       for id <- items do
-        job_args = %{"op" => "fetch_remote", "id" => id, "depth" => 1}
+        job_args = %{"op" => "fetch_remote", "id" => id, "depth" => 1, "thread" => true}
         assert_enqueued(worker: Pleroma.Workers.RemoteFetcherWorker, args: job_args)
       end
     end
@@ -570,7 +768,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
       object = Object.normalize(data["object"])
 
       for id <- object.data["replies"] do
-        job_args = %{"op" => "fetch_remote", "id" => id, "depth" => 1}
+        job_args = %{"op" => "fetch_remote", "id" => id, "depth" => 1, "thread" => true}
         assert_enqueued(worker: Pleroma.Workers.RemoteFetcherWorker, args: job_args)
       end
     end

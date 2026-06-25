@@ -46,29 +46,71 @@ defmodule Pleroma.Web.PleromaAPI.EmojiReactionController do
 
   def filter_allowed_users(reactions, user, with_muted) do
     exclude_ap_ids =
-      if is_nil(user) do
-        []
-      else
-        User.cached_blocked_users_ap_ids(user) ++
-          if not with_muted, do: User.cached_muted_users_ap_ids(user), else: []
-      end
-
-    filter_emoji = fn emoji, users, url ->
-      case Enum.reject(users, &(&1 in exclude_ap_ids)) do
-        [] -> nil
-        users -> {emoji, users, url}
-      end
-    end
+      user
+      |> excluded_reaction_user_ap_ids(with_muted)
+      |> MapSet.new()
 
     reactions
-    |> Stream.map(fn
-      [emoji, users, url] when is_list(users) -> filter_emoji.(emoji, users, url)
-    end)
+    |> enumerable_reactions()
+    |> Stream.map(&filter_emoji_reaction(&1, exclude_ap_ids))
     |> Stream.reject(&is_nil/1)
   end
 
+  defp enumerable_reactions(reactions) when is_list(reactions) or is_map(reactions), do: reactions
+  defp enumerable_reactions(_reactions), do: []
+
+  defp excluded_reaction_user_ap_ids(nil, _with_muted), do: []
+
+  defp excluded_reaction_user_ap_ids(user, with_muted) do
+    blocked_ap_ids = cached_relation_ap_ids(fn -> User.cached_blocked_users_ap_ids(user) end)
+
+    muted_ap_ids =
+      if include_muted_users?(with_muted) do
+        []
+      else
+        cached_relation_ap_ids(fn -> User.cached_muted_users_ap_ids(user) end)
+      end
+
+    blocked_ap_ids ++ muted_ap_ids
+  end
+
+  defp cached_relation_ap_ids(fun) do
+    case fun.() do
+      ap_ids when is_list(ap_ids) -> ap_ids
+      _ -> []
+    end
+  end
+
+  defp include_muted_users?(value), do: value in [true, "true", "1", 1]
+
+  defp filter_emoji_reaction([emoji, users], exclude_ap_ids) do
+    filter_emoji_reaction([emoji, users, nil], exclude_ap_ids)
+  end
+
+  defp filter_emoji_reaction({emoji, users}, exclude_ap_ids) do
+    filter_emoji_reaction([emoji, users, nil], exclude_ap_ids)
+  end
+
+  defp filter_emoji_reaction([emoji, users, url], exclude_ap_ids)
+       when is_binary(emoji) and is_list(users) and (is_binary(url) or is_nil(url)) do
+    users =
+      users
+      |> Enum.filter(&is_binary/1)
+      |> Enum.reject(&MapSet.member?(exclude_ap_ids, &1))
+
+    case users do
+      [] -> nil
+      users -> {emoji, users, url}
+    end
+  end
+
+  defp filter_emoji_reaction(_reaction, _exclude_ap_ids), do: nil
+
   defp filter(reactions, %{emoji: emoji}) when is_binary(emoji) do
-    Enum.filter(reactions, fn [e, _, _] -> e == emoji end)
+    Enum.filter(reactions, fn
+      [e, _, _] -> e == emoji
+      _ -> false
+    end)
   end
 
   defp filter(reactions, _), do: reactions

@@ -7,6 +7,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
 
   require Pleroma.Constants
 
+  import Ecto.Query, only: [where: 3]
+
   alias Pleroma.Activity
   alias Pleroma.HTML
   alias Pleroma.Maps
@@ -17,7 +19,9 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.CommonAPI.Utils
+  alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.AccountView
+  alias Pleroma.Web.MastodonAPI.FederatedTargetView
   alias Pleroma.Web.MastodonAPI.PollView
   alias Pleroma.Web.MastodonAPI.StatusView
   alias Pleroma.Web.MediaProxy
@@ -80,6 +84,110 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       if object, do: Map.put(acc, object.data["id"], activity), else: acc
     end)
   end
+
+  defp get_status_groups_by_address(activities, reading_user) do
+    addresses =
+      activities
+      |> Enum.flat_map(&status_group_candidate_ap_ids/1)
+      |> Enum.uniq()
+
+    if addresses == [] do
+      %{}
+    else
+      User
+      |> where([user], user.ap_id in ^addresses or user.follower_address in ^addresses)
+      |> Repo.all()
+      |> Enum.filter(&FederatedTarget.group?/1)
+      |> Enum.reduce(%{}, fn group, acc ->
+        rendered_group = render_status_group(group, reading_user)
+
+        acc
+        |> maybe_put_group_address(group.ap_id, rendered_group)
+        |> maybe_put_group_address(group.follower_address, rendered_group)
+      end)
+    end
+  end
+
+  defp maybe_put_group_address(map, address, rendered_group) when is_binary(address) do
+    Map.put(map, address, rendered_group)
+  end
+
+  defp maybe_put_group_address(map, _address, _rendered_group), do: map
+
+  defp status_group(%Activity{} = activity, %Object{} = object, opts) do
+    cond do
+      match?(%User{}, opts[:group]) ->
+        render_status_group(opts[:group], opts[:for])
+
+      is_map(opts[:groups_by_address]) ->
+        activity
+        |> status_group_candidate_ap_ids(object)
+        |> Enum.find_value(&Map.get(opts[:groups_by_address], &1))
+
+      true ->
+        activity
+        |> status_group_candidate_ap_ids(object)
+        |> find_status_group()
+        |> case do
+          %User{} = group -> render_status_group(group, opts[:for])
+          _ -> nil
+        end
+    end
+  end
+
+  defp status_group(_activity, _object, _opts), do: nil
+
+  defp render_status_group(%User{} = group, reading_user) do
+    FederatedTargetView.render("group.json", %{group: group, for: reading_user})
+  end
+
+  defp find_status_group([]), do: nil
+
+  defp find_status_group(addresses) do
+    User
+    |> where([user], user.ap_id in ^addresses or user.follower_address in ^addresses)
+    |> Repo.all()
+    |> Enum.find(&FederatedTarget.group?/1)
+  end
+
+  defp status_group_candidate_ap_ids(%Activity{} = activity) do
+    object = Object.normalize(activity, fetch: false)
+    status_group_candidate_ap_ids(activity, object)
+  end
+
+  defp status_group_candidate_ap_ids(%Activity{} = activity, %Object{} = object) do
+    [activity.data, object.data]
+    |> Enum.flat_map(&status_group_candidate_ap_ids_from_data/1)
+    |> Enum.uniq()
+  end
+
+  defp status_group_candidate_ap_ids(_activity, _object), do: []
+
+  defp status_group_candidate_ap_ids_from_data(data) when is_map(data) do
+    addressing_values =
+      ["to", "cc", "bto", "bcc", "audience", "target", "context"]
+      |> Enum.flat_map(&data_address_values(Map.get(data, &1)))
+
+    tag_values =
+      data
+      |> Map.get("tag", [])
+      |> List.wrap()
+      |> Enum.flat_map(fn
+        %{"type" => "Mention", "href" => href} -> data_address_values(href)
+        _ -> []
+      end)
+
+    addressing_values ++ tag_values
+  end
+
+  defp status_group_candidate_ap_ids_from_data(_data), do: []
+
+  defp data_address_values(values) when is_list(values) do
+    Enum.flat_map(values, &data_address_values/1)
+  end
+
+  defp data_address_values(value) when is_binary(value), do: [value]
+  defp data_address_values(_value), do: []
 
   # DEPRECATED This field seems to be a left-over from the StatusNet era.
   # If your application uses `pleroma.conversation_id`: this field is deprecated.
@@ -154,6 +262,10 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       |> Map.put(:replied_to_activities, replied_to_activities)
       |> Map.put(:quoted_activities, quoted_activities)
       |> Map.put(:parent_activities, parent_activities)
+      |> Map.put(
+        :groups_by_address,
+        get_status_groups_by_address(activities ++ parent_activities, reading_user)
+      )
       |> Map.put(:relationships, relationships_opt)
 
     safe_render_many(activities, StatusView, "show.json", opts)
@@ -228,8 +340,10 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       application: build_application(object.data["generator"]),
       language: object.data["language"],
       emojis: [],
+      group: reblogged[:group] || status_group(activity, object, opts),
       pleroma: %{
         local: activity.local,
+        comments_enabled: object.data["commentsEnabled"] != false,
         pinned_at: pinned_at,
         bookmark_folder: bookmark_folder
       }
@@ -393,6 +507,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       |> Stream.map(fn {emoji, users, url} ->
         build_emoji_map(emoji, users, url, opts[:for])
       end)
+      |> Stream.reject(&(&1.count == 0))
       |> Enum.to_list()
 
     # Status muted state (would do 1 request per status unless user mutes are preloaded)
@@ -426,7 +541,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       created_at: created_at,
       edited_at: edited_at,
       reblogs_count: announcement_count,
-      replies_count: object.data["repliesCount"] || 0,
+      replies_count: replies_count(object),
       favourites_count: like_count,
       reblogged: reblogged?(activity, opts[:for]),
       favourited: present?(favorited),
@@ -444,6 +559,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       language: object.data["language"],
       emojis: build_emojis(object.data["emoji"]),
       quotes_count: object.data["quotesCount"] || 0,
+      group: status_group(activity, object, opts),
       pleroma: %{
         local: activity.local,
         conversation_id: get_context_id(activity),
@@ -453,6 +569,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
         quote_id: quote_id,
         quote_url: object.data["quoteUrl"],
         quote_visible: visible_for_user?(quote_activity, opts[:for]),
+        comments_enabled: object.data["commentsEnabled"] != false,
         content: %{"text/plain" => content_plaintext},
         spoiler_text: %{"text/plain" => summary},
         expires_at: expires_at,
@@ -656,12 +773,24 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   def render("attachment_meta.json", %{
         attachment: %{"url" => [%{"width" => width, "height" => height} | _]}
       })
-      when is_integer(width) and is_integer(height) do
+      when is_integer(width) and is_integer(height) and height > 0 do
     %{
       original: %{
         width: width,
         height: height,
         aspect: width / height
+      }
+    }
+  end
+
+  def render("attachment_meta.json", %{
+        attachment: %{"url" => [%{"width" => width, "height" => height} | _]}
+      })
+      when is_integer(width) and is_integer(height) do
+    %{
+      original: %{
+        width: width,
+        height: height
       }
     }
   end
@@ -856,13 +985,25 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   end
 
   defp build_emoji_map(emoji, users, url, current_user) do
+    users = active_emoji_reaction_users(users)
+    user_ap_ids = Enum.map(users, & &1.ap_id)
+
     %{
       name: Pleroma.Web.PleromaAPI.EmojiReactionView.emoji_name(emoji, url),
       count: length(users),
       url: MediaProxy.url(url),
-      me: !!(current_user && current_user.ap_id in users),
-      account_ids: Enum.map(users, fn user -> User.get_cached_by_ap_id(user).id end)
+      me: !!(current_user && current_user.ap_id in user_ap_ids),
+      account_ids: Enum.map(users, & &1.id)
     }
+  end
+
+  defp active_emoji_reaction_users(user_ap_ids) do
+    user_ap_ids
+    |> Enum.map(&User.get_cached_by_ap_id/1)
+    |> Enum.filter(fn
+      %User{is_active: true} -> true
+      _ -> false
+    end)
   end
 
   @spec build_application(map() | nil) :: map() | nil
@@ -897,6 +1038,49 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       nil
     end
   end
+
+  defp replies_count(%Object{data: data}) do
+    [
+      integer_count(data["repliesCount"]),
+      integer_count(data["replies_count"]),
+      integer_count(data["commentsCount"]),
+      integer_count(data["comments_count"]),
+      reply_collection_count(data["replies"]),
+      reply_collection_count(data["comments"])
+    ]
+    |> Enum.filter(&is_integer/1)
+    |> Enum.max(fn -> 0 end)
+  end
+
+  defp integer_count(value) when is_integer(value), do: value
+
+  defp integer_count(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, _} -> integer
+      _ -> nil
+    end
+  end
+
+  defp integer_count(_), do: nil
+
+  defp reply_collection_count(%{"totalItems" => count}), do: integer_count(count)
+  defp reply_collection_count(%{"total_items" => count}), do: integer_count(count)
+  defp reply_collection_count(%{"total" => count}), do: integer_count(count)
+  defp reply_collection_count(%{"count" => count}), do: integer_count(count)
+
+  defp reply_collection_count(%{"items" => replies}) when is_list(replies),
+    do: reply_collection_count(replies)
+
+  defp reply_collection_count(%{"orderedItems" => replies}) when is_list(replies),
+    do: reply_collection_count(replies)
+
+  defp reply_collection_count(replies) when is_list(replies) do
+    replies
+    |> Enum.filter(&is_binary/1)
+    |> length()
+  end
+
+  defp reply_collection_count(_), do: nil
 
   defp get_source_text(%{"content" => content} = _source) do
     content

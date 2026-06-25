@@ -91,6 +91,65 @@ defmodule Pleroma.Web.ActivityPub.UtilsTest do
     end
   end
 
+  describe "maybe_handle_group_posts/1" do
+    test "repeats public posts into local groups addressed through audience" do
+      poster = insert(:user)
+      group = insert(:user, actor_type: "Group")
+
+      object =
+        insert(:note,
+          user: poster,
+          data: %{
+            "audience" => group.ap_id,
+            "to" => [Pleroma.Constants.as_public()]
+          }
+        )
+
+      activity =
+        insert(:note_activity,
+          user: poster,
+          note: object,
+          data_attrs: %{
+            "audience" => group.ap_id,
+            "to" => [Pleroma.Constants.as_public()]
+          }
+        )
+
+      assert :ok = Utils.maybe_handle_group_posts(activity)
+      assert Utils.get_existing_announce(group.ap_id, object)
+    end
+
+    test "repeats public posts into local groups addressed through attributedTo group objects" do
+      poster = insert(:user)
+      group = insert(:user, actor_type: "Group")
+
+      object =
+        insert(:note,
+          user: poster,
+          data: %{
+            "attributedTo" => [
+              poster.ap_id,
+              %{"type" => "Group", "id" => group.ap_id}
+            ],
+            "to" => [Pleroma.Constants.as_public()]
+          }
+        )
+
+      activity =
+        insert(:note_activity,
+          user: poster,
+          note: object,
+          data_attrs: %{
+            "object" => object.data,
+            "to" => [Pleroma.Constants.as_public()]
+          }
+        )
+
+      assert :ok = Utils.maybe_handle_group_posts(activity)
+      assert Utils.get_existing_announce(group.ap_id, object)
+    end
+  end
+
   describe "make_like_data" do
     setup do
       user = insert(:user)

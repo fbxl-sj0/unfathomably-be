@@ -90,6 +90,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
       |> render("index.json",
         activities: activities,
         for: user,
+        group: group,
         as: :activity,
         with_muted: Map.get(activity_params, :with_muted, false)
       )

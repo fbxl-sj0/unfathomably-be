@@ -16,8 +16,6 @@ defmodule HttpRequestMock do
           body: body
         } = _env
       ) do
-    headers = normalize_activitypub_accept_header(headers)
-
     with {:ok, res} <- apply(__MODULE__, method, [url, query, body, headers]) do
       res
     else
@@ -28,20 +26,6 @@ defmodule HttpRequestMock do
 
         {_, _r} = error
     end
-  end
-
-  defp normalize_activitypub_accept_header(headers) do
-    Enum.map(headers, fn
-      {"accept", accept} when is_binary(accept) ->
-        if String.contains?(accept, "application/activity+json") do
-          {"accept", "application/activity+json"}
-        else
-          {"accept", accept}
-        end
-
-      header ->
-        header
-    end)
   end
 
   # GET Requests
@@ -327,7 +311,7 @@ defmodule HttpRequestMock do
     {:ok,
      %Tesla.Env{
        status: 200,
-       body: File.read!("test/fixtures/tesla_mock/peertube.moe-channel.json"),
+       body: File.read!("test/fixtures/tesla_mock/peertube.moe-video-channel.json"),
        headers: activitypub_object_headers()
      }}
   end
@@ -1729,7 +1713,7 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def get("http://127.0.0.1:5000/languages", _, _, _) do
+  def get("http://192.168.250.99:5000/languages", _, _, _) do
     {:ok,
      %Tesla.Env{
        status: 200,
@@ -1804,23 +1788,11 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def post("http://127.0.0.1:5000/translate", _, body, _) do
-    response_body =
-      case Jason.decode(body) do
-        {:ok, %{"source" => "auto"}} ->
-          ~s({"translatedText":"Hello world","detectedLanguage":{"language":"fr"}})
-
-        {:ok, %{"source" => "ja"}} ->
-          ~s({"translatedText":"Day one has the exaggerated Tachibana.","detectedLanguage":{"language":"ja"}})
-
-        _ ->
-          File.read!("test/fixtures/tesla_mock/opentranslate-translation.json")
-      end
-
+  def post("http://192.168.250.99:5000/translate", _, _, _) do
     {:ok,
      %Tesla.Env{
        status: 200,
-       body: response_body,
+       body: File.read!("test/fixtures/tesla_mock/opentranslate-translation.json"),
        headers: [{"content-type", "application/json"}]
      }}
   end

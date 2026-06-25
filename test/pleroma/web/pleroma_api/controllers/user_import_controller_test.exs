@@ -7,6 +7,8 @@ defmodule Pleroma.Web.PleromaAPI.UserImportControllerTest do
   use Oban.Testing, repo: Pleroma.Repo
 
   alias Pleroma.Tests.ObanHelpers
+  alias Pleroma.User.PostArchiveImport
+  alias Pleroma.Workers.PostArchiveImportWorker
 
   import Pleroma.Factory
   import Mock
@@ -246,5 +248,103 @@ defmodule Pleroma.Web.PleromaAPI.UserImportControllerTest do
       assert job_result == users
       assert Enum.all?(users, &Pleroma.User.mutes?(user, &1))
     end
+  end
+
+  describe "POST /api/pleroma/post_archive_import" do
+    setup do: oauth_access(["write:statuses"])
+
+    test "rejects post archive imports when disabled", %{conn: conn} do
+      clear_config([PostArchiveImport, :policy], :disabled)
+
+      response =
+        conn
+        |> put_req_header("content-type", "multipart/form-data")
+        |> post("/api/pleroma/post_archive_import", %{
+          "archive" => %Plug.Upload{path: "missing.zip", filename: "archive.zip"}
+        })
+        |> json_response(400)
+
+      assert response == %{"error" => "Post archive imports are disabled"}
+    end
+
+    test "queues post archive imports when open", %{conn: conn, user: user} do
+      archive_path = empty_post_archive_path()
+      import_dir = Path.dirname(archive_path)
+
+      clear_config([PostArchiveImport, :policy], :open)
+      clear_config([PostArchiveImport, :dir], import_dir)
+
+      response =
+        conn
+        |> put_req_header("content-type", "multipart/form-data")
+        |> post("/api/pleroma/post_archive_import", %{
+          "archive" => %Plug.Upload{
+            path: archive_path,
+            filename: "archive.zip",
+            content_type: "application/zip"
+          }
+        })
+        |> json_response_and_validate_schema(200)
+
+      assert response["state"] == "pending"
+      assert response["file_size"] > 0
+
+      import = PostArchiveImport.get(response["id"])
+
+      assert import.user_id == user.id
+      assert import.state == :pending
+
+      assert_enqueued(
+        worker: PostArchiveImportWorker,
+        args: %{"op" => "process", "import_id" => import.id}
+      )
+    end
+
+    test "keeps post archive imports for review when moderated", %{conn: conn} do
+      archive_path = empty_post_archive_path()
+      import_dir = Path.dirname(archive_path)
+
+      clear_config([PostArchiveImport, :policy], :moderated)
+      clear_config([PostArchiveImport, :dir], import_dir)
+
+      response =
+        conn
+        |> put_req_header("content-type", "multipart/form-data")
+        |> post("/api/pleroma/post_archive_import", %{
+          "archive" => %Plug.Upload{
+            path: archive_path,
+            filename: "archive.zip",
+            content_type: "application/zip"
+          }
+        })
+        |> json_response_and_validate_schema(200)
+
+      assert response["state"] == "awaiting_review"
+      assert PostArchiveImport.get(response["id"]).state == :awaiting_review
+      assert all_enqueued(worker: PostArchiveImportWorker) == []
+    end
+  end
+
+  defp empty_post_archive_path do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "post-archive-import-test-#{System.unique_integer([:positive])}"
+      )
+
+    path = Path.join(dir, "archive.zip")
+
+    File.mkdir_p!(dir)
+
+    files = [
+      {~c"actor.json", Jason.encode!(%{"id" => "https://old.example/users/alice"})},
+      {~c"outbox.json", Jason.encode!(%{"type" => "OrderedCollection", "orderedItems" => []})}
+    ]
+
+    {:ok, _} = :zip.create(String.to_charlist(path), files)
+
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    path
   end
 end

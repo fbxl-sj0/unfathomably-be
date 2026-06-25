@@ -1,0 +1,1 @@
+Downgraded deleted remote featured collection fetches to debug logs instead of warnings.

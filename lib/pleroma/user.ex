@@ -102,6 +102,7 @@ defmodule Pleroma.User do
     field(:password_confirmation, :string, virtual: true)
     field(:keys, :string)
     field(:public_key, :string)
+    field(:public_key_history, {:array, :string}, default: [])
     field(:ap_id, :string)
     field(:avatar, :map, default: %{})
     field(:local, :boolean, default: true)
@@ -118,6 +119,7 @@ defmodule Pleroma.User do
     field(:note_count, :integer, default: 0)
     field(:follower_count, :integer, default: 0)
     field(:following_count, :integer, default: 0)
+    field(:moderator_count, :integer, default: 0)
     field(:is_locked, :boolean, default: false)
     field(:is_confirmed, :boolean, default: true)
     field(:password_reset_pending, :boolean, default: false)
@@ -151,6 +153,10 @@ defmodule Pleroma.User do
     field(:also_known_as, {:array, ObjectValidators.ObjectID}, default: [])
     field(:inbox, :string)
     field(:shared_inbox, :string)
+    field(:outbox_address, :string)
+    field(:attributed_to_address, :string)
+    field(:is_indexable, :boolean, default: nil)
+    field(:posting_restricted_to_mods, :boolean, default: false)
     field(:accepts_chat_messages, :boolean, default: nil)
     field(:last_active_at, :naive_datetime)
     field(:disclose_client, :boolean, default: true)
@@ -422,8 +428,7 @@ defmodule Pleroma.User do
 
   def image_description(image, default \\ "")
 
-  def image_description(%{"name" => name}, _default) when is_binary(name), do: name
-  def image_description(%{"summary" => summary}, _default) when is_binary(summary), do: summary
+  def image_description(%{"name" => name}, _default), do: name
   def image_description(_, default), do: default
 
   # Should probably be renamed or removed
@@ -502,8 +507,11 @@ defmodule Pleroma.User do
         :ap_id,
         :inbox,
         :shared_inbox,
+        :outbox_address,
+        :attributed_to_address,
         :nickname,
         :public_key,
+        :public_key_history,
         :avatar,
         :banner,
         :is_locked,
@@ -519,10 +527,12 @@ defmodule Pleroma.User do
         :follower_count,
         :fields,
         :following_count,
+        :moderator_count,
         :is_discoverable,
+        :is_indexable,
+        :posting_restricted_to_mods,
         :invisible,
         :actor_type,
-        :tags,
         :also_known_as,
         :accepts_chat_messages,
         :pinned_objects,
@@ -542,6 +552,7 @@ defmodule Pleroma.User do
     |> validate_fields(true)
     |> maybe_update_image_description(:avatar, avatar_description)
     |> maybe_update_image_description(:banner, header_description)
+    |> maybe_preserve_previous_public_key(struct)
     |> validate_non_local()
   end
 
@@ -552,6 +563,42 @@ defmodule Pleroma.User do
 
   defp maybe_update_remote_fields(params, fields_limit) do
     Map.update(params, :fields, [], &Enum.take(&1, fields_limit))
+  end
+
+  defp maybe_preserve_previous_public_key(changeset, %User{public_key: old_public_key})
+       when is_binary(old_public_key) do
+    case get_change(changeset, :public_key) do
+      new_public_key when is_binary(new_public_key) and new_public_key != old_public_key ->
+        put_change(
+          changeset,
+          :public_key_history,
+          add_public_key_history_entry(
+            get_field(changeset, :public_key_history) || [],
+            old_public_key
+          )
+        )
+
+      _ ->
+        changeset
+    end
+  end
+
+  defp maybe_preserve_previous_public_key(changeset, _user), do: changeset
+
+  defp add_public_key_history_entry(history, public_key_pem) do
+    if valid_public_key_pem?(public_key_pem) do
+      history
+      |> List.wrap()
+      |> Enum.reject(&(&1 == public_key_pem))
+      |> then(&[public_key_pem | &1])
+      |> Enum.take(5)
+    else
+      history
+    end
+  end
+
+  defp valid_public_key_pem?(public_key_pem) do
+    match?({:ok, _}, decode_public_key(public_key_pem))
   end
 
   defp validate_non_local(cng) do
@@ -745,8 +792,7 @@ defmodule Pleroma.User do
          {:existing_image, %{"id" => id}} <-
            {:existing_image, Map.get(changeset.data, image_field)},
          {:object, %Object{} = object} <- {:object, Object.get_by_ap_id(id)},
-         {:ok, object} <-
-           Object.update_data(object, %{"name" => description, "summary" => description}) do
+         {:ok, object} <- Object.update_data(object, %{"name" => description}) do
       put_change(changeset, image_field, object.data)
     else
       _ -> changeset
@@ -983,7 +1029,21 @@ defmodule Pleroma.User do
 
   defp put_private_key(changeset) do
     {:ok, pem} = Keys.generate_rsa_pem()
-    put_change(changeset, :keys, pem)
+
+    changeset
+    |> put_change(:keys, pem)
+    |> put_change(:public_key, public_key_pem_from_private_key(pem))
+  end
+
+  defp public_key_pem_from_private_key(pem) do
+    {:ok, _, public_key} = Keys.keys_from_pem(pem)
+    entry = :public_key.pem_entry_encode(:SubjectPublicKeyInfo, public_key)
+
+    entry
+    |> List.wrap()
+    |> :public_key.pem_encode()
+    |> String.trim_trailing()
+    |> Kernel.<>("\n")
   end
 
   defp autofollow_users(user) do
@@ -1281,7 +1341,7 @@ defmodule Pleroma.User do
   def set_cache(%User{} = user) do
     @cachex.put(:user_cache, "ap_id:#{user.ap_id}", user)
     @cachex.put(:user_cache, "nickname:#{user.nickname}", user)
-    @cachex.put(:user_cache, "friends_ap_ids:#{user.nickname}", get_user_friends_ap_ids(user))
+    @cachex.put(:user_cache, "friends_ap_ids:#{user.ap_id}", get_user_friends_ap_ids(user))
     {:ok, user}
   end
 
@@ -1322,7 +1382,7 @@ defmodule Pleroma.User do
   end
 
   @spec get_cached_by_ap_id(String.t()) :: User.t() | nil
-  def get_cached_by_ap_id(ap_id) when is_binary(ap_id) do
+  def get_cached_by_ap_id(ap_id) do
     key = "ap_id:#{ap_id}"
 
     with {:ok, nil} <- @cachex.get(:user_cache, key),
@@ -1334,8 +1394,6 @@ defmodule Pleroma.User do
       nil -> nil
     end
   end
-
-  def get_cached_by_ap_id(_), do: nil
 
   def get_cached_by_id(id) do
     key = "id:#{id}"
@@ -1567,11 +1625,33 @@ defmodule Pleroma.User do
       user
     else
       e ->
-        Logger.error("Follower/Following counter update for #{user.ap_id} failed.\n#{inspect(e)}")
+        log_follow_information_refresh_error(user.ap_id, e)
 
         user
     end
   end
+
+  defp log_follow_information_refresh_error(ap_id, {:error, reason}) do
+    log_follow_information_refresh_error(ap_id, reason)
+  end
+
+  defp log_follow_information_refresh_error(ap_id, reason) do
+    message = "Follower/Following counter update for #{ap_id} failed.\n#{inspect(reason)}"
+
+    if expected_remote_collection_unavailable?(reason) do
+      Logger.debug(message)
+    else
+      Logger.warning(message)
+    end
+  end
+
+  defp expected_remote_collection_unavailable?("Object has been deleted"), do: true
+
+  defp expected_remote_collection_unavailable?({:http, status})
+       when status in [401, 403, 404, 410],
+       do: true
+
+  defp expected_remote_collection_unavailable?(_), do: false
 
   def fetch_follow_information(user) do
     with {:ok, info} <- ActivityPub.fetch_follow_information_for_user(user) do
@@ -1942,6 +2022,15 @@ defmodule Pleroma.User do
     end
   end
 
+  @spec set_remote_deactivated(User.t()) :: {:ok, User.t()} | {:error, Changeset.t()}
+  def set_remote_deactivated(%User{local: false, is_active: true} = user) do
+    user
+    |> change(%{is_active: false})
+    |> update_and_set_cache()
+  end
+
+  def set_remote_deactivated(%User{} = user), do: {:ok, user}
+
   def approve(users) when is_list(users) do
     Repo.transaction(fn ->
       Enum.map(users, fn user ->
@@ -2027,6 +2116,7 @@ defmodule Pleroma.User do
       note_count: 0,
       follower_count: 0,
       following_count: 0,
+      moderator_count: 0,
       is_locked: false,
       password_reset_pending: false,
       registration_reason: nil,
@@ -2041,6 +2131,11 @@ defmodule Pleroma.User do
       fields: [],
       raw_fields: [],
       is_discoverable: false,
+      is_indexable: nil,
+      posting_restricted_to_mods: false,
+      attributed_to_address: nil,
+      outbox_address: nil,
+      public_key_history: [],
       also_known_as: [],
       accepts_email_list: false
       # id: preserved
@@ -2239,7 +2334,7 @@ defmodule Pleroma.User do
 
   def fetch_by_ap_id(ap_id), do: ActivityPub.make_user_from_ap_id(ap_id)
 
-  def get_or_fetch_by_ap_id(ap_id) when is_binary(ap_id) do
+  def get_or_fetch_by_ap_id(ap_id) do
     cached_user = get_cached_by_ap_id(ap_id)
 
     maybe_fetched_user = needs_update?(cached_user) && fetch_by_ap_id(ap_id)
@@ -2255,8 +2350,6 @@ defmodule Pleroma.User do
         {:error, :not_found}
     end
   end
-
-  def get_or_fetch_by_ap_id(_), do: {:error, :not_found}
 
   @doc """
   Creates an internal service actor by URI if missing.
@@ -2352,17 +2445,33 @@ defmodule Pleroma.User do
     |> set_cache()
   end
 
-  def public_key(%{public_key: public_key_pem}) when is_binary(public_key_pem) do
-    key =
-      public_key_pem
-      |> :public_key.pem_decode()
-      |> hd()
-      |> :public_key.pem_entry_decode()
-
-    {:ok, key}
-  end
+  def public_key(%{public_key: public_key_pem}) when is_binary(public_key_pem),
+    do: decode_public_key(public_key_pem)
 
   def public_key(_), do: {:error, "key not found"}
+
+  def historical_public_keys(%{public_key_history: public_key_history})
+      when is_list(public_key_history) do
+    public_key_history
+    |> Enum.flat_map(fn public_key_pem ->
+      case decode_public_key(public_key_pem) do
+        {:ok, key} -> [key]
+        _ -> []
+      end
+    end)
+  end
+
+  def historical_public_keys(_), do: []
+
+  defp decode_public_key(public_key_pem) when is_binary(public_key_pem) do
+    with [entry | _] <- :public_key.pem_decode(public_key_pem) do
+      {:ok, :public_key.pem_entry_decode(entry)}
+    else
+      _ -> {:error, :invalid_public_key}
+    end
+  rescue
+    _ -> {:error, :invalid_public_key}
+  end
 
   def get_or_fetch_public_key_for_ap_id(ap_id) do
     with {:ok, %User{} = user} <- get_or_fetch_by_ap_id(ap_id),
@@ -2377,6 +2486,15 @@ defmodule Pleroma.User do
     with {:ok, %User{} = user} <- get_cached_by_ap_id(ap_id),
          {:ok, public_key} <- public_key(user) do
       {:ok, public_key}
+    else
+      _ -> :error
+    end
+  end
+
+  def get_historical_public_keys_for_ap_id(ap_id) do
+    with {:ok, %User{} = user} <- get_cached_by_ap_id(ap_id),
+         public_keys when public_keys != [] <- historical_public_keys(user) do
+      {:ok, public_keys}
     else
       _ -> :error
     end

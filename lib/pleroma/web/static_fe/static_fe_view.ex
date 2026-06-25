@@ -24,18 +24,13 @@ defmodule Pleroma.Web.StaticFE.StaticFEView do
   end
 
   def format_date(date) when is_binary(date) do
-    with {:ok, date, _} <- DateTime.from_iso8601(date) do
-      format_date(date)
-    else
-      _ -> format_date(DateTime.utc_now())
+    case DateTime.from_iso8601(date) do
+      {:ok, date, _} -> Strftime.strftime!(date, "%Y/%m/%d %l:%M:%S %p UTC")
+      _ -> Gettext.gettext("unknown date")
     end
   end
 
-  def format_date(%DateTime{} = date) do
-    Strftime.strftime!(date, "%Y/%m/%d %l:%M:%S %p UTC")
-  end
-
-  def format_date(_), do: format_date(DateTime.utc_now())
+  def format_date(_), do: Gettext.gettext("unknown date")
 
   def instance_name, do: Pleroma.Config.get([:instance, :name], "Pleroma")
 

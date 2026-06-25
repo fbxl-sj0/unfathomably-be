@@ -1,0 +1,1 @@
+Authorized local group moderator collection Add and Remove activities now update the local group moderator list instead of being treated as metadata-only events.

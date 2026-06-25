@@ -10,18 +10,24 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
   alias Pleroma.Object
   alias Pleroma.Object.Containment
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.ActivityPub.Utils
 
   require Pleroma.Constants
 
   def cast_and_filter_recipients(message, field, follower_collection, field_fallback \\ []) do
-    message =
-      message
-      |> Transmogrifier.fix_addressing_list(field)
-      |> Transmogrifier.fix_addressing_public(field)
+    field_value =
+      case Map.fetch(message, field) do
+        {:ok, nil} -> field_fallback
+        {:ok, value} -> value
+        :error -> field_fallback
+      end
 
-    {:ok, data} = ObjectValidators.Recipients.cast(message[field] || field_fallback)
+    {:ok, data} =
+      field_value
+      |> normalize_recipient_value()
+      |> ObjectValidators.Recipients.cast()
 
     data =
       Enum.reject(data, fn x ->
@@ -31,12 +37,35 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     Map.put(message, field, data)
   end
 
+  defp normalize_recipient_value(values) when is_list(values) do
+    Enum.flat_map(values, &normalize_recipient_value/1)
+  end
+
+  defp normalize_recipient_value(value) when is_binary(value) do
+    [normalize_public_recipient(value)]
+  end
+
+  defp normalize_recipient_value(%{"id" => id}) when is_binary(id) do
+    [normalize_public_recipient(id)]
+  end
+
+  defp normalize_recipient_value(%{"href" => href}) when is_binary(href) do
+    [normalize_public_recipient(href)]
+  end
+
+  defp normalize_recipient_value(_), do: []
+
+  defp normalize_public_recipient("Public"), do: Pleroma.Constants.as_public()
+  defp normalize_public_recipient("as:Public"), do: Pleroma.Constants.as_public()
+  defp normalize_public_recipient(value), do: value
+
   def fix_object_defaults(data) do
     data = Maps.filter_empty_values(data)
 
     context =
       Utils.maybe_create_context(
-        data["context"] || data["conversation"] || data["inReplyTo"] || data["id"]
+        data["context"] || data["conversation"] || context_id(data["contextHistory"]) ||
+          context_id(data["target"]) || data["inReplyTo"] || data["id"]
       )
 
     %User{follower_address: follower_collection} = User.get_cached_by_ap_id(data["attributedTo"])
@@ -47,22 +76,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     |> cast_and_filter_recipients("cc", follower_collection)
     |> cast_and_filter_recipients("bto", follower_collection)
     |> cast_and_filter_recipients("bcc", follower_collection)
+    |> cast_and_filter_recipients("audience", follower_collection)
     |> Transmogrifier.fix_implicit_addressing(follower_collection)
   end
 
-  def fix_activity_addressing(activity) do
-    case User.get_cached_by_ap_id(activity["actor"]) do
-      %User{follower_address: follower_collection} ->
-        activity
-        |> cast_and_filter_recipients("to", follower_collection)
-        |> cast_and_filter_recipients("cc", follower_collection)
-        |> cast_and_filter_recipients("bto", follower_collection)
-        |> cast_and_filter_recipients("bcc", follower_collection)
-        |> Transmogrifier.fix_implicit_addressing(follower_collection)
+  defp context_id(id) when is_binary(id), do: id
+  defp context_id(%{"id" => id}) when is_binary(id), do: id
+  defp context_id(%{"href" => href}) when is_binary(href), do: href
+  defp context_id(_), do: nil
 
-      _ ->
-        activity
-    end
+  def fix_activity_addressing(activity) do
+    %User{follower_address: follower_collection} = User.get_cached_by_ap_id(activity["actor"])
+
+    activity
+    |> cast_and_filter_recipients("to", follower_collection)
+    |> cast_and_filter_recipients("cc", follower_collection)
+    |> cast_and_filter_recipients("bto", follower_collection)
+    |> cast_and_filter_recipients("bcc", follower_collection)
+    |> cast_and_filter_recipients("audience", follower_collection)
+    |> Transmogrifier.fix_implicit_addressing(follower_collection)
   end
 
   def fix_actor(data) do
@@ -72,6 +104,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
       |> Containment.get_actor()
 
     data
+    |> Addressing.put_attributed_groups()
     |> Map.put("actor", actor)
     |> Map.put("attributedTo", actor)
   end
@@ -80,21 +113,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     data
     |> Map.put("context", object_context)
   end
-
-  def fix_activity_context(data, %Object{data: object_data}) do
-    context =
-      object_data["conversation"] ||
-        object_data["inReplyTo"] ||
-        object_data["id"]
-
-    if is_binary(context) do
-      Map.put(data, "context", Utils.maybe_create_context(context))
-    else
-      data
-    end
-  end
-
-  def fix_activity_context(data, _), do: data
 
   def fix_object_action_recipients(%{"type" => "Announce", "actor" => actor} = data, object) do
     if group_actor?(actor) do
@@ -106,6 +124,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
   def fix_object_action_recipients(data, object) do
     do_fix_object_action_recipients(data, object)
+  end
+
+  def fix_object_action_audience(data, %Object{data: object_data}) do
+    group_ap_ids = Addressing.addressed_group_ap_ids(object_data)
+
+    case group_ap_ids do
+      [] ->
+        data
+
+      [_ | _] ->
+        {:ok, audience} =
+          data
+          |> Map.get("audience", [])
+          |> normalize_recipient_value()
+          |> Kernel.++(group_ap_ids)
+          |> ObjectValidators.Recipients.cast()
+
+        Map.put(data, "audience", audience)
+    end
   end
 
   defp do_fix_object_action_recipients(
@@ -122,8 +159,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
     Map.put(data, "to", to)
   end
-
-  defp do_fix_object_action_recipients(data, _), do: data
 
   defp group_actor?(actor) when is_binary(actor) do
     case User.get_by_ap_id(actor) do
@@ -150,6 +185,11 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
   # Misskey fallback
   def fix_quote_url(%{"_misskey_quote" => quote_url} = data) do
+    Map.put(data, "quoteUrl", quote_url)
+  end
+
+  # Hubzilla compatibility.
+  def fix_quote_url(%{"quote" => quote_url} = data) when is_binary(quote_url) do
     Map.put(data, "quoteUrl", quote_url)
   end
 

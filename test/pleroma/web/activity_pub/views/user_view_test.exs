@@ -6,12 +6,9 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
   use Pleroma.DataCase, async: true
   import Pleroma.Factory
 
-  alias Pleroma.FollowingRelationship
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.UserView
   alias Pleroma.Web.CommonAPI
-
-  require Pleroma.Constants
 
   test "Renders a user, including the public key" do
     user = insert(:user, raw_bio: "plain profile source")
@@ -27,69 +24,6 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
     assert String.starts_with?(public_key, "-----BEGIN PUBLIC KEY-----\n")
     assert String.ends_with?(public_key, "-----END PUBLIC KEY-----\n")
     refute String.ends_with?(public_key, "-----END PUBLIC KEY-----\n\n")
-  end
-
-  test "renders FEP-7aa9 featured collection hints" do
-    user = insert(:user, is_discoverable: true)
-
-    result = UserView.render("user.json", %{user: user})
-
-    assert result["featuredCollections"] == "#{user.ap_id}/collections"
-
-    assert result["interactionPolicy"] == %{
-             "canFeature" => %{
-               "automaticApproval" => [Pleroma.Constants.as_public()]
-             }
-           }
-
-    assert Enum.any?(result["@context"], fn
-             %{"featuredCollections" => _, "canFeature" => _} -> true
-             _ -> false
-           end)
-  end
-
-  test "renders conservative FEP-7aa9 feature policies for locked and undiscoverable users" do
-    locked_user = insert(:user, is_discoverable: true, is_locked: true)
-    undiscoverable_user = insert(:user, is_discoverable: false)
-    locked_followers = locked_user.follower_address
-    undiscoverable_ap_id = undiscoverable_user.ap_id
-
-    assert %{
-             "interactionPolicy" => %{
-               "canFeature" => %{"automaticApproval" => [^locked_followers]}
-             }
-           } = UserView.render("user.json", %{user: locked_user})
-
-    assert %{
-             "interactionPolicy" => %{
-               "canFeature" => %{"automaticApproval" => [^undiscoverable_ap_id]}
-             }
-           } = UserView.render("user.json", %{user: undiscoverable_user})
-  end
-
-  test "renders a FEP-7aa9 collection index for local pinned posts" do
-    user = insert(:user)
-
-    assert %{
-             "id" => collections_id,
-             "type" => "Collection",
-             "totalItems" => 1,
-             "first" => first
-           } = UserView.render("featured_collections.json", %{user: user})
-
-    assert collections_id == "#{user.ap_id}/collections"
-    assert first == "#{user.ap_id}/collections?page=1"
-
-    assert %{
-             "id" => page_id,
-             "type" => "CollectionPage",
-             "partOf" => ^collections_id,
-             "totalItems" => 1,
-             "items" => [featured_address]
-           } = UserView.render("featured_collections.json", %{user: user, page: 1})
-
-    assert page_id == first
-    assert featured_address == user.featured_address
   end
 
   test "does not render an empty Misskey profile summary" do
@@ -157,19 +91,12 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
         avatar: %{
           "url" => [%{"href" => "https://someurl"}],
           "name" => "a drawing of pleroma-tan using pleroma groups"
-        },
-        banner: %{
-          "url" => [%{"href" => "https://somebanner"}],
-          "summary" => "a red and black skyline"
         }
       )
 
     result = UserView.render("user.json", %{user: user})
 
     assert result["icon"]["name"] == "a drawing of pleroma-tan using pleroma groups"
-    assert result["icon"]["summary"] == "a drawing of pleroma-tan using pleroma groups"
-    assert result["image"]["name"] == "a red and black skyline"
-    assert result["image"]["summary"] == "a red and black skyline"
   end
 
   test "renders an invisible user with the invisible property set to true" do
@@ -238,28 +165,6 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
       user = Map.merge(user, %{hide_followers_count: false, hide_followers: true})
       assert %{"totalItems" => 1} = UserView.render("followers.json", %{user: user})
     end
-
-    test "renders paginated follower collections from cached counts" do
-      user = insert(:user)
-
-      for _ <- 1..11 do
-        follower = insert(:user)
-        {:ok, _follower, _user} = FollowingRelationship.follow(follower, user, :follow_accept)
-      end
-
-      user = User.get_by_id(user.id)
-      first = UserView.render("followers.json", %{user: user})["first"]
-
-      assert first["totalItems"] == 11
-      assert length(first["orderedItems"]) == 10
-      assert first["next"] == "#{user.ap_id}/followers?page=2"
-
-      second = UserView.render("followers.json", %{user: user, page: 2})
-
-      assert second["totalItems"] == 11
-      assert length(second["orderedItems"]) == 1
-      refute Map.has_key?(second, "next")
-    end
   end
 
   describe "following" do
@@ -279,28 +184,6 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
       assert %{"totalItems" => 1} = UserView.render("following.json", %{user: user})
       user = Map.merge(user, %{hide_follows_count: false, hide_follows: true})
       assert %{"totalItems" => 1} = UserView.render("following.json", %{user: user})
-    end
-
-    test "renders paginated following collections from cached counts" do
-      user = insert(:user)
-
-      for _ <- 1..11 do
-        followed = insert(:user)
-        {:ok, _user, _followed} = FollowingRelationship.follow(user, followed, :follow_accept)
-      end
-
-      user = User.get_by_id(user.id)
-      first = UserView.render("following.json", %{user: user})["first"]
-
-      assert first["totalItems"] == 11
-      assert length(first["orderedItems"]) == 10
-      assert first["next"] == "#{user.ap_id}/following?page=2"
-
-      second = UserView.render("following.json", %{user: user, page: 2})
-
-      assert second["totalItems"] == 11
-      assert length(second["orderedItems"]) == 1
-      refute Map.has_key?(second, "next")
     end
   end
 

@@ -1,0 +1,1 @@
+Added a read-only admin federation health endpoint summarizing remote instance reachability and outgoing federation queue state.

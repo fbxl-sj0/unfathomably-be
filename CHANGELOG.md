@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.6.51] - 2026-06-25
+
+### Fixed
+- Reduced incoming federation retry noise by acknowledging Friendica-style `View` and `Read` receipt activities as no-op receipts.
+
+### Changed
+- Refreshed release metadata for the quiet backend compatibility, federation-health, and janitor work since 2.6.50.
+
 ## [2.6.50] - 2026-06-23
 
 ### Added
@@ -16,6 +24,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Added remote replies collection refresh jobs for public remote posts, including debounced refreshes when known ancestors receive remote replies.
 - Added ActivityPub alternate discovery from HTTP `Link` headers and HTML `rel="alternate"` links when object fetches land on human-readable pages.
 - Added Ed25519 HTTP Signature verification for remote actors that publish W3C Multikey `publicKeyMultibase` keys or OKP `publicKeyJwk` verification methods.
+- Added Mbin-compatible group collection metadata for remote and local group actors, including outbox, moderators, featured/pinned items, indexability, and moderator-only posting hints.
+- Added cached remote group moderator counts from Mbin-style `attributedTo` moderator collections and exposed them in the group API.
+- Added a local ActivityPub moderators collection endpoint for group actors that advertise `attributedTo`.
+- Added first-class handling for Mbin-style `Lock` activities so remote software can close and reopen discussion threads.
+- Added authorized Mbin-style moderator collection handling for local groups, so valid `Add`/`Remove` activities can update local group moderator roles.
+- Improved Threadiverse group audience detection so public posts addressed through `audience`, `cc`, nested objects, or PeerTube-style `attributedTo` group arrays can be associated with the right local group.
 - Added OpenTranslate/LibreTranslate-style translation provider documentation and Polish model coverage notes.
 - Added a complete source installation guide covering Unfathomably BE, Unfathomably FE, nginx, OpenTranslate, and optional Meilisearch.
 - Added a rehearsed upgrade guide for moving source installs from Rebased/Soapbox or Pleroma to Unfathomably BE and FE.
@@ -38,6 +52,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fixed duplicate follow insertion handling so cached follow counters are not recalculated unnecessarily.
 - Fixed browser-facing issues around static asset MIME types, stale composer drafts, duplicate form IDs, and unsupported Permissions-Policy feature names.
 - Fixed profile and refresh-route handling that could return server errors on deep frontend routes.
+- Fixed incoming ActivityPub retry noise by treating permanent validation changeset failures as cancelled jobs and giving remote-context fetches a longer receiver timeout.
+- Fixed Oban janitor cleanup for terminal incoming federation retries caused by unreachable ActivityPub objects, HTML responses, duplicate inserts, or unsafe remote update actors.
+- Fixed remote object fetch races where concurrent fetches could log duplicate object insert warnings instead of returning the already-cached object.
+- Fixed wrapped opaque incoming federation failures so dead remote Undo activities are cancelled instead of retrying as `{:error, :error}` forever.
+- Fixed remote follow-counter refresh for NodeBB-style idless ActivityPub collections and slow partial collection responses such as Minds.
+- Fixed federated target platform hints for Discourse AP actors, WordPress ActivityPub inboxes, Friendica forums, Gancio federation actors, and Lotide/Narwhal communities so working remote groups and sources keep their expected UI shape.
+- Fixed Mbin HTML fallback previews to use the canonical ActivityPub thread URL as the object ID, allowing previewed magazine posts to resolve as interactable statuses when the remote serves ActivityPub JSON.
+- Fixed Mbin-style group `Announce` handling so wrapped Create, Add, Remove, Like, Dislike, Undo, and Lock activities are treated as the underlying group operation rather than ordinary boosts.
+- Fixed Mbin-style group `Announce` handling for wrapped Update activities.
+- Fixed incoming `commentsEnabled` preservation so remote group software can accurately expose locked or open discussion threads to clients.
+- Fixed stale remote actor refreshes that return an ActivityPub `Tombstone` so cached remote actors are deactivated locally instead of staying active with failed refresh noise.
+- Fixed malformed cached remote public keys so signature validation fails cleanly and can fall into the retry/refresh path instead of raising from PEM decoding.
+- Improved remote actor key rotation handling by preserving a bounded history of previous valid public keys and trying them as a fallback for stale signed requests.
+- Reduced group/source feed query overhead by reusing cached follow lists for blocked-domain visibility checks.
+- Fixed preview status resolution for remote thread mirrors whose human URL negotiates to ActivityPub with a different canonical object ID, including a guarded synthetic Create fallback for object-only previews.
+- Fixed source/feed platform hints for WriteFreely collections, GoToSocial `gts.*` hosts, snac actors, verified Iceshrimp instances with opaque actor URLs, Owncast federation users, and Calckey/Misskey-family actors, allowed signed collection fetch fallback for protected source outboxes, and added cached actor-card fallback when a known profile source cannot expose preview items.
 
 ## 2.6.0
 ### Security

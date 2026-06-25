@@ -7,9 +7,11 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
 
   alias Pleroma.Activity
   alias Pleroma.Bookmark
+  alias Pleroma.FollowingRelationship
   alias Pleroma.Notification
   alias Pleroma.Object
   alias Pleroma.Repo
+  alias Pleroma.User
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Workers.Cron.RemotePostCleanupWorker
 
@@ -22,9 +24,13 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
     clear_config([RemotePostCleanupWorker, :max_age_days], 365)
     clear_config([RemotePostCleanupWorker, :batch_size], 50)
     clear_config([RemotePostCleanupWorker, :candidate_scan_limit], 100)
+    clear_config([RemotePostCleanupWorker, :max_scan_pages], 4)
     clear_config([RemotePostCleanupWorker, :query_timeout_ms], 60_000)
     clear_config([RemotePostCleanupWorker, :keep_threads_with_local_activity], true)
     clear_config([RemotePostCleanupWorker, :keep_direct_or_mentioned], true)
+    clear_config([RemotePostCleanupWorker, :remote_actor_cleanup_enabled], true)
+    clear_config([RemotePostCleanupWorker, :remote_actor_max_age_days], 730)
+    clear_config([RemotePostCleanupWorker, :remote_actor_batch_size], 50)
   end
 
   test "prunes old untouched remote public post objects without deleting their create activities" do
@@ -76,7 +82,8 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
     assert {:ok, _reply} =
              CommonAPI.post(user, %{
                status: "I want to keep this thread",
-               in_reply_to_status_id: activity.id
+               in_reply_to_status_id: activity.id,
+               visibility: "public"
              })
 
     assert {:ok, 0} = RemotePostCleanupWorker.perform(%Oban.Job{})
@@ -94,7 +101,8 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
     assert {:ok, _reply} =
              CommonAPI.post(user, %{
                status: "This should keep the surrounding thread",
-               in_reply_to_status_id: first_activity.id
+               in_reply_to_status_id: first_activity.id,
+               visibility: "public"
              })
 
     assert {:ok, 0} = RemotePostCleanupWorker.perform(%Oban.Job{})
@@ -114,7 +122,8 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
     assert {:ok, _reply} =
              CommonAPI.post(user, %{
                status: "Keep the direct parent only",
-               in_reply_to_status_id: first_activity.id
+               in_reply_to_status_id: first_activity.id,
+               visibility: "public"
              })
 
     assert {:ok, 1} = RemotePostCleanupWorker.perform(%Oban.Job{})
@@ -182,6 +191,49 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
     assert pruned_count == 1
   end
 
+  test "keeps scanning when the first old candidate window is protected" do
+    clear_config([RemotePostCleanupWorker, :batch_size], 1)
+    clear_config([RemotePostCleanupWorker, :candidate_scan_limit], 1)
+    clear_config([RemotePostCleanupWorker, :max_scan_pages], 2)
+
+    protected = remote_public_post()
+    prunable = remote_public_post()
+    user = insert(:user)
+
+    assert {:ok, _favorite} = CommonAPI.favorite(user, protected.activity.id)
+
+    assert {:ok, 1} = RemotePostCleanupWorker.perform(%Oban.Job{})
+
+    assert %Object{data: %{"type" => "Note"}} = Object.get_by_ap_id(protected.object.data["id"])
+    refute Object.get_by_ap_id(prunable.object.data["id"])
+  end
+
+  test "hides stale unused remote actors and clears cached presentation data" do
+    actor = old_remote_actor()
+
+    assert {:ok, 0} = RemotePostCleanupWorker.perform(%Oban.Job{})
+
+    assert %User{
+             invisible: true,
+             is_discoverable: false,
+             avatar: %{},
+             banner: %{},
+             tags: [],
+             emoji: %{}
+           } = Repo.reload(actor)
+  end
+
+  test "keeps stale remote actors followed by local users" do
+    local_user = insert(:user)
+    actor = old_remote_actor()
+
+    assert {:ok, _, _} = FollowingRelationship.follow(local_user, actor, :follow_accept)
+
+    assert {:ok, 0} = RemotePostCleanupWorker.perform(%Oban.Job{})
+
+    assert %User{invisible: false, avatar: %{"url" => _}} = Repo.reload(actor)
+  end
+
   defp remote_public_post(opts \\ []) do
     old_days = Keyword.get(opts, :old_days, 400)
     public = Pleroma.Constants.as_public()
@@ -201,8 +253,6 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
     object =
       insert(:note,
         user: poster,
-        inserted_at: old_inserted_at,
-        updated_at: old_inserted_at,
         data: %{
           "id" => "https://#{remote_host}/objects/#{remote_id}",
           "to" => to,
@@ -214,6 +264,12 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
             |> DateTime.to_iso8601()
         }
       )
+
+    Object
+    |> Ecto.Query.where([object], object.id == ^object.id)
+    |> Repo.update_all(set: [inserted_at: old_inserted_at, updated_at: old_inserted_at])
+
+    object = Repo.get(Object, object.id)
 
     activity =
       insert(:note_activity,
@@ -230,5 +286,27 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
       )
 
     %{activity: activity, object: object}
+  end
+
+  defp old_remote_actor do
+    old_datetime =
+      NaiveDateTime.utc_now()
+      |> NaiveDateTime.add(-800 * 86_400, :second)
+      |> NaiveDateTime.truncate(:second)
+
+    insert(:user,
+      local: false,
+      domain: "unused.example",
+      actor_type: "Person",
+      updated_at: old_datetime,
+      last_refreshed_at: old_datetime,
+      last_status_at: old_datetime,
+      invisible: false,
+      is_discoverable: true,
+      avatar: %{"url" => "https://unused.example/avatar.png"},
+      banner: %{"url" => "https://unused.example/banner.png"},
+      tags: ["stale"],
+      emoji: %{"old" => "https://unused.example/old.png"}
+    )
   end
 end

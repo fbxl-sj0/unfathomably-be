@@ -23,6 +23,11 @@ config :phoenix, serve_endpoints: true
 config :logger, :console, level: :info
 config :logger, :ex_syslogger, level: :info
 
+# Production hosts should get timezone database updates through normal
+# dependency updates. The runtime updater is noisy and can crash on newer OTP
+# releases while parsing upstream tzdata rules.
+config :tzdata, :autoupdate, :disabled
+
 # ## SSL Support
 #
 # To get SSL working, you will need to add the `https` key

@@ -16,6 +16,15 @@ defmodule Pleroma.ReverseProxy do
   @max_body_length :infinity
   @failed_request_ttl :timer.seconds(60)
   @methods ~w(GET HEAD)
+  @quiet_http_response_codes [403, 404, 410]
+  @transient_request_errors [
+    :closed,
+    :timeout,
+    :econnrefused,
+    :enotconn,
+    :invalid_state,
+    :nxdomain
+  ]
 
   @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
 
@@ -124,7 +133,7 @@ defmodule Pleroma.ReverseProxy do
         |> halt()
 
       {:error, {:invalid_http_response, code}} ->
-        Logger.error("#{__MODULE__}: request to #{inspect(url)} failed with HTTP status #{code}")
+        log_http_response_error(url, code)
         track_failed_url(url, code, opts)
 
         conn
@@ -137,7 +146,7 @@ defmodule Pleroma.ReverseProxy do
         |> halt()
 
       {:error, error} ->
-        Logger.error("#{__MODULE__}: request to #{inspect(url)} failed: #{inspect(error)}")
+        log_request_error(url, error)
         track_failed_url(url, error, opts)
 
         conn
@@ -412,6 +421,22 @@ defmodule Pleroma.ReverseProxy do
   end
 
   defp client, do: Pleroma.ReverseProxy.Client.Wrapper
+
+  defp log_http_response_error(url, code) when code in @quiet_http_response_codes do
+    Logger.debug("#{__MODULE__}: request to #{inspect(url)} failed with HTTP status #{code}")
+  end
+
+  defp log_http_response_error(url, code) do
+    Logger.warning("#{__MODULE__}: request to #{inspect(url)} failed with HTTP status #{code}")
+  end
+
+  defp log_request_error(url, error) when error in @transient_request_errors do
+    Logger.debug("#{__MODULE__}: request to #{inspect(url)} failed: #{inspect(error)}")
+  end
+
+  defp log_request_error(url, error) do
+    Logger.error("#{__MODULE__}: request to #{inspect(url)} failed: #{inspect(error)}")
+  end
 
   defp track_failed_url(url, error, opts) do
     ttl =

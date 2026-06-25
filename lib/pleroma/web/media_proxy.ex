@@ -52,11 +52,26 @@ defmodule Pleroma.Web.MediaProxy do
 
   @spec url_proxiable?(String.t()) :: boolean()
   def url_proxiable?(url) do
-    not local?(url) and not whitelisted?(url)
+    remote_http_url?(url) and not local?(url) and not whitelisted?(url)
+  end
+
+  @spec remote_http_url?(term()) :: boolean()
+  def remote_http_url?(url) when is_binary(url) do
+    uri = URI.parse(url)
+
+    uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.host != ""
+  rescue
+    URI.Error -> false
+  end
+
+  def remote_http_url?(_), do: false
+
+  def verify_remote_http_url(url) do
+    if remote_http_url?(url), do: :ok, else: {:error, :unsupported_remote_url}
   end
 
   def preview_url(url, preview_params \\ []) do
-    if preview_enabled?() do
+    if preview_enabled?() and url_proxiable?(url) do
       encode_preview_url(url, preview_params)
     else
       url(url)

@@ -15,7 +15,7 @@ defmodule Pleroma.Telemetry.Logger do
     [:pleroma, :connection_pool, :client, :add]
   ]
   def attach do
-    :telemetry.attach_many("pleroma-logger", @events, &handle_event/4, [])
+    :telemetry.attach_many("pleroma-logger", @events, &__MODULE__.handle_event/4, [])
   end
 
   # Passing anonymous functions instead of strings to logger is intentional,

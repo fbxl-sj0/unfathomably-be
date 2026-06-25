@@ -8,15 +8,20 @@ defmodule Pleroma.Web.PleromaAPI.UserImportController do
   require Logger
 
   alias Pleroma.User
+  alias Pleroma.User.PostArchiveImport
   alias Pleroma.Web.ApiSpec
+  alias Pleroma.Web.PleromaAPI.PostArchiveImportView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   plug(OAuthScopesPlug, %{scopes: ["follow", "write:follows"]} when action == :follow)
   plug(OAuthScopesPlug, %{scopes: ["follow", "write:blocks"]} when action == :blocks)
   plug(OAuthScopesPlug, %{scopes: ["follow", "write:mutes"]} when action == :mutes)
+  plug(OAuthScopesPlug, %{scopes: ["write:statuses"]} when action == :post_archive)
+  plug(OAuthScopesPlug, %{scopes: ["read:accounts"]} when action == :post_archive_imports)
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate)
   defdelegate open_api_operation(action), to: ApiSpec.UserImportOperation
+  action_fallback(Pleroma.Web.MastodonAPI.FallbackController)
 
   def follow(%Plug.Conn{body_params: %{list: %Plug.Upload{path: path}}} = conn, _) do
     read_import_file(conn, path, &follow(&1, %{}))
@@ -51,6 +56,25 @@ defmodule Pleroma.Web.PleromaAPI.UserImportController do
   def mutes(%{assigns: %{user: user}, body_params: %{list: list}} = conn, _) do
     User.Import.mutes_import(user, prepare_user_identifiers(list))
     json(conn, "job started")
+  end
+
+  def post_archive_imports(%{assigns: %{user: user}} = conn, _params) do
+    imports = PostArchiveImport.list(user)
+
+    conn
+    |> put_view(PostArchiveImportView)
+    |> render("index.json", post_archive_imports: imports)
+  end
+
+  def post_archive(
+        %{assigns: %{user: user}, body_params: %{archive: %Plug.Upload{} = upload}} = conn,
+        _params
+      ) do
+    with {:ok, import} <- PostArchiveImport.create(user, upload) do
+      conn
+      |> put_view(PostArchiveImportView)
+      |> render("show.json", post_archive_import: import)
+    end
   end
 
   defp prepare_user_identifiers(list) do

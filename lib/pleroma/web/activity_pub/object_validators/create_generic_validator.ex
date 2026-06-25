@@ -67,6 +67,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator do
     |> CommonFixes.cast_and_filter_recipients("cc", follower_collection, object["cc"])
     |> CommonFixes.cast_and_filter_recipients("bto", follower_collection, object["bto"])
     |> CommonFixes.cast_and_filter_recipients("bcc", follower_collection, object["bcc"])
+    |> CommonFixes.cast_and_filter_recipients("audience", follower_collection, object["audience"])
     |> Transmogrifier.fix_implicit_addressing(follower_collection)
   end
 
@@ -145,7 +146,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator do
   end
 
   def validate_addressing_match(cng, object) do
-    [:to, :cc, :bcc, :bto]
+    [:to, :cc, :bcc, :bto, :audience]
     |> Enum.reduce(cng, fn field, cng ->
       object_data = object[to_string(field)]
 

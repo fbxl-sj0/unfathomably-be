@@ -1,0 +1,19 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://w3id.org/security/v1"
+  ],
+  "type": "Group",
+  "id": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e",
+  "following": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e/following",
+  "followers": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e/followers",
+  "inbox": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e/inbox",
+  "outbox": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e/outbox",
+  "preferredUsername": "5224869f-aa63-4c83-ab3a-87c3a5ac440e",
+  "url": "https://peertube.moe/video-channels/5224869f-aa63-4c83-ab3a-87c3a5ac440e",
+  "name": "PeerTube channel",
+  "summary": "",
+  "endpoints": {
+    "sharedInbox": "https://peertube.moe/inbox"
+  }
+}

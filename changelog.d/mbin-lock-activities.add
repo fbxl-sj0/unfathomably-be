@@ -1,0 +1,1 @@
+Added first-class handling for Mbin-style Lock and Undo Lock activities so remote group software can close and reopen discussion threads.

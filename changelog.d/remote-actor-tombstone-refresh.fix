@@ -1,0 +1,1 @@
+Fixed stale remote actor refreshes that return ActivityPub Tombstone documents so cached remote actors are deactivated locally.

@@ -79,6 +79,27 @@ defmodule Pleroma.ReverseProxyTest do
     assert conn.halted
   end
 
+  test "request connection close is not logged as an application error", %{conn: conn} do
+    url = "/request-closed"
+
+    ClientMock
+    |> expect(:request, fn :get, ^url, _, _, _ -> {:error, :closed} end)
+
+    log =
+      capture_log([level: :debug], fn ->
+        conn = ReverseProxy.call(conn, url)
+
+        assert conn.status == 500
+        assert conn.halted
+      end)
+
+    assert log =~
+             "[debug] Elixir.Pleroma.ReverseProxy: request to \"/request-closed\" failed: :closed"
+
+    refute log =~ "[error]"
+    assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
+  end
+
   defp stream_mock(invokes, with_close? \\ false) do
     ClientMock
     |> expect(:request, fn :get, "/stream-bytes/" <> length, _, _, _ ->
@@ -152,7 +173,7 @@ defmodule Pleroma.ReverseProxyTest do
   defp error_mock(status) when is_integer(status) do
     ClientMock
     |> expect(:request, fn :get, "/status/" <> _, _, _, _ ->
-      {:error, status}
+      {:ok, status, [], %{}}
     end)
   end
 
@@ -161,8 +182,8 @@ defmodule Pleroma.ReverseProxyTest do
       error_mock(500)
       url = "/status/500"
 
-      capture_log(fn -> ReverseProxy.call(conn, url) end) =~
-        "[error] Elixir.Pleroma.ReverseProxy: request to /status/500 failed with HTTP status 500"
+      assert capture_log(fn -> ReverseProxy.call(conn, url) end) =~
+               "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/500\" failed with HTTP status 500"
 
       assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
 
@@ -174,8 +195,8 @@ defmodule Pleroma.ReverseProxyTest do
       error_mock(400)
       url = "/status/400"
 
-      capture_log(fn -> ReverseProxy.call(conn, url) end) =~
-        "[error] Elixir.Pleroma.ReverseProxy: request to /status/400 failed with HTTP status 400"
+      assert capture_log(fn -> ReverseProxy.call(conn, url) end) =~
+               "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/400\" failed with HTTP status 400"
 
       assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
       assert Cachex.ttl(:failed_proxy_url_cache, url) == {:ok, nil}
@@ -185,10 +206,15 @@ defmodule Pleroma.ReverseProxyTest do
       error_mock(403)
       url = "/status/403"
 
-      capture_log(fn ->
-        ReverseProxy.call(conn, url, failed_request_ttl: :timer.seconds(120))
-      end) =~
-        "[error] Elixir.Pleroma.ReverseProxy: request to /status/403 failed with HTTP status 403"
+      log =
+        capture_log([level: :debug], fn ->
+          ReverseProxy.call(conn, url, failed_request_ttl: :timer.seconds(120))
+        end)
+
+      assert log =~
+               "[debug] Elixir.Pleroma.ReverseProxy: request to \"/status/403\" failed with HTTP status 403"
+
+      refute log =~ "[error]"
 
       {:ok, ttl} = Cachex.ttl(:failed_proxy_url_cache, url)
       assert ttl > 100_000
@@ -198,12 +224,12 @@ defmodule Pleroma.ReverseProxyTest do
       url = "/status/204"
       expect(ClientMock, :request, fn :get, _url, _, _, _ -> {:ok, 204, [], %{}} end)
 
-      capture_log(fn ->
-        conn = ReverseProxy.call(conn, url)
-        assert conn.resp_body == "Request failed: No Content"
-        assert conn.halted
-      end) =~
-        "[error] Elixir.Pleroma.ReverseProxy: request to \"/status/204\" failed with HTTP status 204"
+      assert capture_log(fn ->
+               conn = ReverseProxy.call(conn, url)
+               assert conn.resp_body == "Request failed: No Content"
+               assert conn.halted
+             end) =~
+               "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/204\" failed with HTTP status 204"
 
       assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
       assert Cachex.ttl(:failed_proxy_url_cache, url) == {:ok, nil}

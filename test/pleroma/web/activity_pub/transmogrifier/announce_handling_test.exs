@@ -193,6 +193,102 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AnnounceHandlingTest do
     assert Object.get_by_ap_id("http://piefed.example/comment/1")
   end
 
+  test "it does not count group actor announces as user boosts" do
+    author = insert(:user)
+
+    group =
+      insert(:user,
+        local: false,
+        actor_type: "Group",
+        ap_id: "https://mbin.example/m/main",
+        follower_address: "https://mbin.example/m/main/followers"
+      )
+
+    {:ok, post} = CommonAPI.post(author, %{status: "group-distributed post"})
+    object = Object.get_by_ap_id(post.data["object"])
+
+    announce = %{
+      "id" => "https://mbin.example/activities/announce/1",
+      "actor" => group.ap_id,
+      "object" => object.data["id"],
+      "published" => "2026-06-24T00:00:00Z",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "type" => "Announce"
+    }
+
+    assert {:ok, %Activity{local: false}} = Transmogrifier.handle_incoming(announce)
+
+    object = Object.get_by_ap_id(post.data["object"])
+    assert object.data["announcement_count"] == 0
+    refute group.ap_id in object.data["announcements"]
+  end
+
+  test "it unwraps Mbin group announces around Update activities" do
+    author =
+      insert(:user,
+        local: false,
+        ap_id: "https://mbin.example/u/user",
+        nickname: "user@mbin.example",
+        follower_address: "https://mbin.example/u/user/followers"
+      )
+
+    group =
+      insert(:user,
+        local: false,
+        actor_type: "Group",
+        ap_id: "https://mbin.example/m/main",
+        follower_address: "https://mbin.example/m/main/followers"
+      )
+
+    note =
+      insert(:note,
+        user: author,
+        data: %{
+          "id" => "https://mbin.example/m/main/p/1",
+          "to" => [group.ap_id, Pleroma.Constants.as_public()],
+          "cc" => [author.follower_address],
+          "content" => "<p>old body</p>",
+          "context" => "https://mbin.example/m/main/p/1/context"
+        }
+      )
+
+    _create = insert(:note_activity, user: author, note: note, local: false)
+
+    updated_note =
+      note.data
+      |> Map.put("content", "<p>new body</p>")
+      |> Map.put("audience", group.ap_id)
+      |> Map.put("updated", "2026-06-24T00:00:00Z")
+
+    update = %{
+      "id" => "https://mbin.example/activities/update/1",
+      "type" => "Update",
+      "actor" => author.ap_id,
+      "published" => "2026-06-24T00:00:00Z",
+      "to" => [group.ap_id, Pleroma.Constants.as_public()],
+      "cc" => [author.follower_address],
+      "object" => updated_note,
+      "audience" => group.ap_id
+    }
+
+    announce = %{
+      "id" => "https://mbin.example/activities/announce/update/1",
+      "type" => "Announce",
+      "actor" => group.ap_id,
+      "object" => update,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "published" => "2026-06-24T00:00:01Z",
+      "audience" => group.ap_id
+    }
+
+    assert {:ok, %Activity{data: %{"type" => "Update"}}} =
+             Transmogrifier.handle_incoming(announce)
+
+    assert %{data: %{"content" => "<p>new body</p>"}} = Object.get_by_ap_id(note.data["id"])
+  end
+
   # Ignore inlined activities for now
   @tag skip: true
   test "it works for incoming announces with an inlined activity" do

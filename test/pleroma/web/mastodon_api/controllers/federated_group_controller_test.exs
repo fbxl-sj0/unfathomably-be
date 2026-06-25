@@ -217,6 +217,55 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
 
       assert %{follower_count: 42} = User.get_cached_by_id(group.id)
     end
+
+    test "fetches a missing remote group moderator count from attributedTo collection", %{
+      conn: conn
+    } do
+      moderators_url = "https://mbin.example/m/main/moderators"
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "main@mbin.example",
+          ap_id: "https://mbin.example/m/main",
+          attributed_to_address: moderators_url,
+          moderator_count: 0,
+          name: "Main"
+        )
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^moderators_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => moderators_url,
+                "type" => "OrderedCollection",
+                "totalItems" => "4",
+                "orderedItems" => []
+              })
+          }
+      end)
+
+      group_id = to_string(group.id)
+
+      assert %{
+               "id" => ^group_id,
+               "moderators_count" => 4,
+               "source" => %{
+                 "pleroma" => %{
+                   "activitypub" => %{"attributed_to" => ^moderators_url}
+                 }
+               }
+             } =
+               conn
+               |> get("/api/v1/groups/#{group.id}")
+               |> json_response(200)
+
+      assert %{moderator_count: 4} = User.get_cached_by_id(group.id)
+    end
   end
 
   describe "GET /api/v1/groups/:id/preview" do
@@ -428,7 +477,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
           actor_type: "Group",
           local: false,
           nickname: "selfhosted@lemmy.example",
-          ap_id: "https://lemmy.example/c/selfhosted"
+          ap_id: "https://lemmy.example/c/selfhosted",
+          name: "Self Hosted"
         )
 
       unfollowed_group =
@@ -447,6 +497,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
         )
 
       {:ok, _, _} = Pleroma.FollowingRelationship.follow(user, group, :follow_accept)
+      group_id = to_string(group.id)
 
       context = "https://lemmy.example/post/1"
 
@@ -513,7 +564,12 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
       assert [
                %{
                  "id" => followed_activity_id,
-                 "content" => content
+                 "content" => content,
+                 "group" => %{
+                   "id" => ^group_id,
+                   "display_name" => "Self Hosted",
+                   "slug" => ^group_id
+                 }
                }
              ] =
                conn
@@ -548,7 +604,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
           actor_type: "Group",
           local: false,
           nickname: "root42@peertube.example",
-          ap_id: "https://peertube.example/video-channels/root42"
+          ap_id: "https://peertube.example/video-channels/root42",
+          name: "root42"
         )
 
       note =
@@ -563,12 +620,18 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
         )
 
       activity = insert(:note_activity, user: group, note: note)
+      group_id = to_string(group.id)
 
       assert [
                %{
                  "id" => activity_id,
-                 "account" => %{"id" => group_id},
-                 "content" => content
+                 "account" => %{"id" => ^group_id},
+                 "content" => content,
+                 "group" => %{
+                   "id" => ^group_id,
+                   "display_name" => "root42",
+                   "slug" => ^group_id
+                 }
                }
              ] =
                conn
@@ -576,7 +639,6 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                |> json_response(200)
 
       assert activity_id == to_string(activity.id)
-      assert group_id == to_string(group.id)
       assert content =~ "Repairing a Commodore drive"
     end
 

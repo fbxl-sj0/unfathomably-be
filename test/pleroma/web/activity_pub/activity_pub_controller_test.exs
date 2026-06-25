@@ -8,6 +8,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
 
   alias Pleroma.Activity
   alias Pleroma.Delivery
+  alias Pleroma.GroupMembership
   alias Pleroma.Instances
   alias Pleroma.Object
   alias Pleroma.Tests.ObanHelpers
@@ -2262,25 +2263,25 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
            end)
   end
 
-  test "featured collections index", %{conn: conn} do
-    user = insert(:user)
-    %{nickname: nickname, ap_id: ap_id, featured_address: featured_address} = user
-    collections_id = "#{ap_id}/collections"
-    first_page_id = "#{collections_id}?page=1"
+  test "local group moderators collection", %{conn: conn} do
+    owner = insert(:user)
+    moderator = insert(:user)
 
-    %{"id" => ^collections_id, "type" => "Collection", "totalItems" => 1} =
+    {:ok, group} =
+      Pleroma.Web.FederatedTarget.create_local_group(owner, %{
+        "display_name" => "Federated Mods",
+        "name" => "federated_mods"
+      })
+
+    {:ok, _memberships} = GroupMembership.promote(owner, group, [moderator], "moderator")
+
+    %{"id" => collection_id, "orderedItems" => items, "totalItems" => 2} =
       conn
-      |> get("/users/#{nickname}/collections")
+      |> get("/users/#{group.nickname}/collections/moderators")
       |> json_response(200)
 
-    %{
-      "id" => ^first_page_id,
-      "type" => "CollectionPage",
-      "partOf" => ^collections_id,
-      "items" => [^featured_address]
-    } =
-      conn
-      |> get("/users/#{nickname}/collections?page=1")
-      |> json_response(200)
+    assert collection_id == "#{group.ap_id}/collections/moderators"
+    assert owner.ap_id in items
+    assert moderator.ap_id in items
   end
 end

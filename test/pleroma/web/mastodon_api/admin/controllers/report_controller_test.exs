@@ -58,6 +58,35 @@ defmodule Pleroma.Web.MastodonAPI.Admin.ReportControllerTest do
                |> get("/api/v1/admin/reports?resolved=true")
                |> json_response_and_validate_schema(200)
     end
+
+    test "includes staff role fields on embedded account payloads", %{conn: conn} do
+      reporter = insert(:user, is_admin: true, show_role: false)
+      target_user = insert(:user)
+
+      {:ok, %{id: report_id}} =
+        CommonAPI.report(reporter, %{
+          account_id: target_user.id,
+          comment: "admin report"
+        })
+
+      assert [
+               %{
+                 "id" => ^report_id,
+                 "account" => %{
+                   "account" => %{
+                     "pleroma" => %{
+                       "is_admin" => true,
+                       "is_moderator" => false
+                     }
+                   },
+                   "role" => "admin"
+                 }
+               }
+             ] =
+               conn
+               |> get("/api/v1/admin/reports?resolved=false")
+               |> json_response_and_validate_schema(200)
+    end
   end
 
   describe "GET /api/v1/admin/reports/:id" do

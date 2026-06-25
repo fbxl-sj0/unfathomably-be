@@ -21,6 +21,8 @@ defmodule Pleroma.NotificationTest do
   alias Pleroma.Web.Push
   alias Pleroma.Web.Streamer
 
+  require Pleroma.Constants
+
   setup do
     Mox.stub_with(Pleroma.UnstubbedConfigMock, Pleroma.Config)
     :ok
@@ -921,6 +923,48 @@ defmodule Pleroma.NotificationTest do
       {enabled_receivers, _disabled_receivers} = Notification.get_notified_from_activity(activity)
 
       assert other_user not in enabled_receivers
+    end
+
+    test "it notifies a local parent author when a remote reply only cc's them" do
+      user = insert(:user)
+
+      remote_user =
+        insert(:user,
+          local: false,
+          domain: "www.minds.com",
+          ap_id: "https://www.minds.com/api/activitypub/users/12345",
+          follower_address: "https://www.minds.com/api/activitypub/users/12345/followers"
+        )
+
+      {:ok, parent_activity} = CommonAPI.post(user, %{status: "test post"})
+      parent_object = parent_activity.object
+
+      create_activity = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "type" => "Create",
+        "id" => "#{remote_user.ap_id}/entities/urn:comment:1/activity",
+        "actor" => remote_user.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [remote_user.follower_address, user.ap_id],
+        "object" => %{
+          "type" => "Note",
+          "id" => "#{remote_user.ap_id}/entities/urn:comment:1",
+          "actor" => remote_user.ap_id,
+          "attributedTo" => remote_user.ap_id,
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [remote_user.follower_address, user.ap_id],
+          "content" => "reply from minds",
+          "inReplyTo" => parent_object.data["id"],
+          "context" => parent_object.data["context"],
+          "published" => DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+      }
+
+      {:ok, activity} = Transmogrifier.handle_incoming(create_activity)
+
+      {enabled_receivers, _disabled_receivers} = Notification.get_notified_from_activity(activity)
+
+      assert user in enabled_receivers
     end
 
     test "it does not send notification to mentioned users in likes" do

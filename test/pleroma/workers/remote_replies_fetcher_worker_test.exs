@@ -146,12 +146,12 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
 
     assert_enqueued(
       worker: RemoteFetcherWorker,
-      args: %{"op" => "fetch_remote", "id" => @reply_1, "depth" => 1}
+      args: %{"op" => "fetch_remote", "id" => @reply_1, "depth" => 1, "thread" => true}
     )
 
     assert_enqueued(
       worker: RemoteFetcherWorker,
-      args: %{"op" => "fetch_remote", "id" => @reply_2, "depth" => 1}
+      args: %{"op" => "fetch_remote", "id" => @reply_2, "depth" => 1, "thread" => true}
     )
   end
 

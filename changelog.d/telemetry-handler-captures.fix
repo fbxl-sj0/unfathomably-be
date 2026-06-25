@@ -1,0 +1,1 @@
+Avoid telemetry handler warnings by using module-qualified callback captures

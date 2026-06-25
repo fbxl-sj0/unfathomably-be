@@ -102,6 +102,50 @@ defmodule Pleroma.Instances.InstanceTest do
     end
   end
 
+  describe "health recording" do
+    setup do
+      clear_config([:instances, :reachability_backoff_base_minutes], 30)
+      clear_config([:instances, :reachability_backoff_max_minutes], 60)
+    end
+
+    test "records failures with a bounded backoff window" do
+      assert {:ok, _instance} =
+               Instance.set_unreachable(
+                 "backoff.example",
+                 Instances.reachability_datetime_threshold()
+               )
+
+      assert {:ok, instance} =
+               Instance.record_failure("backoff.example", :timeout, source: "test")
+
+      assert instance.metadata.failure_count == 1
+      assert instance.metadata.last_failure_reason == "test:timeout"
+      assert instance.metadata.last_status == "unreachable"
+      assert %DateTime{} = instance.metadata.backoff_until
+
+      refute Enum.any?(
+               Instance.get_consistently_unreachable(),
+               fn {host, _unreachable_since} -> host == "backoff.example" end
+             )
+    end
+
+    test "records success and clears failure state" do
+      assert {:ok, _instance} =
+               Instance.record_failure("https://restored.example/users/alice", :timeout,
+                 source: "test"
+               )
+
+      assert {:ok, instance} =
+               Instance.record_success("https://restored.example/users/alice", source: "test")
+
+      refute instance.unreachable_since
+      assert instance.host == "restored.example"
+      assert instance.metadata.failure_count == 0
+      assert instance.metadata.last_status == "reachable"
+      refute instance.metadata.backoff_until
+    end
+  end
+
   describe "get_or_update_favicon/1" do
     test "Scrapes favicon URLs" do
       Tesla.Mock.mock(fn %{url: "https://favicon.example.org/"} ->

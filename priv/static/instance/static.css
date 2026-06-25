@@ -1,26 +1,671 @@
-/*
-    Project: Unfathomably BE static assets
-    --------------------------------------
+* {
+  box-sizing: border-box;
+}
 
-    File: priv/static/instance/static.css
+:root {
+  --background-color: #050505;
+  --foreground-color: #111111;
+  --panel-color: #151515;
+  --panel-muted-color: #1d1d1d;
+  --border-color: #2a2a2a;
+  --border-strong-color: #3a3a3a;
+  --primary-text-color: #f4f4f5;
+  --muted-text-color: #a1a1aa;
+  --dim-text-color: #71717a;
+  --static-accent: rgb(var(--color-primary-500, 220, 38, 38));
+  --static-accent-hover: rgb(var(--color-primary-400, 248, 113, 113));
+  --static-accent-muted: rgba(var(--color-primary-500, 220, 38, 38), 0.18);
+  --static-accent-border: rgba(var(--color-primary-500, 220, 38, 38), 0.42);
+}
 
-    Purpose:
+html {
+  min-height: 100%;
+  background: var(--background-color);
+}
 
-        Provide the default stylesheet hook for backend-rendered pages that
-        link /instance/static.css.
+body {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  background: var(--background-color);
+  color: var(--primary-text-color);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
 
-    Responsibilities:
+body::after {
+  content: "";
+  flex: 1 0 32px;
+}
 
-        - keep the stylesheet URL present on fresh installs
-        - provide a safe base file for instance-level CSS overrides
+.instance-header {
+  width: 100%;
+  padding: 18px 16px;
+  background: #080808;
+  border-bottom: 1px solid var(--border-color);
+}
 
-    This file intentionally does NOT contain:
+.instance-header__content {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  color: var(--primary-text-color);
+  text-decoration: none;
+}
 
-        - frontend application styling
-        - theme-specific overrides
-        - generated bundle output
-*/
+.instance-header__content:hover {
+  text-decoration: none;
+}
 
-/* Instance administrators can override this file from instance/static/. */
+.instance-header__thumbnail {
+  width: 40px;
+  max-width: 40px;
+  height: 40px;
+  margin-right: 12px;
+  border-radius: 6px;
+  object-fit: cover;
+}
 
-/* end of priv/static/instance/static.css */
+.instance-header__title {
+  margin: 0;
+  color: var(--primary-text-color);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.container {
+  width: 100%;
+  max-width: 760px;
+  margin: 20px auto 0;
+  padding: 0 16px;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
+}
+
+.container__content {
+  padding: 0;
+}
+
+header {
+  margin-bottom: 16px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin: 0;
+  color: var(--primary-text-color);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: left;
+}
+
+h2 {
+  color: var(--primary-text-color);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: left;
+}
+
+h2:first-child:not(:last-child) {
+  margin: 0 0 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 22px;
+  font-weight: 700;
+}
+
+h2 pre,
+pre,
+code {
+  border-radius: 6px;
+  background: var(--panel-muted-color);
+  color: var(--primary-text-color);
+  font-family: "Roboto Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+h2 pre,
+pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+code {
+  padding: 2px 4px;
+  font-size: 0.95em;
+}
+
+a {
+  color: var(--static-accent-hover);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--static-accent-hover);
+  text-decoration: underline;
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--static-accent);
+  outline-offset: 2px;
+}
+
+form {
+  width: 100%;
+}
+
+.input {
+  display: flex;
+  flex-direction: column;
+  color: var(--muted-text-color);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  margin-top: 5px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border-strong-color);
+  border-radius: 6px;
+  background: #0b0b0b;
+  color: var(--primary-text-color);
+  font-size: 14px;
+}
+
+input:focus {
+  border-color: var(--static-accent);
+  outline: none;
+  box-shadow: 0 0 0 1px var(--static-accent);
+}
+
+.scopes-input {
+  display: flex;
+  flex-direction: column;
+  margin: 1em 0;
+  color: var(--muted-text-color);
+  font-size: 12px;
+}
+
+.scopes-input label:first-child {
+  height: 2em;
+}
+
+.scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+  color: var(--primary-text-color);
+}
+
+.scope {
+  display: flex;
+  flex-basis: 100%;
+  align-items: center;
+}
+
+.scope::before {
+  width: 0.6em;
+  height: 0.6em;
+  margin-right: 0.75em;
+  border-radius: 999px;
+  background: var(--static-accent);
+  content: "";
+}
+
+.scope-description {
+  display: flex;
+  flex-direction: column;
+  color: var(--muted-text-color);
+}
+
+.scope-description code {
+  color: var(--primary-text-color);
+}
+
+[type="checkbox"] + label {
+  display: none;
+  margin: 0.5em;
+  cursor: pointer;
+}
+
+[type="checkbox"] {
+  display: none;
+}
+
+[type="checkbox"] + label::before {
+  display: inline-block;
+  width: 1.2em;
+  height: 1.2em;
+  margin-right: 1em;
+  margin-bottom: -0.2em;
+  border: 3px solid var(--border-strong-color);
+  border-radius: 3px;
+  background: #0b0b0b;
+  box-shadow: 0 0 0 1px var(--static-accent-border);
+  content: "";
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+[type="checkbox"]:checked + label::before {
+  border-color: var(--static-accent);
+  background: var(--static-accent);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.actions button,
+.actions a.button {
+  width: auto;
+  margin-left: 0;
+}
+
+a.button,
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 8px 16px;
+  border: 1px solid var(--static-accent-border);
+  border-radius: 6px;
+  appearance: none;
+  background: var(--static-accent);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-decoration: none;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+a.button:hover,
+button:hover {
+  border-color: var(--static-accent-hover);
+  background: var(--static-accent-hover);
+  color: #ffffff;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.alert-danger,
+.alert-info {
+  width: 100%;
+  margin-top: 20px;
+  padding: 12px;
+  border-radius: 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.alert-danger {
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  background: rgba(127, 29, 29, 0.55);
+  color: #fecaca;
+}
+
+.alert-info {
+  border: 1px solid var(--static-accent-border);
+  background: var(--static-accent-muted);
+  color: var(--primary-text-color);
+}
+
+.account-header__banner {
+  width: 100%;
+  height: 0;
+  padding-bottom: 33.3333%;
+  border-radius: 8px 8px 0 0;
+  background-position: center;
+  background-size: cover;
+}
+
+.account-header__avatar {
+  width: 94px;
+  height: 94px;
+  margin: -47px 10px 0;
+  border: 4px solid var(--background-color);
+  border-radius: 999px;
+  background-position: center;
+  background-size: cover;
+}
+
+.account-header__meta {
+  padding: 8px 10px 17px;
+}
+
+.account-header__display-name {
+  color: var(--primary-text-color);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.account-header__nickname {
+  color: var(--muted-text-color);
+  font-size: 14px;
+}
+
+.form-row {
+  display: flex;
+  gap: 12px;
+}
+
+.form-row > label {
+  flex: 1;
+  line-height: 42px;
+}
+
+.form-row > input {
+  flex: 2;
+}
+
+main {
+  width: 100%;
+}
+
+.conversation,
+.activity-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.activity {
+  overflow: hidden;
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--panel-color);
+  color: var(--primary-text-color);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+}
+
+.activity#selected {
+  border-color: var(--static-accent-border);
+  box-shadow: 0 0 0 1px var(--static-accent-border), 0 14px 36px rgba(0, 0, 0, 0.28);
+}
+
+.pull-right {
+  float: right;
+  margin: 0 0 8px 16px;
+  color: var(--dim-text-color);
+  font-size: 13px;
+}
+
+.activity-link {
+  color: var(--dim-text-color);
+}
+
+.activity-link:hover {
+  color: var(--static-accent-hover);
+}
+
+.p-author {
+  margin-bottom: 14px;
+}
+
+.p-author .u-url {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  color: var(--primary-text-color);
+  text-decoration: none;
+}
+
+.p-author .u-url:hover .p-name {
+  color: var(--static-accent-hover);
+}
+
+.avatar {
+  flex: 0 0 auto;
+  margin-right: 12px;
+}
+
+.avatar .u-photo {
+  display: block;
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--border-strong-color);
+  border-radius: 8px;
+  object-fit: cover;
+  background: #0b0b0b;
+}
+
+.display-name {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  color: var(--primary-text-color);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.p-name {
+  overflow-wrap: anywhere;
+}
+
+.nickname {
+  margin-top: 2px;
+  color: var(--muted-text-color);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.activity-content {
+  clear: both;
+  color: var(--primary-text-color);
+  overflow-wrap: anywhere;
+}
+
+.e-content {
+  color: var(--primary-text-color);
+}
+
+.e-content p:last-child,
+.activity-content p:last-child {
+  margin-bottom: 0;
+}
+
+.e-content a,
+.activity-content a {
+  color: var(--static-accent-hover);
+}
+
+.e-content blockquote,
+.activity-content blockquote {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--static-accent-border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted-text-color);
+}
+
+.activity-content details {
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: #101010;
+}
+
+.activity-content details[open] {
+  border-color: var(--border-strong-color);
+}
+
+.activity-content summary {
+  color: var(--primary-text-color);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.activity-content details[open] summary {
+  margin-bottom: 10px;
+}
+
+.nsfw {
+  margin-top: 12px;
+}
+
+.activity-content img.u-photo,
+.activity-content video {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-top: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: #000000;
+}
+
+.activity-content audio {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.e-content .emoji,
+.activity-content .emoji {
+  display: inline-block;
+  width: 1.2em;
+  height: 1.2em;
+  margin: 0 0.05em;
+  vertical-align: -0.2em;
+}
+
+.counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-color);
+}
+
+.counts dt,
+.counts dd {
+  margin: 0;
+  text-align: center;
+}
+
+.counts dt {
+  grid-row: 1;
+  color: var(--muted-text-color);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.counts dd {
+  grid-row: 2;
+  color: var(--primary-text-color);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+#pagination {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin: 18px 0 0;
+}
+
+#pagination a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 38px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--panel-color);
+  color: var(--primary-text-color);
+  font-size: 20px;
+  line-height: 1;
+  text-decoration: none;
+}
+
+#pagination a:hover {
+  border-color: var(--static-accent-border);
+  color: var(--static-accent-hover);
+}
+
+@media (min-width: 581px) {
+  .container {
+    margin-top: 28px;
+  }
+
+  .activity {
+    padding: 18px;
+  }
+}
+
+@media (min-width: 976px) {
+  .instance-header {
+    padding: 20px 0;
+  }
+}
+
+@media (max-width: 580px) {
+  .container {
+    margin-top: 14px;
+    padding: 0 10px;
+  }
+
+  .activity {
+    padding: 14px;
+  }
+
+  .pull-right {
+    float: none;
+    display: block;
+    margin: 0 0 10px;
+  }
+
+  .form-row {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .form-row > label {
+    line-height: 1.4;
+  }
+
+  .counts {
+    grid-template-columns: 1fr;
+  }
+
+  .counts dt,
+  .counts dd {
+    grid-row: auto;
+  }
+}

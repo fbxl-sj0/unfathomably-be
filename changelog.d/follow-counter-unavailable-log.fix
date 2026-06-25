@@ -1,0 +1,1 @@
+Treat deleted, gone, forbidden, and missing remote follow collections as debug-level refresh misses.

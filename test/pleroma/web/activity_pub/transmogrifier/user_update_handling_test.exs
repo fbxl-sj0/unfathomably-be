@@ -135,6 +135,47 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.UserUpdateHandlingTest do
     assert user.fields == []
   end
 
+  test "it works with NodeBB-style custom profile fields" do
+    user = insert(:user, local: false)
+
+    update_data = File.read!("test/fixtures/mastodon-update.json") |> Jason.decode!()
+
+    object =
+      update_data["object"]
+      |> Map.put("actor", user.ap_id)
+      |> Map.put("id", user.ap_id)
+      |> Map.put("attachment", [
+        %{"name" => "Forum", "type" => "PropertyValue", "value" => "NodeBB"},
+        %{
+          "name" => "Website",
+          "type" => "Link",
+          "href" => "https://example.org/<b>profile</b>"
+        },
+        %{
+          "name" => "About",
+          "type" => "Note",
+          "content" => "<p>Forum profile</p>"
+        },
+        %{"name" => "Broken", "type" => "Link"},
+        "malformed"
+      ])
+
+    update_data =
+      update_data
+      |> Map.put("actor", user.ap_id)
+      |> Map.put("object", object)
+
+    {:ok, _update_activity} = Transmogrifier.handle_incoming(update_data)
+
+    user = User.get_cached_by_ap_id(user.ap_id)
+
+    assert user.fields == [
+             %{"name" => "Forum", "value" => "NodeBB"},
+             %{"name" => "Website", "value" => "https://example.org/profile"},
+             %{"name" => "About", "value" => "Forum profile"}
+           ]
+  end
+
   test "it works for incoming update activities which lock the account" do
     user = insert(:user, local: false)
 

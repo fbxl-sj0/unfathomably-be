@@ -53,6 +53,12 @@ defmodule Pleroma.Web.MastodonAPI.Admin.AccountControllerTest do
 
       assert %{
                "id" => ^id,
+               "account" => %{
+                 "pleroma" => %{
+                   "is_admin" => false,
+                   "is_moderator" => true
+                 }
+               },
                "email" => "email@example.com",
                "confirmed" => false,
                "role" => "moderator"

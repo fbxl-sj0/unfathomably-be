@@ -69,14 +69,17 @@ defmodule Pleroma.Web.ActivityPub.Builder do
   defp unicode_emoji_react(_object, data, emoji) do
     data
     |> Map.put("content", emoji)
+    |> Map.put("_misskey_reaction", emoji)
     |> Map.put("type", "EmojiReact")
   end
 
   defp add_emoji_content(data, emoji, url) do
     tag = [Emoji.build_emoji_tag({emoji, url})]
+    reaction = Emoji.maybe_quote(emoji)
 
     data
-    |> Map.put("content", Emoji.maybe_quote(emoji))
+    |> Map.put("content", reaction)
+    |> Map.put("_misskey_reaction", reaction)
     |> Map.put("type", "EmojiReact")
     |> Map.put("tag", tag)
   end
@@ -170,6 +173,9 @@ defmodule Pleroma.Web.ActivityPub.Builder do
         {_, %User{follower_address: follower_address}} ->
           # We are deleting a user, address the followers of that user
           [follower_address]
+
+        {_, _} ->
+          []
       end
 
     {:ok,

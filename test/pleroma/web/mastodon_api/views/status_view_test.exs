@@ -112,6 +112,52 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
            ]
   end
 
+  test "ignores emoji reactions from unknown or malformed users" do
+    user = insert(:user)
+    {:ok, activity} = CommonAPI.post(user, %{status: "yo"})
+
+    activity
+    |> Object.normalize(fetch: false)
+    |> Object.update_data(%{
+      "reactions" => [
+        ["x", ["https://remote.example/users/missing", nil], nil],
+        ["bad", nil, nil],
+        [1, ["https://remote.example/users/missing"], nil]
+      ]
+    })
+
+    activity = Activity.get_by_id(activity.id)
+    status = StatusView.render("show.json", activity: activity, for: user)
+
+    assert status[:pleroma][:emoji_reactions] == []
+  end
+
+  test "handles string with_muted values while rendering emoji reactions" do
+    user = insert(:user)
+    other_user = insert(:user)
+
+    {:ok, activity} = CommonAPI.post(user, %{status: "yo"})
+    {:ok, _} = User.mute(user, other_user)
+    {:ok, _} = CommonAPI.react_with_emoji(activity.id, other_user, ":dinosaur:")
+
+    activity = Repo.get(Activity, activity.id)
+
+    status = StatusView.render("show.json", activity: activity, for: user, with_muted: "false")
+    assert status[:pleroma][:emoji_reactions] == []
+
+    status = StatusView.render("show.json", activity: activity, for: user, with_muted: "true")
+
+    assert status[:pleroma][:emoji_reactions] == [
+             %{
+               name: "dinosaur",
+               count: 1,
+               me: false,
+               url: "http://localhost:4001/emoji/dino%20walking.gif",
+               account_ids: [other_user.id]
+             }
+           ]
+  end
+
   test "doesn't show reactions from muted and blocked users" do
     user = insert(:user)
     other_user = insert(:user)
@@ -663,6 +709,23 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
 
     assert %{id: "2"} = result
     assert_schema(result, "Attachment", api_spec)
+  end
+
+  test "attachments do not calculate aspect for zero height media" do
+    object = %{
+      "type" => "Video",
+      "url" => [
+        %{
+          "mediaType" => "video/mp4",
+          "href" => "someurl",
+          "width" => 200,
+          "height" => 0
+        }
+      ]
+    }
+
+    assert %{meta: %{original: %{width: 200, height: 0}}} =
+             StatusView.render("attachment.json", %{attachment: object})
   end
 
   test "honkerific attachments use summary as description" do

@@ -18,7 +18,18 @@ defmodule Pleroma.Workers.ReachabilityWorkerTest do
     Instances.set_unreachable("nodeinfo.example", Instances.reachability_datetime_threshold())
 
     Tesla.Mock.mock(fn %{url: "https://nodeinfo.example/.well-known/nodeinfo"} ->
-      %Tesla.Env{status: 200, body: "{}"}
+      %Tesla.Env{
+        status: 200,
+        body:
+          Jason.encode!(%{
+            "links" => [
+              %{
+                "rel" => "http://nodeinfo.diaspora.software/ns/schema/2.0",
+                "href" => "https://nodeinfo.example/nodeinfo/2.0"
+              }
+            ]
+          })
+      }
     end)
 
     assert {:ok, _} =
@@ -41,12 +52,56 @@ defmodule Pleroma.Workers.ReachabilityWorkerTest do
         %Tesla.Env{status: 404, body: ""}
 
       %{url: "https://webfinger.example/.well-known/webfinger?resource=" <> _} ->
-        %Tesla.Env{status: 200, body: "{}"}
+        %Tesla.Env{
+          status: 200,
+          body:
+            Jason.encode!(%{
+              "subject" => "acct:alice@webfinger.example",
+              "links" => [
+                %{
+                  "rel" => "self",
+                  "type" => "application/activity+json",
+                  "href" => "https://webfinger.example/users/alice"
+                }
+              ]
+            })
+        }
     end)
 
     assert {:ok, _} =
              ReachabilityWorker.perform(%Oban.Job{args: %{"domain" => "webfinger.example"}})
 
     assert Instances.reachable?("webfinger.example")
+  end
+
+  test "does not mark parked-domain HTML as reachable" do
+    insert(:user,
+      local: false,
+      nickname: "alice@parked.example",
+      ap_id: "https://parked.example/users/alice"
+    )
+
+    Instances.set_unreachable("parked.example", Instances.reachability_datetime_threshold())
+
+    Tesla.Mock.mock(fn
+      %{url: "https://parked.example/.well-known/nodeinfo"} ->
+        %Tesla.Env{
+          status: 200,
+          headers: [{"content-type", "text/html"}],
+          body: "<!DOCTYPE html><script>window.location = '/lander'</script>"
+        }
+
+      %{url: "https://parked.example/.well-known/webfinger?resource=" <> _} ->
+        %Tesla.Env{
+          status: 200,
+          headers: [{"content-type", "text/html"}],
+          body: "<!DOCTYPE html><script>window.location = '/lander'</script>"
+        }
+    end)
+
+    assert {:error, :unreachable} =
+             ReachabilityWorker.perform(%Oban.Job{args: %{"domain" => "parked.example"}})
+
+    refute Instances.reachable?("parked.example")
   end
 end

@@ -1,0 +1,1 @@
+Reduced group/source feed query overhead by reusing cached follow lists for blocked-domain visibility checks.

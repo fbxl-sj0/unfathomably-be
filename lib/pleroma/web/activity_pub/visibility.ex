@@ -33,15 +33,17 @@ defmodule Pleroma.Web.ActivityPub.Visibility do
       not Utils.label_in_message?(Pleroma.Constants.as_public(), data)
   end
 
-  def is_private?(activity) do
+  def is_private?(%{data: data} = activity) when is_map(data) do
     with false <- is_public?(activity),
          %User{follower_address: follower_address} <-
-           User.get_cached_by_ap_id(activity.data["actor"]) do
-      follower_address in activity.data["to"]
+           User.get_cached_by_ap_id(data["actor"]) do
+      follower_address in field_list(data, "to")
     else
       _ -> false
     end
   end
+
+  def is_private?(_), do: false
 
   def is_announceable?(activity, user, public \\ true) do
     is_public?(activity) ||
@@ -69,7 +71,7 @@ defmodule Pleroma.Web.ActivityPub.Visibility do
         %Activity{data: %{"listMessage" => list_ap_id}} = activity,
         %User{} = user
       ) do
-    user.ap_id in activity.data["to"] ||
+    user.ap_id in field_list(activity.data, "to") ||
       list_ap_id
       |> Pleroma.List.get_by_ap_id()
       |> Pleroma.List.member?(user)
@@ -95,7 +97,9 @@ defmodule Pleroma.Web.ActivityPub.Visibility do
   def visible_for_user?(%{__struct__: module} = message, user)
       when module in [Activity, Object] do
     x = [user.ap_id | User.following(user)]
-    y = [message.data["actor"]] ++ message.data["to"] ++ (message.data["cc"] || [])
+
+    y =
+      [message.data["actor"]] ++ field_list(message.data, "to") ++ field_list(message.data, "cc")
 
     user_is_local = user.local
     federatable = not is_local_public?(message)
@@ -133,8 +137,8 @@ defmodule Pleroma.Web.ActivityPub.Visibility do
   end
 
   def get_visibility(object) do
-    to = object.data["to"] || []
-    cc = object.data["cc"] || []
+    to = field_list(object.data, "to")
+    cc = field_list(object.data, "cc")
 
     cond do
       Pleroma.Constants.as_public() in to ->
@@ -163,4 +167,13 @@ defmodule Pleroma.Web.ActivityPub.Visibility do
         "direct"
     end
   end
+
+  defp field_list(data, field) when is_map(data) do
+    data
+    |> Map.get(field)
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp field_list(_, _), do: []
 end

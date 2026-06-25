@@ -5,6 +5,7 @@
 defmodule Pleroma.UserTest do
   alias Pleroma.Activity
   alias Pleroma.Builders.UserBuilder
+  alias Pleroma.Keys
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.Tests.ObanHelpers
@@ -83,16 +84,20 @@ defmodule Pleroma.UserTest do
       user2 = User.get_or_create_service_actor_by_ap_id(uri, "internal.fetch-test")
       assert user.id == user2.id
     end
+
+    test "stores the public key for service actors" do
+      uri = "#{Pleroma.Web.Endpoint.url()}/internal/public-key-test"
+      user = User.get_or_create_service_actor_by_ap_id(uri, "internal.public-key-test")
+
+      assert is_binary(user.keys)
+      assert is_binary(user.public_key)
+      assert {:ok, _public_key} = User.public_key(user)
+    end
   end
 
   describe "AP ID user relationships" do
     setup do
       {:ok, user: insert(:user)}
-    end
-
-    test "nil AP IDs do not query the database unsafely" do
-      refute User.get_cached_by_ap_id(nil)
-      assert {:error, :not_found} = User.get_or_fetch_by_ap_id(nil)
     end
 
     test "outgoing_relationships_ap_ids/1", %{user: user} do
@@ -179,12 +184,6 @@ defmodule Pleroma.UserTest do
     expected_followers_collection = "#{User.ap_id(user)}/following"
 
     assert expected_followers_collection == User.ap_following(user)
-  end
-
-  test "image_description accepts Pleroma and Mastodon image description fields" do
-    assert User.image_description(%{"name" => "old field"}) == "old field"
-    assert User.image_description(%{"summary" => "mastodon field"}) == "mastodon field"
-    assert User.image_description(%{}, "fallback") == "fallback"
   end
 
   test "returns all pending follow requests" do
@@ -1910,6 +1909,40 @@ defmodule Pleroma.UserTest do
 
   test "get_public_key_for_ap_id returns correctly for user that's not in the db" do
     assert :error = User.get_public_key_for_ap_id("http://mastodon.example.org/users/admin")
+  end
+
+  test "remote_user_changeset preserves an old public key when a remote actor rotates keys" do
+    {:ok, old_private_key} = Keys.generate_rsa_pem()
+    old_public_key = public_key_pem_from_private_key(old_private_key)
+
+    {:ok, new_private_key} = Keys.generate_rsa_pem()
+    new_public_key = public_key_pem_from_private_key(new_private_key)
+
+    user =
+      insert(:user,
+        local: false,
+        public_key: old_public_key,
+        public_key_history: []
+      )
+
+    {:ok, updated} =
+      user
+      |> User.remote_user_changeset(%{
+        ap_id: user.ap_id,
+        nickname: user.nickname,
+        name: user.name,
+        public_key: new_public_key
+      })
+      |> Repo.update()
+
+    assert updated.public_key == new_public_key
+    assert updated.public_key_history == [old_public_key]
+  end
+
+  defp public_key_pem_from_private_key(private_key_pem) do
+    {:ok, _private_key, public_key} = Keys.keys_from_pem(private_key_pem)
+    entry = :public_key.pem_entry_encode(:SubjectPublicKeyInfo, public_key)
+    :public_key.pem_encode([entry])
   end
 
   describe "per-user rich-text filtering" do

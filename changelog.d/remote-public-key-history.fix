@@ -1,0 +1,1 @@
+Remote actor refreshes now preserve a bounded history of previous valid public keys and HTTP Signature validation can fall back to those keys for stale signed requests.

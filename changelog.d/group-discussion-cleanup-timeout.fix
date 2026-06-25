@@ -1,0 +1,1 @@
+Bound remote group discussion cleanup database queries so a bad plan cannot hold a live connection indefinitely.

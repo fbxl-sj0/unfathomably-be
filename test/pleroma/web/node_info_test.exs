@@ -45,18 +45,20 @@ defmodule Pleroma.Web.NodeInfoTest do
     assert json_response(conn, 200)["version"] == "2.0"
   end
 
-  test "nodeinfo responses work without the json extension", %{conn: conn} do
-    conn = get(conn, "/nodeinfo/2.1")
+  test "nodeinfo responses work with bare dotted schema versions", %{conn: conn} do
+    response =
+      conn
+      |> get("/nodeinfo/2.1")
+      |> json_response(200)
 
-    assert [content_type] = get_resp_header(conn, "content-type")
-    assert content_type =~ "profile=http://nodeinfo.diaspora.software/ns/schema/2.1#"
-    assert json_response(conn, 200)["version"] == "2.1"
+    assert response["version"] == "2.1"
 
-    conn = get(build_conn(), "/nodeinfo/2.0")
+    response =
+      build_conn()
+      |> get("/nodeinfo/2.0")
+      |> json_response(200)
 
-    assert [content_type] = get_resp_header(conn, "content-type")
-    assert content_type =~ "profile=http://nodeinfo.diaspora.software/ns/schema/2.0#"
-    assert json_response(conn, 200)["version"] == "2.0"
+    assert response["version"] == "2.0"
   end
 
   test "nodeinfo shows staff accounts", %{conn: conn} do

@@ -16,7 +16,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
   alias Pleroma.Object
   alias Pleroma.Object.Containment
   alias Pleroma.User
-  alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidator
@@ -34,6 +33,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
   alias Pleroma.Web.ActivityPub.ObjectValidators.JoinValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.LeaveValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.LikeValidator
+  alias Pleroma.Web.ActivityPub.ObjectValidators.LockValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.QuestionValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.UndoValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator
@@ -81,7 +81,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
          do_not_federate <- DeleteValidator.do_not_federate?(cng),
          {:ok, object} <- Ecto.Changeset.apply_action(cng, :insert) do
       object = stringify_keys(object)
-      meta = Keyword.put(meta, :do_not_federate, do_not_federate)
+
+      meta =
+        meta
+        |> Keyword.put(:do_not_federate, do_not_federate)
+        |> Keyword.put(:delete_target, DeleteValidator.classify_target(object))
+
       {:ok, object, meta}
     end
   end
@@ -135,7 +140,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
            do_separate_with_history(object, fn object ->
              with {:ok, object} <-
                     object
-                    |> cast_and_validate_object(validator, meta)
+                    |> validator.cast_and_validate()
                     |> Ecto.Changeset.apply_action(:insert) do
                object = stringify_keys(object)
 
@@ -176,12 +181,15 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
 
       {:object_validation, e} ->
         e
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, changeset}
     end
   end
 
   def validate(%{"type" => type} = object, meta)
       when type in ~w[Accept Reject Follow Update Like EmojiReact Announce
-      ChatMessage Answer Join Leave] do
+      ChatMessage Answer Join Leave Lock] do
     validator =
       case type do
         "Accept" -> AcceptRejectValidator
@@ -195,6 +203,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
         "Answer" -> AnswerValidator
         "Join" -> JoinValidator
         "Leave" -> LeaveValidator
+        "Lock" -> LockValidator
       end
 
     with {:ok, object} <-
@@ -253,17 +262,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
 
   def cast_and_apply(o), do: {:error, {:validator_not_set, o}}
 
-  defp cast_and_validate_object(object, ArticleNotePageValidator, meta) do
-    ArticleNotePageValidator.cast_and_validate(object,
-      preserve_internal_replies_collection:
-        Access.get(meta, :preserve_internal_replies_collection, false)
-    )
-  end
-
-  defp cast_and_validate_object(object, validator, _meta) do
-    validator.cast_and_validate(object)
-  end
-
   def stringify_keys(object) when is_struct(object) do
     object
     |> Map.from_struct()
@@ -285,43 +283,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
 
   def fetch_actor(object) do
     with actor <- Containment.get_actor(object),
-         {:ok, actor} <- ObjectValidators.ObjectID.cast(actor),
-         {:ok, %User{} = actor} <- User.get_or_fetch_by_ap_id(actor) do
-      {:ok, actor}
-    else
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :actor_not_found}
+         {:ok, actor} <- ObjectValidators.ObjectID.cast(actor) do
+      User.get_or_fetch_by_ap_id(actor)
     end
   end
 
   def fetch_actor_and_object(object) do
-    with {:ok, %User{}} <- fetch_actor(object),
-         {:ok, object_id} <- object_id_from_activity(object["object"]),
-         {:ok, %Object{}} <- fetch_remote_object(object_id) do
-      :ok
-    else
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :object_not_found}
+    fetch_actor(object)
+    fetch_thread_or_object(object["object"])
+    :ok
+  end
+
+  defp fetch_thread_or_object(object) when is_binary(object) do
+    case Pleroma.Web.ActivityPub.RemoteReplies.fetch_thread_from_reply(object, depth: 0) do
+      {:ok, _object} -> :ok
+      _ -> Object.normalize(object, fetch: true)
     end
   end
 
-  defp object_id_from_activity(object) do
-    object
-    |> Utils.get_ap_id()
-    |> ObjectValidators.ObjectID.cast()
-  end
-
-  defp fetch_remote_object(object_id) when is_binary(object_id) do
-    case Object.get_cached_by_ap_id(object_id) do
-      %Object{} = object ->
-        {:ok, object}
-
-      _ ->
-        Pleroma.Object.Fetcher.fetch_object_from_id(object_id)
-    end
-  end
-
-  defp fetch_remote_object(_), do: {:error, :object_not_found}
+  defp fetch_thread_or_object(object), do: Object.normalize(object, fetch: true)
 
   defp for_each_history_item(
          %{"type" => "OrderedCollection", "orderedItems" => items} = history,

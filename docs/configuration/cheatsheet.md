@@ -772,6 +772,7 @@ Pleroma has these periodic job workers:
 
 * `Pleroma.Workers.Cron.DigestEmailsWorker` - digest emails for users with new mentions and follows
 * `Pleroma.Workers.Cron.NewUsersDigestWorker` - digest emails for admins with new registrations
+* `Pleroma.Workers.Cron.RemotePostCleanupWorker` - prunes stale cached remote post objects that can be refetched later
 
 ```elixir
 config :pleroma, Oban,
@@ -809,6 +810,16 @@ config :pleroma, :workers,
     federator_outgoing: 5
   ]
 ```
+
+### Pleroma.Workers.Cron.RemotePostCleanupWorker
+
+Prunes old public remote post objects that nobody local has interacted with. This is a cache cleanup, not a moderation delete: the original Create activity is kept so the object can be fetched again from its source if a user needs it later.
+
+* `enabled` - enables the scheduled cleanup worker.
+* `max_age_days` - remote public posts older than this many days may be pruned.
+* `batch_size` - maximum number of objects to prune per worker run.
+* `keep_threads_with_local_activity` - keeps the whole thread when a local user has replied, liked, repeated, reacted, or bookmarked within it.
+* `keep_direct_or_mentioned` - keeps posts that directly address local users or generated local notifications.
 
 #### Migrating `Pleroma.Web.Federator.RetryQueue` settings
 

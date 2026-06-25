@@ -3,13 +3,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Workers.RemoteFetcherWorker do
+  alias Pleroma.Config
   alias Pleroma.Object.Fetcher
+  alias Pleroma.Web.ActivityPub.RemoteReplies
 
   use Pleroma.Workers.WorkerHelper, queue: "remote_fetcher"
 
+  @default_timeout_ms 30_000
+
   @impl Oban.Worker
   def perform(%Job{args: %{"op" => "fetch_remote", "id" => id} = args}) do
-    case Fetcher.fetch_object_from_id(id, depth: args["depth"]) do
+    case fetch_object(id, args) do
       {:ok, _object} ->
         :ok
 
@@ -32,5 +36,29 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
   end
 
   @impl Oban.Worker
-  def timeout(_job), do: :timer.seconds(10)
+  def timeout(_job), do: timeout_ms()
+
+  defp fetch_object(id, %{"thread" => true} = args) do
+    RemoteReplies.fetch_thread_from_reply(id, depth: args["depth"])
+  end
+
+  defp fetch_object(id, args) do
+    Fetcher.fetch_object_from_id(id, depth: args["depth"])
+  end
+
+  defp timeout_ms do
+    case Config.get([__MODULE__, :timeout_ms], @default_timeout_ms) do
+      value when is_integer(value) -> value
+      value when is_binary(value) -> parse_timeout_ms(value)
+      _ -> @default_timeout_ms
+    end
+    |> max(1_000)
+  end
+
+  defp parse_timeout_ms(value) do
+    case Integer.parse(value) do
+      {integer, ""} -> integer
+      _ -> @default_timeout_ms
+    end
+  end
 end

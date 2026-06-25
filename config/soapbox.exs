@@ -51,6 +51,21 @@ config :pleroma, :instance,
   description: "A federated social platform powered by unfathomably-be and unfathomably-fe.",
   instance_thumbnail: "/instance/thumbnail.png"
 
+config :pleroma, :frontend_configurations,
+  soapbox_fe: %{
+    allowedEmoji: [
+      "\u{1F44D}",
+      "\u{2764}\u{FE0F}",
+      "\u{1F914}",
+      "\u{1F606}",
+      "\u{1F62E}",
+      "\u{1F621}",
+      "\u{1F622}",
+      "\u{1F60F}",
+      "\u{1F1EB}"
+    ]
+  }
+
 # Background migration performance
 config :pleroma, :delete_context_objects, sleep_interval_ms: 3_000
 

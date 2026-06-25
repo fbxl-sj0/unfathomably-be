@@ -24,8 +24,6 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
   @stale_event_reminder_seconds 24 * 60 * 60
   @stale_cleanup_retry_seconds 24 * 60 * 60
   @stale_federator_retry_seconds 30 * 24 * 60 * 60
-  @terminal_publisher_status_re ~r/status: (400|401|403|404|405|406|410|422|451|501)(,|})/
-  @duplicate_receiver_error_re ~r/activities_unique_apid_index/
   @cleanup_workers [
     "Pleroma.Workers.Cron.GroupDiscussionCleanupWorker",
     "Pleroma.Workers.Cron.RemotePostCleanupWorker"
@@ -37,17 +35,13 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     discarded_stale_event_reminders = discard_stale_event_reminders()
     discarded_stale_cleanup_retries = discard_stale_cleanup_retries()
     discarded_stale_federator_retries = discard_stale_federator_retries()
-    discarded_terminal_publisher_retries = discard_terminal_publisher_retries()
-    discarded_duplicate_receiver_retries = discard_duplicate_receiver_retries()
 
     {:ok,
      %{
        deleted_far_future_poll_notifications: deleted_far_future_polls,
        discarded_stale_event_reminders: discarded_stale_event_reminders,
        discarded_stale_cleanup_retries: discarded_stale_cleanup_retries,
-       discarded_stale_federator_retries: discarded_stale_federator_retries,
-       discarded_terminal_publisher_retries: discarded_terminal_publisher_retries,
-       discarded_duplicate_receiver_retries: discarded_duplicate_receiver_retries
+       discarded_stale_federator_retries: discarded_stale_federator_retries
      }}
   end
 
@@ -101,44 +95,6 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
       )
       |> where([job], job.state == "retryable")
       |> where([job], job.inserted_at < ^stale_before)
-    )
-  end
-
-  def discard_terminal_publisher_retries do
-    terminal_status_re = Regex.source(@terminal_publisher_status_re)
-
-    discard_jobs(
-      Oban.Job
-      |> where([job], job.queue == "federator_outgoing")
-      |> where([job], job.worker == "Pleroma.Workers.PublisherWorker")
-      |> where([job], job.state == "retryable")
-      |> where(
-        [job],
-        fragment(
-          "exists (select 1 from unnest(?) as error where error->>'error' ~ ?)",
-          job.errors,
-          ^terminal_status_re
-        )
-      )
-    )
-  end
-
-  def discard_duplicate_receiver_retries do
-    duplicate_error_re = Regex.source(@duplicate_receiver_error_re)
-
-    discard_jobs(
-      Oban.Job
-      |> where([job], job.queue == "federator_incoming")
-      |> where([job], job.worker == "Pleroma.Workers.ReceiverWorker")
-      |> where([job], job.state == "retryable")
-      |> where(
-        [job],
-        fragment(
-          "exists (select 1 from unnest(?) as error where error->>'error' ~ ?)",
-          job.errors,
-          ^duplicate_error_re
-        )
-      )
     )
   end
 
