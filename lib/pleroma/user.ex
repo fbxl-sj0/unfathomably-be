@@ -1379,10 +1379,12 @@ defmodule Pleroma.User do
     @cachex.del(:user_cache, "friends_ap_ids:#{user.ap_id}")
     @cachex.del(:user_cache, "blocked_users_ap_ids:#{user.ap_id}")
     @cachex.del(:user_cache, "muted_users_ap_ids:#{user.ap_id}")
+    @cachex.del(:user_cache, "visible_follower_count:#{user.id}")
+    @cachex.del(:user_cache, "visible_following_count:#{user.id}")
   end
 
   @spec get_cached_by_ap_id(String.t()) :: User.t() | nil
-  def get_cached_by_ap_id(ap_id) do
+  def get_cached_by_ap_id(ap_id) when is_binary(ap_id) do
     key = "ap_id:#{ap_id}"
 
     with {:ok, nil} <- @cachex.get(:user_cache, key),
@@ -1394,6 +1396,8 @@ defmodule Pleroma.User do
       nil -> nil
     end
   end
+
+  def get_cached_by_ap_id(_), do: nil
 
   def get_cached_by_id(id) do
     key = "id:#{id}"
@@ -2334,7 +2338,7 @@ defmodule Pleroma.User do
 
   def fetch_by_ap_id(ap_id), do: ActivityPub.make_user_from_ap_id(ap_id)
 
-  def get_or_fetch_by_ap_id(ap_id) do
+  def get_or_fetch_by_ap_id(ap_id) when is_binary(ap_id) do
     cached_user = get_cached_by_ap_id(ap_id)
 
     maybe_fetched_user = needs_update?(cached_user) && fetch_by_ap_id(ap_id)
@@ -2350,6 +2354,8 @@ defmodule Pleroma.User do
         {:error, :not_found}
     end
   end
+
+  def get_or_fetch_by_ap_id(_), do: {:error, :not_found}
 
   @doc """
   Creates an internal service actor by URI if missing.

@@ -268,6 +268,65 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
     end
   end
 
+  describe "GET /api/v1/groups/lookup" do
+    test "resolves uncached WebFinger handles with a leading at sign", %{conn: conn} do
+      actor_url = "https://wordpress.example/?author=0"
+      outbox_url = "https://wordpress.example/wp-json/activitypub/1.0/actors/0/outbox"
+
+      webfinger_url =
+        "https://wordpress.example/.well-known/webfinger?resource=acct%3Ablog%40wordpress.example"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^webfinger_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "subject" => "acct:blog@wordpress.example",
+                "links" => [
+                  %{
+                    "rel" => "self",
+                    "type" => "application/activity+json",
+                    "href" => actor_url
+                  }
+                ]
+              })
+          }
+
+        %{method: :get, url: ^actor_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => actor_url,
+                "type" => "Group",
+                "preferredUsername" => "blog",
+                "name" => "WordPress Blog",
+                "inbox" => "https://wordpress.example/wp-json/activitypub/1.0/actors/0/inbox",
+                "outbox" => outbox_url
+              })
+          }
+      end)
+
+      assert %{
+               "actor_type" => "Group",
+               "ap_id" => ^actor_url,
+               "display_name" => "WordPress Blog",
+               "source" => %{
+                 "pleroma" => %{
+                   "activitypub" => %{"outbox" => ^outbox_url}
+                 }
+               }
+             } =
+               conn
+               |> get(
+                 "/api/v1/groups/lookup?name=#{URI.encode_www_form("@blog@wordpress.example")}"
+               )
+               |> json_response(200)
+    end
+  end
+
   describe "GET /api/v1/groups/:id/preview" do
     setup do: oauth_access(["read:accounts", "read:follows"])
 
@@ -1050,6 +1109,111 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
       assert activity_id == to_string(activity.id)
       assert author_id == to_string(author.id)
       assert content =~ "A cached channel video"
+    end
+
+    test "refreshes a stale PeerTube channel first page from the channel outbox", %{
+      conn: conn
+    } do
+      group_url = "https://peertube.example/video-channels/nephitejnf_channel"
+      outbox_url = "https://peertube.example/video-channels/nephitejnf_channel/outbox"
+      fresh_video_url = "https://peertube.example/videos/watch/fresh"
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "nephitejnf_channel@peertube.example",
+          ap_id: group_url,
+          name: "Main nephitejnf channel",
+          outbox_address: outbox_url
+        )
+
+      author =
+        insert(:user,
+          actor_type: "Person",
+          local: false,
+          nickname: "nephitejnf@peertube.example",
+          ap_id: "https://peertube.example/accounts/nephitejnf",
+          name: "nephitejnf"
+        )
+
+      stale =
+        insert(:note,
+          user: group,
+          data: %{
+            "type" => "Video",
+            "name" => "Older cached channel video",
+            "content" => "<p>This should not lead the refreshed channel timeline.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      _stale_activity = insert(:note_activity, user: group, note: stale, local: false)
+
+      fresh_video =
+        insert(:note,
+          user: author,
+          data: %{
+            "id" => fresh_video_url,
+            "type" => "Video",
+            "actor" => author.ap_id,
+            "attributedTo" => author.ap_id,
+            "name" => "Fresh channel video",
+            "content" => "<p>This came from the fresh PeerTube outbox.</p>"
+          }
+        )
+
+      fresh_activity = insert(:note_activity, user: author, note: fresh_video, local: false)
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^outbox_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => outbox_url,
+                "type" => "OrderedCollection",
+                "orderedItems" => [
+                  %{
+                    "id" => fresh_video_url,
+                    "type" => "Video",
+                    "actor" => author.ap_id,
+                    "attributedTo" => author.ap_id,
+                    "name" => "Fresh channel video",
+                    "content" => "<p>This came from the fresh PeerTube outbox.</p>"
+                  }
+                ]
+              })
+          }
+      end)
+
+      assert [
+               %{
+                 "id" => fresh_activity_id,
+                 "account" => %{"id" => author_id},
+                 "content" => content
+               }
+             ] =
+               conn
+               |> get("/api/v1/timelines/group/#{group.id}")
+               |> json_response(200)
+
+      assert fresh_activity_id == to_string(fresh_activity.id)
+      assert author_id == to_string(author.id)
+      assert content =~ "Fresh channel video"
+
+      assert [
+               %{
+                 "id" => ^fresh_activity_id,
+                 "content" => alias_content
+               }
+             ] =
+               conn
+               |> get("/api/v1/groups/#{group.id}/statuses")
+               |> json_response(200)
+
+      assert alias_content =~ "Fresh channel video"
     end
   end
 end

@@ -1,0 +1,1 @@
+Refresh remote group first pages from their native outbox/API even when stale cached group posts already exist.

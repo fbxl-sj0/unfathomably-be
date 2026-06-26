@@ -1,0 +1,1 @@
+Fixed Discourse topic previews to hydrate interactive statuses from topic post ActivityPub object IDs when Discourse exposes them.

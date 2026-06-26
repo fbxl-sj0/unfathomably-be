@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
   use Pleroma.Web.ConnCase
 
+  alias Pleroma.Instances.Instance
   alias Pleroma.Repo
   alias Pleroma.User
 
@@ -17,11 +18,23 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
     :ok
   end
 
-  describe "GET /api/v1/sources" do
+  describe "GET /api/v1/sources and /api/v1/feeds" do
     setup do: oauth_access(["read:accounts", "read:follows"])
 
-    test "lists followed non-group ActivityPub actors", %{conn: conn, user: user} do
+    test "lists followed feed-like actors without returning groups or normal profiles", %{
+      conn: conn,
+      user: user
+    } do
       source =
+        insert(:user,
+          actor_type: "Application",
+          local: false,
+          nickname: "library@audio.example.org",
+          ap_id: "https://audio.example.org/federation/music/libraries/everyone",
+          name: "Everyone's Music"
+        )
+
+      profile =
         insert(:user,
           actor_type: "Person",
           local: false,
@@ -39,6 +52,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
         )
 
       {:ok, _, _} = User.follow(user, source)
+      {:ok, _, _} = User.follow(user, profile)
       {:ok, _, _} = User.follow(user, group)
 
       source_id = to_string(source.id)
@@ -46,13 +60,13 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
       assert [
                %{
                  "id" => ^source_id,
-                 "display_name" => "Writer",
-                 "source_profile" => "activitypub_profile",
+                 "display_name" => "Everyone's Music",
+                 "source_profile" => "library",
                  "relationship" => %{"following" => true}
                }
              ] =
                conn
-               |> get("/api/v1/sources")
+               |> get("/api/v1/feeds")
                |> json_response(200)
     end
 
@@ -77,7 +91,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
 
       assert [%{"id" => ^source_id, "source_profile" => "blog_publisher"}] =
                conn
-               |> get("/api/v1/sources?q=blog")
+               |> get("/api/v1/feeds?q=blog")
                |> json_response(200)
     end
 
@@ -102,19 +116,21 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                }
              ] =
                conn
-               |> get("/api/v1/sources/search?q=library")
+               |> get("/api/v1/feeds/search?q=library")
                |> json_response(200)
     end
 
-    test "classifies common source software from stable ActivityPub URL shapes", %{conn: conn} do
+    test "classifies common feed software from stable ActivityPub URL shapes", %{conn: conn} do
       cases = [
         {"https://longform.example.org/api/collections/notes", "Person", "writefreely",
          "WriteFreely"},
-        {"https://gts.example.org/users/alice", "Person", "gotosocial", "GoToSocial"},
-        {"https://snac.example.org/alice", "Person", "snac", "snac"},
-        {"https://torsi.ca/users/9g05u6rvhh", "Person", "iceshrimp", "Iceshrimp"},
+        {"https://wordpress.example.org/wp-json/activitypub/1.0/actors/1", "Application",
+         "wordpress", "WordPress"},
+        {"https://audio.example.org/federation/music/libraries/everyone", "Application",
+         "funkwhale", "Funkwhale"},
         {"https://video.example.org/federation/user/streamer", "Service", "owncast", "Owncast"},
-        {"https://calckey.example.org/users/9i20j8bbu5dipj8c", "Person", "misskey", "Misskey"}
+        {"https://books.bookwyrm.example.org/user/shelf", "Person", "bookwyrm", "BookWyrm"},
+        {"https://pod.castopod.example.org/@news", "Service", "castopod", "Castopod"}
       ]
 
       for {ap_id, actor_type, platform, label} <- cases do
@@ -140,6 +156,554 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
 
         assert source_id == to_string(source.id)
       end
+    end
+
+    test "uses NodeInfo software before hostname platform guesses", %{conn: conn} do
+      insert(:instance,
+        host: "social.owncast.online",
+        metadata: %Instance.Pleroma.Instances.Metadata{
+          software_name: "mastodon",
+          software_version: "4.5.11"
+        }
+      )
+
+      source =
+        insert(:user,
+          actor_type: "Service",
+          local: false,
+          nickname: "updates@social.owncast.online",
+          ap_id: "https://social.owncast.online/users/updates",
+          inbox: "https://social.owncast.online/users/updates/inbox",
+          name: "Updates"
+        )
+
+      assert %{
+               "platform" => "mastodon",
+               "platform_label" => "Mastodon",
+               "platform_family" => "microblog",
+               "platform_confidence" => "software"
+             } =
+               conn
+               |> get("/api/v1/sources/#{source.id}")
+               |> json_response(200)
+    end
+
+    test "lists followed feed actors detected from NodeInfo metadata", %{conn: conn, user: user} do
+      insert(:instance,
+        host: "open.audio",
+        metadata: %Instance.Pleroma.Instances.Metadata{
+          software_name: "funkwhale",
+          software_version: "1.4.0"
+        }
+      )
+
+      source =
+        insert(:user,
+          actor_type: "Person",
+          local: false,
+          nickname: "funkwhale_admin@open.audio",
+          ap_id: "https://open.audio/federation/actors/funkwhale_admin",
+          inbox: "https://open.audio/federation/actors/funkwhale_admin/inbox",
+          name: "funkwhale_admin"
+        )
+
+      {:ok, _, _} = User.follow(user, source)
+      source_id = to_string(source.id)
+
+      assert [
+               %{
+                 "id" => ^source_id,
+                 "platform" => "funkwhale",
+                 "source_profile" => "library",
+                 "relationship" => %{"following" => true}
+               }
+             ] =
+               conn
+               |> get("/api/v1/feeds")
+               |> json_response(200)
+    end
+
+    test "does not treat a normal Mastodon account on an Owncast domain as a feed", %{
+      conn: conn
+    } do
+      insert(:instance,
+        host: "social.owncast.online",
+        metadata: %Instance.Pleroma.Instances.Metadata{
+          software_name: "mastodon",
+          software_version: "4.5.11"
+        }
+      )
+
+      insert(:user,
+        actor_type: "Person",
+        local: false,
+        nickname: "owncast@social.owncast.online",
+        ap_id: "https://social.owncast.online/users/owncast",
+        inbox: "https://social.owncast.online/users/owncast/inbox",
+        name: "Owncast"
+      )
+
+      assert [] =
+               conn
+               |> get("/api/v1/feeds/search?q=owncast")
+               |> json_response(200)
+    end
+
+    test "resolves source WebFinger handles and stores actor outboxes", %{conn: conn} do
+      actor_url = "https://blog.example/wp-json/activitypub/1.0/actors/7"
+      outbox_url = actor_url <> "/outbox"
+
+      webfinger_url =
+        "https://blog.example/.well-known/webfinger?resource=acct%3Aauthor%40blog.example"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^webfinger_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "subject" => "acct:author@blog.example",
+                "links" => [
+                  %{
+                    "rel" => "self",
+                    "type" => "application/activity+json",
+                    "href" => actor_url
+                  }
+                ]
+              })
+          }
+
+        %{method: :get, url: ^actor_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => actor_url,
+                "type" => "Person",
+                "preferredUsername" => "author",
+                "name" => "Blog Author",
+                "inbox" => actor_url <> "/inbox",
+                "outbox" => outbox_url
+              })
+          }
+      end)
+
+      assert [
+               %{
+                 "ap_id" => ^actor_url,
+                 "display_name" => "Blog Author",
+                 "source_profile" => "blog_publisher",
+                 "source" => %{
+                   "pleroma" => %{
+                     "activitypub" => %{"outbox" => ^outbox_url}
+                   }
+                 }
+               }
+             ] =
+               conn
+               |> get("/api/v1/feeds/search?q=#{URI.encode_www_form("@author@blog.example")}")
+               |> json_response(200)
+
+      assert %User{outbox_address: ^outbox_url} = User.get_cached_by_ap_id(actor_url)
+    end
+
+    test "falls back to Owncast public stream status when the outbox has no preview items", %{
+      conn: conn
+    } do
+      actor = "https://stream.example/federation/user/streamer"
+      outbox = actor <> "/outbox"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^actor} ->
+          %Tesla.Env{
+            status: 200,
+            body: %{
+              "id" => actor,
+              "type" => "Service",
+              "preferredUsername" => "streamer",
+              "name" => "Streamer",
+              "inbox" => actor <> "/inbox",
+              "outbox" => outbox
+            }
+          }
+
+        %{method: :get, url: ^outbox} ->
+          %Tesla.Env{
+            status: 200,
+            body: %{
+              "id" => outbox,
+              "type" => "OrderedCollection",
+              "totalItems" => 12,
+              "first" => %{
+                "type" => "OrderedCollectionPage",
+                "orderedItems" => []
+              }
+            }
+          }
+
+        %{method: :get, url: "https://stream.example/api/status"} ->
+          %Tesla.Env{
+            status: 200,
+            body: %{
+              "online" => true,
+              "streamTitle" => "Test Stream",
+              "viewerCount" => 7,
+              "serverTime" => "2026-06-25T12:00:00Z"
+            }
+          }
+
+        %{method: :get, url: "https://stream.example/api/yp"} ->
+          %Tesla.Env{
+            status: 200,
+            body: %{
+              "name" => "Streamer",
+              "description" => "A test stream.",
+              "logo" => "/logo.png"
+            }
+          }
+      end)
+
+      source =
+        insert(:user,
+          actor_type: "Service",
+          local: false,
+          nickname: "streamer@stream.example",
+          ap_id: actor,
+          inbox: actor <> "/inbox",
+          name: "Streamer"
+        )
+
+      assert %{
+               "items" => [
+                 %{
+                   "id" =>
+                     "https://stream.example/federation/user/streamer#owncast-stream-status",
+                   "type" => "StreamStatus",
+                   "title" => "Live now: Test Stream",
+                   "summary" => summary,
+                   "url" => "https://stream.example/",
+                   "media_url" => "https://stream.example/hls/stream.m3u8",
+                   "media_type" => "application/x-mpegURL",
+                   "thumbnail_url" => "https://stream.example/logo.png",
+                   "platform" => "owncast",
+                   "source_kind" => "live_stream",
+                   "source_kind_label" => "Live stream",
+                   "capabilities" => [
+                     "follow stream",
+                     "preview live status",
+                     "play stream"
+                   ],
+                   "render_hint" => %{
+                     "layout" => "player",
+                     "primary_action" => "play"
+                   }
+                 }
+               ],
+               "total_items" => 12
+             } =
+               conn
+               |> get("/api/v1/feeds/#{source.id}/items")
+               |> json_response(200)
+
+      assert summary =~ "A test stream."
+      assert summary =~ "7 viewers"
+    end
+
+    test "resolves Pixelfed actors as photo feeds and falls back to WebFinger Atom items", %{
+      conn: conn
+    } do
+      actor = "https://pixey.example/users/stux"
+      outbox = actor <> "/outbox"
+      atom = actor <> ".atom"
+      post = "https://pixey.example/p/stux/786695923908154355"
+      image = "https://pixey.example/storage/m/photo.jpg"
+
+      insert(:instance,
+        host: "pixey.example",
+        metadata: %Instance.Pleroma.Instances.Metadata{
+          software_name: "pixelfed",
+          software_version: "0.12.7"
+        }
+      )
+
+      webfinger_url =
+        "https://pixey.example/.well-known/webfinger?resource=acct%3Astux%40pixey.example"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^webfinger_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "subject" => "acct:stux@pixey.example",
+                "links" => [
+                  %{
+                    "rel" => "self",
+                    "type" => "application/activity+json",
+                    "href" => actor
+                  },
+                  %{
+                    "rel" => "http://schemas.google.com/g/2010#updates-from",
+                    "type" => "application/atom+xml",
+                    "href" => atom
+                  }
+                ]
+              })
+          }
+
+        %{method: :get, url: ^actor} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => actor,
+                "type" => "Person",
+                "preferredUsername" => "stux",
+                "name" => "stux",
+                "inbox" => actor <> "/inbox",
+                "outbox" => outbox,
+                "followers" => actor <> "/followers"
+              }),
+            headers: HttpRequestMock.activitypub_object_headers()
+          }
+
+        %{method: :get, url: ^outbox} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => outbox,
+                "type" => "OrderedCollection",
+                "totalItems" => 148
+              }),
+            headers: HttpRequestMock.activitypub_object_headers()
+          }
+
+        %{method: :get, url: ^atom} ->
+          %Tesla.Env{
+            status: 200,
+            body: pixelfed_atom_feed(atom, post, image)
+          }
+
+        %{method: :get, url: ^post} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => post,
+                "type" => "Note",
+                "content" => "A Pixelfed image post",
+                "published" => "2025-01-19T20:48:44Z",
+                "url" => post,
+                "attributedTo" => actor,
+                "to" => [Pleroma.Constants.as_public()],
+                "cc" => [actor <> "/followers"],
+                "attachment" => [
+                  %{
+                    "type" => "Document",
+                    "mediaType" => "image/jpeg",
+                    "url" => image,
+                    "name" => "A Pixelfed image post"
+                  }
+                ]
+              }),
+            headers: HttpRequestMock.activitypub_object_headers()
+          }
+      end)
+
+      assert [
+               %{
+                 "id" => source_id,
+                 "ap_id" => ^actor,
+                 "source_profile" => "photo_stream",
+                 "source_kind" => "photo_feed",
+                 "platform" => "pixelfed",
+                 "platform_family" => "photo"
+               }
+             ] =
+               conn
+               |> get("/api/v1/feeds/search?q=#{URI.encode_www_form("@stux@pixey.example")}")
+               |> json_response(200)
+
+      assert %{
+               "items" => [
+                 %{
+                   "id" => ^post,
+                   "type" => "Image",
+                   "thumbnail_url" => ^image,
+                   "platform" => "pixelfed",
+                   "platform_family" => "photo",
+                   "status" => %{"uri" => ^post}
+                 }
+               ],
+               "total_items" => 148
+             } =
+               conn
+               |> get("/api/v1/feeds/#{source_id}/items")
+               |> json_response(200)
+    end
+
+    test "resolves Mitra actors as microblog feeds and reads their outbox page", %{
+      conn: conn
+    } do
+      actor = "https://public.mitra.example/users/admin"
+      outbox = actor <> "/outbox"
+      first = outbox <> "?page=true"
+      post = "https://public.mitra.example/objects/019db9a6-8204-e6e9-5edf-25b82d84234b"
+
+      insert(:instance,
+        host: "public.mitra.example",
+        metadata: %Instance.Pleroma.Instances.Metadata{
+          software_name: "mitra",
+          software_version: "5.5.0"
+        }
+      )
+
+      webfinger_url =
+        "https://public.mitra.example/.well-known/webfinger?resource=acct%3Aadmin%40public.mitra.example"
+
+      note = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => post,
+        "type" => "Note",
+        "attributedTo" => actor,
+        "content" => "<p>Apologies for the downtime.</p>",
+        "context" => "https://public.mitra.example/collections/conversations/019db9a6",
+        "published" => "2026-04-23T09:23:10Z",
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [actor <> "/followers"],
+        "replies" => post <> "/replies"
+      }
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^webfinger_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "subject" => "acct:admin@public.mitra.example",
+                "links" => [
+                  %{
+                    "rel" => "self",
+                    "type" =>
+                      "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+                    "href" => actor
+                  },
+                  %{
+                    "rel" => "http://schemas.google.com/g/2010#updates-from",
+                    "type" => "application/atom+xml",
+                    "href" => "https://public.mitra.example/feeds/users/admin"
+                  }
+                ]
+              })
+          }
+
+        %{method: :get, url: ^actor} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => actor,
+                "type" => "Person",
+                "preferredUsername" => "admin",
+                "name" => "admin",
+                "inbox" => actor <> "/inbox",
+                "outbox" => outbox,
+                "followers" => actor <> "/followers"
+              }),
+            headers: HttpRequestMock.activitypub_object_headers()
+          }
+
+        %{method: :get, url: ^outbox} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => outbox,
+                "type" => "OrderedCollection",
+                "attributedTo" => actor,
+                "first" => first
+              }),
+            headers: HttpRequestMock.activitypub_object_headers()
+          }
+
+        %{method: :get, url: ^first} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => first,
+                "type" => "OrderedCollectionPage",
+                "attributedTo" => actor,
+                "orderedItems" => [
+                  %{
+                    "id" => "https://public.mitra.example/activities/announce/019b7a5e",
+                    "type" => "Announce",
+                    "actor" => actor,
+                    "published" => "2026-01-01T16:23:10Z",
+                    "to" => [Pleroma.Constants.as_public()],
+                    "cc" => [actor <> "/followers"],
+                    "object" => "https://mitra.example/objects/019b799a"
+                  },
+                  %{
+                    "id" => "https://public.mitra.example/activities/create/019db9a6",
+                    "type" => "Create",
+                    "actor" => actor,
+                    "published" => "2026-04-23T09:23:10Z",
+                    "to" => [Pleroma.Constants.as_public()],
+                    "cc" => [actor <> "/followers"],
+                    "object" => note
+                  }
+                ]
+              }),
+            headers: HttpRequestMock.activitypub_object_headers()
+          }
+
+        %{method: :get, url: ^post} ->
+          %Tesla.Env{
+            status: 200,
+            body: Jason.encode!(note),
+            headers: HttpRequestMock.activitypub_object_headers()
+          }
+      end)
+
+      assert [
+               %{
+                 "id" => source_id,
+                 "ap_id" => ^actor,
+                 "source_profile" => "microblog_feed",
+                 "source_kind" => "microblog_feed",
+                 "platform" => "mitra",
+                 "platform_family" => "microblog"
+               }
+             ] =
+               conn
+               |> get(
+                 "/api/v1/feeds/search?q=#{URI.encode_www_form("@admin@public.mitra.example")}"
+               )
+               |> json_response(200)
+
+      assert %{
+               "items" => [
+                 %{
+                   "id" => ^post,
+                   "type" => "Note",
+                   "platform" => "mitra",
+                   "platform_family" => "microblog",
+                   "status" => %{"uri" => ^post}
+                 }
+               ]
+             } =
+               conn
+               |> get("/api/v1/feeds/#{source_id}/items")
+               |> json_response(200)
     end
 
     test "searches RSS feed URLs as sources", %{conn: conn} do
@@ -237,29 +801,56 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
     end
   end
 
-  describe "POST /api/v1/sources/:id/follow" do
+  describe "POST /api/v1/sources/:id/follow and /api/v1/feeds/:id/follow" do
     setup do: oauth_access(["follow", "write:follows", "read:follows"])
 
-    test "follows and unfollows a source through CommonAPI follow state", %{conn: conn} do
+    test "follows and unfollows unlocked subscription sources locally", %{conn: conn} do
       source =
         insert(:user,
-          actor_type: "Person",
+          actor_type: "Application",
           local: false,
-          nickname: "local-source",
-          ap_id: "http://mastodon.example.org/users/local-source",
-          inbox: "http://mastodon.example.org/inbox"
+          nickname: "library@audio.example.org",
+          ap_id: "http://audio.example.org/federation/music/libraries/local-source",
+          inbox: "http://audio.example.org/inbox"
         )
 
       source_id = to_string(source.id)
 
-      assert %{"id" => ^source_id, "following" => false, "requested" => true} =
+      assert %{"id" => ^source_id, "following" => true, "requested" => false} =
                conn
-               |> post("/api/v1/sources/#{source.id}/follow")
+               |> post("/api/v1/feeds/#{source.id}/follow")
                |> json_response(200)
 
       assert %{"id" => ^source_id, "following" => false, "requested" => false} =
                conn
-               |> post("/api/v1/sources/#{source.id}/unfollow")
+               |> post("/api/v1/feeds/#{source.id}/unfollow")
+               |> json_response(200)
+    end
+
+    test "follows a Funkwhale Person source detected by NodeInfo", %{conn: conn} do
+      insert(:instance,
+        host: "open.audio",
+        metadata: %Instance.Pleroma.Instances.Metadata{
+          software_name: "funkwhale",
+          software_version: "1.4.0"
+        }
+      )
+
+      source =
+        insert(:user,
+          actor_type: "Person",
+          local: false,
+          nickname: "funkwhale_admin@open.audio",
+          ap_id: "https://open.audio/federation/actors/funkwhale_admin",
+          inbox: "https://open.audio/federation/actors/funkwhale_admin/inbox",
+          name: "funkwhale_admin"
+        )
+
+      source_id = to_string(source.id)
+
+      assert %{"id" => ^source_id, "following" => true, "requested" => false} =
+               conn
+               |> post("/api/v1/feeds/#{source.id}/follow")
                |> json_response(200)
     end
 
@@ -293,24 +884,32 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
     end
   end
 
-  describe "GET /api/v1/timelines/sources" do
+  describe "GET /api/v1/timelines/sources and /api/v1/timelines/feeds" do
     setup do: oauth_access(["read:statuses"])
 
     test "returns root posts from followed sources", %{conn: conn, user: user} do
       source =
         insert(:user,
-          actor_type: "Person",
+          actor_type: "Application",
           local: false,
-          nickname: "writer@example.org",
-          ap_id: "https://example.org/users/writer"
+          nickname: "library@example.org",
+          ap_id: "https://example.org/federation/music/libraries/writer"
         )
 
       unfollowed_source =
         insert(:user,
-          actor_type: "Person",
+          actor_type: "Application",
           local: false,
           nickname: "other@example.org",
-          ap_id: "https://example.org/users/other"
+          ap_id: "https://example.org/federation/music/libraries/other"
+        )
+
+      profile =
+        insert(:user,
+          actor_type: "Person",
+          local: false,
+          nickname: "person@example.org",
+          ap_id: "https://example.org/users/person"
         )
 
       group =
@@ -322,6 +921,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
         )
 
       {:ok, _, _} = Pleroma.FollowingRelationship.follow(user, source, :follow_accept)
+      {:ok, _, _} = Pleroma.FollowingRelationship.follow(user, profile, :follow_accept)
       {:ok, _, _} = Pleroma.FollowingRelationship.follow(user, group, :follow_accept)
 
       context = "https://example.org/posts/1"
@@ -386,6 +986,23 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
           data_attrs: %{"to" => [Pleroma.Constants.as_public(), unfollowed_source.ap_id]}
         )
 
+      profile_root =
+        insert(:note,
+          user: profile,
+          data: %{
+            "content" => "<p>A followed profile root.</p>",
+            "to" => [Pleroma.Constants.as_public(), profile.ap_id]
+          }
+        )
+
+      _profile_activity =
+        insert(:note_activity,
+          user: profile,
+          note: profile_root,
+          local: false,
+          data_attrs: %{"to" => [Pleroma.Constants.as_public(), profile.ap_id]}
+        )
+
       group_root =
         insert(:note,
           user: group,
@@ -410,7 +1027,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                }
              ] =
                conn
-               |> get("/api/v1/timelines/sources")
+               |> get("/api/v1/timelines/feeds")
                |> json_response(200)
 
       assert followed_activity_id == to_string(followed_activity.id)
@@ -435,6 +1052,26 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
         </item>
       </channel>
     </rss>
+    """
+  end
+
+  defp pixelfed_atom_feed(atom_url, post_url, image_url) do
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+      <id>#{atom_url}</id>
+      <title>stux on pixey.example</title>
+      <updated>2025-01-19T20:48:44.000Z</updated>
+      <entry>
+        <id>#{post_url}</id>
+        <title>A Pixelfed image post</title>
+        <updated>2025-01-19T20:48:44.000Z</updated>
+        <content type="html"><![CDATA[<p>A Pixelfed image post</p>]]></content>
+        <link rel="alternate" href="#{post_url}" />
+        <summary type="html">A Pixelfed image post</summary>
+        <media:content url="#{image_url}" type="image/jpeg" medium="image" />
+      </entry>
+    </feed>
     """
   end
 end

@@ -72,8 +72,9 @@ defmodule Pleroma.Web.OAuth.OAuthController do
 
   def authorize(%Plug.Conn{} = conn, params), do: do_authorize(conn, params)
 
-  defp do_authorize(%Plug.Conn{} = conn, params) do
-    app = Repo.get_by(App, client_id: params["client_id"])
+  defp do_authorize(%Plug.Conn{} = conn, %{"client_id" => client_id} = params)
+       when is_binary(client_id) do
+    app = Repo.get_by(App, client_id: client_id)
     available_scopes = (app && app.scopes) || []
     scopes = Scopes.fetch_scopes(params, available_scopes)
 
@@ -103,6 +104,12 @@ defmodule Pleroma.Web.OAuth.OAuthController do
       state: params["state"],
       params: params
     })
+  end
+
+  defp do_authorize(%Plug.Conn{} = conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> text(dgettext("errors", "Bad OAuth request."))
   end
 
   defp handle_existing_authorization(

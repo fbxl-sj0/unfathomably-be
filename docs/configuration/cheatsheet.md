@@ -12,8 +12,9 @@ To add configuration to your config file, you can copy it from the base config. 
 * `name`: The instance’s name.
 * `email`: Email used to reach an Administrator/Moderator of the instance.
 * `notify_email`: Email used for notifications.
-* `description`: The instance’s description, can be seen in nodeinfo and ``/api/v1/instance``.
+* `description`: The instance's description, can be seen in nodeinfo and ``/api/v1/instance``.
 * `short_description`: Shorter version of instance description, can be seen on ``/api/v1/instance``.
+* `stats_refresh_interval`: Milliseconds between cached instance statistics refreshes. Defaults to `300000`.
 * `limit`: Posts character limit (CW/Subject included in the counter).
 * `description_limit`: The character limit for image descriptions.
 * `remote_limit`: Hard character limit beyond which remote posts will be dropped.
@@ -99,6 +100,9 @@ To add configuration to your config file, you can copy it from the base config. 
 ## Background migrations
 * `populate_hashtags_table/sleep_interval_ms`: Sleep interval between each chunk of processed records in order to decrease the load on the system (defaults to 0 and should be keep default on most instances).
 * `populate_hashtags_table/fault_rate_allowance`: Max rate of failed objects to actually processed objects in order to enable the feature (any value from 0.0 which tolerates no errors to 1.0 which will enable the feature even if hashtags transfer failed for all records).
+
+## Federation instance cache
+* `cache_refresh_interval`: Milliseconds between in-memory refreshes of host reachability and dormancy state. Defaults to `300000`.
 
 ## Welcome
 * `direct_message`: - welcome message sent as a direct message.

@@ -118,6 +118,19 @@ defmodule Pleroma.Web.MastodonAPI.InstanceControllerTest do
     assert length(rules) == 3
   end
 
+  test "get instance extended description", %{conn: conn} do
+    clear_config([:instance, :description], "<p>Longer instance description</p>")
+
+    conn = get(conn, "/api/v1/instance/extended_description")
+
+    assert %{
+             "content" => "<p>Longer instance description</p>",
+             "updated_at" => updated_at
+           } = json_response_and_validate_schema(conn, 200)
+
+    assert {:ok, _, _} = DateTime.from_iso8601(updated_at)
+  end
+
   test "get instance configuration", %{conn: conn} do
     clear_config([:instance, :limit], 476)
 

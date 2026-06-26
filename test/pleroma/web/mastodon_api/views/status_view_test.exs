@@ -759,6 +759,23 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
     assert_schema(expected, "Attachment", api_spec)
   end
 
+  test "attachments infer image type from image URL when remote MIME is generic" do
+    object = %{
+      "type" => "Document",
+      "url" => [
+        %{
+          "mediaType" => "application/octet-stream",
+          "href" => "https://lemmy.example/pictrs/image/file.jpeg"
+        }
+      ]
+    }
+
+    result = StatusView.render("attachment.json", %{attachment: object})
+
+    assert result.type == "image"
+    assert result.pleroma.mime_type == "image/jpeg"
+  end
+
   test "put the url advertised in the Activity in to the url attribute" do
     id = "https://wedistribute.org/wp-json/pterotype/v1/object/85810"
     [activity] = Activity.search(nil, id)

@@ -1,0 +1,1 @@
+Added `/api/v1/feeds` and `/api/v1/timelines/feeds` aliases while tightening feed classification so ordinary remote profiles remain in normal social timelines instead of the feed surface.

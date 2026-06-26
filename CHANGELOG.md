@@ -4,13 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+- Fixed addressed inbox handling for servers that send the ActivityPub actor as an embedded object instead of a bare actor URI.
+- Fixed WebFinger resolution for leading-`@` group and feed handles, and preserved actor outbox URLs for source previews discovered through WebFinger.
+- Stopped feed list rendering from performing synchronous NodeInfo refreshes for hosts whose cached instance metadata is blank.
+
 ## [2.6.51] - 2026-06-25
 
 ### Fixed
 - Reduced incoming federation retry noise by acknowledging Friendica-style `View` and `Read` receipt activities as no-op receipts.
+- Fixed event API rendering so event banners and attachment links reuse the already-rendered media-proxied attachment data instead of exposing raw remote image URLs to the frontend.
+- Fixed group and source list rendering so list pages use cached group counters and skip unused per-row interaction-score queries.
+- Fixed remote group detail timelines so cached posts render without a synchronous remote collection refresh, embedded status group cards skip per-status interaction score queries, and uncached remote backfill work is capped to avoid minute-long page stalls.
+- Fixed media proxy image failures so dead remote images can render a short-lived local placeholder instead of redirecting browsers to the original remote URL or producing noisy failed image loads.
 
 ### Changed
 - Refreshed release metadata for the quiet backend compatibility, federation-health, and janitor work since 2.6.50.
+- Added offset handling to federated group/source listing helpers so clients can page large source lists instead of requesting everything at once.
+- Added `/api/v1/feeds` and `/api/v1/timelines/feeds` aliases for the source APIs and tightened feed classification so ordinary remote profiles stay in normal social timelines instead of the feed surface.
 
 ## [2.6.50] - 2026-06-23
 

@@ -180,12 +180,12 @@ defmodule Pleroma.Web.Federation.Platform do
 
   defp software_names(input) do
     [
-      get_path(input, [:software, :name]),
       get_path(input, [:nodeinfo, :software, :name]),
+      get_path(input, [:software, :name]),
       get_path(input, [:metadata, :software, :name]),
-      get_path(input, [:platform]),
+      get_path(input, [:generator]),
       get_path(input, [:application]),
-      get_path(input, [:generator])
+      get_path(input, [:platform])
     ]
     |> Enum.flat_map(&name_candidates/1)
     |> Enum.reject(&(&1 == ""))

@@ -101,6 +101,7 @@ defmodule Pleroma.Application do
         http_children(adapter, @mix_env) ++
         [
           Pleroma.Stats,
+          Pleroma.Instances.Cache,
           Pleroma.JobQueueMonitor,
           {Majic.Pool, [name: Pleroma.MajicPool, pool_size: Config.get([:majic_pool, :size], 2)]},
           {Oban, Config.get(Oban)},
@@ -193,6 +194,8 @@ defmodule Pleroma.Application do
       build_cachex("anti_duplication_mrf", limit: 5_000),
       build_cachex("translations", default_ttl: :timer.hours(24), limit: 5_000),
       build_cachex("rel_me", default_ttl: :timer.minutes(30), limit: 2_500),
+      build_cachex("remote_group_backfill", default_ttl: :timer.minutes(5), limit: 5_000),
+      build_cachex("remote_group_preview", default_ttl: :timer.minutes(5), limit: 5_000),
       build_cachex("host_meta", default_ttl: :timer.minutes(120), limit: 5000)
     ]
   end

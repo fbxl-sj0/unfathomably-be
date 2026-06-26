@@ -1,0 +1,1 @@
+Added an in-memory instance reachability cache so common federation reachability and dormancy checks can avoid database round trips between asynchronous refreshes.

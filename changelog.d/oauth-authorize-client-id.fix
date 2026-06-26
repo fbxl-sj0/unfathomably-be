@@ -1,0 +1,1 @@
+Returned a controlled bad OAuth request instead of raising when authorization requests omit `client_id`.

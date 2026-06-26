@@ -1,0 +1,1 @@
+Fixed remote group detail timelines so cached posts render without a synchronous remote collection refresh, embedded status group cards skip per-status interaction score queries, and uncached remote backfill work is capped to avoid minute-long page stalls.

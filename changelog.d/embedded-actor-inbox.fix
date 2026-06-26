@@ -1,0 +1,1 @@
+Fixed addressed inbox handling for servers that send the ActivityPub actor as an embedded object instead of a bare actor URI.

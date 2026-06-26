@@ -34,8 +34,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
       header_static: account[:header_static],
       locked: group.is_locked,
       membership_required: group.is_locked,
-      members_count: FederatedTarget.group_member_count(group),
-      moderators_count: FederatedTarget.group_moderator_count(group),
+      members_count: group_member_count(group, opts),
+      moderators_count: group_moderator_count(group, opts),
       note: account[:note] || "",
       owner: %{id: to_string(group.id)},
       posting_restricted_to_mods: group.posting_restricted_to_mods,
@@ -71,7 +71,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
       target_profile: FederatedTarget.group_profile(group),
       target_kind: target_kind,
       target_kind_label: FederatedTarget.group_kind_label(group),
-      interaction_score: FederatedTarget.contact_interaction_score(group),
+      interaction_score: contact_interaction_score(group, opts),
       capabilities: FederatedTarget.group_capabilities(group)
     }
   end
@@ -145,7 +145,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
       source_profile: FederatedTarget.source_profile(source),
       source_kind: source_kind,
       source_kind_label: FederatedTarget.source_kind_label(source),
-      interaction_score: FederatedTarget.contact_interaction_score(source),
+      interaction_score: contact_interaction_score(source, opts),
       capabilities: FederatedTarget.source_capabilities(source),
       uri: source.ap_id,
       url: account[:url],
@@ -199,4 +199,15 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
       role: "user"
     }
   end
+
+  defp group_member_count(group, %{refresh_counts: false}), do: group.follower_count || 0
+  defp group_member_count(group, _opts), do: FederatedTarget.group_member_count(group)
+
+  defp group_moderator_count(group, %{refresh_counts: false}), do: group.moderator_count || 0
+  defp group_moderator_count(group, _opts), do: FederatedTarget.group_moderator_count(group)
+
+  defp contact_interaction_score(_target, %{include_interaction_score: false}), do: 0
+
+  defp contact_interaction_score(target, _opts),
+    do: FederatedTarget.contact_interaction_score(target)
 end

@@ -579,6 +579,15 @@ config :pleroma, :config_description, [
         ]
       },
       %{
+        key: :stats_refresh_interval,
+        type: :integer,
+        description:
+          "Milliseconds between expensive cached instance statistics refreshes. This updates peer/domain counts used by instance metadata endpoints.",
+        suggestions: [
+          300_000
+        ]
+      },
+      %{
         key: :contact_username,
         type: :string,
         description: "Instance owner username",
@@ -1123,6 +1132,23 @@ config :pleroma, :config_description, [
           "Languages to be exposed in /api/v1/instance. Should be in the format of BCP47 language codes.",
         suggestions: [
           "en"
+        ]
+      }
+    ]
+  },
+  %{
+    group: :pleroma,
+    key: :instances,
+    type: :group,
+    description: "Federated instance cache and health settings",
+    children: [
+      %{
+        key: :cache_refresh_interval,
+        type: :integer,
+        description:
+          "Milliseconds between in-memory refreshes of host reachability and dormancy state. Database writes still update the cache immediately after successful changes.",
+        suggestions: [
+          300_000
         ]
       }
     ]

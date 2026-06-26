@@ -1,0 +1,1 @@
+Use cached NodeInfo software before hostname hints when classifying federated groups and feeds, and add a read-only Owncast stream-status preview fallback for stream actors with empty ActivityPub outboxes.

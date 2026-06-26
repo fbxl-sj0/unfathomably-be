@@ -31,7 +31,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
 
     conn
     |> put_view(FederatedTargetView)
-    |> render("sources.json", sources: sources, for: user)
+    |> render("sources.json", sources: sources, for: user, include_interaction_score: false)
   end
 
   @doc "GET /api/v1/sources/search"
@@ -40,7 +40,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
 
     conn
     |> put_view(FederatedTargetView)
-    |> render("sources.json", sources: sources, for: user)
+    |> render("sources.json", sources: sources, for: user, include_interaction_score: false)
   end
 
   @doc "GET /api/v1/sources/lookup"

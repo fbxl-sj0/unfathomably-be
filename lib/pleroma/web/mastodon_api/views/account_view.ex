@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.MastodonAPI.AccountView do
   use Pleroma.Web, :view
 
+  @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
+
   alias Pleroma.FollowingRelationship
   alias Pleroma.User
   alias Pleroma.UserNote
@@ -550,7 +552,9 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
 
   defp visible_following_count(%User{local: true} = user) do
     if Pleroma.Instances.any_dormant?() do
-      Pleroma.FollowingRelationship.following_count(user)
+      cached_visible_count(user, :following, fn ->
+        FollowingRelationship.following_count(user)
+      end)
     else
       user.following_count || 0
     end
@@ -560,13 +564,26 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
 
   defp visible_follower_count(%User{local: true} = user) do
     if Pleroma.Instances.any_dormant?() do
-      Pleroma.FollowingRelationship.follower_count(user)
+      cached_visible_count(user, :follower, fn ->
+        FollowingRelationship.follower_count(user)
+      end)
     else
       user.follower_count || 0
     end
   end
 
   defp visible_follower_count(%User{} = user), do: user.follower_count || 0
+
+  defp cached_visible_count(%User{id: id}, type, fun)
+       when not is_nil(id) and type in [:follower, :following] do
+    @cachex.fetch!(:user_cache, "visible_#{type}_count:#{id}", fn _ ->
+      fun.()
+    end)
+  rescue
+    _ -> fun.()
+  end
+
+  defp cached_visible_count(_, _, fun), do: fun.()
 
   defp image_url(%{"url" => [%{"href" => href} | _]}), do: href
   defp image_url(_), do: nil

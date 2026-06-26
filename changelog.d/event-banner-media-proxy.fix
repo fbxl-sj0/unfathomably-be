@@ -1,0 +1,1 @@
+Fixed event API rendering so event banners and attachment links reuse media-proxied attachment data instead of leaking raw remote image URLs to frontend event cards.

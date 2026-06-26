@@ -19,8 +19,11 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
 
   require Logger
 
+  @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
   @default_remote_group_backfill_limit 20
   @remote_group_backfill_limit 40
+  @remote_group_backfill_timeout 20_000
+  @remote_group_backfill_cache :remote_group_backfill_cache
 
   plug(OAuthScopesPlug, %{scopes: ["read:statuses"], fallback: :proceed_unauthenticated})
 
@@ -56,7 +59,10 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
 
   def index(conn, _params), do: render_error(conn, :unauthorized, "authorization required")
 
-  @doc "GET /api/v1/timelines/group/:id"
+  @doc """
+  GET /api/v1/timelines/group/:id
+  GET /api/v1/groups/:id/statuses
+  """
   def show(conn, %{"id" => id} = params) do
     user = conn.assigns[:user]
 
@@ -73,15 +79,9 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
         |> Map.put(:announce_filtering_user, user)
 
       activities =
-        case remote_group_first_page_activities(group, activity_params) do
-          [_ | _] = activities ->
-            activities
-
-          _ ->
-            group
-            |> fetch_group_activities(activity_params)
-            |> maybe_backfill_remote_group(group, activity_params)
-        end
+        group
+        |> fetch_group_activities(activity_params)
+        |> maybe_backfill_remote_group(group, activity_params)
         |> unique_group_activities()
 
       conn
@@ -169,45 +169,30 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   defp group_activity_object_id(%Activity{id: id}), do: id
   defp group_activity_object_id(activity), do: activity
 
-  defp maybe_backfill_remote_group([], %User{local: false} = group, activity_params) do
-    if pinned_timeline?(activity_params) do
-      []
-    else
-      maybe_backfill_first_remote_group_page(group, activity_params)
+  defp maybe_backfill_remote_group(activities, %User{local: false} = group, activity_params) do
+    cond do
+      pinned_timeline?(activity_params) ->
+        activities
+
+      first_timeline_page?(activity_params) ->
+        refreshed_activities = maybe_backfill_first_remote_group_page(group, activity_params)
+
+        case refreshed_activities do
+          [] -> activities
+          _ -> refreshed_activities
+        end
+
+      true ->
+        activities
     end
   end
 
   defp maybe_backfill_remote_group(activities, _group, _activity_params), do: activities
 
-  defp remote_group_first_page_activities(%User{local: false} = group, activity_params) do
-    if refreshable_remote_group_first_page?(activity_params) do
-      group
-      |> backfill_remote_group(activity_params)
-      |> fallback_group_activities(activity_params)
-    else
-      []
-    end
-  end
-
-  defp remote_group_first_page_activities(_group, _activity_params), do: []
-
-  defp refreshable_remote_group_first_page?(activity_params) do
-    first_timeline_page?(activity_params) and
-      not pinned_timeline?(activity_params) and
-      Map.get(activity_params, :discussion_roots_only) == true
-  end
-
   defp maybe_backfill_first_remote_group_page(%User{} = group, activity_params) do
-    if first_timeline_page?(activity_params) do
-      item_ids = backfill_remote_group(group, activity_params)
-
-      case fetch_group_activities(group, activity_params) do
-        [] -> fallback_group_activities(item_ids, activity_params)
-        activities -> activities
-      end
-    else
-      []
-    end
+    group
+    |> backfill_remote_group(activity_params)
+    |> fallback_group_activities(activity_params)
   end
 
   defp pinned_timeline?(%{pinned: true}), do: true
@@ -218,6 +203,48 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   end
 
   defp backfill_remote_group(%User{} = group, activity_params) do
+    cache_key = remote_group_backfill_cache_key(group, activity_params)
+
+    case @cachex.get(@remote_group_backfill_cache, cache_key) do
+      {:ok, item_ids} when is_list(item_ids) ->
+        item_ids
+
+      _ ->
+        fetch_and_cache_remote_group_backfill(group, activity_params, cache_key)
+    end
+  end
+
+  defp fetch_and_cache_remote_group_backfill(%User{} = group, activity_params, cache_key) do
+    task = Task.async(fn -> do_backfill_remote_group(group, activity_params) end)
+
+    case Task.yield(task, @remote_group_backfill_timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, item_ids} when is_list(item_ids) ->
+        cache_remote_group_backfill(cache_key, item_ids)
+        item_ids
+
+      {:exit, reason} ->
+        Logger.debug("Could not backfill remote group #{group.ap_id}: #{inspect(reason)}")
+        []
+
+      nil ->
+        Logger.debug("Timed out backfilling remote group #{group.ap_id}")
+        []
+    end
+  end
+
+  defp cache_remote_group_backfill(_cache_key, []), do: :ok
+
+  defp cache_remote_group_backfill(cache_key, item_ids) do
+    @cachex.put(@remote_group_backfill_cache, cache_key, item_ids)
+    :ok
+  end
+
+  defp remote_group_backfill_cache_key(%User{id: id}, activity_params) do
+    {id, remote_group_backfill_limit(activity_params),
+     Map.get(activity_params, :discussion_roots_only)}
+  end
+
+  defp do_backfill_remote_group(%User{} = group, activity_params) do
     limit = remote_group_backfill_limit(activity_params)
 
     case FederatedTarget.group_items_result(group, %{"limit" => limit}) do

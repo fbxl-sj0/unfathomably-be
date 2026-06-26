@@ -1,0 +1,1 @@
+Fixed leading-`@` WebFinger lookup for remote group/feed handles and preserved actor outbox URLs for source previews discovered through WebFinger.

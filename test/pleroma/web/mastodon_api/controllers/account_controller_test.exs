@@ -2087,6 +2087,13 @@ defmodule Pleroma.Web.MastodonAPI.AccountControllerTest do
     %{nickname: acct} = insert(:user, %{nickname: "nickname"})
     %{nickname: acct_two} = insert(:user, %{nickname: "nickname@notlocaldoma.in"})
 
+    remote =
+      insert(:user,
+        local: false,
+        nickname: "funkwhale_admin@open.audio",
+        ap_id: "https://open.audio/federation/actors/funkwhale_admin"
+      )
+
     result =
       conn
       |> get("/api/v1/accounts/lookup?acct=#{acct}")
@@ -2100,6 +2107,20 @@ defmodule Pleroma.Web.MastodonAPI.AccountControllerTest do
       |> json_response_and_validate_schema(200)
 
     assert %{"acct" => ^acct_two} = result
+
+    result =
+      conn
+      |> get("/api/v1/accounts/lookup?acct=#{URI.encode_www_form("@" <> remote.nickname)}")
+      |> json_response_and_validate_schema(200)
+
+    assert %{"acct" => "funkwhale_admin@open.audio"} = result
+
+    result =
+      conn
+      |> get("/api/v1/accounts/lookup?acct=#{URI.encode_www_form(remote.ap_id)}")
+      |> json_response_and_validate_schema(200)
+
+    assert %{"acct" => "funkwhale_admin@open.audio"} = result
 
     _result =
       conn

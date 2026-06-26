@@ -316,12 +316,27 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
         %{assigns: %{valid_signature: true, valid_host_header: true}} = conn,
         %{"nickname" => nickname} = params
       ) do
+    params = Utils.normalize_params(params)
+
     with %User{} = recipient <- User.get_cached_by_nickname(nickname),
          {:ok, %User{} = actor} <- User.get_or_fetch_by_ap_id(params["actor"]),
          true <- Utils.recipient_in_message(recipient, actor, params),
          params <- Utils.maybe_splice_recipient(recipient.ap_id, params) do
       Federator.incoming_ap_doc(params)
       json(conn, "ok")
+    else
+      nil ->
+        errors(conn, {:error, :not_found})
+
+      {:error, _reason} ->
+        conn
+        |> put_status(:bad_request)
+        |> json("error, could not fetch actor")
+
+      false ->
+        conn
+        |> put_status(:bad_request)
+        |> json("error, recipient not in message")
     end
   end
 

@@ -1,0 +1,1 @@
+Fixed feed previews for signed-fetch source actors by falling back to stored or inferred outbox URLs when the actor document cannot be fetched directly.

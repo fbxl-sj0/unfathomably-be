@@ -1,0 +1,1 @@
+Stopped feed list rendering from performing synchronous NodeInfo refreshes for hosts whose cached instance metadata is blank.

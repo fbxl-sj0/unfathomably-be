@@ -1,0 +1,1 @@
+Fixed media proxy image failures so dead remote images can render a short-lived local placeholder instead of redirecting browsers to the original remote URL or producing noisy failed image loads.

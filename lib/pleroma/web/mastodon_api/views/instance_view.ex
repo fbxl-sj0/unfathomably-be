@@ -6,11 +6,13 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
   use Pleroma.Web, :view
 
   alias Pleroma.Config
+  alias Pleroma.ConfigDB
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.MRF
   alias Pleroma.Web.MastodonAPI
 
   @mastodon_api_level "2.7.2"
+  @default_extended_description_updated_at "1970-01-01T00:00:00Z"
 
   @block_severities %{
     federated_timeline_removal: "silence",
@@ -104,6 +106,15 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
     %{
       id: rule.id,
       text: rule.text
+    }
+  end
+
+  def render("extended_description.json", _) do
+    instance = Config.get(:instance)
+
+    %{
+      updated_at: extended_description_updated_at(),
+      content: Keyword.get(instance, :description) || ""
     }
   end
 
@@ -214,6 +225,39 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
     |> Enum.map(&String.downcase/1)
     |> Enum.uniq()
   end
+
+  defp extended_description_updated_at do
+    configured =
+      Config.get([:instance, :extended_description_updated_at])
+      |> normalize_extended_description_updated_at()
+
+    configured || config_db_instance_updated_at() || @default_extended_description_updated_at
+  end
+
+  defp config_db_instance_updated_at do
+    case ConfigDB.get_by_group_and_key(:pleroma, :instance) do
+      %{updated_at: updated_at} -> normalize_extended_description_updated_at(updated_at)
+      _ -> nil
+    end
+  end
+
+  defp normalize_extended_description_updated_at(%DateTime{} = datetime),
+    do: DateTime.to_iso8601(datetime)
+
+  defp normalize_extended_description_updated_at(%NaiveDateTime{} = datetime) do
+    datetime
+    |> DateTime.from_naive!("Etc/UTC")
+    |> DateTime.to_iso8601()
+  end
+
+  defp normalize_extended_description_updated_at(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, _, _} -> value
+      _ -> nil
+    end
+  end
+
+  defp normalize_extended_description_updated_at(_), do: nil
 
   def federation do
     quarantined = Config.get([:instance, :quarantined_instances], [])

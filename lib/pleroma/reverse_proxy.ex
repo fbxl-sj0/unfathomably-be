@@ -17,6 +17,14 @@ defmodule Pleroma.ReverseProxy do
   @failed_request_ttl :timer.seconds(60)
   @methods ~w(GET HEAD)
   @quiet_http_response_codes [403, 404, 410]
+  @image_fallback_extensions ~w(.avif .gif .heic .heif .ico .jpeg .jpg .png .svg .webp)
+  @failed_image_placeholder """
+  <svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+    <rect width="120" height="120" fill="#f3f4f6"/>
+    <path d="M28 80l20-24 15 18 9-11 20 17H28z" fill="#d1d5db"/>
+    <circle cx="42" cy="42" r="10" fill="#d1d5db"/>
+  </svg>
+  """
   @transient_request_errors [
     :closed,
     :timeout,
@@ -52,6 +60,9 @@ defmodule Pleroma.ReverseProxy do
   * `redirect_on_failure` (default `false`). Redirects the client to the real remote URL if there's any HTTP
   errors. Any error during body processing will not be redirected as the response is chunked. This may expose
   remote URL, clients IPs, ….
+
+  * `image_fallback_on_failure` (default `false`). Returns a short-lived local SVG placeholder for failed image
+  requests. This is useful for media proxy callers that should not redirect browsers to dead remote media.
 
   * `max_body_length` (default `#{inspect(@max_body_length)}`): limits the content length to be approximately the
   specified length. It is validated with the `content-length` header and also verified when proxying.
@@ -98,6 +109,7 @@ defmodule Pleroma.ReverseProxy do
           | {:resp_headers, [{String.t(), String.t()}]}
           | {:inline_content_types, boolean() | [String.t()]}
           | {:redirect_on_failure, boolean()}
+          | {:image_fallback_on_failure, boolean()}
 
   @spec call(Plug.Conn.t(), url :: String.t(), [option()]) :: Plug.Conn.t()
   def call(_conn, _url, _opts \\ [])
@@ -245,15 +257,35 @@ defmodule Pleroma.ReverseProxy do
   end
 
   defp error_or_redirect(conn, url, code, body, opts) do
-    if Keyword.get(opts, :redirect_on_failure, false) do
-      conn
-      |> Phoenix.Controller.redirect(external: url)
-      |> halt()
-    else
-      conn
-      |> send_resp(code, body)
-      |> halt
+    cond do
+      Keyword.get(opts, :redirect_on_failure, false) ->
+        conn
+        |> Phoenix.Controller.redirect(external: url)
+        |> halt()
+
+      Keyword.get(opts, :image_fallback_on_failure, false) and image_request?(url, opts) ->
+        send_failed_image_placeholder(conn)
+
+      true ->
+        conn
+        |> send_resp(code, body)
+        |> halt()
     end
+  end
+
+  defp image_request?(url, opts) do
+    filename = Keyword.get(opts, :attachment_name) || Pleroma.Web.MediaProxy.filename(url)
+    extension = filename |> to_string() |> Path.extname() |> String.downcase()
+    extension in @image_fallback_extensions
+  end
+
+  defp send_failed_image_placeholder(conn) do
+    conn
+    |> put_resp_header("content-type", "image/svg+xml")
+    |> put_resp_header("content-disposition", "inline; filename=\"remote-media-unavailable.svg\"")
+    |> put_resp_header("cache-control", "public, max-age=60")
+    |> send_resp(200, @failed_image_placeholder)
+    |> halt()
   end
 
   defp downcase_headers(headers) do

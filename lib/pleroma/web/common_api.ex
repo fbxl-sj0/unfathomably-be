@@ -6,6 +6,7 @@ defmodule Pleroma.Web.CommonAPI do
   alias Pleroma.Activity
   alias Pleroma.Config
   alias Pleroma.Conversation.Participation
+  alias Pleroma.FollowingRelationship
   alias Pleroma.Formatter
   alias Pleroma.ModerationLog
   alias Pleroma.Object
@@ -20,6 +21,7 @@ defmodule Pleroma.Web.CommonAPI do
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI.ActivityDraft
+  alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.Utils.Params
 
   import Pleroma.Web.Gettext
@@ -121,13 +123,42 @@ defmodule Pleroma.Web.CommonAPI do
 
     with {:ok, follow_data, _} <- Builder.follow(follower, followed),
          {:ok, activity, _} <- Pipeline.common_pipeline(follow_data, local: true),
-         {:ok, follower, followed} <- User.wait_and_refresh(timeout, follower, followed) do
+         {:ok, follower, followed} <- User.wait_and_refresh(timeout, follower, followed),
+         {:ok, follower, followed} <- maybe_accept_subscription_source_follow(follower, followed) do
       if activity.data["state"] == "reject" do
         {:error, :rejected}
       else
         {:ok, follower, followed, activity}
       end
     end
+  end
+
+  defp maybe_accept_subscription_source_follow(
+         %User{} = follower,
+         %User{local: false, is_locked: false} = followed
+       ) do
+    with {:ok, %User{} = source} <- FederatedTarget.resolve_source(followed.ap_id),
+         true <- source.id == followed.id,
+         true <- subscription_source?(source),
+         {:ok, follower, source} <-
+           FollowingRelationship.update(follower, source, :follow_accept) do
+      {:ok, follower, source}
+    else
+      _ -> {:ok, follower, followed}
+    end
+  end
+
+  defp maybe_accept_subscription_source_follow(%User{} = follower, %User{} = followed) do
+    {:ok, follower, followed}
+  end
+
+  defp subscription_source?(%User{} = source) do
+    family =
+      source
+      |> FederatedTarget.source_platform()
+      |> Map.get(:platform_family)
+
+    family in ["audio", "video", "longform", "photo", "books", "bookmarks", "events"]
   end
 
   def unfollow(follower, unfollowed) do

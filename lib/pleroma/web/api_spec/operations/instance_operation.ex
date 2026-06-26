@@ -57,6 +57,22 @@ defmodule Pleroma.Web.ApiSpec.InstanceOperation do
     }
   end
 
+  def extended_description_operation do
+    %Operation{
+      tags: ["Instance misc"],
+      summary: "Retrieve extended instance description",
+      operationId: "InstanceController.extended_description",
+      responses: %{
+        200 =>
+          Operation.response(
+            "Extended instance description",
+            "application/json",
+            extended_description()
+          )
+      }
+    }
+  end
+
   def domain_blocks_operation do
     %Operation{
       tags: ["Instance misc"],
@@ -462,6 +478,24 @@ defmodule Pleroma.Web.ApiSpec.InstanceOperation do
           text: %Schema{type: :string}
         }
       }
+    }
+  end
+
+  defp extended_description do
+    %Schema{
+      type: :object,
+      properties: %{
+        updated_at: %Schema{
+          type: :string,
+          format: :"date-time",
+          description: "Timestamp of the last extended description update"
+        },
+        content: %Schema{
+          type: :string,
+          description: "Rendered HTML content of the extended instance description"
+        }
+      },
+      required: [:updated_at, :content]
     }
   end
 

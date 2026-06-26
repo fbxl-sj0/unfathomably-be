@@ -4,12 +4,13 @@
 
 defmodule Pleroma.Web.FederatedTarget do
   @moduledoc """
-  Shared lookup, listing, and classification for federated groups and sources.
+  Shared lookup, listing, and classification for federated groups and feeds.
 
   Rebased stores remote ActivityPub actors in the normal users table.  This
-  module keeps the higher-level "group" and "source" APIs from growing a
-  parallel actor store by treating ActivityPub Group actors as groups and the
-  remaining followable actor shapes as sources.
+  module keeps the higher-level "group" and "feed" APIs from growing a
+  parallel actor store by treating ActivityPub Group actors as groups and
+  non-profile publishers such as RSS feeds, blogs, channels, and music
+  libraries as feeds.
   """
 
   import Ecto.Query
@@ -23,6 +24,7 @@ defmodule Pleroma.Web.FederatedTarget do
   alias Pleroma.HTTP
   alias Pleroma.HTTP.AdapterHelper
   alias Pleroma.Instances
+  alias Pleroma.Instances.Instance
   alias Pleroma.Notification
   alias Pleroma.Object.Fetcher
   alias Pleroma.Repo
@@ -34,13 +36,27 @@ defmodule Pleroma.Web.FederatedTarget do
   alias Pleroma.Web.Federation.Platform
   alias Pleroma.Web.MastodonAPI.StatusView
 
+  @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
   @group_actor_type "Group"
   @group_service_actor_types ["Application", "Service"]
   @group_service_actor_regex "fedigroups|gancio|gup\\.pe|buzzrelay|tootgroup"
   @group_service_platform_fragments ["fedigroups", "gancio", "gup.pe", "buzzrelay", "tootgroup"]
+  @feed_actor_types ["Application", "Service"]
+  @feed_source_actor_regex "wp-json|wordpress|writefreely|postmarks|/api/collections/|/video-channels/|peertube|castopod|/federation/user/|/federation/music/libraries/|/music/libraries/|funkwhale|bookwyrm"
+  @feed_source_platform_regex "^(bookwyrm|castopod|funkwhale|gancio|mobilizon|owncast|peertube|pixelfed|postmarks|wordpress|wordpress event bridge|writefreely)$"
+  @feed_microblog_platforms [
+    "gotosocial",
+    "iceshrimp",
+    "misskey",
+    "mitra",
+    "sharkey",
+    "snac",
+    "wafrn"
+  ]
   @iceshrimp_instance_hosts ["torsi.ca", "tuit.fr", "yuustan.space", "iceshrimp.de"]
   @non_content_activity_types [
     "ApproveReply",
+    "Accept",
     "Block",
     "Delete",
     "Dislike",
@@ -72,6 +88,8 @@ defmodule Pleroma.Web.FederatedTarget do
   @rss_feed_redirect_limit 3
   @rss_feed_redirect_statuses [301, 302, 303, 307, 308]
   @rss_feed_gone_statuses [410, 451]
+  @remote_group_preview_cache :remote_group_preview_cache
+  @source_items_cache_ttl :timer.minutes(5)
 
   def group?(%User{
         actor_type: @group_actor_type,
@@ -98,15 +116,16 @@ defmodule Pleroma.Web.FederatedTarget do
 
   def group?(_), do: false
 
-  def source?(%User{
-        actor_type: actor_type,
-        local: false,
-        is_active: true,
-        invisible: false,
-        ap_id: ap_id
-      })
-      when actor_type != @group_actor_type and is_binary(ap_id) do
-    url?(ap_id)
+  def source?(
+        %User{
+          local: false,
+          is_active: true,
+          invisible: false,
+          ap_id: ap_id
+        } = user
+      )
+      when is_binary(ap_id) do
+    url?(ap_id) and not group?(user) and feed_source_actor?(user)
   end
 
   def source?(_), do: false
@@ -123,6 +142,10 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   def rss_source?(_), do: false
+
+  defp feed_source_actor?(%User{} = user) do
+    source_profile(user) != "activitypub_profile"
+  end
 
   def list_groups(user, params), do: list_targets(:group, user, params)
   def list_sources(user, params), do: list_targets(:source, user, params)
@@ -226,7 +249,7 @@ defmodule Pleroma.Web.FederatedTarget do
             _ ->
               case resolve_actor_source(identifier) do
                 {:ok, %User{} = source} -> {:ok, source}
-                _ -> resolve_rss_source(identifier)
+                _ -> resolve_source_webfinger_or_rss(identifier)
               end
           end
       end
@@ -296,8 +319,9 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   def group_profile(%User{} = user) do
-    host = host(user) || ""
-    path = path(user) || ""
+    host = String.downcase(host(user) || "")
+    path = String.downcase(path(user) || "")
+    nodeinfo_platform = instance_platform_name(user)
 
     cond do
       String.ends_with?(host, "gup.pe") ->
@@ -306,7 +330,8 @@ defmodule Pleroma.Web.FederatedTarget do
       String.contains?(path, ["/c/", "/communities/", "/m/"]) ->
         "threadiverse_forum"
 
-      String.contains?(path, "/video-channels/") or String.contains?(host, "peertube") ->
+      String.contains?(path, "/video-channels/") or nodeinfo_platform == "peertube" or
+          (is_nil(nodeinfo_platform) and String.contains?(host, "peertube")) ->
         "collection_channel"
 
       String.contains?(path, "/category/") ->
@@ -327,22 +352,40 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   def source_profile(%User{} = user) do
-    host = host(user) || ""
-    path = path(user) || ""
+    host = String.downcase(host(user) || "")
+    path = String.downcase(path(user) || "")
+    nodeinfo_platform = instance_platform_name(user)
 
     cond do
       rss_source?(user) ->
         "rss_feed"
 
-      String.contains?(path, "wp-json") or String.contains?(host, "wordpress") ->
+      nodeinfo_platform in ["wordpress", "writefreely", "postmarks"] or
+        String.contains?(path, "wp-json") or String.contains?(path, "/api/collections/") or
+          (is_nil(nodeinfo_platform) and
+             (String.contains?(host, "wordpress") or String.contains?(host, "writefreely") or
+                String.contains?(host, "postmarks"))) ->
         "blog_publisher"
 
-      String.contains?(path, "/video-channels/") or String.contains?(host, "peertube") ->
+      nodeinfo_platform in ["peertube", "owncast", "castopod"] or
+        String.contains?(path, "/video-channels/") or
+        String.contains?(path, "/federation/user/") or
+          (is_nil(nodeinfo_platform) and
+             (String.contains?(host, "peertube") or String.contains?(host, "castopod"))) ->
         "collection_channel"
 
-      String.contains?(path, ["/federation/music/libraries/", "/music/libraries/"]) or
-          String.contains?(host, "bookwyrm") ->
+      nodeinfo_platform in ["funkwhale", "bookwyrm"] or
+        String.contains?(path, ["/federation/music/libraries/", "/music/libraries/"]) or
+          (is_nil(nodeinfo_platform) and
+             (String.contains?(host, "funkwhale") or String.contains?(host, "bookwyrm"))) ->
         "library"
+
+      nodeinfo_platform == "pixelfed" or
+          (is_nil(nodeinfo_platform) and String.contains?(host, "pixelfed")) ->
+        "photo_stream"
+
+      nodeinfo_platform in @feed_microblog_platforms ->
+        "microblog_feed"
 
       user.actor_type in ["Application", "Service"] ->
         "application_source"
@@ -441,10 +484,106 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp platform_hints(%User{} = user, profile, fallback_type) do
     %{
+      "nodeinfo" => instance_platform_hint(user),
       "platform" => platform_name_hint(user, profile),
       "type" => fallback_type
     }
   end
+
+  defp instance_platform_name(%User{} = user) do
+    user
+    |> instance_platform_hint()
+    |> case do
+      %{} = hint ->
+        case Platform.classify(%{"nodeinfo" => hint}) do
+          %{confidence: :software, platform: platform} -> platform
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp instance_platform_hint(%User{} = user) do
+    user
+    |> cached_instance_metadata()
+    |> instance_platform_hint()
+  end
+
+  defp instance_platform_hint(metadata) do
+    software_name = metadata_field(metadata, :software_name)
+
+    if present_binary?(software_name) do
+      %{
+        "software" =>
+          %{
+            "name" => software_name,
+            "version" => metadata_field(metadata, :software_version)
+          }
+          |> maybe_put("repository", metadata_field(metadata, :software_repository))
+      }
+    end
+  end
+
+  defp cached_instance_metadata(%User{} = user) do
+    with host when is_binary(host) <- host(user) do
+      cached_instance_metadata(host)
+    end
+  end
+
+  defp cached_instance_metadata(host) when is_binary(host) do
+    host =
+      host
+      |> String.trim()
+      |> String.downcase()
+
+    cache_key = {__MODULE__, :instance_metadata_by_host}
+    cache = Process.get(cache_key, %{})
+
+    case Map.fetch(cache, host) do
+      {:ok, metadata} ->
+        metadata
+
+      :error ->
+        metadata =
+          Instance
+          |> where([instance], fragment("lower(?)", instance.host) == ^host)
+          |> Repo.one()
+          |> cached_instance_record_metadata()
+
+        Process.put(cache_key, Map.put(cache, host, metadata))
+        metadata
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp cached_instance_metadata(_), do: nil
+
+  defp cached_instance_record_metadata(%Instance{} = instance) do
+    if metadata_has_software?(instance.metadata) do
+      instance.metadata
+    else
+      nil
+    end
+  end
+
+  defp cached_instance_record_metadata(_), do: nil
+
+  defp metadata_has_software?(metadata) do
+    metadata
+    |> metadata_field(:software_name)
+    |> present_binary?()
+  end
+
+  defp metadata_field(%{} = metadata, key) when is_atom(key) do
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+  end
+
+  defp metadata_field(_, _), do: nil
 
   defp platform_name_hint(%User{} = user, profile) do
     host = String.downcase(host(user) || "")
@@ -488,7 +627,7 @@ defmodule Pleroma.Web.FederatedTarget do
       String.contains?(host, "mitra") ->
         "mitra"
 
-      String.contains?(host, "owncast") or String.contains?(path, "/federation/user/") ->
+      String.contains?(path, "/federation/user/") ->
         "owncast"
 
       String.contains?(host, ["misskey", "calckey"]) ->
@@ -592,7 +731,10 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_kind_for_platform(%User{} = user, %{platform: platform}) do
     case source_profile(user) do
+      _ when platform == "owncast" -> "live_stream"
       "rss_feed" -> "rss_feed"
+      "photo_stream" -> "photo_feed"
+      "microblog_feed" -> "microblog_feed"
       "library" when platform == "funkwhale" -> "funkwhale_library"
       "library" -> "collection"
       "collection_channel" -> "ordered_collection"
@@ -603,6 +745,9 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp source_kind_label_for_kind("funkwhale_library"), do: "Library"
+  defp source_kind_label_for_kind("photo_feed"), do: "Photo feed"
+  defp source_kind_label_for_kind("microblog_feed"), do: "Microblog feed"
+  defp source_kind_label_for_kind("live_stream"), do: "Live stream"
   defp source_kind_label_for_kind("ordered_collection"), do: "Ordered collection"
   defp source_kind_label_for_kind("collection"), do: "Collection"
   defp source_kind_label_for_kind("actor_feed"), do: "Actor feed"
@@ -641,7 +786,7 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_capability_labels(_kind, "flipboard"), do: ["follow magazine", "read articles"]
 
   defp source_capability_labels(_kind, "owncast"),
-    do: ["follow stream", "live notices", "read posts"]
+    do: ["follow stream", "preview live status", "play stream"]
 
   defp source_capability_labels(_kind, "castopod"),
     do: ["follow podcast", "preview episodes", "send replies"]
@@ -766,6 +911,7 @@ defmodule Pleroma.Web.FederatedTarget do
     |> filter_followed_kind(kind)
     |> order_by([r, _u], desc: r.updated_at)
     |> select([_r, u], u)
+    |> offset(^offset_param(params))
     |> limit(^limit_param(params))
     |> Repo.all()
   end
@@ -786,12 +932,44 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp filter_followed_kind(query, :source) do
     reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+    rss_nickname = @rss_source_nickname_prefix <> "%"
 
     where(
       query,
       [_r, u],
-      (u.actor_type != @group_actor_type or is_nil(u.actor_type)) and u.local == false and
+      u.local == false and
         u.is_active == true and u.invisible == false and fragment("? ~ ?", u.ap_id, "^https?://")
+    )
+    |> where(
+      [_r, u],
+      not (u.actor_type == @group_actor_type or
+             (u.actor_type in ^@group_service_actor_types and
+                fragment("? ~* ?", u.ap_id, ^@group_service_actor_regex)))
+    )
+    |> where(
+      [_r, u],
+      u.actor_type in ^@feed_actor_types or ilike(u.nickname, ^rss_nickname) or
+        fragment(
+          """
+          concat_ws(' ', ?, ?, ?, ?) ~* ?
+          """,
+          u.ap_id,
+          u.uri,
+          u.inbox,
+          u.shared_inbox,
+          ^@feed_source_actor_regex
+        ) or
+        fragment(
+          """
+          exists (
+            select 1 from instances i
+            where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+              and lower(coalesce(i.metadata->>'software_name', '')) ~ ?
+          )
+          """,
+          u.ap_id,
+          ^@feed_source_platform_regex
+        )
     )
     |> filter_reachable_followed_actor(reachability_datetime_threshold)
   end
@@ -840,6 +1018,7 @@ defmodule Pleroma.Web.FederatedTarget do
             ilike(u.uri, ^term)
         )
         |> order_by([u], desc: u.updated_at)
+        |> offset(^offset_param(params))
         |> limit(^limit_param(params))
         |> Repo.all()
       end
@@ -941,13 +1120,29 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp kind_query(:source) do
     reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+    rss_nickname = @rss_source_nickname_prefix <> "%"
 
     from(u in User,
-      where: u.actor_type != @group_actor_type or is_nil(u.actor_type),
       where: u.local == false,
       where: u.is_active == true,
       where: u.invisible == false,
       where: fragment("? ~ ?", u.ap_id, "^https?://"),
+      where:
+        not (u.actor_type == @group_actor_type or
+               (u.actor_type in ^@group_service_actor_types and
+                  fragment("? ~* ?", u.ap_id, ^@group_service_actor_regex))),
+      where:
+        u.actor_type in ^@feed_actor_types or ilike(u.nickname, ^rss_nickname) or
+          fragment(
+            """
+            concat_ws(' ', ?, ?, ?, ?) ~* ?
+            """,
+            u.ap_id,
+            u.uri,
+            u.inbox,
+            u.shared_inbox,
+            ^@feed_source_actor_regex
+          ),
       where:
         fragment(
           """
@@ -1066,6 +1261,7 @@ defmodule Pleroma.Web.FederatedTarget do
     with true <- url?(identifier),
          {:ok, data} <- fetch_collection_json(identifier),
          true <- collection_source_object?(data),
+         :ok <- refresh_instance_metadata(data["id"] || identifier),
          {:ok, owner_data} <- fetch_collection_source_owner(data),
          {:ok, attrs} <- collection_source_attrs(data, owner_data),
          {:ok, %User{} = source} <- upsert_collection_source(attrs) do
@@ -1079,6 +1275,7 @@ defmodule Pleroma.Web.FederatedTarget do
     with true <- url?(identifier),
          {:ok, data} <- fetch_collection_json(identifier),
          true <- actor_source_object?(data),
+         :ok <- refresh_instance_metadata(data["id"] || identifier),
          {:ok, attrs} <- actor_source_attrs(data),
          {:ok, %User{} = source} <- upsert_collection_source(attrs),
          true <- source?(source) do
@@ -1113,6 +1310,7 @@ defmodule Pleroma.Web.FederatedTarget do
     with true <- url?(url),
          {:ok, data} <- fetch_collection_json(url),
          true <- group_actor_object?(data),
+         :ok <- refresh_instance_metadata(data["id"] || url),
          {:ok, attrs} <- actor_source_attrs(data),
          {:ok, %User{} = group} <- upsert_collection_source(attrs),
          true <- group?(group) do
@@ -1123,12 +1321,11 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp resolve_group_webfinger(identifier) do
-    with [local, host] <- String.split(identifier, "@", parts: 2),
-         true <- local != "" and host != "",
+    with {:ok, _local, host, account} <- webfinger_identifier_parts(identifier),
          {:ok, %{"links" => links}} <-
            fetch_webfinger_json(
              "https://#{host}/.well-known/webfinger?resource=" <>
-               URI.encode_www_form("acct:" <> identifier)
+               URI.encode_www_form("acct:" <> account)
            ),
          self when is_binary(self) <- webfinger_self_link(links) do
       resolve_group_actor_url(self)
@@ -1136,6 +1333,51 @@ defmodule Pleroma.Web.FederatedTarget do
       _ -> {:error, :not_found}
     end
   end
+
+  defp resolve_source_webfinger_or_rss(identifier) do
+    case resolve_source_webfinger(identifier) do
+      {:ok, %User{} = source} -> {:ok, source}
+      _ -> resolve_rss_source(identifier)
+    end
+  end
+
+  defp resolve_source_webfinger(identifier) do
+    with {:ok, _local, host, account} <- webfinger_identifier_parts(identifier),
+         {:ok, %{"links" => links}} <-
+           fetch_webfinger_json(
+             "https://#{host}/.well-known/webfinger?resource=" <>
+               URI.encode_www_form("acct:" <> account)
+           ),
+         self when is_binary(self) <- webfinger_self_link(links) do
+      resolve_actor_source(self)
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp webfinger_identifier_parts(identifier) when is_binary(identifier) do
+    identifier =
+      identifier
+      |> String.trim()
+      |> String.replace_prefix("acct:", "")
+      |> String.trim_leading("@")
+      |> String.trim_leading("!")
+      |> String.trim_leading("&")
+
+    case String.split(identifier, "@", parts: 2) do
+      [local, host] when local != "" and host != "" ->
+        if String.contains?(host, "@") do
+          {:error, :not_found}
+        else
+          {:ok, local, host, local <> "@" <> host}
+        end
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp webfinger_identifier_parts(_), do: {:error, :not_found}
 
   defp fetch_webfinger_json(url) do
     headers = [{"accept", "application/jrd+json, application/json"}]
@@ -1187,6 +1429,24 @@ defmodule Pleroma.Web.FederatedTarget do
        do: true
 
   defp actor_source_object?(_), do: false
+
+  defp refresh_instance_metadata(url) when is_binary(url) do
+    with %URI{scheme: scheme, host: host} = uri
+         when scheme in ["http", "https"] and is_binary(host) <-
+           parse_uri(url) do
+      uri
+      |> Map.merge(%{path: "/", query: nil, fragment: nil})
+      |> Instance.get_or_update_metadata()
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp refresh_instance_metadata(_), do: :ok
 
   defp collection_source_object?(%{"type" => type})
        when type in ["Library", "Collection", "OrderedCollection"],
@@ -1328,6 +1588,7 @@ defmodule Pleroma.Web.FederatedTarget do
          shared_inbox: get_in(data, ["endpoints", "sharedInbox"]),
          follower_address: collection_source_followers(data, id),
          following_address: actor_source_following(data),
+         outbox_address: actor_source_outbox(data),
          public_key: actor_source_public_key(data),
          is_discoverable: actor_source_discoverable(data)
        }}
@@ -1440,6 +1701,9 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp actor_source_following(_), do: nil
 
+  defp actor_source_outbox(%{"outbox" => outbox}) when is_binary(outbox), do: outbox
+  defp actor_source_outbox(_), do: nil
+
   defp actor_source_public_key(%{"publicKey" => %{"publicKeyPem" => public_key}})
        when is_binary(public_key),
        do: public_key
@@ -1509,6 +1773,12 @@ defmodule Pleroma.Web.FederatedTarget do
     |> parse_limit()
   end
 
+  defp offset_param(params) do
+    params
+    |> param(:offset)
+    |> parse_offset()
+  end
+
   defp param(params, key) do
     Map.get(params, key) || Map.get(params, to_string(key))
   end
@@ -1527,6 +1797,17 @@ defmodule Pleroma.Web.FederatedTarget do
   defp clamp_limit(limit) when limit < 1, do: @default_limit
   defp clamp_limit(limit) when limit > @max_limit, do: @max_limit
   defp clamp_limit(limit), do: limit
+
+  defp parse_offset(offset) when is_integer(offset), do: max(offset, 0)
+
+  defp parse_offset(offset) when is_binary(offset) do
+    case Integer.parse(offset) do
+      {offset, _} -> max(offset, 0)
+      _ -> 0
+    end
+  end
+
+  defp parse_offset(_), do: 0
 
   defp followed_rss_sources_limit(limit) when is_integer(limit) do
     limit
@@ -1679,6 +1960,12 @@ defmodule Pleroma.Web.FederatedTarget do
       |> Map.get("limit", Map.get(params, :limit, 20))
       |> parse_source_item_limit()
 
+    cached_remote_group_preview_result(group, limit, reading_user, fn ->
+      remote_group_items_result(group, params, group_context, limit, reading_user)
+    end)
+  end
+
+  defp remote_group_items_result(group, params, group_context, limit, reading_user) do
     with {:ok, collection} <- group_items_collection(group, params),
          {:ok, page} <- first_source_item_page(collection) do
       items =
@@ -1686,8 +1973,9 @@ defmodule Pleroma.Web.FederatedTarget do
         |> source_collection_items()
         |> Enum.take(preview_candidate_limit(limit))
         |> Enum.map(&group_preview_item/1)
-        |> Enum.map(&render_source_item(&1, group_context, reading_user))
+        |> Enum.map(&render_source_item(&1, group_context, reading_user, fetch_replies?: false))
         |> Enum.reject(&is_nil/1)
+        |> unique_preview_items()
         |> Enum.take(limit)
 
       {:ok,
@@ -1701,6 +1989,39 @@ defmodule Pleroma.Web.FederatedTarget do
         {:error, reason}
     end
   end
+
+  defp cached_remote_group_preview_result(%User{} = group, limit, reading_user, fun) do
+    cache_key = remote_group_preview_cache_key(group, limit, reading_user)
+
+    case @cachex.get(@remote_group_preview_cache, cache_key) do
+      {:ok, %{items: items} = envelope} when is_list(items) ->
+        {:ok, envelope}
+
+      _ ->
+        cache_remote_group_preview_result(cache_key, fun.())
+    end
+  rescue
+    _ ->
+      fun.()
+  catch
+    _, _ ->
+      fun.()
+  end
+
+  defp cache_remote_group_preview_result(cache_key, {:ok, %{items: items} = envelope} = result)
+       when is_list(items) and items != [] do
+    @cachex.put(@remote_group_preview_cache, cache_key, envelope)
+    result
+  end
+
+  defp cache_remote_group_preview_result(_cache_key, result), do: result
+
+  defp remote_group_preview_cache_key(%User{id: id}, limit, reading_user) do
+    {id, limit, reading_user_cache_id(reading_user)}
+  end
+
+  defp reading_user_cache_id(%User{id: id}), do: id
+  defp reading_user_cache_id(_), do: nil
 
   defp local_group_text_param(params, key) do
     value = Map.get(params, key, Map.get(params, String.to_atom(key)))
@@ -1792,12 +2113,40 @@ defmodule Pleroma.Web.FederatedTarget do
       |> Map.get("limit", Map.get(params, :limit, 20))
       |> parse_source_item_limit()
 
-    if rss_source?(source) do
-      rss_source_items_result(source, source_context, limit, reading_user)
-    else
-      activitypub_source_items_result(source, source_context, limit, reading_user)
-    end
+    cached_source_items_result(source, limit, reading_user, fn ->
+      if rss_source?(source) do
+        rss_source_items_result(source, source_context, limit, reading_user)
+      else
+        activitypub_source_items_result(source, source_context, limit, reading_user)
+      end
+    end)
   end
+
+  defp cached_source_items_result(%User{} = source, limit, reading_user, fun) do
+    cache_key = {:source_items, source.id, limit, reading_user_cache_id(reading_user)}
+
+    case @cachex.get(@remote_group_preview_cache, cache_key) do
+      {:ok, %{items: items} = envelope} when is_list(items) ->
+        {:ok, envelope}
+
+      _ ->
+        cache_source_items_result(cache_key, fun.())
+    end
+  rescue
+    _ ->
+      fun.()
+  catch
+    _, _ ->
+      fun.()
+  end
+
+  defp cache_source_items_result(cache_key, {:ok, %{items: items} = envelope} = result)
+       when is_list(items) and items != [] do
+    @cachex.put(@remote_group_preview_cache, cache_key, envelope, ttl: @source_items_cache_ttl)
+    result
+  end
+
+  defp cache_source_items_result(_cache_key, result), do: result
 
   defp activitypub_source_items_result(source, source_context, limit, reading_user) do
     with {:ok, collection} <- source_items_collection(source),
@@ -1807,16 +2156,19 @@ defmodule Pleroma.Web.FederatedTarget do
         |> source_collection_items()
         |> Enum.take(preview_candidate_limit(limit))
         |> Enum.map(&source_preview_item/1)
-        |> Enum.map(&render_source_item(&1, source_context, reading_user))
+        |> Enum.map(&render_source_item(&1, source_context, reading_user, fetch_replies?: false))
         |> Enum.reject(&is_nil/1)
+        |> unique_preview_items()
         |> Enum.take(limit)
 
       if items == [] do
-        source_actor_fallback_items(
+        source_preview_fallback_items(
           source,
           source_context,
           :empty_collection,
-          collection_total_items(collection)
+          collection_total_items(collection),
+          limit,
+          reading_user
         )
       else
         {:ok,
@@ -1828,7 +2180,7 @@ defmodule Pleroma.Web.FederatedTarget do
       end
     else
       {:error, reason} ->
-        source_actor_fallback_items(source, source_context, reason, nil)
+        source_preview_fallback_items(source, source_context, reason, nil, limit, reading_user)
     end
   end
 
@@ -1837,8 +2189,9 @@ defmodule Pleroma.Web.FederatedTarget do
       items =
         feed.items
         |> Enum.take(preview_candidate_limit(limit))
-        |> Enum.map(&render_source_item(&1, source_context, reading_user))
+        |> Enum.map(&render_source_item(&1, source_context, reading_user, fetch_replies?: false))
         |> Enum.reject(&is_nil/1)
+        |> unique_preview_items()
         |> Enum.take(limit)
 
       if items == [] do
@@ -1879,6 +2232,18 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp preview_candidate_limit(limit), do: min(limit * 8, @max_limit)
 
+  defp unique_preview_items(items) when is_list(items) do
+    Enum.uniq_by(items, &preview_item_identity/1)
+  end
+
+  defp preview_item_identity(%{} = item) do
+    Map.get(item, :id) ||
+      Map.get(item, "id") ||
+      Map.get(item, :url) ||
+      Map.get(item, "url") ||
+      :erlang.phash2(item)
+  end
+
   defp source_items_collection(%User{} = source) do
     with {:ok, %{} = actor_or_collection} <- source_items_fetch_json(source.ap_id || source.uri) do
       case first_source_item_page(actor_or_collection) do
@@ -1886,8 +2251,13 @@ defmodule Pleroma.Web.FederatedTarget do
           {:ok, actor_or_collection}
 
         {:error, _reason} ->
-          source_outbox_collection(actor_or_collection)
+          case source_outbox_collection(actor_or_collection) do
+            {:ok, _collection} = result -> result
+            _ -> source_stored_or_inferred_outbox_collection(source)
+          end
       end
+    else
+      _ -> source_stored_or_inferred_outbox_collection(source)
     end
   end
 
@@ -2206,6 +2576,7 @@ defmodule Pleroma.Web.FederatedTarget do
   defp atom_item(item) do
     title = rss_xml_text(item, ~x"./*[local-name()='title']/text()"s)
     link = atom_item_link(item)
+    image = atom_media_image(item)
 
     summary =
       rss_xml_text(item, ~x"./*[local-name()='summary']/text()"s) ||
@@ -2217,11 +2588,12 @@ defmodule Pleroma.Web.FederatedTarget do
 
     rss_item_map(%{
       "id" => rss_xml_text(item, ~x"./*[local-name()='id']/text()"s) || link,
-      "type" => "Article",
+      "type" => if(is_binary(image), do: "Image", else: "Article"),
       "name" => title,
       "summary" => summary,
       "url" => link,
-      "published" => rss_datetime(published)
+      "published" => rss_datetime(published),
+      "image" => image
     })
   end
 
@@ -2236,6 +2608,33 @@ defmodule Pleroma.Web.FederatedTarget do
   defp atom_item_link(item) do
     rss_xml_text(item, ~x"./*[local-name()='link'][@rel='alternate']/@href"s) ||
       rss_xml_text(item, ~x"./*[local-name()='link'][1]/@href"s)
+  end
+
+  defp atom_media_image(item) do
+    item
+    |> SweetXml.xpath(~x"./*[local-name()='content'][@url]"l)
+    |> Enum.find_value(fn media ->
+      url = rss_xml_text(media, ~x"./@url"s)
+      media_type = rss_xml_text(media, ~x"./@type"s)
+
+      cond do
+        !is_binary(url) ->
+          nil
+
+        is_binary(media_type) and String.starts_with?(media_type, "image/") ->
+          url
+
+        is_nil(media_type) and String.match?(url, ~r/\.(avif|gif|jpe?g|png|webp)(\?|$)/i) ->
+          url
+
+        true ->
+          nil
+      end
+    end)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
   end
 
   defp rss_enclosure_image(item) do
@@ -2336,6 +2735,38 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_outbox_collection(%{"outbox" => %{} = outbox}), do: {:ok, outbox}
   defp source_outbox_collection(_), do: {:error, :empty_collection}
+
+  defp source_stored_or_inferred_outbox_collection(%User{} = source) do
+    with outbox when is_binary(outbox) <- source_outbox_url(source),
+         true <- safe_fetch_url?(outbox) do
+      source_items_fetch_json(outbox)
+    else
+      _ -> {:error, :empty_collection}
+    end
+  end
+
+  defp source_outbox_url(%User{outbox_address: outbox}) when is_binary(outbox) do
+    outbox
+    |> String.trim()
+    |> empty_string_to_nil()
+  end
+
+  defp source_outbox_url(%User{ap_id: ap_id}) when is_binary(ap_id) do
+    with %URI{scheme: scheme, host: host, path: path} = uri
+         when scheme in ["http", "https"] and is_binary(host) and is_binary(path) <-
+           parse_uri(ap_id),
+         false <- String.ends_with?(path, "/outbox") do
+      uri
+      |> Map.put(:path, String.trim_trailing(path, "/") <> "/outbox")
+      |> Map.put(:query, nil)
+      |> Map.put(:fragment, nil)
+      |> URI.to_string()
+    else
+      _ -> nil
+    end
+  end
+
+  defp source_outbox_url(_), do: nil
 
   defp source_context(%User{} = source) do
     platform = source_platform(source)
@@ -2449,6 +2880,7 @@ defmodule Pleroma.Web.FederatedTarget do
       "lemmy" -> threadiverse_api_collection(group, "api/v3", params)
       "piefed" -> threadiverse_api_collection(group, "api/alpha", params)
       "mbin" -> mbin_api_collection(group)
+      "discourse" -> discourse_api_collection(group, params)
       _ -> {:error, :unsupported_platform}
     end
   end
@@ -2564,6 +2996,268 @@ defmodule Pleroma.Web.FederatedTarget do
       {:ok, %{"orderedItems" => items, "totalItems" => length(items)}}
     else
       _ -> {:error, :empty_collection}
+    end
+  end
+
+  defp discourse_api_collection(%User{} = group, params) do
+    limit =
+      params
+      |> Map.get("limit", Map.get(params, :limit, 20))
+      |> parse_source_item_limit()
+
+    with url when is_binary(url) <- discourse_category_json_url(group),
+         {:ok, %{"topic_list" => %{"topics" => topics} = topic_list}} when is_list(topics) <-
+           source_items_fetch_json(url),
+         items <-
+           topics
+           |> maybe_filter_discourse_featured_topics(params)
+           |> Enum.take(preview_candidate_limit(limit))
+           |> Enum.map(&discourse_topic_item(group, &1))
+           |> Enum.reject(&is_nil/1),
+         true <- items != [] do
+      collection = %{
+        "orderedItems" => items,
+        "totalItems" => length(items)
+      }
+
+      {:ok, maybe_put_discourse_next(collection, url, topic_list["more_topics_url"])}
+    else
+      _ -> {:error, :empty_collection}
+    end
+  end
+
+  defp discourse_category_json_url(%User{} = group) do
+    [group.uri, group.ap_id]
+    |> Enum.find_value(&discourse_category_json_url/1)
+  end
+
+  defp discourse_category_json_url(url, opts \\ [])
+
+  defp discourse_category_json_url(url, opts) when is_binary(url) do
+    with %URI{scheme: scheme, host: host, path: path} = uri
+         when scheme in ["http", "https"] and is_binary(host) and is_binary(path) <-
+           parse_uri(url),
+         true <- String.starts_with?(path, "/c/") do
+      query =
+        if Keyword.get(opts, :keep_query, false) do
+          uri.query
+        end
+
+      path =
+        path
+        |> String.trim_trailing("/")
+        |> discourse_json_path()
+
+      uri
+      |> Map.merge(%{path: path, query: query, fragment: nil})
+      |> URI.to_string()
+    else
+      _ -> nil
+    end
+  end
+
+  defp discourse_category_json_url(_, _), do: nil
+
+  defp discourse_json_path(path) when is_binary(path) do
+    cond do
+      String.ends_with?(path, ".json") -> path
+      String.ends_with?(path, "/l/latest") -> path <> ".json"
+      true -> path <> ".json"
+    end
+  end
+
+  defp maybe_put_discourse_next(collection, base_url, more_topics_url)
+       when is_binary(more_topics_url) do
+    next_url =
+      base_url
+      |> URI.merge(more_topics_url)
+      |> URI.to_string()
+      |> discourse_category_json_url(keep_query: true)
+
+    if is_binary(next_url) do
+      Map.put(collection, "next", next_url)
+    else
+      collection
+    end
+  rescue
+    _ -> collection
+  end
+
+  defp maybe_put_discourse_next(collection, _base_url, _more_topics_url), do: collection
+
+  defp maybe_filter_discourse_featured_topics(topics, params) do
+    if truthy_source_item_param?(params, "include_featured") do
+      topics
+    else
+      Enum.reject(topics, &discourse_featured_topic?/1)
+    end
+  end
+
+  defp discourse_featured_topic?(%{} = topic) do
+    Enum.any?(["pinned", "pinned_globally"], fn key ->
+      topic[key] in [true, "true", "1", 1]
+    end)
+  end
+
+  defp discourse_featured_topic?(_), do: false
+
+  defp discourse_topic_item(%User{} = group, %{"id" => id} = topic) do
+    with topic_id when is_integer(topic_id) <- normalized_integer(id),
+         url when is_binary(url) <- discourse_topic_url(group, topic, topic_id),
+         title when is_binary(title) <- discourse_topic_title(topic) do
+      post = discourse_topic_first_ap_post(url)
+      ap_object_id = discourse_post_ap_object_id(post)
+
+      %{
+        "id" => url,
+        "type" => "Article",
+        "activity_pub_object_id" => ap_object_id,
+        "activity_pub_object_type" => discourse_post_ap_object_type(post),
+        "name" => title,
+        "summary" => discourse_topic_summary(topic),
+        "content" => discourse_topic_summary(topic),
+        "url" => url,
+        "published" => discourse_topic_published(topic),
+        "updated" => discourse_topic_updated(topic),
+        "attributedTo" => discourse_post_ap_actor(post),
+        "image" => discourse_absolute_url(group, topic["image_url"]),
+        "commentsCount" => discourse_topic_comment_count(topic)
+      }
+      |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+      |> Map.new()
+    end
+  end
+
+  defp discourse_topic_item(_, _), do: nil
+
+  defp discourse_topic_first_ap_post(topic_url) when is_binary(topic_url) do
+    with {:ok, %{"post_stream" => %{"posts" => posts}}} when is_list(posts) <-
+           source_items_fetch_json(topic_url <> ".json") do
+      Enum.find(posts, &present_binary?(&1["activity_pub_object_id"])) || List.first(posts)
+    else
+      _ -> nil
+    end
+  end
+
+  defp discourse_post_ap_object_id(%{"activity_pub_object_id" => id}) when is_binary(id) do
+    id
+    |> String.trim()
+    |> empty_string_to_nil()
+  end
+
+  defp discourse_post_ap_object_id(_), do: nil
+
+  defp discourse_post_ap_object_type(%{"activity_pub_object_type" => type})
+       when type in @source_item_status_types,
+       do: type
+
+  defp discourse_post_ap_object_type(_), do: nil
+
+  defp discourse_post_ap_actor(%{"activity_pub_attributed_to" => actor}) when is_binary(actor),
+    do: actor
+
+  defp discourse_post_ap_actor(%{"activity_pub_actor" => actor}) when is_binary(actor), do: actor
+  defp discourse_post_ap_actor(_), do: nil
+
+  defp discourse_topic_url(%User{} = group, topic, topic_id) do
+    with base_url when is_binary(base_url) <- discourse_base_url(group) do
+      slug =
+        topic["slug"]
+        |> discourse_text()
+        |> discourse_safe_slug()
+
+      path =
+        if is_binary(slug) do
+          "/t/#{slug}/#{topic_id}"
+        else
+          "/t/#{topic_id}"
+        end
+
+      base_url
+      |> URI.merge(path)
+      |> URI.to_string()
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp discourse_base_url(%User{} = group) do
+    [group.uri, group.ap_id]
+    |> Enum.find_value(fn url ->
+      with %URI{scheme: scheme, host: host} = uri
+           when scheme in ["http", "https"] and is_binary(host) <- parse_uri(url) do
+        uri
+        |> Map.merge(%{path: "/", query: nil, fragment: nil})
+        |> URI.to_string()
+      end
+    end)
+  end
+
+  defp discourse_absolute_url(_group, nil), do: nil
+
+  defp discourse_absolute_url(%User{} = group, url) when is_binary(url) do
+    if String.starts_with?(url, ["http://", "https://"]) do
+      url
+    else
+      with base_url when is_binary(base_url) <- discourse_base_url(group) do
+        base_url
+        |> URI.merge(url)
+        |> URI.to_string()
+      end
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp discourse_topic_title(%{} = topic) do
+    discourse_text(topic["title"]) || discourse_text(topic["fancy_title"])
+  end
+
+  defp discourse_topic_summary(%{} = topic) do
+    discourse_text(topic["excerpt"]) || discourse_text(topic["fancy_title"]) ||
+      discourse_text(topic["title"])
+  end
+
+  defp discourse_text(value) when is_binary(value) do
+    value
+    |> source_item_strip_html()
+    |> HtmlEntities.decode()
+    |> HtmlEntities.decode()
+    |> String.trim()
+    |> empty_string_to_nil()
+  end
+
+  defp discourse_text(_), do: nil
+
+  defp discourse_safe_slug(slug) when is_binary(slug) do
+    slug
+    |> String.replace(~r/[^A-Za-z0-9_-]+/, "-")
+    |> String.trim("-")
+    |> empty_string_to_nil()
+  end
+
+  defp discourse_safe_slug(_), do: nil
+
+  defp discourse_topic_published(%{} = topic) do
+    discourse_text(topic["created_at"]) || discourse_topic_updated(topic)
+  end
+
+  defp discourse_topic_updated(%{} = topic) do
+    discourse_text(topic["last_posted_at"]) || discourse_text(topic["bumped_at"])
+  end
+
+  defp discourse_topic_comment_count(%{} = topic) do
+    [
+      normalized_integer(topic["reply_count"]),
+      discourse_posts_count_to_replies(topic["posts_count"]),
+      discourse_posts_count_to_replies(topic["highest_post_number"])
+    ]
+    |> Enum.find(&is_integer/1)
+  end
+
+  defp discourse_posts_count_to_replies(count) do
+    with count when is_integer(count) and count > 0 <- normalized_integer(count) do
+      count - 1
     end
   end
 
@@ -2724,8 +3418,10 @@ defmodule Pleroma.Web.FederatedTarget do
        when type in @non_content_activity_types,
        do: nil
 
+  defp source_preview_item(%{"type" => "Announce"}, _depth), do: nil
+
   defp source_preview_item(%{"type" => type, "object" => object} = activity, depth)
-       when type in ["Add", "Create", "Announce", "Update"] do
+       when type in ["Add", "Create", "Update"] do
     object
     |> source_preview_object(depth)
     |> source_preview_inherit_activity(activity)
@@ -2734,7 +3430,7 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_preview_item(item, depth), do: source_preview_object(item, depth)
 
   defp source_preview_object(%{"type" => type, "object" => _object} = activity, depth)
-       when type in ["Add", "Create", "Announce", "Update"] and depth > 0 do
+       when type in ["Add", "Create", "Update"] and depth > 0 do
     source_preview_item(activity, depth - 1)
   end
 
@@ -2832,6 +3528,414 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_preview_inherit_activity(object, _activity), do: object
 
+  defp source_preview_fallback_items(
+         %User{} = source,
+         source_context,
+         reason,
+         total_items,
+         limit,
+         reading_user
+       ) do
+    case owncast_stream_fallback_items(source, source_context, total_items) do
+      {:ok, envelope} ->
+        {:ok, envelope}
+
+      _ ->
+        case pixelfed_atom_fallback_items(
+               source,
+               source_context,
+               limit,
+               reading_user,
+               total_items
+             ) do
+          {:ok, envelope} -> {:ok, envelope}
+
+          _ ->
+            case cached_source_status_fallback_items(
+                   source,
+                   source_context,
+                   limit,
+                   reading_user,
+                   total_items
+                 ) do
+              {:ok, envelope} -> {:ok, envelope}
+              _ -> source_actor_fallback_items(source, source_context, reason, total_items)
+            end
+        end
+    end
+  end
+
+  defp owncast_stream_fallback_items(
+         %User{} = source,
+         %{platform: %{platform: "owncast"}} = source_context,
+         total_items
+       ) do
+    with {:ok, %{} = status} <- owncast_fetch_json(source, "/api/status"),
+         directory <- owncast_optional_json(source, "/api/yp"),
+         %{} = item_data <- owncast_stream_status_item(source, status, directory),
+         %{} = item <- render_source_item(item_data, source_context) do
+      {:ok,
+       %{
+         items: [item],
+         next: nil,
+         total_items: total_items || 1
+       }}
+    else
+      _ -> {:error, :empty_collection}
+    end
+  end
+
+  defp owncast_stream_fallback_items(_, _, _), do: {:error, :not_owncast}
+
+  defp cached_source_status_fallback_items(
+         %User{} = source,
+         source_context,
+         limit,
+         reading_user,
+         total_items
+       ) do
+    items =
+      source
+      |> cached_source_status_query(preview_candidate_limit(limit))
+      |> Repo.all()
+      |> Enum.map(&cached_source_status_item(&1, source_context, reading_user))
+      |> Enum.reject(&is_nil/1)
+      |> unique_preview_items()
+      |> Enum.take(limit)
+
+    if items == [] do
+      {:error, :empty_collection}
+    else
+      {:ok,
+       %{
+         items: items,
+         next: nil,
+         total_items: total_items || length(items)
+       }}
+    end
+  rescue
+    _ -> {:error, :empty_collection}
+  catch
+    _, _ -> {:error, :empty_collection}
+  end
+
+  defp cached_source_status_query(%User{ap_id: ap_id}, limit) when is_binary(ap_id) do
+    Activity
+    |> where([activity], activity.actor == ^ap_id)
+    |> where([activity], fragment("?->>'type' = 'Create'", activity.data))
+    |> Activity.with_preloaded_object(:inner)
+    |> where([activity, object: object], fragment("?->>'type'", object.data) in ^@source_item_status_types)
+    |> order_by([activity], desc: activity.id)
+    |> limit(^limit)
+  end
+
+  defp cached_source_status_query(_, _limit) do
+    Activity
+    |> where([activity], false and activity.id == activity.id)
+  end
+
+  defp cached_source_status_item(
+         %Activity{object: %{data: %{} = object}, data: %{} = activity_data} = activity,
+         source_context,
+         reading_user
+       ) do
+    with true <- Visibility.visible_for_user?(activity, reading_user),
+         status when is_map(status) <-
+           StatusView.render("show.json", %{activity: activity, for: reading_user}),
+         %{} = item <-
+           object
+           |> source_preview_inherit_activity(activity_data)
+           |> render_source_item(source_context, reading_user, fetch_replies?: false) do
+      Map.put_new(item, :status, status)
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp cached_source_status_item(_, _, _), do: nil
+
+  defp pixelfed_atom_fallback_items(
+         %User{} = source,
+         %{platform: %{platform: "pixelfed"}} = source_context,
+         limit,
+         reading_user,
+         total_items
+       ) do
+    with atom_url when is_binary(atom_url) <- actor_updates_feed_url(source),
+         {:ok, feed} <- fetch_rss_feed(atom_url) do
+      items =
+        feed.items
+        |> Enum.take(preview_candidate_limit(limit))
+        |> Enum.map(&render_source_item(&1, source_context, reading_user, fetch_replies?: false))
+        |> Enum.reject(&is_nil/1)
+        |> unique_preview_items()
+        |> Enum.take(limit)
+
+      if items == [] do
+        {:error, :empty_collection}
+      else
+        {:ok,
+         %{
+           items: items,
+           next: nil,
+           total_items: total_items || length(feed.items)
+         }}
+      end
+    end
+  end
+
+  defp pixelfed_atom_fallback_items(_, _, _, _, _), do: {:error, :not_pixelfed}
+
+  defp actor_updates_feed_url(%User{} = source) do
+    [source.nickname, actor_webfinger_identifier(source)]
+    |> Enum.find_value(&fetch_actor_updates_feed_url/1)
+  end
+
+  defp actor_webfinger_identifier(%User{} = source) do
+    with username when is_binary(username) <- actor_source_username(source),
+         host when is_binary(host) <- host(source) do
+      username <> "@" <> host
+    end
+  end
+
+  defp actor_source_username(%User{ap_id: ap_id, nickname: nickname}) do
+    nickname_username(nickname) || actor_url_username(ap_id)
+  end
+
+  defp nickname_username(nickname) when is_binary(nickname) do
+    nickname
+    |> String.split("@", parts: 2)
+    |> case do
+      [username, _host] when username != "" -> username
+      _ -> nil
+    end
+  end
+
+  defp nickname_username(_), do: nil
+
+  defp actor_url_username(ap_id) when is_binary(ap_id) do
+    ap_id
+    |> path()
+    |> case do
+      path when is_binary(path) ->
+        path
+        |> String.split("/", trim: true)
+        |> List.last()
+        |> empty_string_to_nil()
+
+      _ ->
+        nil
+    end
+  end
+
+  defp actor_url_username(_), do: nil
+
+  defp fetch_actor_updates_feed_url(identifier) when is_binary(identifier) do
+    with true <- safe_webfinger_identifier?(identifier),
+         {:ok, _local, host, account} <- webfinger_identifier_parts(identifier),
+         {:ok, %{"links" => links}} <-
+           fetch_webfinger_json(
+             "https://#{host}/.well-known/webfinger?resource=" <>
+               URI.encode_www_form("acct:" <> account)
+           ),
+         url when is_binary(url) <- webfinger_updates_link(links),
+         true <- safe_fetch_url?(url) do
+      url
+    else
+      _ -> nil
+    end
+  end
+
+  defp fetch_actor_updates_feed_url(_), do: nil
+
+  defp webfinger_updates_link(links) when is_list(links) do
+    Enum.find_value(links, fn
+      %{
+        "rel" => "http://schemas.google.com/g/2010#updates-from",
+        "href" => href
+      } = link
+      when is_binary(href) ->
+        type = String.downcase(link["type"] || "")
+
+        if type in ["", "application/atom+xml", "application/rss+xml", "application/xml"] do
+          href
+        end
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp webfinger_updates_link(_), do: nil
+
+  defp owncast_fetch_json(%User{} = source, path) do
+    headers = [{"accept", "application/json"}]
+
+    with url when is_binary(url) <- owncast_api_url(source, path),
+         true <- safe_fetch_url?(url),
+         {:ok, %{status: status, body: body}} when status in 200..299 <- HTTP.get(url, headers),
+         {:ok, %{} = data} <- decode_source_items_body(body) do
+      mark_source_items_fetch_reachable(url)
+      {:ok, data}
+    else
+      _ -> {:error, :fetch_failed}
+    end
+  rescue
+    _ -> {:error, :fetch_failed}
+  catch
+    _, _ -> {:error, :fetch_failed}
+  end
+
+  defp owncast_optional_json(%User{} = source, path) do
+    case owncast_fetch_json(source, path) do
+      {:ok, %{} = data} -> data
+      _ -> nil
+    end
+  end
+
+  defp owncast_api_url(%User{} = source, path) do
+    with %URI{scheme: scheme, host: host} = uri
+         when scheme in ["http", "https"] and is_binary(host) <-
+           parse_uri(source.ap_id || source.uri || "") do
+      uri
+      |> Map.merge(%{path: path, query: nil, fragment: nil})
+      |> URI.to_string()
+    else
+      _ -> nil
+    end
+  end
+
+  defp owncast_absolute_url(%User{} = source, path) when is_binary(path) do
+    if String.starts_with?(path, ["http://", "https://"]) do
+      path
+    else
+      with base when is_binary(base) <- owncast_api_url(source, "/") do
+        base
+        |> URI.merge(path)
+        |> URI.to_string()
+      end
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp owncast_absolute_url(_, _), do: nil
+
+  defp owncast_stream_status_item(%User{} = source, %{} = status, directory) do
+    actor_id = source.ap_id || source.uri
+
+    if is_binary(actor_id) do
+      state = if status["online"] == true, do: "Live now", else: "Offline"
+      stream_title = owncast_stream_title(status, directory)
+      site_name = owncast_directory_text(directory, ["name"]) || source.name || source.nickname
+      title = owncast_status_title(state, stream_title, site_name)
+      content = owncast_stream_status_content(state, stream_title, status, directory)
+
+      %{
+        "id" => actor_id <> "#owncast-stream-status",
+        "type" => "StreamStatus",
+        "name" => title,
+        "content" => content,
+        "url" => owncast_stream_urls(source),
+        "attributedTo" => actor_id,
+        "published" => owncast_status_time(status),
+        "image" => owncast_absolute_url(source, owncast_directory_text(directory, ["logo"]))
+      }
+      |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+      |> Map.new()
+    end
+  end
+
+  defp owncast_status_title(state, stream_title, site_name) do
+    cond do
+      present_binary?(stream_title) -> "#{state}: #{stream_title}"
+      present_binary?(site_name) -> "#{state}: #{site_name}"
+      true -> "#{state}: Owncast stream"
+    end
+  end
+
+  defp owncast_stream_urls(%User{} = source) do
+    [
+      %{
+        "type" => "Link",
+        "mediaType" => "text/html",
+        "href" => owncast_api_url(source, "/")
+      },
+      %{
+        "type" => "Link",
+        "mediaType" => "application/x-mpegURL",
+        "href" => owncast_api_url(source, "/hls/stream.m3u8")
+      }
+    ]
+    |> Enum.reject(fn %{"href" => href} -> is_nil(href) or href == "" end)
+  end
+
+  defp owncast_stream_status_content(state, stream_title, status, directory) do
+    [
+      "<p><strong>#{html_escape(state)}</strong></p>",
+      owncast_stream_title_html(stream_title),
+      owncast_description_html(directory),
+      owncast_viewer_count_html(status)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("")
+  end
+
+  defp owncast_stream_title_html(title) when is_binary(title) do
+    "<p>Stream title: #{html_escape(title)}</p>"
+  end
+
+  defp owncast_stream_title_html(_), do: nil
+
+  defp owncast_description_html(directory) do
+    case owncast_directory_text(directory, ["description"]) do
+      description when is_binary(description) -> "<p>#{html_escape(description)}</p>"
+      _ -> nil
+    end
+  end
+
+  defp owncast_viewer_count_html(status) do
+    case normalized_integer(status["viewerCount"]) do
+      count when is_integer(count) -> "<p>#{count} viewers</p>"
+      _ -> nil
+    end
+  end
+
+  defp owncast_status_time(status) do
+    owncast_directory_text(status, ["lastConnectTime", "lastDisconnectTime", "serverTime"])
+  end
+
+  defp owncast_stream_title(status, directory) do
+    owncast_directory_text(status, ["streamTitle"]) ||
+      owncast_directory_text(directory, ["streamTitle"])
+  end
+
+  defp owncast_directory_text(%{} = data, keys) when is_list(keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.get(data, key) do
+        value when is_binary(value) ->
+          value
+          |> String.trim()
+          |> empty_string_to_nil()
+
+        _ ->
+          nil
+      end
+    end)
+  end
+
+  defp owncast_directory_text(_, _), do: nil
+
+  defp html_escape(value) when is_binary(value) do
+    value
+    |> Phoenix.HTML.html_escape()
+    |> Phoenix.HTML.safe_to_string()
+  end
+
   defp source_actor_fallback_items(%User{} = source, source_context, reason, total_items) do
     with {:ok, %{} = actor} <- source_items_fetch_json(source.ap_id || source.uri),
          %{} = item <- render_source_item(actor, source_context) do
@@ -2885,9 +3989,9 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_preview_warning(:fetch_failed), do: "Remote source preview could not be fetched."
   defp source_preview_warning(_), do: "Remote source preview is unavailable."
 
-  defp render_source_item(item, source_context, reading_user \\ nil)
+  defp render_source_item(item, source_context, reading_user \\ nil, opts \\ [])
 
-  defp render_source_item(item, source_context, _reading_user) when is_binary(item) do
+  defp render_source_item(item, source_context, _reading_user, _opts) when is_binary(item) do
     %{
       id: item,
       type: "Link",
@@ -2922,7 +4026,7 @@ defmodule Pleroma.Web.FederatedTarget do
     |> Map.merge(source_context.platform)
   end
 
-  defp render_source_item(%{} = item, source_context, reading_user) do
+  defp render_source_item(%{} = item, source_context, reading_user, opts) do
     url = source_item_best_url(item)
     media = source_item_media(item)
     summary = source_item_summary(item)
@@ -2961,16 +4065,20 @@ defmodule Pleroma.Web.FederatedTarget do
       capabilities: source_context.capabilities
     }
     |> Map.merge(platform)
-    |> maybe_put(:status, source_item_status(item, source_context, reading_user, comments_count))
+    |> maybe_put(
+      :status,
+      source_item_status(item, source_context, reading_user, comments_count, opts)
+    )
   end
 
-  defp render_source_item(_, _, _), do: nil
+  defp render_source_item(_, _, _, _), do: nil
 
   defp source_item_status(
          %{} = item,
          %{source_kind: "rss_feed", source: %User{} = source},
          reading_user,
-         comments_count
+         comments_count,
+         _opts
        ) do
     with id when is_binary(id) <- rss_source_item_object_id(source, item),
          %Activity{} = activity <- rss_source_item_activity(source, item, id),
@@ -2987,11 +4095,11 @@ defmodule Pleroma.Web.FederatedTarget do
     _, _ -> nil
   end
 
-  defp source_item_status(%{} = item, _source_context, reading_user, comments_count) do
+  defp source_item_status(%{} = item, _source_context, reading_user, comments_count, opts) do
     with id when is_binary(id) <- source_item_object_id(item),
          %Activity{} = activity <- source_item_activity(item, id),
          true <- Visibility.visible_for_user?(activity, reading_user),
-         :ok <- maybe_fetch_source_item_replies(activity),
+         :ok <- maybe_fetch_source_item_replies(activity, opts),
          %Activity{} = activity <- Activity.get_create_by_object_ap_id_with_object(id),
          status when is_map(status) <-
            StatusView.render("show.json", %{activity: activity, for: reading_user}) do
@@ -3005,7 +4113,15 @@ defmodule Pleroma.Web.FederatedTarget do
     _, _ -> nil
   end
 
-  defp maybe_fetch_source_item_replies(%Activity{} = activity) do
+  defp maybe_fetch_source_item_replies(%Activity{} = activity, opts) do
+    if Keyword.get(opts, :fetch_replies?, true) do
+      fetch_source_item_replies(activity)
+    else
+      :ok
+    end
+  end
+
+  defp fetch_source_item_replies(%Activity{} = activity) do
     RemoteReplies.fetch_for_activity(activity)
     :ok
   rescue
@@ -3102,6 +4218,8 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_item_recipients(recipient, _default) when is_binary(recipient), do: [recipient]
   defp source_item_recipients(_, default), do: default
 
+  defp source_item_object_id(%{"activity_pub_object_id" => id}) when is_binary(id), do: id
+  defp source_item_object_id(%{"activityPubObjectId" => id}) when is_binary(id), do: id
   defp source_item_object_id(%{"id" => id}) when is_binary(id), do: id
   defp source_item_object_id(_), do: nil
 
@@ -3433,7 +4551,8 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_item_url_media_type(_), do: nil
 
   defp source_item_media_type?(media_type) when is_binary(media_type) do
-    String.starts_with?(media_type, "audio/") or String.starts_with?(media_type, "video/") or
+    media_type in ["application/x-mpegURL", "application/vnd.apple.mpegurl"] or
+      String.starts_with?(media_type, "audio/") or String.starts_with?(media_type, "video/") or
       String.starts_with?(media_type, "image/")
   end
 

@@ -1,0 +1,1 @@
+Fixed Discourse group previews to read category topic JSON when ActivityPub outboxes contain follow-accept noise instead of discussion entries.

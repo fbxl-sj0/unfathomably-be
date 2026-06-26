@@ -536,6 +536,13 @@ defmodule Pleroma.Web.Streamer do
     |> Enum.each(fn pid -> send(pid, :close) end)
   end
 
+  defp streamer_registry_started? do
+    case Process.whereis(@registry) do
+      nil -> false
+      pid -> Process.alive?(pid)
+    end
+  end
+
   cond do
     @mix_env == :test ->
       defp do_add_socket(topic, oauth_token) do
@@ -558,13 +565,6 @@ defmodule Pleroma.Web.Streamer do
         if streamer_registry_started?(), do: close_streams(oauth_token)
       end
 
-      defp streamer_registry_started? do
-        case Process.whereis(@registry) do
-          nil -> false
-          pid -> Process.alive?(pid)
-        end
-      end
-
     @mix_env == :benchmark ->
       defp do_add_socket(topic, _oauth_token), do: {:ok, topic}
       defp do_remove_socket(_topic), do: :ok
@@ -573,18 +573,25 @@ defmodule Pleroma.Web.Streamer do
 
     true ->
       defp do_add_socket(topic, oauth_token) do
-        register_socket(topic, oauth_token)
+        if streamer_registry_started?(), do: register_socket(topic, oauth_token)
         {:ok, topic}
       end
 
-      defp do_remove_socket(topic), do: Registry.unregister(@registry, topic)
-      defp do_stream_topics(topics, items), do: stream_topics(topics, items)
-      defp do_close_streams_by_oauth_token(oauth_token), do: close_streams(oauth_token)
+      defp do_remove_socket(topic) do
+        if streamer_registry_started?(), do: Registry.unregister(@registry, topic)
+      end
+
+      defp do_stream_topics(topics, items) do
+        if streamer_registry_started?(), do: stream_topics(topics, items)
+      end
+
+      defp do_close_streams_by_oauth_token(oauth_token) do
+        if streamer_registry_started?(), do: close_streams(oauth_token)
+      end
   end
 
-  # In test environment, streaming depends on whether the registry has been started.
+  # Streaming depends on whether the registry has been started.
   # In benchmark environment, streaming is intentionally disabled.
-  # In any other environment, the compiled function bodies above stream directly.
   if @mix_env == :test do
     def should_env_send? do
       streamer_registry_started?()

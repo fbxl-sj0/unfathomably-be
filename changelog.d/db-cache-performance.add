@@ -1,0 +1,1 @@
+Added cached visible follow counts, a configurable instance stats refresh interval, and a lower(host) index for dormant instance joins.

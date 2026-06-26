@@ -11,7 +11,7 @@ defmodule Pleroma.Stats do
   alias Pleroma.Repo
   alias Pleroma.User
 
-  @interval :timer.seconds(60)
+  @default_interval :timer.minutes(5)
   @state_key {__MODULE__, :state}
   @empty_state %{
     peers: [],
@@ -35,7 +35,9 @@ defmodule Pleroma.Stats do
     if Pleroma.Config.get(:env) != :test do
       {:ok, nil, {:continue, :calculate_stats}}
     else
-      {:ok, calculate_stat_data()}
+      stats = calculate_stat_data()
+      cache_state(stats)
+      {:ok, stats}
     end
   end
 
@@ -51,7 +53,7 @@ defmodule Pleroma.Stats do
           user_count: non_neg_integer()
         }
   def get_stats do
-    %{stats: stats} = get_state()
+    %{stats: stats} = cached_state()
 
     stats
   end
@@ -59,7 +61,7 @@ defmodule Pleroma.Stats do
   @doc "Returns list peers"
   @spec get_peers() :: list(String.t())
   def get_peers do
-    %{peers: peers} = get_state()
+    %{peers: peers} = cached_state()
 
     peers
   end
@@ -121,7 +123,7 @@ defmodule Pleroma.Stats do
     cache_state(stats)
 
     unless Pleroma.Config.get(:env) == :test do
-      Process.send_after(self(), :run_update, @interval)
+      Process.send_after(self(), :run_update, refresh_interval())
     end
 
     {:noreply, stats}
@@ -143,14 +145,8 @@ defmodule Pleroma.Stats do
   def handle_info(:run_update, _) do
     new_stats = calculate_stat_data()
     cache_state(new_stats)
-    Process.send_after(self(), :run_update, @interval)
+    Process.send_after(self(), :run_update, refresh_interval())
     {:noreply, new_stats}
-  end
-
-  defp get_state do
-    GenServer.call(__MODULE__, :get_state, 1_000) || cached_state()
-  catch
-    :exit, _ -> cached_state()
   end
 
   defp cache_state(state) do
@@ -160,4 +156,15 @@ defmodule Pleroma.Stats do
   defp cached_state do
     :persistent_term.get(@state_key, @empty_state)
   end
+
+  defp refresh_interval do
+    [:instance, :stats_refresh_interval]
+    |> Pleroma.Config.get(@default_interval)
+    |> normalize_refresh_interval()
+  end
+
+  defp normalize_refresh_interval(interval) when is_integer(interval) and interval > 0,
+    do: interval
+
+  defp normalize_refresh_interval(_), do: @default_interval
 end

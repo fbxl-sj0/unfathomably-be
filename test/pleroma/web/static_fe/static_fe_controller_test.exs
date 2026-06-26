@@ -36,6 +36,16 @@ defmodule Pleroma.Web.StaticFE.StaticFEControllerTest do
       assert html_response(conn, 200) =~ user.nickname
     end
 
+    test "profile app subroutes fall back to the frontend app", %{conn: conn, user: user} do
+      for tab <- ~w(with_replies followers following media favorites pins) do
+        conn = get(conn, "/@#{user.nickname}/#{tab}")
+        html = html_response(conn, 200)
+
+        assert html =~ "</html>"
+        refute html =~ "Post not found"
+      end
+    end
+
     test "remote profile shorthand route falls back to the frontend app", %{conn: conn} do
       user = insert(:user, local: false, nickname: "dwarvenallfather@www.minds.com")
 
@@ -134,6 +144,18 @@ defmodule Pleroma.Web.StaticFE.StaticFEControllerTest do
       assert html =~ "<header>"
       assert html =~ user.nickname
       assert html =~ "testing a thing!"
+    end
+
+    test "remote frontend post route falls back to the frontend app", %{conn: conn} do
+      user = insert(:user, local: false, nickname: "alice@example.com")
+      note = insert(:note, user: user, data: %{"url" => "https://example.com/notice/1"})
+      activity = insert(:note_activity, user: user, note: note, local: false)
+
+      conn = get(conn, "/@#{user.nickname}/posts/#{activity.id}")
+      html = html_response(conn, 200)
+
+      assert html =~ "</html>"
+      refute html =~ "notice/1"
     end
 
     test "single notice page with missing object published date", %{conn: conn, user: user} do

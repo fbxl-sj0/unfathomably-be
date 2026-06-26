@@ -1,0 +1,1 @@
+Avoided restart-time websocket errors when open streaming connections outlive the streamer registry during shutdown.

@@ -1,0 +1,1 @@
+Use locally cached statuses as a source preview fallback when a followed ActivityPub source restricts or fails live collection fetches.

@@ -1,0 +1,1 @@
+Returned controlled client errors for direct user-inbox deliveries that cannot be matched to the target user instead of falling through to a 500.

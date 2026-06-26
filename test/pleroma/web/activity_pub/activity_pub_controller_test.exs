@@ -950,6 +950,93 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       assert Activity.get_by_ap_id(data["id"])
     end
 
+    test "it accepts incoming activities whose actor is embedded as an object", %{
+      conn: conn,
+      data: data
+    } do
+      recipient = insert(:user)
+      actor = insert(:user, local: false, actor_type: "Group")
+
+      actor_object = %{
+        "id" => actor.ap_id,
+        "type" => "Group",
+        "preferredUsername" => actor.nickname,
+        "inbox" => actor.inbox,
+        "outbox" => actor.outbox_address
+      }
+
+      data =
+        data
+        |> Map.put("actor", actor_object)
+        |> Map.put("to", [recipient.ap_id])
+        |> Map.put("cc", [])
+        |> Kernel.put_in(["object", "attributedTo"], actor.ap_id)
+        |> Kernel.put_in(["object", "to"], [recipient.ap_id])
+        |> Kernel.put_in(["object", "cc"], [])
+
+      conn =
+        conn
+        |> assign_valid_signature()
+        |> put_req_header("content-type", "application/activity+json")
+        |> post("/users/#{recipient.nickname}/inbox", data)
+
+      assert "ok" == json_response(conn, 200)
+      ObanHelpers.perform(all_enqueued(worker: ReceiverWorker))
+      assert Activity.get_by_ap_id(data["id"])
+    end
+
+    test "it accepts Discourse-style follow accepts addressed to the followed group", %{
+      conn: conn
+    } do
+      recipient = insert(:user)
+      group = insert(:user, local: false, actor_type: "Group")
+
+      {:ok, follow_data, _} = Pleroma.Web.ActivityPub.Builder.follow(recipient, group)
+
+      {:ok, follow_activity, _} =
+        Pleroma.Web.ActivityPub.Pipeline.common_pipeline(follow_data, local: true)
+
+      recipient_actor = %{
+        "id" => recipient.ap_id,
+        "type" => "Person",
+        "preferredUsername" => recipient.nickname,
+        "inbox" => recipient.ap_id <> "/inbox"
+      }
+
+      group_actor = %{
+        "id" => group.ap_id,
+        "type" => "Group",
+        "preferredUsername" => group.nickname,
+        "inbox" => group.inbox,
+        "outbox" => group.outbox_address
+      }
+
+      data = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => group.ap_id <> "/accepts/" <> Ecto.UUID.generate(),
+        "type" => "Accept",
+        "actor" => group_actor,
+        "to" => [group.ap_id],
+        "object" => %{
+          "id" => follow_activity.data["id"],
+          "type" => "Follow",
+          "actor" => recipient_actor,
+          "object" => group_actor
+        }
+      }
+
+      conn =
+        conn
+        |> assign_valid_signature()
+        |> put_req_header("content-type", "application/activity+json")
+        |> post("/users/#{recipient.nickname}/inbox", data)
+
+      assert "ok" == json_response(conn, 200)
+      ObanHelpers.perform(all_enqueued(worker: ReceiverWorker))
+
+      assert User.following?(recipient, group)
+    end
+
     test "it accepts messages with to as string instead of array", %{conn: conn, data: data} do
       user = insert(:user)
 
@@ -1071,6 +1158,29 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       assert "ok" == json_response(conn, 200)
       ObanHelpers.perform(all_enqueued(worker: ReceiverWorker))
       assert Activity.get_by_ap_id(data["id"])
+    end
+
+    test "it rejects messages that do not address the inbox user", %{conn: conn, data: data} do
+      user = insert(:user)
+      other_user = insert(:user)
+
+      data =
+        data
+        |> Map.put("to", [other_user.ap_id])
+        |> Map.put("cc", [])
+        |> Map.put("bcc", [])
+        |> Kernel.put_in(["object", "to"], [other_user.ap_id])
+        |> Kernel.put_in(["object", "cc"], [])
+        |> Kernel.put_in(["object", "bcc"], [])
+
+      conn =
+        conn
+        |> assign_valid_signature()
+        |> put_req_header("content-type", "application/activity+json")
+        |> post("/users/#{user.nickname}/inbox", data)
+
+      assert "error, recipient not in message" == json_response(conn, 400)
+      refute Activity.get_by_ap_id(data["id"])
     end
 
     test "it rejects reads from other users", %{conn: conn} do

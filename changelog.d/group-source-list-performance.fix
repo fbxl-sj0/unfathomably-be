@@ -1,0 +1,1 @@
+Fixed federated group and source list rendering so list pages use cached group counts, skip unused per-row interaction scoring, and support offset paging for large source lists.

@@ -43,10 +43,16 @@ defmodule Pleroma.Web.StaticFE.StaticFEController do
 
       render(conn, "conversation.html", %{activities: timeline, meta: meta})
     else
-      %Activity{object: %Object{data: data}} ->
-        conn
-        |> put_status(:found)
-        |> redirect(external: data["url"] || data["external_url"] || data["id"])
+      %Activity{} = activity ->
+        if frontend_remote_notice_path?(conn) do
+          frontend_notice(conn, activity)
+        else
+          %Object{data: data} = activity.object
+
+          conn
+          |> put_status(:found)
+          |> redirect(external: data["url"] || data["external_url"] || data["id"])
+        end
 
       _ ->
         not_found(conn, "Post not found.")
@@ -225,4 +231,28 @@ defmodule Pleroma.Web.StaticFE.StaticFEController do
   end
 
   defp remote_profile_path?(_), do: false
+
+  defp frontend_remote_notice_path?(%{path_info: ["@" <> nickname, "posts", _notice_id]}) do
+    String.contains?(nickname, "@")
+  end
+
+  defp frontend_remote_notice_path?(%{path_info: ["@" <> nickname, _notice_id]}) do
+    String.contains?(nickname, "@")
+  end
+
+  defp frontend_remote_notice_path?(_), do: false
+
+  defp frontend_notice(conn, %Activity{} = activity) do
+    with %Object{} = object <- Object.normalize(activity, fetch: false),
+         %User{} = user <- User.get_by_ap_id(object.data["actor"]) do
+      RedirectController.redirector_with_meta(conn, %{
+        activity_id: activity.id,
+        object: object,
+        user: user,
+        url: Helpers.url(conn) <> conn.request_path
+      })
+    else
+      _ -> RedirectController.redirector(conn, nil)
+    end
+  end
 end

@@ -100,6 +100,30 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
 
       assert {"content-security-policy", "sandbox;"} in headers
     end
+
+    test "it serves a local placeholder when proxied image fetch fails", %{conn: conn} do
+      clear_config([:media_proxy, :proxy_opts], redirect_on_failure: false)
+
+      media_url = "https://dead.example/image.png"
+      media_proxy_url = MediaProxy.encode_url(media_url)
+
+      ClientMock
+      |> expect(:request, fn :get, ^media_url, _, _, _ ->
+        {:error, :nxdomain}
+      end)
+
+      response = get(conn, media_proxy_url)
+
+      assert response.status == 200
+      assert get_resp_header(response, "content-type") == ["image/svg+xml"]
+
+      assert get_resp_header(response, "content-disposition") == [
+               "inline; filename=\"remote-media-unavailable.svg\""
+             ]
+
+      assert response.resp_body =~ "<svg"
+      refute response.resp_body =~ media_url
+    end
   end
 
   describe "Media Preview Proxy" do

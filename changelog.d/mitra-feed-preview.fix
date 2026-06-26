@@ -1,0 +1,1 @@
+Classified NodeInfo-identified Mitra and related alternate microblog actors as feed-previewable sources, skipped source-preview boosts, and avoided remote reply hydration while rendering feed cards so their own ActivityPub outbox posts load quickly in Feeds.

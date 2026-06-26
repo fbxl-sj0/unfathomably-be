@@ -97,6 +97,7 @@ defmodule Pleroma.FollowingRelationship do
 
   defp after_update(state, %User{} = follower, %User{} = following) do
     User.invalidate_cache(follower)
+    User.invalidate_cache(following)
 
     with {:ok, following} <- User.update_follower_count(following),
          {:ok, follower} <- User.update_following_count(follower) do

@@ -111,7 +111,12 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
 
     conn
     |> put_view(FederatedTargetView)
-    |> render("groups.json", groups: groups, for: user)
+    |> render("groups.json",
+      groups: groups,
+      for: user,
+      include_interaction_score: false,
+      refresh_counts: false
+    )
   end
 
   @doc "GET /api/v1/groups/search"
@@ -120,7 +125,12 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
 
     conn
     |> put_view(FederatedTargetView)
-    |> render("groups.json", groups: groups, for: user)
+    |> render("groups.json",
+      groups: groups,
+      for: user,
+      include_interaction_score: false,
+      refresh_counts: false
+    )
   end
 
   @doc "GET /api/v1/groups/lookup"
@@ -131,7 +141,12 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
       {:ok, %User{} = group} ->
         conn
         |> put_view(FederatedTargetView)
-        |> render("group.json", group: group, for: user)
+        |> render("group.json",
+          group: group,
+          for: user,
+          include_interaction_score: false,
+          refresh_counts: false
+        )
 
       _ ->
         render_error(conn, :not_found, "Record not found")
@@ -168,7 +183,12 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
       {:ok, %User{} = group} ->
         conn
         |> put_view(FederatedTargetView)
-        |> render("group.json", group: group, for: user)
+        |> render("group.json",
+          group: group,
+          for: user,
+          include_interaction_score: false,
+          refresh_counts: false
+        )
 
       _ ->
         render_error(conn, :not_found, "Record not found")

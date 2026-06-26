@@ -92,6 +92,18 @@ defmodule Pleroma.Web.Federation.PlatformTest do
            } = Platform.classify(payload)
   end
 
+  test "prefers NodeInfo software over actor and fallback hints" do
+    payload = %{
+      "nodeinfo" => %{"software" => %{"name" => "mastodon"}},
+      "generator" => %{"name" => "Pixelfed"},
+      "platform" => "owncast",
+      "type" => "Video"
+    }
+
+    assert %{platform: "mastodon", family: :microblog, confidence: :software} =
+             Platform.classify(payload)
+  end
+
   test "classifies actor generator metadata" do
     payload = %{
       "type" => "Person",

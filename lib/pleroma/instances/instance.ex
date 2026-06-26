@@ -6,6 +6,7 @@ defmodule Pleroma.Instances.Instance do
   @moduledoc "Instance."
 
   alias Pleroma.Instances
+  alias Pleroma.Instances.Cache, as: InstanceCache
   alias Pleroma.Instances.Instance
   alias Pleroma.Maps
   alias Pleroma.Config
@@ -75,72 +76,98 @@ defmodule Pleroma.Instances.Instance do
   def filter_reachable([]), do: %{}
 
   def filter_reachable(urls_or_hosts) when is_list(urls_or_hosts) do
-    hosts =
-      urls_or_hosts
-      |> Enum.map(&(&1 && host(&1)))
-      |> Enum.filter(&(to_string(&1) != ""))
+    case InstanceCache.filter_reachable(urls_or_hosts) do
+      {:ok, result} ->
+        result
 
-    unreachable_hosts =
-      Repo.all(
-        from(i in Instance,
-          where: i.host in ^hosts,
-          select: {i.host, i.unreachable_since}
-        )
-      )
+      :error ->
+        hosts =
+          urls_or_hosts
+          |> Enum.map(&(&1 && host(&1)))
+          |> Enum.filter(&(to_string(&1) != ""))
 
-    unreachable_since_by_host = Map.new(unreachable_hosts, & &1)
+        unreachable_hosts =
+          Repo.all(
+            from(i in Instance,
+              where: i.host in ^hosts,
+              select: {i.host, i.unreachable_since}
+            )
+          )
 
-    reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+        unreachable_since_by_host = Map.new(unreachable_hosts, & &1)
 
-    for entry <- Enum.filter(urls_or_hosts, &is_binary/1) do
-      host = host(entry)
-      unreachable_since = unreachable_since_by_host[host]
+        reachability_datetime_threshold = Instances.reachability_datetime_threshold()
 
-      if !unreachable_since ||
-           NaiveDateTime.compare(unreachable_since, reachability_datetime_threshold) == :gt do
-        {entry, unreachable_since}
-      end
+        for entry <- Enum.filter(urls_or_hosts, &is_binary/1) do
+          host = host(entry)
+          unreachable_since = unreachable_since_by_host[host]
+
+          if !unreachable_since ||
+               NaiveDateTime.compare(unreachable_since, reachability_datetime_threshold) == :gt do
+            {entry, unreachable_since}
+          end
+        end
+        |> Enum.filter(& &1)
+        |> Map.new(& &1)
     end
-    |> Enum.filter(& &1)
-    |> Map.new(& &1)
   end
 
   def reachable?(url_or_host) when is_binary(url_or_host) do
-    !Repo.one(
-      from(i in Instance,
-        where:
-          i.host == ^host(url_or_host) and
-            i.unreachable_since <= ^Instances.reachability_datetime_threshold(),
-        select: true
-      )
-    )
+    case InstanceCache.reachable?(url_or_host) do
+      {:ok, reachable?} ->
+        reachable?
+
+      :error ->
+        !Repo.one(
+          from(i in Instance,
+            where:
+              i.host == ^host(url_or_host) and
+                i.unreachable_since <= ^Instances.reachability_datetime_threshold(),
+            select: true
+          )
+        )
+    end
   end
 
   def dormant?(url_or_host) when is_binary(url_or_host) do
-    Repo.exists?(
-      from(i in Instance,
-        where:
-          i.host == ^host(url_or_host) and
-            i.unreachable_since <= ^Instances.dormant_datetime_threshold()
-      )
-    )
+    case InstanceCache.dormant?(url_or_host) do
+      {:ok, dormant?} ->
+        dormant?
+
+      :error ->
+        Repo.exists?(
+          from(i in Instance,
+            where:
+              i.host == ^host(url_or_host) and
+                i.unreachable_since <= ^Instances.dormant_datetime_threshold()
+          )
+        )
+    end
   end
 
   def any_dormant? do
-    Repo.exists?(
-      from(i in Instance,
-        where: i.unreachable_since <= ^Instances.dormant_datetime_threshold()
-      )
-    )
+    case InstanceCache.any_dormant?() do
+      {:ok, any_dormant?} ->
+        any_dormant?
+
+      :error ->
+        Repo.exists?(
+          from(i in Instance,
+            where: i.unreachable_since <= ^Instances.dormant_datetime_threshold()
+          )
+        )
+    end
   end
 
   def set_reachable(url_or_host) when is_binary(url_or_host) do
     with host <- host(url_or_host),
-         %Instance{} = existing_record <- Repo.get_by(Instance, %{host: host}) do
-      {:ok, _instance} =
-        existing_record
-        |> changeset(%{unreachable_since: nil})
-        |> Repo.update()
+         %Instance{} = existing_record <- Repo.get_by(Instance, %{host: host}),
+         {:ok, instance} <-
+           existing_record
+           |> changeset(%{unreachable_since: nil})
+           |> Repo.update() do
+      InstanceCache.sync(instance)
+      {:ok, instance}
     end
   end
 
@@ -242,21 +269,24 @@ defmodule Pleroma.Instances.Instance do
 
     changes = %{unreachable_since: unreachable_since}
 
-    cond do
-      is_nil(existing_record) ->
-        %Instance{}
-        |> changeset(Map.put(changes, :host, host))
-        |> Repo.insert()
+    result =
+      cond do
+        is_nil(existing_record) ->
+          %Instance{}
+          |> changeset(Map.put(changes, :host, host))
+          |> Repo.insert()
 
-      existing_record.unreachable_since &&
-          NaiveDateTime.compare(existing_record.unreachable_since, unreachable_since) != :gt ->
-        {:ok, existing_record}
+        existing_record.unreachable_since &&
+            NaiveDateTime.compare(existing_record.unreachable_since, unreachable_since) != :gt ->
+          {:ok, existing_record}
 
-      true ->
-        existing_record
-        |> changeset(changes)
-        |> Repo.update()
-    end
+        true ->
+          existing_record
+          |> changeset(changes)
+          |> Repo.update()
+      end
+
+    tap_cache_update(result)
   end
 
   def set_unreachable(_, _), do: {:error, nil}
@@ -303,6 +333,7 @@ defmodule Pleroma.Instances.Instance do
       instance
       |> changeset(Map.put_new(changes, :host, host))
       |> insert_or_update()
+      |> tap_cache_update()
       |> tap_log_health_update(host, opts)
     else
       _ -> {:error, nil}
@@ -323,6 +354,13 @@ defmodule Pleroma.Instances.Instance do
   end
 
   defp tap_log_health_update(result, _host, _opts), do: result
+
+  defp tap_cache_update({:ok, %Instance{} = instance} = result) do
+    InstanceCache.sync(instance)
+    result
+  end
+
+  defp tap_cache_update(result), do: result
 
   defp normalize_host(url_or_host) when is_binary(url_or_host) do
     case host(url_or_host) do
@@ -482,8 +520,7 @@ defmodule Pleroma.Instances.Instance do
     existing_record = Repo.get_by(Instance, %{host: host})
     now = NaiveDateTime.utc_now()
 
-    if existing_record && existing_record.metadata_updated_at &&
-         NaiveDateTime.diff(now, existing_record.metadata_updated_at) < 86_400 do
+    if fresh_metadata?(existing_record, now) do
       existing_record.metadata
     else
       metadata = scrape_metadata(instance_uri)
@@ -502,21 +539,67 @@ defmodule Pleroma.Instances.Instance do
     end
   end
 
+  defp fresh_metadata?(%Instance{metadata: metadata, metadata_updated_at: updated_at}, now)
+       when not is_nil(updated_at) do
+    metadata_has_software?(metadata) and NaiveDateTime.diff(now, updated_at) < 86_400
+  end
+
+  defp fresh_metadata?(_, _), do: false
+
+  defp metadata_has_software?(metadata) do
+    metadata
+    |> metadata_software_name()
+    |> case do
+      name when is_binary(name) -> String.trim(name) != ""
+      _ -> false
+    end
+  end
+
+  defp metadata_software_name(%{} = metadata) do
+    Map.get(metadata, :software_name) || Map.get(metadata, "software_name")
+  end
+
+  defp metadata_software_name(_), do: nil
+
   defp get_nodeinfo_uri(well_known) do
     links = Map.get(well_known, "links", [])
 
-    nodeinfo21 =
-      Enum.find(links, &(&1["rel"] == "http://nodeinfo.diaspora.software/ns/schema/2.1"))["href"]
+    [
+      "http://nodeinfo.diaspora.software/ns/schema/2.1",
+      "https://nodeinfo.diaspora.software/ns/schema/2.1",
+      "http://nodeinfo.diaspora.software/ns/schema/2.0",
+      "https://nodeinfo.diaspora.software/ns/schema/2.0"
+    ]
+    |> Enum.find_value(&nodeinfo_href_for_rel(links, &1))
+    |> case do
+      href when is_binary(href) ->
+        {:ok, href}
 
-    nodeinfo20 =
-      Enum.find(links, &(&1["rel"] == "http://nodeinfo.diaspora.software/ns/schema/2.0"))["href"]
-
-    cond do
-      is_binary(nodeinfo21) -> {:ok, nodeinfo21}
-      is_binary(nodeinfo20) -> {:ok, nodeinfo20}
-      true -> {:error, :no_links}
+      _ ->
+        links
+        |> Enum.find_value(&nodeinfo_href/1)
+        |> case do
+          href when is_binary(href) -> {:ok, href}
+          _ -> {:error, :no_links}
+        end
     end
   end
+
+  defp nodeinfo_href_for_rel(links, rel) do
+    links
+    |> Enum.find_value(fn
+      %{"rel" => ^rel} = link -> nodeinfo_href(link)
+      _ -> nil
+    end)
+  end
+
+  defp nodeinfo_href(%{"href" => href}) when is_binary(href) do
+    if String.contains?(String.downcase(href), "nodeinfo") do
+      href
+    end
+  end
+
+  defp nodeinfo_href(_), do: nil
 
   defp scrape_metadata(%URI{} = instance_uri) do
     try do

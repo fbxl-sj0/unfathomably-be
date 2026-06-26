@@ -1,0 +1,1 @@
+Classified Pixelfed actors as photo feeds and used their WebFinger Atom feed as a preview fallback when the ActivityPub outbox does not expose items.

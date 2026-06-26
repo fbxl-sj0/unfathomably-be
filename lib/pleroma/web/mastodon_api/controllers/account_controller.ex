@@ -20,6 +20,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.CommonAPI
+  alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.ListView
   alias Pleroma.Web.MastodonAPI.MastodonAPI
   alias Pleroma.Web.MastodonAPI.MastodonAPIController
@@ -583,7 +584,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
 
   @doc "GET /api/v1/accounts/lookup"
   def lookup(%{assigns: %{user: for_user}} = conn, %{acct: nickname} = _params) do
-    with %User{} = user <- User.get_by_nickname(nickname),
+    with %User{} = user <- lookup_user(nickname),
          :visible <- User.visible_for(user, for_user) do
       render(conn, "show.json",
         user: user,
@@ -593,6 +594,37 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
       error -> user_visibility_error(conn, error)
     end
   end
+
+  defp lookup_user(nickname) when is_binary(nickname) do
+    nickname = normalize_lookup_nickname(nickname)
+
+    User.get_by_nickname(nickname) || resolve_lookup_user(nickname)
+  end
+
+  defp lookup_user(_), do: nil
+
+  defp resolve_lookup_user(nickname) do
+    case FederatedTarget.resolve_source(nickname) do
+      {:ok, %User{} = user} ->
+        user
+
+      _ ->
+        case FederatedTarget.resolve_target(nickname) do
+          {:ok, %User{} = user} -> user
+          _ -> nil
+        end
+    end
+  end
+
+  defp normalize_lookup_nickname(nickname) do
+    nickname
+    |> String.trim()
+    |> strip_acct_scheme()
+    |> String.trim_leading("@")
+  end
+
+  defp strip_acct_scheme("acct:" <> nickname), do: nickname
+  defp strip_acct_scheme(nickname), do: nickname
 
   @doc "GET /api/v1/endorsements"
   def own_endorsements(%{assigns: %{user: user}} = conn, params) do

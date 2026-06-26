@@ -263,6 +263,44 @@ defmodule Pleroma.Instances.InstanceTest do
       assert expected ==
                Instance.get_or_update_metadata(URI.parse("https://mastodon.example.org/"))
     end
+
+    test "Scrapes NodeInfo links with nonstandard rel values" do
+      Tesla.Mock.mock(fn
+        %{url: "https://funkwhale.example.org/.well-known/nodeinfo"} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "links" => [
+                  %{
+                    "rel" => "https://docs.funkwhale.audio/swagger/schema.yml",
+                    "href" => "https://funkwhale.example.org/api/v2/instance/nodeinfo/2.1"
+                  }
+                ]
+              })
+          }
+
+        %{url: "https://funkwhale.example.org/api/v2/instance/nodeinfo/2.1"} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "software" => %{
+                  "name" => "funkwhale",
+                  "version" => "1.4.0"
+                }
+              })
+          }
+      end)
+
+      expected = %{
+        software_name: "funkwhale",
+        software_version: "1.4.0"
+      }
+
+      assert expected ==
+               Instance.get_or_update_metadata(URI.parse("https://funkwhale.example.org/"))
+    end
   end
 
   test "delete_users_and_activities/1 deletes remote instance users and activities" do

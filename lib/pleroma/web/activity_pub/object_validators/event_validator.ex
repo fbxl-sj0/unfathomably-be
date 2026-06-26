@@ -48,8 +48,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EventValidator do
     data
     |> CommonFixes.fix_actor()
     |> CommonFixes.fix_object_defaults()
+    |> fix_location()
     |> Transmogrifier.fix_emoji()
   end
+
+  defp fix_location(%{"location" => locations} = data) when is_list(locations) do
+    case Enum.find(locations, &physical_location?/1) do
+      nil -> Map.delete(data, "location")
+      location -> Map.put(data, "location", location)
+    end
+  end
+
+  defp fix_location(%{"location" => %{"type" => type}} = data) when type != "Place" do
+    Map.delete(data, "location")
+  end
+
+  defp fix_location(data), do: data
+
+  defp physical_location?(%{"type" => "Place"}), do: true
+  defp physical_location?(_), do: false
 
   def changeset(struct, data) do
     data = fix(data)

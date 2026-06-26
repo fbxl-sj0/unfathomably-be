@@ -31,6 +31,11 @@ defmodule Pleroma.Web.MastodonAPI.InstanceController do
     render(conn, "rules.json")
   end
 
+  @doc "GET /api/v1/instance/extended_description"
+  def extended_description(conn, _params) do
+    render(conn, "extended_description.json")
+  end
+
   @doc "GET /api/v1/instance/domain_blocks"
   def domain_blocks(conn, _params) do
     render(conn, "domain_blocks.json")

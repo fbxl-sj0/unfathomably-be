@@ -45,8 +45,10 @@ defmodule Pleroma.Web.ActivityPub.Utils do
 
   # Some implementations send the actor URI as the actor field, others send the entire actor object,
   # so figure out what the actor's URI is based on what we have.
-  def get_ap_id(%{"id" => id} = _), do: id
-  def get_ap_id(id), do: id
+  def get_ap_id(%{"id" => id}) when is_binary(id), do: id
+  def get_ap_id(%{"href" => href}) when is_binary(href), do: href
+  def get_ap_id(id) when is_binary(id), do: id
+  def get_ap_id(_), do: nil
 
   def normalize_params(params) do
     Map.put(params, "actor", get_ap_id(params["actor"]))
@@ -93,7 +95,32 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   def recipient_in_message(%User{ap_id: ap_id} = recipient, %User{} = actor, params),
     do:
       label_in_message?(ap_id, params) || unaddressed_message?(params) ||
-        User.following?(recipient, actor)
+        User.following?(recipient, actor) || response_to_recipient_request?(ap_id, params)
+
+  defp response_to_recipient_request?(recipient_ap_id, %{"type" => type, "object" => object})
+       when type in ["Accept", "Reject"] do
+    embedded_request_actor_matches?(recipient_ap_id, object) ||
+      stored_request_actor_matches?(recipient_ap_id, object)
+  end
+
+  defp response_to_recipient_request?(_, _), do: false
+
+  defp embedded_request_actor_matches?(recipient_ap_id, %{"type" => type, "actor" => actor})
+       when type in ["Follow", "Join"] do
+    get_ap_id(actor) == recipient_ap_id
+  end
+
+  defp embedded_request_actor_matches?(_, _), do: false
+
+  defp stored_request_actor_matches?(recipient_ap_id, object) do
+    with object_id when is_binary(object_id) <- get_ap_id(object),
+         %Activity{actor: ^recipient_ap_id, data: %{"type" => type}} <-
+           Activity.get_by_ap_id(object_id) do
+      type in ["Follow", "Join"]
+    else
+      _ -> false
+    end
+  end
 
   defp extract_list(target) when is_binary(target), do: [target]
   defp extract_list(lst) when is_list(lst), do: lst

@@ -169,6 +169,7 @@ config :pleroma, :instance,
   notify_email: "noreply@example.com",
   description: "A flexible fediverse server powered by unfathomably-be.",
   short_description: "",
+  stats_refresh_interval: :timer.minutes(5),
   background_image: "/images/city.jpg",
   instance_thumbnail: "/instance/thumbnail.png",
   favicon: "/favicon.png",
@@ -282,6 +283,8 @@ config :pleroma, :instance,
   max_media_attachments: 1_000,
   group_post_default_visibility: "unlisted",
   migration_cooldown_period: 30
+
+config :pleroma, :instances, cache_refresh_interval: :timer.minutes(5)
 
 config :pleroma, :welcome,
   direct_message: [

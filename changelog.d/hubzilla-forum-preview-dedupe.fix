@@ -1,0 +1,2 @@
+Deduplicated remote group and feed previews that expose the same post through both forum wrapper activities and bare Create activities.
+Throttled first-page remote group backfills so slow third-party participants do not make repeated group page loads stall.

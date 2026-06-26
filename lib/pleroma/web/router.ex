@@ -909,6 +909,14 @@ defmodule Pleroma.Web.Router do
     get("/sources/:id/items", SourceController, :items)
     post("/sources/:id/follow", SourceController, :follow)
     post("/sources/:id/unfollow", SourceController, :unfollow)
+    get("/feeds", SourceController, :index)
+    get("/feeds/search", SourceController, :search)
+    get("/feeds/lookup", SourceController, :lookup)
+    get("/feeds/relationships", SourceController, :relationships)
+    get("/feeds/:id", SourceController, :show)
+    get("/feeds/:id/items", SourceController, :items)
+    post("/feeds/:id/follow", SourceController, :follow)
+    post("/feeds/:id/unfollow", SourceController, :unfollow)
 
     # Unlike `GET /api/v1/accounts/:id/favourites`, demands authentication
     get("/favourites", StatusController, :favourites)
@@ -940,6 +948,7 @@ defmodule Pleroma.Web.Router do
     get("/timelines/direct", TimelineController, :direct)
     get("/timelines/groups", FederatedGroupTimelineController, :index)
     get("/timelines/sources", FederatedSourceTimelineController, :index)
+    get("/timelines/feeds", FederatedSourceTimelineController, :index)
     get("/timelines/list/:list_id", TimelineController, :list)
 
     get("/announcements", AnnouncementController, :index)
@@ -963,6 +972,7 @@ defmodule Pleroma.Web.Router do
 
     get("/groups/lookup", FederatedGroupController, :lookup)
     get("/groups/:id/preview", FederatedGroupController, :preview)
+    get("/groups/:id/statuses", FederatedGroupTimelineController, :show)
     get("/groups/:id", FederatedGroupController, :show)
 
     get("/accounts/:id/statuses", AccountController, :statuses)
@@ -976,6 +986,7 @@ defmodule Pleroma.Web.Router do
     get("/instance", InstanceController, :show)
     get("/instance/peers", InstanceController, :peers)
     get("/instance/rules", InstanceController, :rules)
+    get("/instance/extended_description", InstanceController, :extended_description)
     get("/instance/domain_blocks", InstanceController, :domain_blocks)
     get("/instance/translation_languages", InstanceController, :translation_languages)
 
@@ -1047,6 +1058,17 @@ defmodule Pleroma.Web.Router do
     pipe_through(:base_api)
 
     get("/openapi", OpenApiSpex.Plug.RenderSpec, [])
+  end
+
+  scope "/", Pleroma.Web.Fallback do
+    pipe_through(:accepts_html)
+
+    get("/@:maybe_nickname_or_id/with_replies", RedirectController, :redirector_with_meta)
+    get("/@:maybe_nickname_or_id/followers", RedirectController, :redirector_with_meta)
+    get("/@:maybe_nickname_or_id/following", RedirectController, :redirector_with_meta)
+    get("/@:maybe_nickname_or_id/media", RedirectController, :redirector_with_meta)
+    get("/@:maybe_nickname_or_id/favorites", RedirectController, :redirector_with_meta)
+    get("/@:maybe_nickname_or_id/pins", RedirectController, :redirector_with_meta)
   end
 
   scope "/api", Pleroma.Web, as: :authenticated_twitter_api do

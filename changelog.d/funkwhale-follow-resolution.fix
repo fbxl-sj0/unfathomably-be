@@ -1,0 +1,1 @@
+Fixed Funkwhale and other feed/source actors whose NodeInfo links use nonstandard rel values so pasted ActivityPub actor URLs can resolve, classify, and remain followed as feeds.

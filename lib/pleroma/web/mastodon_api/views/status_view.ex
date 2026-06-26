@@ -138,7 +138,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   defp status_group(_activity, _object, _opts), do: nil
 
   defp render_status_group(%User{} = group, reading_user) do
-    FederatedTargetView.render("group.json", %{group: group, for: reading_user})
+    FederatedTargetView.render("group.json", %{
+      group: group,
+      for: reading_user,
+      include_interaction_score: false,
+      refresh_counts: false
+    })
   end
 
   defp find_status_group([]), do: nil
@@ -353,7 +358,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   def render("show.json", %{activity: %{data: %{"object" => _object}} = activity} = opts) do
     object = Object.normalize(activity, fetch: false)
 
-    user = CommonAPI.get_user(object.data["actor"])
+    actor = object.data["actor"] || activity.actor
+    user = CommonAPI.get_user(actor)
     user_follower_address = user.follower_address
 
     like_count = object.data["like_count"] || 0
@@ -581,7 +587,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
         bookmark_folder: bookmark_folder,
         content_type: opts[:with_source] && (object.data["content_type"] || "text/plain"),
         quotes_count: object.data["quotesCount"] || 0,
-        event: build_event(object.data, opts[:for])
+        event: build_event(object.data, opts[:for], attachments)
       }
     }
   end
@@ -718,8 +724,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
 
   def render("attachment.json", %{attachment: attachment}) do
     [attachment_url | _] = attachment["url"]
-    media_type = attachment_url["mediaType"] || attachment_url["mimeType"] || "image"
     href_remote = attachment_url["href"]
+
+    media_type =
+      (attachment_url["mediaType"] || attachment_url["mimeType"])
+      |> attachment_media_type(href_remote)
+
     href = href_remote |> MediaProxy.url()
     href_preview = attachment_url["href"] |> MediaProxy.preview_url()
     meta = render("attachment_meta.json", %{attachment: attachment})
@@ -821,6 +831,48 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     %{content: content, detected_source_language: detected_source_language, provider: provider}
   end
 
+  defp attachment_media_type("application/octet-stream", href),
+    do: infer_media_type_from_href(href)
+
+  defp attachment_media_type(nil, href), do: infer_media_type_from_href(href)
+  defp attachment_media_type("", href), do: infer_media_type_from_href(href)
+  defp attachment_media_type(media_type, _href), do: media_type
+
+  defp infer_media_type_from_href(href) when is_binary(href) do
+    case URI.parse(href) do
+      %URI{path: path} when is_binary(path) ->
+        case String.downcase(Path.extname(path)) do
+          ".jpg" ->
+            "image/jpeg"
+
+          ".jpeg" ->
+            "image/jpeg"
+
+          ".svg" ->
+            "image/svg+xml"
+
+          extension when extension in [".avif", ".gif", ".png", ".webp"] ->
+            "image/" <> String.trim_leading(extension, ".")
+
+          extension
+          when extension in [".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".webm"] ->
+            "video/" <> String.trim_leading(extension, ".")
+
+          extension
+          when extension in [".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav"] ->
+            "audio/" <> String.trim_leading(extension, ".")
+
+          _ ->
+            "application/octet-stream"
+        end
+
+      _ ->
+        "application/octet-stream"
+    end
+  end
+
+  defp infer_media_type_from_href(_href), do: "application/octet-stream"
+
   def get_reply_to(activity, %{replied_to_activities: replied_to_activities}) do
     object = Object.normalize(activity, fetch: false)
 
@@ -917,7 +969,9 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     end)
   end
 
-  defp build_event(%{"type" => "Event"} = data, for_user) do
+  defp build_event(%{"type" => "Event"} = data, for_user, attachments) do
+    banner = event_banner(attachments)
+
     %{
       name: data["name"],
       start_time: data["startTime"],
@@ -928,9 +982,44 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       join_state: build_event_join_state(for_user, data["id"]),
       participation_request_count: maybe_put_participation_request_count(data, for_user)
     }
+    |> Maps.put_if_present(:banner, banner)
+    |> Maps.put_if_present(:links, event_links(attachments, banner))
   end
 
-  defp build_event(_, _), do: nil
+  defp build_event(_, _, _), do: nil
+
+  defp event_banner(attachments) when is_list(attachments) do
+    Enum.find(attachments, fn attachment ->
+      attachment[:type] == "image" and event_banner_attachment?(attachment)
+    end) || Enum.find(attachments, &(&1[:type] == "image"))
+  end
+
+  defp event_banner(_), do: nil
+
+  defp event_banner_attachment?(attachment) do
+    name =
+      attachment
+      |> get_in([:pleroma, :name])
+      |> to_string()
+      |> String.downcase()
+
+    description =
+      attachment
+      |> Map.get(:description)
+      |> to_string()
+      |> String.downcase()
+
+    String.contains?(name, "banner") or String.contains?(description, "banner")
+  end
+
+  defp event_links(attachments, nil) when is_list(attachments), do: attachments
+
+  defp event_links(attachments, banner) when is_list(attachments) do
+    links = Enum.reject(attachments, &(&1[:id] == banner[:id]))
+    if links == [], do: nil, else: links
+  end
+
+  defp event_links(_, _), do: nil
 
   defp build_event_location(%{"type" => "Place"} = location) do
     %{

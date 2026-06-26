@@ -1,0 +1,1 @@
+Fixed Owncast source previews to expose the HLS stream URL and classify Owncast actors as live streams instead of generic ordered collections.

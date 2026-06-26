@@ -430,6 +430,21 @@ defmodule Pleroma.Web.OAuth.OAuthControllerTest do
       assert html_response(conn, 200) =~ ~s(type="submit")
     end
 
+    test "returns a bad request instead of crashing without a client_id", %{conn: conn} do
+      conn =
+        get(
+          conn,
+          "/oauth/authorize",
+          %{
+            "response_type" => "code",
+            "redirect_uri" => "https://redirect.url",
+            "scope" => "read"
+          }
+        )
+
+      assert text_response(conn, 400) == "Bad OAuth request."
+    end
+
     test "properly handles internal calls with `authorization`-wrapped params", %{
       app: app,
       conn: conn
