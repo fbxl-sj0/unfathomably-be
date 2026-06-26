@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fixed addressed inbox handling for servers that send the ActivityPub actor as an embedded object instead of a bare actor URI.
 - Fixed WebFinger resolution for leading-`@` group and feed handles, and preserved actor outbox URLs for source previews discovered through WebFinger.
 - Stopped feed list rendering from performing synchronous NodeInfo refreshes for hosts whose cached instance metadata is blank.
+- Fixed OpenTranslate requests for posts with unknown source languages by using provider auto-detection instead of an empty source language, and by pre-detecting obvious non-Latin scripts before OpenTranslate can misread HTML as English.
 
 ## [2.6.51] - 2026-06-25
 

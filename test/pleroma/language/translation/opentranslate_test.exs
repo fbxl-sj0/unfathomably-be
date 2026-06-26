@@ -43,19 +43,89 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
            } = res
   end
 
+  test "it asks OpenTranslate to auto-detect unknown source languages" do
+    {:ok, res} =
+      Opentranslate.translate(
+        "Bonjour le monde",
+        nil,
+        "en"
+      )
+
+    assert %{
+             content: "Hello world",
+             detected_source_language: "fr",
+             provider: "OpenTranslate"
+           } = res
+  end
+
+  test "it detects obvious script language from visible HTML before asking OpenTranslate" do
+    Tesla.Mock.mock_global(fn
+      %Tesla.Env{
+        method: :post,
+        url: "http://192.168.250.99:5000/translate",
+        body: body
+      } ->
+        assert %{
+                 "format" => "html",
+                 "source" => "ja",
+                 "target" => "en"
+               } = Jason.decode!(body)
+
+        {:ok,
+         %Tesla.Env{
+           status: 200,
+           body: ~s({"translatedText":"<p>Game started</p>"}),
+           headers: [{"content-type", "application/json"}]
+         }}
+
+      env ->
+        HttpRequestMock.request(env)
+    end)
+
+    {:ok, res} =
+      Opentranslate.translate(
+        "<p>mikawa\u{3055}\u{3093}\u{3068}\u{59cb}\u{3081}\u{307e}\u{3057}\u{305f}<br/>" <>
+          "<a href=\"https://misskey.io/reversi/g/anygf6k2ab9503ys\">\u{89b3}\u{6226}\u{3059}\u{308b}</a></p>",
+        nil,
+        "en"
+      )
+
+    assert %{
+             content: "<p>Game started</p>",
+             detected_source_language: "ja",
+             provider: "OpenTranslate"
+           } = res
+  end
+
   test "it only advertises English as a translation target" do
     assert {:ok, ["en"]} = Opentranslate.supported_languages(:target)
   end
 
   test "it returns source languages from the OpenTranslate service" do
     assert {:ok,
-            ["ar", "de", "en", "es", "fr", "ga", "hi", "it", "ja", "ko", "pt", "ru", "zh-Hans"]} =
+            [
+              "auto",
+              "ar",
+              "de",
+              "en",
+              "es",
+              "fr",
+              "ga",
+              "hi",
+              "it",
+              "ja",
+              "ko",
+              "pt",
+              "ru",
+              "zh-Hans"
+            ]} =
              Opentranslate.supported_languages(:source)
   end
 
   test "it builds an English-only language matrix" do
     assert {:ok, matrix} = Opentranslate.languages_matrix()
 
+    assert matrix["auto"] == ["en"]
     assert matrix["fr"] == ["en"]
     assert matrix["zh-Hans"] == ["en"]
     assert matrix["en"] == []

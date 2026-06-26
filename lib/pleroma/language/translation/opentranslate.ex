@@ -18,7 +18,10 @@ defmodule Pleroma.Language.Translation.Opentranslate do
 
   @impl Provider
   def translate(content, source_language, target_language) do
-    if normalize_language(target_language) == "en" do
+    source_language = normalize_source_language(content, source_language)
+    target_language = normalize_language(target_language)
+
+    if target_language == "en" do
       case Pleroma.HTTP.post(
              endpoint("/translate"),
              request_body(content, source_language, target_language),
@@ -47,7 +50,9 @@ defmodule Pleroma.Language.Translation.Opentranslate do
   def supported_languages(:source) do
     case Pleroma.HTTP.get(endpoint("/languages")) do
       {:ok, %{status: 200} = res} ->
-        decode_languages(res.body)
+        with {:ok, languages} <- decode_languages(res.body) do
+          {:ok, add_auto_language(languages)}
+        end
 
       _ ->
         {:error, :internal_server_error}
@@ -92,11 +97,12 @@ defmodule Pleroma.Language.Translation.Opentranslate do
 
   defp decode_translation(body, source_language) do
     case Jason.decode(body) do
-      {:ok, %{"translatedText" => translated_content}} when is_binary(translated_content) ->
+      {:ok, %{"translatedText" => translated_content} = decoded}
+      when is_binary(translated_content) ->
         {:ok,
          %{
            content: translated_content,
-           detected_source_language: source_language,
+           detected_source_language: detected_source_language(decoded, source_language),
            provider: @name
          }}
 
@@ -123,9 +129,67 @@ defmodule Pleroma.Language.Translation.Opentranslate do
     end
   end
 
+  defp add_auto_language(["auto" | _] = languages), do: languages
+  defp add_auto_language(languages), do: ["auto" | languages]
+
+  defp detected_source_language(decoded, fallback) do
+    with language when is_binary(language) <- detected_source_language_from_response(decoded),
+         language <- String.trim(language),
+         true <- language != "" do
+      language
+    else
+      _ -> fallback
+    end
+  end
+
+  defp detected_source_language_from_response(%{"detectedLanguage" => %{"language" => language}}),
+    do: language
+
+  defp detected_source_language_from_response(%{"detectedLanguage" => language}), do: language
+
+  defp detected_source_language_from_response(%{"detected_source_language" => language}),
+    do: language
+
+  defp detected_source_language_from_response(_), do: nil
+
+  defp normalize_source_language(content, language) do
+    case normalize_language(language) do
+      "" -> infer_source_language(content) || "auto"
+      language -> language
+    end
+  end
+
+  defp infer_source_language(content) do
+    content
+    |> visible_text()
+    |> script_language()
+  end
+
+  defp visible_text(content) when is_binary(content) do
+    content
+    |> Floki.parse_fragment!()
+    |> Floki.text()
+  rescue
+    _ -> content
+  end
+
+  defp visible_text(_), do: ""
+
+  defp script_language(text) do
+    cond do
+      Regex.match?(~r/[\x{3040}-\x{30ff}]/u, text) -> "ja"
+      Regex.match?(~r/[\x{ac00}-\x{d7af}]/u, text) -> "ko"
+      Regex.match?(~r/[\x{0600}-\x{06ff}]/u, text) -> "ar"
+      Regex.match?(~r/[\x{0900}-\x{097f}]/u, text) -> "hi"
+      Regex.match?(~r/[\x{4e00}-\x{9fff}]/u, text) -> "zh-Hans"
+      true -> nil
+    end
+  end
+
   defp normalize_language(language) do
     language
     |> to_string()
+    |> String.trim()
     |> String.downcase()
   end
 
