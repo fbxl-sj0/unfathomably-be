@@ -58,6 +58,58 @@ defmodule Pleroma.Web.ActivityPub.MRF.QuoteToLinkTagPolicyTest do
            }
   end
 
+  test "Add quote url to Link tag with malformed existing tags" do
+    quote_url = "https://gleasonator.com/objects/1234"
+    hashtag = %{"type" => "Hashtag", "name" => "#foo"}
+
+    activity = %{
+      "type" => "Create",
+      "actor" => "https://gleasonator.com/users/alex",
+      "object" => %{
+        "type" => "Note",
+        "content" => "Nice post",
+        "quoteUrl" => quote_url,
+        "tag" => [hashtag, nil, 42]
+      }
+    }
+
+    {:ok, %{"object" => object}} = QuoteToLinkTagPolicy.filter(activity)
+
+    assert [^hashtag, tag] = object["tag"]
+
+    assert tag == %{
+             "type" => "Link",
+             "href" => quote_url,
+             "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type()
+           }
+  end
+
+  test "Add quote url to Link tag with a map-shaped existing tag" do
+    quote_url = "https://gleasonator.com/objects/1234"
+    hashtag = %{"type" => "Hashtag", "name" => "#foo"}
+
+    activity = %{
+      "type" => "Create",
+      "actor" => "https://gleasonator.com/users/alex",
+      "object" => %{
+        "type" => "Note",
+        "content" => "Nice post",
+        "quoteUrl" => quote_url,
+        "tag" => hashtag
+      }
+    }
+
+    {:ok, %{"object" => object}} = QuoteToLinkTagPolicy.filter(activity)
+
+    assert [^hashtag, tag] = object["tag"]
+
+    assert tag == %{
+             "type" => "Link",
+             "href" => quote_url,
+             "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type()
+           }
+  end
+
   test "Bypass posts without quoteUrl" do
     activity = %{
       "type" => "Create",

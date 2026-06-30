@@ -19,8 +19,10 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceMentionsInContent do
     if Enum.find(attrs, fn {name, value} ->
          name == "class" && value in ["mention", "u-url mention", "mention u-url"]
        end) do
-      href = Enum.find(attrs, fn {name, _} -> name == "href" end) |> elem(1)
-      acc ++ [href]
+      case Enum.find(attrs, fn {name, _} -> name == "href" end) do
+        {_name, href} when is_binary(href) -> acc ++ [href]
+        _ -> acc
+      end
     else
       acc
     end
@@ -36,10 +38,12 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceMentionsInContent do
 
   defp do_extract(_, acc), do: acc
 
-  defp extract_mention_uris_from_content(content) do
+  defp extract_mention_uris_from_content(content) when is_binary(content) do
     {:ok, tree} = :fast_html.decode(content, format: [:html_atoms])
     do_extract(tree, [])
   end
+
+  defp extract_mention_uris_from_content(_content), do: []
 
   defp get_replied_to_user(%{"inReplyTo" => in_reply_to}) do
     case Object.normalize(in_reply_to, fetch: false) do
@@ -78,7 +82,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceMentionsInContent do
   defp force_mentions(%{"to" => to, "inReplyTo" => in_reply_to} = object)
        when is_list(to) and is_binary(in_reply_to) do
     # image-only posts from pleroma apparently reach this MRF without the content field
-    content = object["content"] || ""
+    content = if is_binary(object["content"]), do: object["content"], else: ""
 
     # Get the replied-to user for sorting
     replied_to_user = get_replied_to_user(object)

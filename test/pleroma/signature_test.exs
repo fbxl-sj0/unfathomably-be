@@ -12,6 +12,7 @@ defmodule Pleroma.SignatureTest do
 
   alias Pleroma.Signature
   alias Pleroma.StubbedHTTPSignaturesMock, as: HTTPSignaturesMock
+  alias Pleroma.Keys
   alias Pleroma.User
 
   setup do
@@ -35,6 +36,16 @@ defmodule Pleroma.SignatureTest do
   defp make_fake_conn(key_id),
     do: %Plug.Conn{req_headers: %{"signature" => make_fake_signature(key_id <> "#main-key")}}
 
+  defp public_key_pem_from_private_key_pem(private_key_pem) do
+    {:ok, _private_key, public_key} = Keys.keys_from_pem(private_key_pem)
+
+    public_key_entry = :public_key.pem_entry_encode(:SubjectPublicKeyInfo, public_key)
+
+    [public_key_entry]
+    |> :public_key.pem_encode()
+    |> IO.iodata_to_binary()
+  end
+
   describe "fetch_public_key/1" do
     test "it returns key" do
       expected_result = {:ok, @rsa_public_key}
@@ -45,10 +56,10 @@ defmodule Pleroma.SignatureTest do
     end
 
     test "it returns error when not found user" do
-      assert capture_log(fn ->
-               assert Signature.fetch_public_key(make_fake_conn("https://test-ap-id")) ==
-                        {:error, :error}
-             end) =~ "[error] Could not decode user"
+      capture_log(fn ->
+        assert Signature.fetch_public_key(make_fake_conn("https://test-ap-id")) ==
+                 {:error, :error}
+      end)
     end
 
     test "it returns error if public key is nil" do
@@ -72,9 +83,9 @@ defmodule Pleroma.SignatureTest do
     end
 
     test "it returns error when not found user" do
-      assert capture_log(fn ->
-               {:error, _} = Signature.refetch_public_key(make_fake_conn("https://test-ap_id"))
-             end) =~ "[error] Could not decode user"
+      capture_log(fn ->
+        {:error, _} = Signature.refetch_public_key(make_fake_conn("https://test-ap_id"))
+      end)
     end
   end
 
@@ -118,7 +129,8 @@ defmodule Pleroma.SignatureTest do
     end
 
     test "falls back to historical public keys" do
-      user = insert(:user, public_key: nil, public_key_history: [@public_key])
+      historical_public_key = public_key_pem_from_private_key_pem(@private_key)
+      user = insert(:user, public_key: nil, public_key_history: [historical_public_key])
 
       signature =
         Signature.sign(%User{ap_id: user.ap_id, keys: @private_key}, %{

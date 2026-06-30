@@ -171,6 +171,28 @@ defmodule Pleroma.Web.ActivityPub.MRF.NsfwApiPolicyTest do
       assert NsfwApiPolicy.unlist(object) == expected
     end
 
+    test "normalizes malformed addressing" do
+      user = insert(:user)
+
+      object = %{
+        "to" => [
+          %{"id" => Constants.as_public()},
+          nil,
+          %{"href" => "https://hello.world/users/alex"}
+        ],
+        "cc" => %{"id" => user.follower_address},
+        "actor" => user.ap_id
+      }
+
+      expected = %{
+        "to" => [user.follower_address, "https://hello.world/users/alex"],
+        "cc" => [Constants.as_public()],
+        "actor" => user.ap_id
+      }
+
+      assert NsfwApiPolicy.unlist(object) == expected
+    end
+
     test "raise if user isn't found" do
       object = %{
         "to" => [Constants.as_public()],
@@ -188,6 +210,14 @@ defmodule Pleroma.Web.ActivityPub.MRF.NsfwApiPolicyTest do
     test "adds nsfw tag and marks sensitive" do
       object = %{"tag" => ["yolo"]}
       expected = %{"tag" => ["yolo", "nsfw"], "sensitive" => true}
+      assert NsfwApiPolicy.mark_sensitive(object) == expected
+    end
+
+    test "normalizes malformed tags while preserving structured tags" do
+      hashtag = %{"type" => "Hashtag", "name" => "#yolo"}
+      object = %{"tag" => [hashtag, nil, 42, "plain"]}
+      expected = %{"tag" => [hashtag, "plain", "nsfw"], "sensitive" => true}
+
       assert NsfwApiPolicy.mark_sensitive(object) == expected
     end
 

@@ -57,8 +57,9 @@ defmodule Pleroma.Workers.Cron.ScheduleReachabilityWorker do
       |> join(:inner, [job], instance in Instance,
         on:
           fragment(
-            "lower(?) = lower(split_part(substring(? #>> '{params,inbox}' from '.*://([^/]*)'), ':', 1))",
+            "lower(?) = ap_id_host(coalesce(? #>> '{params,inbox}', ?->>'inbox'))",
             instance.host,
+            job.args,
             job.args
           )
       )

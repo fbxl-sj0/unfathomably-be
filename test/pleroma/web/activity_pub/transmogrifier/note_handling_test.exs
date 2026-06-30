@@ -16,6 +16,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
   import Mock
   import Pleroma.Factory
 
+  require Pleroma.Constants
+
   setup_all do
     Tesla.Mock.mock_global(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok
@@ -476,6 +478,42 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
       object = Object.normalize(data["object"], fetch: false)
 
       assert object.data["content"] == "Hi"
+    end
+
+    test "it ignores malformed contentMap instead of raising" do
+      assert %{"content" => "Hi"} ==
+               Transmogrifier.fix_content_map(%{
+                 "content" => "Hi",
+                 "contentMap" => ["not", "a", "map"]
+               })
+
+      assert %{} == Transmogrifier.fix_content_map(%{"contentMap" => %{}})
+
+      user = insert(:user)
+
+      message = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc" => [],
+        "type" => "Create",
+        "object" => %{
+          "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+          "cc" => [],
+          "id" => Utils.generate_object_id(),
+          "type" => "Note",
+          "content" => "Hi",
+          "contentMap" => ["not", "a", "map"],
+          "inReplyTo" => nil,
+          "attributedTo" => user.ap_id
+        },
+        "actor" => user.ap_id
+      }
+
+      {:ok, %Activity{data: data, local: false}} = Transmogrifier.handle_incoming(message)
+      object = Object.normalize(data["object"], fetch: false)
+
+      assert object.data["content"] == "Hi"
+      refute Map.has_key?(object.data, "contentMap")
     end
 
     test "it works for incoming notices with to/cc not being an array (kroeg)" do
@@ -989,6 +1027,109 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
                "emoji" => %{"bib" => "/test"},
                "tag" => %{"icon" => %{"url" => "/test"}, "name" => ":bib:", "type" => "Emoji"}
              }
+    end
+
+    test "ignores malformed emoji tags instead of raising" do
+      assert Transmogrifier.fix_emoji(%{
+               "tag" => [
+                 %{"type" => "Emoji", "icon" => %{"url" => "/missing-name"}},
+                 %{"type" => "Emoji", "name" => ":missing_icon:"}
+               ]
+             }) == %{
+               "emoji" => %{},
+               "tag" => [
+                 %{"icon" => %{"url" => "/missing-name"}, "type" => "Emoji"},
+                 %{"name" => ":missing_icon:", "type" => "Emoji"}
+               ]
+             }
+
+      assert Transmogrifier.fix_emoji(%{
+               "tag" => %{"type" => "Emoji", "name" => ":missing_icon:"}
+             }) == %{
+               "emoji" => %{},
+               "tag" => %{"name" => ":missing_icon:", "type" => "Emoji"}
+             }
+    end
+  end
+
+  describe "fix_tag/1" do
+    test "ignores malformed non-map tags instead of raising" do
+      assert Transmogrifier.fix_tag(%{
+               "tag" => [
+                 "plain-tag",
+                 nil,
+                 %{"type" => "Hashtag", "name" => "#Good"},
+                 %{"type" => "Hashtag", "name" => nil}
+               ]
+             }) == %{
+               "tag" => [
+                 "plain-tag",
+                 nil,
+                 %{"name" => "#Good", "type" => "Hashtag"},
+                 %{"name" => nil, "type" => "Hashtag"},
+                 "good"
+               ]
+             }
+    end
+  end
+
+  describe "addressing normalization" do
+    test "fix_addressing_public/2 tolerates malformed values" do
+      assert Transmogrifier.fix_addressing_public(
+               %{"to" => ["Public", %{"id" => "ignored"}, nil, "as:Public", "https://remote/users/alice"]},
+               "to"
+             ) == %{
+               "to" => [
+                 Pleroma.Constants.as_public(),
+                 Pleroma.Constants.as_public(),
+                 "https://remote/users/alice"
+               ]
+             }
+
+      assert Transmogrifier.fix_addressing_public(%{"to" => %{"bad" => "shape"}}, "to") == %{
+               "to" => []
+             }
+    end
+
+    test "fix_explicit_addressing/2 normalizes malformed recipient fields" do
+      follower_collection = "https://remote.example/users/alice/followers"
+
+      assert Transmogrifier.fix_explicit_addressing(
+               %{
+                 "to" => %{"bad" => "shape"},
+                 "cc" => [
+                   nil,
+                   42,
+                   follower_collection,
+                   "https://other.example/users/bob/followers",
+                   "https://other.example/users/bob"
+                 ]
+               },
+               follower_collection
+             ) == %{
+               "to" => [],
+               "cc" => [follower_collection, "https://other.example/users/bob"]
+             }
+    end
+
+    test "fix_implicit_addressing/2 normalizes malformed recipient fields" do
+      follower_collection = "https://remote.example/users/alice/followers"
+
+      assert Transmogrifier.fix_implicit_addressing(
+               %{
+                 "to" => %{"href" => "Public"},
+                 "cc" => %{"bad" => "shape"}
+               },
+               follower_collection
+             ) == %{
+               "to" => [Pleroma.Constants.as_public()],
+               "cc" => [follower_collection]
+             }
+
+      assert Transmogrifier.fix_implicit_addressing(
+               %{"to" => [Pleroma.Constants.as_public()], "cc" => []},
+               nil
+             ) == %{"to" => [Pleroma.Constants.as_public()], "cc" => []}
     end
   end
 

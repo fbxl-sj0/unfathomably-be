@@ -109,6 +109,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
       is_binary(right.host) and left.scheme == right.scheme and
       String.downcase(left.host) == String.downcase(right.host) and
       uri_port(left) == uri_port(right)
+  rescue
+    URI.Error -> false
   end
 
   defp same_origin?(_, _), do: false
@@ -139,6 +141,18 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
 
   def fix_attachments(%{"attachment" => attachment} = data) when is_map(attachment),
     do: Map.put(data, "attachment", [attachment])
+
+  def fix_attachments(%{"attachment" => attachments} = data) when is_list(attachments) do
+    attachments = Enum.filter(attachments, &is_map/1)
+
+    if attachments == [] do
+      Map.drop(data, ["attachment"])
+    else
+      Map.put(data, "attachment", attachments)
+    end
+  end
+
+  def fix_attachments(%{"attachment" => _attachment} = data), do: Map.drop(data, ["attachment"])
 
   def fix_attachments(data), do: data
 

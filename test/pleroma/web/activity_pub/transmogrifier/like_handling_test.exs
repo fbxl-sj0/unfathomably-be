@@ -1,9 +1,11 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Ãƒâ€šÃ‚Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.LikeHandlingTest do
   use Pleroma.DataCase, async: true
+
+  require Pleroma.Constants
 
   alias Pleroma.Activity
   alias Pleroma.Object
@@ -32,6 +34,28 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.LikeHandlingTest do
     assert data["type"] == "Like"
     assert data["id"] == "http://mastodon.example.org/users/admin#likes/2"
     assert data["object"] == activity.data["object"]
+  end
+
+  @tag capture_log: true
+  test "it rejects malformed incoming likes without raising" do
+    actor =
+      insert(:user,
+        local: false,
+        ap_id: "https://malformed-like.example/users/alice",
+        follower_address: "https://malformed-like.example/users/alice/followers"
+      )
+
+    data = %{
+      "id" => "https://malformed-like.example/activities/like/1",
+      "actor" => actor.ap_id,
+      "object" => %{"type" => "Note", "content" => "missing id"},
+      "published" => "2026-06-29T00:00:00Z",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [],
+      "type" => "Like"
+    }
+
+    assert {:error, _} = Transmogrifier.handle_incoming(data)
   end
 
   test "it hydrates an unknown reply thread before applying a late remote like" do
@@ -148,7 +172,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.LikeHandlingTest do
     assert activity_data["type"] == "EmojiReact"
     assert activity_data["id"] == data["id"]
     assert activity_data["object"] == activity.data["object"]
-    assert activity_data["content"] == "🍮"
+    assert activity_data["content"] == List.to_string([0x1F36E])
   end
 
   test "it works for incoming misskey likes that contain unicode emojis, turning them into EmojiReacts" do

@@ -154,7 +154,15 @@ defmodule Pleroma.User.BackupTest do
   end
 
   test "it creates a zip archive with user data" do
-    user = insert(:user, %{nickname: "cofe", name: "Cofe", ap_id: "http://cofe.io/users/cofe"})
+    user =
+      insert(:user, %{
+        nickname: "cofe",
+        name: "Cofe",
+        ap_id: "http://cofe.io/users/cofe",
+        follower_address: "http://cofe.io/users/cofe/followers",
+        following_address: "http://cofe.io/users/cofe/following",
+        featured_address: "http://cofe.io/users/cofe/collections/featured"
+      })
 
     {:ok, %{object: %{data: %{"id" => id1}}} = status1} =
       CommonAPI.post(user, %{status: "status1"})

@@ -81,6 +81,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   def classify_target(target, options \\ [])
 
   def classify_target(%{"object" => object_id}, options), do: classify_target(object_id, options)
+  def classify_target(%{"type" => "Tombstone", "id" => object_id}, options),
+    do: classify_tombstone_target(object_id, options)
+
   def classify_target(%{"id" => object_id}, options), do: classify_target(object_id, options)
 
   def classify_target(object_id, options) when is_binary(object_id) do
@@ -94,6 +97,17 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   end
 
   def classify_target(object_id, _options), do: %{state: :missing, object_id: object_id}
+
+  defp classify_tombstone_target(object_id, options) when is_binary(object_id) do
+    case classify_object_target(object_id, options) do
+      %{state: :missing} -> %{state: :remote_tombstone, object_id: object_id}
+      target -> target
+    end
+  end
+
+  defp classify_tombstone_target(object_id, _options) do
+    %{state: :missing, object_id: object_id}
+  end
 
   defp classify_object_target(object_id, options) do
     case Object.get_cached_by_ap_id(object_id) do
@@ -163,13 +177,16 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   defp get_create_by_object_ap_id(_), do: nil
 
   defp validate_delete_target(cng) do
-    validate_change(cng, :object, fn field_name, object_id ->
-      case classify_target(object_id) do
-        %{state: :missing} -> [{field_name, "can't find object"}]
-        %{state: :invalid_type} -> [{field_name, "object not in allowed types"}]
-        _ -> []
-      end
-    end)
+    params = cng.params || %{}
+
+    delete_target =
+      Map.get(params, "object", get_field(cng, :object))
+
+    case classify_target(delete_target) do
+      %{state: :missing} -> add_error(cng, :object, "can't find object")
+      %{state: :invalid_type} -> add_error(cng, :object, "object not in allowed types")
+      _ -> cng
+    end
   end
 
   defp validate_delete_actor(cng, field_name) do

@@ -52,7 +52,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LikeValidator do
       |> CommonFixes.fix_actor()
       |> CommonFixes.fix_activity_addressing()
 
-    with %Object{} = object <- Object.normalize(data["object"]) do
+    with %Object{} = object <- normalize_object_reference(data["object"]) do
       data
       |> CommonFixes.fix_activity_context(object)
       |> CommonFixes.fix_object_action_recipients(object)
@@ -61,6 +61,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LikeValidator do
       _ -> data
     end
   end
+
+  defp normalize_object_reference(object) when is_binary(object) or is_map(object) do
+    Object.normalize(object)
+  end
+
+  defp normalize_object_reference(_object), do: nil
 
   defp validate_data(data_cng) do
     data_cng

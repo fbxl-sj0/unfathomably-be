@@ -62,7 +62,30 @@ defmodule Pleroma.Web.WebFingerTest do
       capture_log(fn ->
         assert {:error, _} = WebFinger.finger("bliblablu")
         assert {:error, _} = WebFinger.finger("pleroma.social")
+        assert {:error, _} = WebFinger.finger("https://%")
       end)
+    end
+
+    test "handles json documents without a links array" do
+      Tesla.Mock.mock(fn
+        %{url: "https://nolinks.example/.well-known/host-meta"} ->
+          {:ok, %Tesla.Env{status: 404, body: ""}}
+
+        %{
+          url:
+            "https://nolinks.example/.well-known/webfinger?resource=acct:alice@nolinks.example"
+        } ->
+          {:ok,
+           %Tesla.Env{
+             status: 200,
+             body: ~s({"subject":"acct:alice@nolinks.example"}),
+             headers: [{"content-type", "application/jrd+json"}]
+           }}
+      end)
+
+      assert {:ok, data} = WebFinger.finger("alice@nolinks.example")
+      assert data["subject"] == "acct:alice@nolinks.example"
+      refute Map.has_key?(data, "ap_id")
     end
 
     test "returns error when there is no content-type header" do

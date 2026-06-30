@@ -26,13 +26,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.NoEmptyPolicy do
 
   def filter(activity), do: {:ok, activity}
 
-  defp is_local?(actor) do
-    if actor |> String.starts_with?("#{Endpoint.url()}") do
-      true
-    else
-      false
-    end
-  end
+  defp is_local?(actor) when is_binary(actor), do: String.starts_with?(actor, "#{Endpoint.url()}")
+  defp is_local?(_actor), do: false
 
   defp has_attachment?(%{
          "object" => %{"type" => "Note", "attachment" => attachments}
@@ -45,21 +40,27 @@ defmodule Pleroma.Web.ActivityPub.MRF.NoEmptyPolicy do
   defp only_mentions?(%{"object" => %{"type" => "Note", "source" => source}}) do
     source =
       case source do
-        %{"content" => text} -> text
+        %{"content" => text} when is_binary(text) -> text
+        text when is_binary(text) -> text
         _ -> source
       end
 
-    non_mentions =
-      source |> String.split() |> Enum.filter(&(not String.starts_with?(&1, "@"))) |> length
-
-    if non_mentions > 0 do
-      false
-    else
-      true
-    end
+    source_is_only_mentions?(source)
   end
 
   defp only_mentions?(_), do: false
+
+  defp source_is_only_mentions?(source) when is_binary(source) do
+    non_mentions =
+      source
+      |> String.split()
+      |> Enum.filter(&(not String.starts_with?(&1, "@")))
+      |> length()
+
+    non_mentions == 0
+  end
+
+  defp source_is_only_mentions?(_source), do: false
 
   defp is_note?(%{"object" => %{"type" => "Note"}}), do: true
   defp is_note?(_), do: false

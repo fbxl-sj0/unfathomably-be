@@ -1102,6 +1102,21 @@ defmodule Pleroma.UserTest do
       end)
     end
 
+    test "it reports duplicate AP IDs as changeset errors" do
+      {:ok, _user} =
+        @valid_remote
+        |> User.remote_user_changeset()
+        |> Repo.insert()
+
+      duplicate =
+        @valid_remote
+        |> Map.put(:nickname, "duplicate@b.de")
+        |> User.remote_user_changeset()
+
+      assert {:error, changeset} = Repo.insert(duplicate)
+      assert %{ap_id: ["has already been taken"]} = errors_on(changeset)
+    end
+
     test "it is invalid given a local user" do
       user = insert(:user)
       cs = User.remote_user_changeset(user, %{name: "tom from myspace"})
@@ -1442,6 +1457,14 @@ defmodule Pleroma.UserTest do
       {:ok, user, good_eggo} = User.follow(user, good_eggo)
 
       refute User.blocks?(user, good_eggo)
+    end
+
+    test "malformed remote AP IDs do not crash domain block checks" do
+      user = insert(:user, domain_blocks: ["meanies.social"])
+      malformed = insert(:user, %{ap_id: "https://%"})
+
+      refute User.blocks_domain?(user, malformed)
+      refute User.blocks?(user, malformed)
     end
   end
 

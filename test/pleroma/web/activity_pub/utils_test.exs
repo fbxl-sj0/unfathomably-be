@@ -195,6 +195,26 @@ defmodule Pleroma.Web.ActivityPub.UtilsTest do
       assert Enum.sort(to) == expected_to
       assert Enum.sort(cc) == expected_cc
     end
+
+    test "normalizes malformed object addressing", %{other_user: other_user} do
+      public = Pleroma.Constants.as_public()
+      remote_actor = "https://remote.example/users/missing"
+
+      object = %Object{
+        data: %{
+          "id" => "https://remote.example/objects/bad-like-target",
+          "actor" => remote_actor,
+          "type" => "Note",
+          "to" => [public, nil, %{"id" => "https://ignored.example/users/alice"}],
+          "cc" => %{"bad" => "shape"}
+        }
+      }
+
+      %{"to" => to, "cc" => cc} = Utils.make_like_data(other_user, object, nil)
+
+      assert Enum.sort(to) == Enum.sort([other_user.follower_address, remote_actor])
+      assert cc == [public]
+    end
   end
 
   describe "make_json_ld_header/1" do

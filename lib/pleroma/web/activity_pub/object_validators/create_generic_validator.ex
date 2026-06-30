@@ -60,15 +60,24 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator do
 
   # CommonFixes.fix_activity_addressing adapted for Create specific behavior
   defp fix_addressing(data, object) do
-    %User{follower_address: follower_collection} = User.get_cached_by_ap_id(data["actor"])
+    case User.get_cached_by_ap_id(data["actor"]) do
+      %User{follower_address: follower_collection} ->
+        data
+        |> fix_create_recipients(object, follower_collection)
+        |> Transmogrifier.fix_implicit_addressing(follower_collection)
 
+      _ ->
+        fix_create_recipients(data, object, nil)
+    end
+  end
+
+  defp fix_create_recipients(data, object, follower_collection) do
     data
     |> CommonFixes.cast_and_filter_recipients("to", follower_collection, object["to"])
     |> CommonFixes.cast_and_filter_recipients("cc", follower_collection, object["cc"])
     |> CommonFixes.cast_and_filter_recipients("bto", follower_collection, object["bto"])
     |> CommonFixes.cast_and_filter_recipients("bcc", follower_collection, object["bcc"])
     |> CommonFixes.cast_and_filter_recipients("audience", follower_collection, object["audience"])
-    |> Transmogrifier.fix_implicit_addressing(follower_collection)
   end
 
   def fix(data, meta) do
@@ -99,10 +108,10 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator do
 
     cng
     |> validate_change(:object, fn :object, object_id ->
-      %URI{host: object_id_host} = URI.parse(object_id)
-      %URI{host: actor_host} = URI.parse(actor)
+      object_id_host = uri_host(object_id)
+      actor_host = uri_host(actor)
 
-      if object_id_host == actor_host do
+      if is_binary(object_id_host) and object_id_host == actor_host do
         []
       else
         [{:object, "The host of the object id doesn't match with the host of the actor"}]
@@ -159,4 +168,14 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator do
       end)
     end)
   end
+
+  defp uri_host(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:host)
+  rescue
+    URI.Error -> nil
+  end
+
+  defp uri_host(_), do: nil
 end

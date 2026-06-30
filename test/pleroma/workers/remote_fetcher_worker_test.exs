@@ -27,6 +27,31 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
     assert RemoteFetcherWorker.timeout(%Oban.Job{}) == 1_000
   end
 
+  test "cancels malformed remote fetch ids instead of retrying them" do
+    assert {:cancel, :bad_request} =
+             RemoteFetcherWorker.perform(%Oban.Job{
+               args: %{
+                 "op" => "fetch_remote",
+                 "id" => %{"bad" => "shape"}
+               }
+             })
+
+    assert {:cancel, :bad_request} =
+             RemoteFetcherWorker.perform(%Oban.Job{
+               args: %{"op" => "fetch_remote", "id" => ""}
+             })
+
+    assert {:cancel, :bad_request} =
+             RemoteFetcherWorker.perform(%Oban.Job{
+               args: %{"op" => "fetch_remote"}
+             })
+
+    assert {:cancel, :bad_request} =
+             RemoteFetcherWorker.perform(%Oban.Job{
+               args: %{"op" => "unknown"}
+             })
+  end
+
   test "cancels permanent remote fetch failures" do
     with_mock Fetcher, fetch_object_from_id: fn _, _ -> {:error, {:http, 404}} end do
       assert {:cancel, :not_found} =
@@ -34,6 +59,39 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
                  args: %{"op" => "fetch_remote", "id" => "https://remote.example/missing"}
                })
     end
+  end
+
+  test "cancels dormant-host fetches instead of retrying them" do
+    with_mock Fetcher, fetch_object_from_id: fn _, _ -> {:error, :unreachable_host} end do
+      assert {:cancel, :unreachable_host} =
+               RemoteFetcherWorker.perform(%Oban.Job{
+                 args: %{
+                   "op" => "fetch_remote",
+                   "id" => "https://dormant.example/objects/1"
+                 }
+               })
+    end
+  end
+
+  test "cancels terminal remote fetch HTTP failures instead of retrying forever" do
+    terminal_responses = [
+      {400, :bad_request},
+      {405, :method_not_allowed},
+      {406, :not_acceptable},
+      {501, :not_implemented}
+    ]
+
+    Enum.each(terminal_responses, fn {status, reason} ->
+      with_mock Fetcher, fetch_object_from_id: fn _, _ -> {:error, {:http, status}} end do
+        assert {:cancel, ^reason} =
+                 RemoteFetcherWorker.perform(%Oban.Job{
+                   args: %{
+                     "op" => "fetch_remote",
+                     "id" => "https://remote.example/terminal/#{status}"
+                   }
+                 })
+      end
+    end)
   end
 
   test "cancels reaction activities whose actor or object cannot be fetched" do

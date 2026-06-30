@@ -1,9 +1,11 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Ãƒâ€šÃ‚Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.EmojiReactHandlingTest do
   use Pleroma.DataCase, async: true
+
+  require Pleroma.Constants
 
   alias Pleroma.Activity
   alias Pleroma.Object
@@ -29,12 +31,36 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.EmojiReactHandlingTest do
     assert data["type"] == "EmojiReact"
     assert data["id"] == "http://mastodon.example.org/users/admin#reactions/2"
     assert data["object"] == activity.data["object"]
-    assert data["content"] == "👌"
+    emoji = List.to_string([0x1F44C])
+    assert data["content"] == emoji
 
     object = Object.get_by_ap_id(data["object"])
 
     assert object.data["reaction_count"] == 1
-    assert match?([["👌", _, nil]], object.data["reactions"])
+    assert [[^emoji, _, nil]] = object.data["reactions"]
+  end
+
+  @tag capture_log: true
+  test "it rejects malformed incoming emoji reactions without raising" do
+    actor =
+      insert(:user,
+        local: false,
+        ap_id: "https://malformed-react.example/users/alice",
+        follower_address: "https://malformed-react.example/users/alice/followers"
+      )
+
+    data = %{
+      "id" => "https://malformed-react.example/activities/react/1",
+      "actor" => actor.ap_id,
+      "content" => [0x1F44D] |> List.to_string(),
+      "object" => %{"type" => "Note", "content" => "missing id"},
+      "published" => "2026-06-29T00:00:00Z",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [],
+      "type" => "EmojiReact"
+    }
+
+    assert {:error, _} = Transmogrifier.handle_incoming(data)
   end
 
   test "it rewrites incoming Dislike activities into thumbs-down reactions" do
@@ -114,6 +140,58 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.EmojiReactHandlingTest do
     assert activity_data["id"] == dislike["id"]
     assert activity_data["content"] == thumbs_down
     assert activity_data["audience"] == [group.ap_id]
+  end
+
+  test "it unwraps group announces around EmojiReact activities" do
+    user = insert(:user)
+    other_user = insert(:user, local: false)
+
+    group =
+      insert(:user,
+        actor_type: "Group",
+        local: false,
+        ap_id: "https://mbin.example/m/main",
+        follower_address: "https://mbin.example/m/main/followers"
+      )
+
+    {:ok, activity} = CommonAPI.post(user, %{status: "hello"})
+    thumbs_up = [0x1F44D] |> List.to_string()
+
+    reaction = %{
+      "id" => "https://mbin.example/activities/react/1",
+      "actor" => other_user.ap_id,
+      "content" => thumbs_up,
+      "object" => activity.data["object"],
+      "published" => "2026-06-29T00:00:00Z",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "audience" => group.ap_id,
+      "type" => "EmojiReact"
+    }
+
+    announce = %{
+      "id" => "https://mbin.example/activities/announce/react/1",
+      "actor" => group.ap_id,
+      "object" => reaction,
+      "published" => "2026-06-29T00:00:01Z",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "type" => "Announce"
+    }
+
+    assert {:ok, %Activity{data: activity_data, local: false}} =
+             Transmogrifier.handle_incoming(announce)
+
+    assert activity_data["actor"] == other_user.ap_id
+    assert activity_data["type"] == "EmojiReact"
+    assert activity_data["id"] == reaction["id"]
+    assert activity_data["content"] == thumbs_up
+    assert activity_data["audience"] == [group.ap_id]
+
+    object = Object.get_by_ap_id(activity.data["object"])
+
+    assert object.data["reaction_count"] == 1
+    assert match?([[^thumbs_up, _, nil]], object.data["reactions"])
   end
 
   test "it rewrites incoming Undo Dislike activities into Undo EmojiReact" do

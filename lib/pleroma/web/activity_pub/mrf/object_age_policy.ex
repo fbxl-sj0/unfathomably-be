@@ -38,11 +38,11 @@ defmodule Pleroma.Web.ActivityPub.MRF.ObjectAgePolicy do
     if :delist in actions do
       with %User{} = user <- User.get_cached_by_ap_id(activity["actor"]) do
         to =
-          List.delete(activity["to"] || [], Pleroma.Constants.as_public()) ++
+          List.delete(recipient_list(activity["to"]), Pleroma.Constants.as_public()) ++
             [user.follower_address]
 
         cc =
-          List.delete(activity["cc"] || [], user.follower_address) ++
+          List.delete(recipient_list(activity["cc"]), user.follower_address) ++
             [Pleroma.Constants.as_public()]
 
         activity =
@@ -65,8 +65,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.ObjectAgePolicy do
   defp check_strip_followers(activity, actions) do
     if :strip_followers in actions do
       with %User{} = user <- User.get_cached_by_ap_id(activity["actor"]) do
-        to = List.delete(activity["to"] || [], user.follower_address)
-        cc = List.delete(activity["cc"] || [], user.follower_address)
+        to = List.delete(recipient_list(activity["to"]), user.follower_address)
+        cc = List.delete(recipient_list(activity["cc"]), user.follower_address)
 
         activity =
           activity
@@ -84,6 +84,12 @@ defmodule Pleroma.Web.ActivityPub.MRF.ObjectAgePolicy do
       {:ok, activity}
     end
   end
+
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
 
   @impl true
   def filter(%{"type" => "Create", "object" => %{"published" => _}} = activity) do

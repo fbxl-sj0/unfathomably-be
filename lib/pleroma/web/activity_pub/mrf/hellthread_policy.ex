@@ -12,11 +12,12 @@ defmodule Pleroma.Web.ActivityPub.MRF.HellthreadPolicy do
   @behaviour Pleroma.Web.ActivityPub.MRF.Policy
 
   defp delist_activity(activity, threshold) when threshold > 0 do
-    follower_collection = User.get_cached_by_ap_id(activity["actor"]).follower_address
-    to = activity["to"] || []
-    cc = activity["cc"] || []
+    follower_collection = follower_collection(activity)
+    to = recipient_list(activity["to"])
+    cc = recipient_list(activity["cc"])
+    recipients = Enum.uniq(to ++ cc)
 
-    follower_collection? = Enum.member?(to ++ cc, follower_collection)
+    follower_collection? = Enum.member?(recipients, follower_collection)
 
     activity =
       case get_recipient_count(activity) do
@@ -53,8 +54,11 @@ defmodule Pleroma.Web.ActivityPub.MRF.HellthreadPolicy do
   defp reject_activity(activity, _threshold), do: {:ok, activity}
 
   defp get_recipient_count(activity) do
-    recipients = (activity["to"] || []) ++ (activity["cc"] || [])
-    follower_collection = User.get_cached_by_ap_id(activity["actor"]).follower_address
+    recipients =
+      (recipient_list(activity["to"]) ++ recipient_list(activity["cc"]))
+      |> Enum.uniq()
+
+    follower_collection = follower_collection(activity)
 
     if Enum.member?(recipients, Pleroma.Constants.as_public()) do
       recipients =
@@ -71,6 +75,19 @@ defmodule Pleroma.Web.ActivityPub.MRF.HellthreadPolicy do
       {:not_public, length(recipients)}
     end
   end
+
+  defp follower_collection(activity) do
+    case User.get_cached_by_ap_id(activity["actor"]) do
+      %User{follower_address: follower_address} -> follower_address
+      _ -> nil
+    end
+  end
+
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
 
   @impl true
   def filter(%{"type" => "Create", "object" => %{"type" => object_type}} = activity)

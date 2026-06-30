@@ -29,17 +29,40 @@ defmodule Pleroma.Workers.ReachabilityWorker do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"domain" => domain}}) when is_binary(domain) do
-    domain = Instances.host(domain)
+    case normalize_domain(domain) do
+      nil ->
+        :discard
 
-    if nodeinfo_reachable?(domain) or webfinger_reachable?(domain) do
-      Instances.record_success(domain, source: "reachability")
-    else
-      Instances.record_failure(domain, :probe_failed, source: "reachability")
-      {:error, :unreachable}
+      domain ->
+        if nodeinfo_reachable?(domain) or webfinger_reachable?(domain) do
+          Instances.record_success(domain, source: "reachability")
+        else
+          Instances.record_failure(domain, :probe_failed, source: "reachability")
+          {:error, :unreachable}
+        end
     end
   end
 
   def perform(%Oban.Job{}), do: :discard
+
+  defp normalize_domain(domain) do
+    domain =
+      domain
+      |> Instances.host()
+      |> case do
+        domain when is_binary(domain) -> String.trim(domain)
+        _ -> ""
+      end
+
+    if domain != "" and not String.match?(domain, ~r/\s/) and
+         not String.contains?(domain, ["/", "\\"]) do
+      domain
+    else
+      nil
+    end
+  rescue
+    _ -> nil
+  end
 
   defp nodeinfo_reachable?(domain) do
     url = "https://#{domain}/.well-known/nodeinfo"

@@ -118,10 +118,10 @@ defmodule Pleroma.Search.MeilisearchTest do
           }
           |> json()
 
-        %{method: :delete, url: "http://127.0.0.1:7700/indexes/objects/documents/" <> id} ->
-          send(self(), "called_delete")
-          assert String.length(id) > 1
-          json(%{})
+      %{method: :delete, url: "http://127.0.0.1:7700/indexes/objects/documents/" <> id} ->
+        send(self(), {:called_delete, id})
+        assert id != ""
+        json(%{})
       end)
 
       Config
@@ -152,7 +152,8 @@ defmodule Pleroma.Search.MeilisearchTest do
       assert_enqueued(worker: SearchIndexingWorker, args: delete_args)
       assert :ok = perform_job(SearchIndexingWorker, delete_args)
 
-      assert_received("called_delete")
+      assert_received({:called_delete, delete_id})
+      assert delete_id == to_string(activity.object.id)
     end
   end
 end

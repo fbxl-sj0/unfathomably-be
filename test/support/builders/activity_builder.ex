@@ -47,7 +47,19 @@ defmodule Pleroma.Builders.ActivityBuilder do
     user = Pleroma.Factory.insert(:user)
 
     public = build(%{"id" => 1}, %{user: user})
-    non_public = build(%{"id" => 2, "to" => [user.follower_address]}, %{user: user})
+    non_public =
+      build(
+        %{
+          "id" => 2,
+          "to" => [user.follower_address],
+          "object" => %{
+            "type" => "Note",
+            "content" => "test",
+            "to" => [user.follower_address]
+          }
+        },
+        %{user: user}
+      )
 
     {:ok, public} = ActivityPub.insert(public)
     {:ok, non_public} = ActivityPub.insert(non_public)

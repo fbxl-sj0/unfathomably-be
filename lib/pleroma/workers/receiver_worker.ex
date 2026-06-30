@@ -10,6 +10,15 @@ defmodule Pleroma.Workers.ReceiverWorker do
   use Pleroma.Workers.WorkerHelper, queue: "federator_incoming"
 
   @impl Oban.Worker
+  def perform(%Job{args: %{"op" => "incoming_ap_doc", "params" => params} = args} = job)
+      when not is_map(params) do
+    if signature_retry_job?(args) do
+      perform_signature_retry(job)
+    else
+      process_errors(:missing_incoming_ap_doc_params)
+    end
+  end
+
   def perform(%Job{args: %{"op" => "incoming_ap_doc", "params" => params} = args} = job) do
     if signature_retry_job?(args) do
       perform_signature_retry(job)
@@ -25,6 +34,8 @@ defmodule Pleroma.Workers.ReceiverWorker do
       process_errors(:missing_incoming_ap_doc_params)
     end
   end
+
+  def perform(%Job{}), do: process_errors(:missing_incoming_ap_doc_params)
 
   defp perform_signature_retry(%Job{args: args} = job) do
     SignatureRetryWorker.perform(%Job{
@@ -76,7 +87,8 @@ defmodule Pleroma.Workers.ReceiverWorker do
       {:error, %Ecto.Changeset{} = changeset} -> {:cancel, {:error, changeset}}
       {:error, :origin_containment_failed} -> {:cancel, :origin_containment_failed}
       {:error, :already_present} -> {:cancel, :already_present}
-      {:error, {:http, status}} when status in [401, 403, 404, 410] -> {:cancel, {:http, status}}
+      {:error, {:http, status}} when status in [400, 401, 403, 404, 405, 406, 410, 501] ->
+        {:cancel, {:http, status}}
       {:error, {:content_type, _} = reason} -> {:cancel, reason}
       {:error, {:unsupported_activity_type, _} = reason} -> {:cancel, reason}
       {:error, {:validate_object, reason}} -> {:cancel, reason}

@@ -89,4 +89,39 @@ defmodule Pleroma.Web.ActivityPub.MRF.HellthreadPolicyTest do
 
     assert {:ok, ^message} = filter(message)
   end
+
+  test "normalizes malformed recipients before counting", %{user: user} do
+    clear_config([:mrf_hellthread], %{delist_threshold: 0, reject_threshold: 1})
+
+    message = %{
+      "actor" => user.ap_id,
+      "type" => "Create",
+      "to" => [
+        %{"id" => "https://www.w3.org/ns/activitystreams#Public"},
+        %{"href" => "https://instance.tld/users/user1"},
+        nil
+      ],
+      "cc" => %{"id" => "https://instance.tld/users/user2"},
+      "object" => %{"type" => "Note"}
+    }
+
+    assert {:reject, "[HellthreadPolicy] 2 recipients is over the limit of 1"} ==
+             filter(message)
+  end
+
+  test "deduplicates recipients before counting", %{user: user} do
+    clear_config([:mrf_hellthread], %{delist_threshold: 0, reject_threshold: 1})
+
+    recipient = "https://instance.tld/users/user1"
+
+    message = %{
+      "actor" => user.ap_id,
+      "type" => "Create",
+      "to" => ["https://www.w3.org/ns/activitystreams#Public", recipient],
+      "cc" => [recipient, user.follower_address],
+      "object" => %{"type" => "Note"}
+    }
+
+    assert {:ok, ^message} = filter(message)
+  end
 end

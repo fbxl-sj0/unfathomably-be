@@ -5,12 +5,15 @@
 defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
   use Pleroma.DataCase, async: false
 
+  alias Pleroma.Instances
   alias Pleroma.Repo
   alias Pleroma.Workers.Cron.ObanCleanupWorker
   alias Pleroma.Workers.EventReminderWorker
   alias Pleroma.Workers.PollWorker
   alias Pleroma.Workers.PublisherWorker
   alias Pleroma.Workers.ReceiverWorker
+  alias Pleroma.Workers.RemoteFetcherWorker
+  alias Pleroma.Workers.SignatureRetryWorker
 
   setup do
     clear_config([:instance, :poll_limits], %{max_expiration: 365 * 24 * 60 * 60})
@@ -69,10 +72,120 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
       ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
       |> insert_job(DateTime.add(now, -2 * 24 * 60 * 60, :second), state: "retryable")
 
-    assert 1 = ObanCleanupWorker.discard_stale_federator_retries(now)
+    old_signature_retry =
+      SignatureRetryWorker.new(%{"op" => "incoming_failed_signature_ap_doc"})
+      |> insert_job(DateTime.add(now, -31 * 24 * 60 * 60, :second), state: "retryable")
+
+    assert 2 = ObanCleanupWorker.discard_stale_federator_retries(now)
 
     assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, old_outgoing.id)
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, old_signature_retry.id)
     assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, recent_incoming.id)
+  end
+
+  test "discards fixed incoming federation exception retries" do
+    now = DateTime.utc_now()
+
+    duplicate_activity =
+      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [%{"error" => "constraint error: activities_unique_apid_index"}]
+      )
+
+    terminal_signature_retry =
+      SignatureRetryWorker.new(%{"op" => "incoming_failed_signature_ap_doc"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [%{"error" => "{:error, {:http, 405}}"}]
+      )
+
+    unknown_error =
+      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [%{"error" => "fresh unclassified receiver error"}]
+      )
+
+    assert 2 = ObanCleanupWorker.discard_fixed_federation_exception_retries()
+
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, duplicate_activity.id)
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, terminal_signature_retry.id)
+    assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, unknown_error.id)
+  end
+
+  test "discards fixed remote fetch retry errors" do
+    now = DateTime.utc_now()
+
+    fixed_collection_error =
+      RemoteFetcherWorker.new(%{"op" => "fetch_remote", "id" => "https://remote.example/o/1"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [%{"error" => "errors: [likes: {\"is invalid\", []}]"}]
+      )
+
+    terminal_status_error =
+      RemoteFetcherWorker.new(%{"op" => "fetch_remote", "id" => "https://remote.example/o/3"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [%{"error" => "{:error, {:http, 405}}"}]
+      )
+
+    unknown_error =
+      RemoteFetcherWorker.new(%{"op" => "fetch_remote", "id" => "https://remote.example/o/2"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [%{"error" => "fresh remote fetch parser error"}]
+      )
+
+    assert 2 = ObanCleanupWorker.discard_fixed_federation_exception_retries()
+
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, fixed_collection_error.id)
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, terminal_status_error.id)
+    assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, unknown_error.id)
+  end
+
+  test "discards terminal publisher retries" do
+    now = DateTime.utc_now()
+
+    terminal_job =
+      PublisherWorker.new(%{"op" => "publish_one"})
+      |> insert_job(now, state: "retryable", errors: [%{"error" => "status: 405"}])
+
+    temporary_job =
+      PublisherWorker.new(%{"op" => "publish_one"})
+      |> insert_job(now, state: "retryable", errors: [%{"error" => "status: 502"}])
+
+    assert 1 = ObanCleanupWorker.discard_terminal_publisher_retries()
+
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, terminal_job.id)
+    assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, temporary_job.id)
+  end
+
+  test "discards publisher jobs aimed at unreachable hosts" do
+    now = DateTime.utc_now()
+    Instances.set_unreachable("dead.example", Instances.reachability_datetime_threshold())
+
+    dead_job =
+      PublisherWorker.new(%{
+        "op" => "publish_one",
+        "module" => "Elixir.Pleroma.Web.ActivityPub.Publisher",
+        "params" => %{"inbox" => "https://dead.example/inbox"}
+      })
+      |> insert_job(now, state: "retryable")
+
+    live_job =
+      PublisherWorker.new(%{
+        "op" => "publish_one",
+        "module" => "Elixir.Pleroma.Web.ActivityPub.Publisher",
+        "params" => %{"inbox" => "https://live.example/inbox"}
+      })
+      |> insert_job(now, state: "retryable")
+
+    assert 1 = ObanCleanupWorker.discard_unreachable_publisher_jobs()
+
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, dead_job.id)
+    assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, live_job.id)
   end
 
   test "discards stale cleanup retries" do
@@ -96,12 +209,14 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
 
   defp insert_job(changeset, scheduled_at, opts \\ []) do
     state = Keyword.get(opts, :state, "scheduled")
+    errors = Keyword.get(opts, :errors, [])
 
     {:ok, job} =
       changeset
       |> Ecto.Changeset.put_change(:scheduled_at, scheduled_at)
       |> Ecto.Changeset.put_change(:inserted_at, scheduled_at)
       |> Ecto.Changeset.put_change(:state, state)
+      |> Ecto.Changeset.put_change(:errors, errors)
       |> Oban.insert()
 
     job

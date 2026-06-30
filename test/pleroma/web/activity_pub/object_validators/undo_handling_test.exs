@@ -18,7 +18,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UndoHandlingTest do
       {:ok, like} = CommonAPI.favorite(user, post_activity.id)
       {:ok, valid_like_undo, []} = Builder.undo(user, like)
 
-      %{user: user, like: like, valid_like_undo: valid_like_undo}
+      %{user: user, like: like, post_activity: post_activity, valid_like_undo: valid_like_undo}
     end
 
     test "it validates a basic like undo", %{valid_like_undo: valid_like_undo} do
@@ -46,8 +46,21 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UndoHandlingTest do
 
       {:error, cng} = ObjectValidator.validate(missing_object, [])
 
-      assert {:object, {"can't find object", []}} in cng.errors
+      assert {:object, {"can't find activity", []}} in cng.errors
       assert length(cng.errors) == 1
+    end
+
+    test "it does not validate if the object points at a status object instead of an activity", %{
+      post_activity: post_activity,
+      valid_like_undo: valid_like_undo
+    } do
+      object_target =
+        valid_like_undo
+        |> Map.put("object", post_activity.data["object"])
+
+      {:error, cng} = ObjectValidator.validate(object_target, [])
+
+      assert {:object, {"can't find activity", []}} in cng.errors
     end
   end
 end

@@ -6,6 +6,7 @@ defmodule Pleroma.User.QueryTest do
   use Pleroma.DataCase, async: false
 
   alias Pleroma.Repo
+  alias Pleroma.FollowingRelationship
   alias Pleroma.User
   alias Pleroma.User.Query
   alias Pleroma.Web.ActivityPub.InternalFetchActor
@@ -43,6 +44,43 @@ defmodule Pleroma.User.QueryTest do
              %{is_suggested: true}
              |> User.Query.build()
              |> Repo.all()
+  end
+
+  describe "recipients_from_activity param" do
+    test "normalizes malformed recipient collections before querying" do
+      recipient = insert(:user)
+      follower = insert(:user)
+
+      FollowingRelationship.follow(follower, recipient, :follow_accept)
+
+      recipients = [
+        recipient.ap_id,
+        %{"id" => recipient.follower_address},
+        %{"href" => "https://unused.example/followers"},
+        nil,
+        42,
+        %{"type" => "Mention"},
+        [recipient.ap_id]
+      ]
+
+      result =
+        %{recipients_from_activity: recipients, select: [:id], internal: true}
+        |> Query.build()
+        |> Repo.all()
+        |> Enum.map(& &1.id)
+        |> Enum.sort()
+
+      assert result == Enum.sort([recipient.id, follower.id])
+    end
+
+    test "treats malformed recipient input as an empty recipient filter" do
+      insert(:user)
+
+      assert [] =
+               %{recipients_from_activity: %{"bad" => "shape"}, select: [:id], internal: true}
+               |> Query.build()
+               |> Repo.all()
+    end
   end
 
   describe "is_privileged param" do

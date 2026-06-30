@@ -88,7 +88,8 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
           "collection_id" => collection_id,
           "depth" => depth
         }
-      }) do
+      })
+      when is_binary(object_id) and is_binary(collection_id) and is_integer(depth) do
     with {:parent, %Object{} = object} <- {:parent, Object.get_cached_by_ap_id(object_id)},
          {:local, false} <- {:local, Object.local?(object)},
          {:public, true} <- {:public, Visibility.is_public?(object)},
@@ -113,6 +114,10 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
       error -> {:cancel, error}
     end
   end
+
+  def perform(%Oban.Job{args: %{"op" => @op}}), do: {:cancel, :bad_request}
+
+  def perform(%Oban.Job{}), do: {:cancel, :bad_request}
 
   defp fetch_reply_ids(collection_id) do
     opts = %{
@@ -202,6 +207,9 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
 
   defp item_ids(_, _), do: []
 
+  defp cast_item_id(%{"type" => "Create", "object" => object}), do: cast_item_id(object)
+  defp cast_item_id(%{"object" => object}) when is_binary(object), do: cast_item_id(object)
+  defp cast_item_id(%{"object" => %{} = object}), do: cast_item_id(object)
   defp cast_item_id(%{"id" => id}), do: cast_item_id(id)
 
   defp cast_item_id(id) when is_binary(id) do
@@ -337,10 +345,15 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
   defp handle_fetch_error(reason) when reason in [:forbidden, :not_found],
     do: {:cancel, reason}
 
+  defp handle_fetch_error({:http, 400}), do: {:cancel, :bad_request}
   defp handle_fetch_error("Object has been deleted"), do: {:cancel, :not_found}
   defp handle_fetch_error({:http, code}) when code in [401, 403], do: {:cancel, :forbidden}
   defp handle_fetch_error({:http, code}) when code in [404, 410], do: {:cancel, :not_found}
+  defp handle_fetch_error({:http, 405}), do: {:cancel, :method_not_allowed}
+  defp handle_fetch_error({:http, 406}), do: {:cancel, :not_acceptable}
+  defp handle_fetch_error({:http, 501}), do: {:cancel, :not_implemented}
   defp handle_fetch_error({:content_type, _} = reason), do: {:cancel, reason}
+  defp handle_fetch_error(:unreachable_host), do: {:cancel, :unreachable_host}
   defp handle_fetch_error(reason), do: {:error, reason}
 
   defp same_origin?(left, right) when is_binary(left) and is_binary(right) do

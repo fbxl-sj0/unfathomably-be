@@ -47,6 +47,20 @@ defmodule Pleroma.Web.ActivityPub.MRF.AntiMentionSpamPolicyTest do
     {:ok, _message} = AntiMentionSpamPolicy.filter(message)
   end
 
+  test "it allows malformed recipient fields without crashing" do
+    user = insert(:user, local: false)
+
+    message = %{
+      "type" => "Create",
+      "actor" => user.ap_id,
+      "to" => %{"bad" => "shape"},
+      "cc" => [nil, 42],
+      "object" => "not an object"
+    }
+
+    {:ok, _message} = AntiMentionSpamPolicy.filter(message)
+  end
+
   test "it rejects posts with mentions from users without followers" do
     user = insert(:user, local: false, follower_count: 0)
 

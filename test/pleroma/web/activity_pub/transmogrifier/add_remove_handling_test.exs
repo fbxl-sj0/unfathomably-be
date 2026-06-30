@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
@@ -79,7 +79,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     }
 
     assert {:ok, activity} = Transmogrifier.handle_incoming(message)
-    assert activity.data == message
+    assert activity.data == Map.put(message, "audience", [])
     user = User.get_cached_by_ap_id(actor)
     assert user.pinned_objects[object_url]
 
@@ -96,7 +96,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     }
 
     assert {:ok, activity} = Transmogrifier.handle_incoming(remove)
-    assert activity.data == remove
+    assert activity.data == Map.put(remove, "audience", [])
 
     user = refresh_record(user)
     refute user.pinned_objects[object_url]
@@ -177,7 +177,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     }
 
     assert {:ok, activity} = Transmogrifier.handle_incoming(message)
-    assert activity.data == message
+    assert activity.data == Map.put(message, "audience", [])
     user = User.get_cached_by_ap_id(actor)
     assert user.pinned_objects[object_url]
   end
@@ -217,7 +217,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     }
 
     assert {:ok, activity} = Transmogrifier.handle_incoming(add)
-    assert activity.data == add
+    assert activity.data == Map.put(add, "audience", [])
 
     group = User.get_cached_by_ap_id(group.ap_id)
     assert group.pinned_objects[object_id]
@@ -235,7 +235,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     }
 
     assert {:ok, activity} = Transmogrifier.handle_incoming(remove)
-    assert activity.data == remove
+    assert activity.data == Map.put(remove, "audience", [])
 
     group = User.get_cached_by_ap_id(group.ap_id)
     refute group.pinned_objects[object_id]
@@ -274,7 +274,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     }
 
     assert {:ok, activity} = Transmogrifier.handle_incoming(add)
-    assert activity.data == add
+    assert activity.data == Map.put(add, "audience", [])
 
     group = User.get_cached_by_ap_id(group.ap_id)
     assert group.pinned_objects == %{}
@@ -307,7 +307,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     }
 
     assert {:ok, activity} = Transmogrifier.handle_incoming(add)
-    assert activity.data == add
+    assert activity.data == Map.put(add, "audience", [])
     assert GroupMembership.role(group, added) == "moderator"
 
     remove = %{
@@ -323,7 +323,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     }
 
     assert {:ok, activity} = Transmogrifier.handle_incoming(remove)
-    assert activity.data == remove
+    assert activity.data == Map.put(remove, "audience", [])
     assert GroupMembership.role(group, added) == "user"
   end
 
@@ -352,7 +352,82 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
     }
 
     assert {:ok, activity} = Transmogrifier.handle_incoming(add)
-    assert activity.data == add
+    assert activity.data == Map.put(add, "audience", [])
     assert GroupMembership.role(group, added) == "user"
+  end
+
+  test "Add activities with unknown actors are rejected without raising" do
+    author = insert(:user)
+    {:ok, post} = CommonAPI.post(author, %{status: "unknown actor pin target"})
+
+    Tesla.Mock.mock(fn
+      %{method: :get, url: "https://unknown-add.example/users/missing"} ->
+        %Tesla.Env{status: 404, body: "", headers: []}
+    end)
+
+    add = %{
+      "id" => "https://unknown-add.example/activities/add/1",
+      "actor" => "https://unknown-add.example/users/missing",
+      "object" => post.data["object"],
+      "target" => "https://unknown-add.example/users/missing/collections/featured",
+      "type" => "Add",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [],
+      "bcc" => [],
+      "bto" => []
+    }
+
+    assert {:error, _} = Transmogrifier.handle_incoming(add)
+  end
+
+  test "Remove activities with malformed actors are rejected without raising" do
+    author = insert(:user)
+    {:ok, post} = CommonAPI.post(author, %{status: "malformed actor unpin target"})
+
+    remove = %{
+      "id" => "https://malformed-remove.example/activities/remove/1",
+      "actor" => %{"type" => "Person"},
+      "object" => post.data["object"],
+      "target" => "https://malformed-remove.example/users/missing/collections/featured",
+      "type" => "Remove",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [],
+      "bcc" => [],
+      "bto" => []
+    }
+
+    assert {:error, _} = Transmogrifier.handle_incoming(remove)
+  end
+
+  test "moderator collection Add activities with malformed objects are rejected without raising" do
+    moderator =
+      insert(:user,
+        local: false,
+        ap_id: "https://malformed-add.example/u/mod",
+        follower_address: "https://malformed-add.example/u/mod/followers"
+      )
+
+    group =
+      insert(:user,
+        local: false,
+        actor_type: "Group",
+        ap_id: "https://malformed-add.example/m/main",
+        follower_address: "https://malformed-add.example/m/main/followers",
+        attributed_to_address: "https://malformed-add.example/m/main/moderators"
+      )
+
+    add = %{
+      "id" => "https://malformed-add.example/activities/add/mod/1",
+      "actor" => moderator.ap_id,
+      "object" => "not a valid activitypub id",
+      "target" => group.attributed_to_address,
+      "type" => "Add",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "bcc" => [],
+      "bto" => []
+    }
+
+    assert {:error, _} = Transmogrifier.handle_incoming(add)
   end
 end

@@ -163,7 +163,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.AntiLinkSpamPolicyTest do
 
       assert capture_log(fn ->
                {:reject, _} = AntiLinkSpamPolicy.filter(message)
-             end) =~ "[error] Could not decode user at fetch http://invalid.actor"
+             end) =~ "Could not decode user at fetch http://invalid.actor"
     end
 
     test "it rejects posts with links" do
@@ -173,7 +173,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.AntiLinkSpamPolicyTest do
 
       assert capture_log(fn ->
                {:reject, _} = AntiLinkSpamPolicy.filter(message)
-             end) =~ "[error] Could not decode user at fetch http://invalid.actor"
+             end) =~ "Could not decode user at fetch http://invalid.actor"
     end
   end
 
@@ -183,6 +183,28 @@ defmodule Pleroma.Web.ActivityPub.MRF.AntiLinkSpamPolicyTest do
 
       message =
         @response_message
+        |> Map.put("actor", user.ap_id)
+
+      {:ok, _message} = AntiLinkSpamPolicy.filter(message)
+    end
+
+    test "it tolerates non-binary content in current and historical objects" do
+      user = insert(:user, local: false)
+
+      message =
+        %{
+          "type" => "Create",
+          "object" => %{
+            "content" => %{"en" => "hi world"},
+            "formerRepresentations" => %{
+              "type" => "OrderedCollection",
+              "orderedItems" => [
+                %{"content" => nil},
+                %{"content" => %{"en" => "old hi world"}}
+              ]
+            }
+          }
+        }
         |> Map.put("actor", user.ap_id)
 
       {:ok, _message} = AntiLinkSpamPolicy.filter(message)

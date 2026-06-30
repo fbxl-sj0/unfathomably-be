@@ -61,6 +61,18 @@ defmodule Pleroma.Web.ActivityPub.MRF.ActivityExpirationPolicyTest do
     refute Map.has_key?(activity, "expires_at")
   end
 
+  test "ignores activities with malformed actors" do
+    assert {:ok, activity} =
+             ActivityExpirationPolicy.filter(%{
+               "id" => "https://example.com/123",
+               "actor" => %{"id" => @local_actor},
+               "type" => "Create",
+               "object" => %{"type" => "Note"}
+             })
+
+    refute Map.has_key?(activity, "expires_at")
+  end
+
   test "ignores non-Create/Note activities" do
     assert {:ok, activity} =
              ActivityExpirationPolicy.filter(%{

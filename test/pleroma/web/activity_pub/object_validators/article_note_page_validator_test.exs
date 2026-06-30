@@ -1,9 +1,11 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest do
   use Pleroma.DataCase, async: true
+
+  require Pleroma.Constants
 
   alias Pleroma.Web.ActivityPub.ObjectValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator
@@ -42,6 +44,58 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest 
     test "a note from factory validates" do
       note = insert(:note)
       %{valid?: true} = ArticleNotePageValidator.cast_and_validate(note.data)
+    end
+
+    test "a note with a map-shaped tag validates without crashing", %{note: note} do
+      note =
+        Map.put(note, "tag", %{
+          "type" => "Hashtag",
+          "name" => "#woodworking"
+        })
+
+      assert {:ok, validate_res, []} = ObjectValidator.validate(note, [])
+      assert is_list(validate_res["tag"])
+      assert %{"type" => "Hashtag", "name" => "#woodworking"} in validate_res["tag"]
+    end
+
+    test "a note with malformed attachments validates without crashing", %{note: note} do
+      note =
+        Map.put(note, "attachment", [
+          %{
+            "type" => "Document",
+            "mediaType" => "image/png",
+            "url" => "https://example.test/image.png"
+          },
+          "not an attachment",
+          nil
+        ])
+
+      cng = ArticleNotePageValidator.cast_and_validate(note)
+
+      assert cng.valid?
+      assert length(cng.changes.attachment) == 1
+    end
+
+    test "a note with a non-list attachment field drops it without crashing", %{note: note} do
+      note = Map.put(note, "attachment", "not an attachment")
+
+      cng = ArticleNotePageValidator.cast_and_validate(note)
+
+      assert cng.valid?
+      refute Map.has_key?(cng.changes, :attachment)
+    end
+
+    test "a note with a malformed replies collection drops it without crashing", %{note: note} do
+      note =
+        Map.put(note, "replies", %{
+          "id" => "https://remote.example/%",
+          "type" => "Collection"
+        })
+
+      cng = ArticleNotePageValidator.cast_and_validate(note)
+
+      assert cng.valid?
+      refute Map.has_key?(cng.changes, :replies_collection)
     end
   end
 

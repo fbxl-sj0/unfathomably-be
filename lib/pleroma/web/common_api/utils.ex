@@ -225,8 +225,8 @@ defmodule Pleroma.Web.CommonAPI.Utils do
   defp group_target_allowed?(%User{local: true, actor_type: "Group"} = group, %User{} = actor) do
     relationship = GroupMembership.relationship(actor, group)
 
-    not Map.get(relationship, :blocked_by, false) and
-      (not group.is_locked || Map.get(relationship, :member, false))
+    Map.get(relationship, :blocked_by, false) != true and
+      (group.is_locked != true || Map.get(relationship, :member, false) == true)
   end
 
   defp group_target_allowed?(%User{actor_type: "Group"}, %User{}), do: true

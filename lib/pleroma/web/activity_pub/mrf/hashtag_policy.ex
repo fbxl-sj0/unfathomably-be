@@ -28,12 +28,15 @@ defmodule Pleroma.Web.ActivityPub.MRF.HashtagPolicy do
   end
 
   defp check_ftl_removal(%{"to" => to} = activity, hashtags) do
+    to = recipient_list(to)
+    cc = recipient_list(activity["cc"])
+
     if Pleroma.Constants.as_public() in to and
          Enum.any?(Config.get([:mrf_hashtag, :federated_timeline_removal]), fn match ->
            match in hashtags
          end) do
       to = List.delete(to, Pleroma.Constants.as_public())
-      cc = [Pleroma.Constants.as_public() | activity["cc"] || []]
+      cc = [Pleroma.Constants.as_public() | cc]
 
       activity =
         activity
@@ -49,6 +52,12 @@ defmodule Pleroma.Web.ActivityPub.MRF.HashtagPolicy do
   end
 
   defp check_ftl_removal(activity, _hashtags), do: {:ok, activity}
+
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
 
   defp check_sensitive(activity) do
     {:ok, new_object} =
@@ -69,7 +78,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.HashtagPolicy do
   def filter(%{"type" => type, "object" => object} = activity)
       when type in ["Create", "Update"] do
     history_items =
-      with %{"formerRepresentations" => %{"orderedItems" => items}} <- object do
+      with %{"formerRepresentations" => %{"orderedItems" => items}} when is_list(items) <- object do
         items
       else
         _ -> []
@@ -77,10 +86,10 @@ defmodule Pleroma.Web.ActivityPub.MRF.HashtagPolicy do
 
     historical_hashtags =
       Enum.reduce(history_items, [], fn item, acc ->
-        acc ++ Object.hashtags(%Object{data: item})
+        acc ++ object_hashtags(item)
       end)
 
-    hashtags = Object.hashtags(%Object{data: object}) ++ historical_hashtags
+    hashtags = object_hashtags(object) ++ historical_hashtags
 
     if hashtags != [] do
       with {:ok, activity} <- check_reject(activity, hashtags),
@@ -98,8 +107,10 @@ defmodule Pleroma.Web.ActivityPub.MRF.HashtagPolicy do
     end
   end
 
-  @impl true
   def filter(activity), do: {:ok, activity}
+
+  defp object_hashtags(object) when is_map(object), do: Object.hashtags(%Object{data: object})
+  defp object_hashtags(_), do: []
 
   @impl true
   def describe do

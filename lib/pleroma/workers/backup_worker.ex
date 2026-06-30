@@ -8,6 +8,8 @@ defmodule Pleroma.Workers.BackupWorker do
   alias Oban.Job
   alias Pleroma.User.Backup
 
+  defguardp valid_job_id(id) when (is_binary(id) and byte_size(id) > 0) or is_integer(id)
+
   def process(backup, admin_user_id \\ nil) do
     %{"op" => "process", "backup_id" => backup.id, "admin_user_id" => admin_user_id}
     |> new()
@@ -33,25 +35,38 @@ defmodule Pleroma.Workers.BackupWorker do
   @impl Oban.Worker
   def perform(%Job{
         args: %{"op" => "process", "backup_id" => backup_id, "admin_user_id" => admin_user_id}
-      }) do
-    with {:ok, %Backup{} = backup} <-
-           backup_id |> Backup.get() |> Backup.process(),
+      })
+      when valid_job_id(backup_id) do
+    with %Backup{} = source_backup <- get_backup(backup_id),
+         {:ok, %Backup{} = backup} <- Backup.process(source_backup),
          {:ok, _job} <- schedule_deletion(backup),
          :ok <- Backup.remove_outdated(backup),
          :ok <- maybe_deliver_email(backup, admin_user_id) do
       {:ok, backup}
+    else
+      nil -> {:cancel, :backup_not_found}
+      {:error, reason} -> {:cancel, reason}
     end
   end
 
-  def perform(%Job{args: %{"op" => "delete", "backup_id" => backup_id}}) do
-    case Backup.get(backup_id) do
+  def perform(%Job{args: %{"op" => "delete", "backup_id" => backup_id}})
+      when valid_job_id(backup_id) do
+    case get_backup(backup_id) do
       %Backup{} = backup -> Backup.delete(backup)
       nil -> :ok
     end
   end
 
+  def perform(%Job{}), do: :discard
+
   @impl Oban.Worker
   def timeout(_job), do: :infinity
+
+  defp get_backup(backup_id) do
+    Backup.get(backup_id)
+  rescue
+    _ -> nil
+  end
 
   defp has_email?(user) do
     not is_nil(user.email) and user.email != ""

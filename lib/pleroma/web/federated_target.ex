@@ -203,7 +203,7 @@ defmodule Pleroma.Web.FederatedTarget do
         """
         not exists (
           select 1 from instances i
-          where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+          where lower(i.host) = ap_id_host(?)
             and i.unreachable_since <= ?
         )
         """,
@@ -963,7 +963,7 @@ defmodule Pleroma.Web.FederatedTarget do
           """
           exists (
             select 1 from instances i
-            where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+            where lower(i.host) = ap_id_host(?)
               and lower(coalesce(i.metadata->>'software_name', '')) ~ ?
           )
           """,
@@ -982,7 +982,7 @@ defmodule Pleroma.Web.FederatedTarget do
         """
         not exists (
           select 1 from instances i
-          where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+          where lower(i.host) = ap_id_host(?)
             and i.unreachable_since <= ?
         )
         """,
@@ -1108,7 +1108,7 @@ defmodule Pleroma.Web.FederatedTarget do
           """
           not exists (
             select 1 from instances i
-            where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+            where lower(i.host) = ap_id_host(?)
               and i.unreachable_since <= ?
           )
           """,
@@ -1148,7 +1148,7 @@ defmodule Pleroma.Web.FederatedTarget do
           """
           not exists (
             select 1 from instances i
-            where lower(i.host) = lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))
+            where lower(i.host) = ap_id_host(?)
               and i.unreachable_since <= ?
           )
           """,
@@ -1629,8 +1629,40 @@ defmodule Pleroma.Web.FederatedTarget do
       _ ->
         %User{local: false}
         |> User.remote_user_changeset(attrs)
-        |> Repo.insert()
-        |> User.set_cache()
+        |> insert_collection_source(attrs)
+    end
+  end
+
+  defp insert_collection_source(changeset, %{ap_id: ap_id} = attrs) do
+    case Repo.insert(changeset) do
+      {:ok, %User{} = source} ->
+        User.set_cache(source)
+
+      {:error, %Ecto.Changeset{} = changeset} = error ->
+        if user_unique_identity_error?(changeset) do
+          update_existing_collection_source(ap_id, attrs)
+        else
+          error
+        end
+    end
+  rescue
+    e in Ecto.ConstraintError ->
+      if user_unique_identity_error?(e) do
+        update_existing_collection_source(ap_id, attrs)
+      else
+        reraise e, __STACKTRACE__
+      end
+  end
+
+  defp update_existing_collection_source(ap_id, attrs) do
+    case User.get_by_ap_id(ap_id) do
+      %User{} = source ->
+        source
+        |> User.remote_user_changeset(attrs)
+        |> User.update_and_set_cache()
+
+      _ ->
+        {:error, :already_exists}
     end
   end
 
@@ -1870,13 +1902,30 @@ defmodule Pleroma.Web.FederatedTarget do
         uri: ap_id
       }
 
-      with {:ok, %User{} = group} <- Repo.insert(group) do
+      with {:ok, %User{} = group} <- insert_local_group(group) do
         User.set_cache(group)
         GroupMembership.ensure_owner(group, owner)
         User.follow(owner, group, :follow_accept)
         {:ok, group}
       end
     end
+  end
+
+  defp insert_local_group(%User{} = group) do
+    case Repo.insert(group) do
+      {:ok, %User{} = group} ->
+        {:ok, group}
+
+      {:error, %Ecto.Changeset{} = changeset} = error ->
+        if user_unique_identity_error?(changeset), do: {:error, :already_exists}, else: error
+    end
+  rescue
+    e in Ecto.ConstraintError ->
+      if user_unique_identity_error?(e) do
+        {:error, :already_exists}
+      else
+        reraise e, __STACKTRACE__
+      end
   end
 
   @doc "Update a local ActivityPub Group actor after checking group moderation rights."
@@ -2069,6 +2118,27 @@ defmodule Pleroma.Web.FederatedTarget do
     end
   end
 
+  defp user_unique_identity_error?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {:ap_id, {_message, opts}} ->
+        Keyword.get(opts, :constraint_name) == "users_ap_id_index" or
+          Keyword.get(opts, :constraint) == :unique
+
+      {:nickname, {_message, opts}} ->
+        Keyword.get(opts, :constraint_name) == "users_nickname_index" or
+          Keyword.get(opts, :constraint) == :unique
+
+      _ ->
+        false
+    end)
+  end
+
+  defp user_unique_identity_error?(%Ecto.ConstraintError{constraint: constraint})
+       when constraint in ["users_ap_id_index", "users_nickname_index"],
+       do: true
+
+  defp user_unique_identity_error?(_), do: false
+
   defp local_group_truthy_param(params, key, default) do
     case Map.get(params, key, Map.get(params, String.to_atom(key), default)) do
       value when value in [true, "true", "1", 1, "on"] -> true
@@ -2245,7 +2315,8 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp source_items_collection(%User{} = source) do
-    with {:ok, %{} = actor_or_collection} <- source_items_fetch_json(source.ap_id || source.uri) do
+    case source_items_fetch_json(source.ap_id || source.uri) do
+      {:ok, %{} = actor_or_collection} ->
       case first_source_item_page(actor_or_collection) do
         {:ok, _page} ->
           {:ok, actor_or_collection}
@@ -2256,8 +2327,19 @@ defmodule Pleroma.Web.FederatedTarget do
             _ -> source_stored_or_inferred_outbox_collection(source)
           end
       end
-    else
-      _ -> source_stored_or_inferred_outbox_collection(source)
+
+      {:error, :invalid_body} = error ->
+        if source_profile(source) == "activitypub_profile" do
+          case source_stored_or_inferred_outbox_collection(source) do
+            {:ok, _collection} = result -> result
+            _ -> error
+          end
+        else
+          error
+        end
+
+      _ ->
+        source_stored_or_inferred_outbox_collection(source)
     end
   end
 
@@ -2326,13 +2408,18 @@ defmodule Pleroma.Web.FederatedTarget do
        "application/activity+json, application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", application/json"}
     ]
 
-    with {:ok, %{status: status, body: body}} when status in 200..299 <- HTTP.get(url, headers),
-         {:ok, %{} = data} <- decode_source_items_body(body) do
-      {:ok, data}
-    else
-      {:error, :invalid_body} -> {:error, :invalid_body}
-      {:ok, _data} -> {:error, :invalid_body}
-      _ -> {:error, :fetch_failed}
+    case HTTP.get(url, headers) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        case decode_source_items_body(body) do
+          {:ok, %{} = data} -> {:ok, data}
+          _ -> {:error, :invalid_body}
+        end
+
+      {:ok, %{status: _status}} ->
+        {:error, :fetch_failed}
+
+      _ ->
+        {:error, :fetch_failed}
     end
   rescue
     _ ->

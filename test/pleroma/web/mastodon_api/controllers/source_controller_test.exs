@@ -256,8 +256,11 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
       webfinger_url =
         "https://blog.example/.well-known/webfinger?resource=acct%3Aauthor%40blog.example"
 
+      decoded_webfinger_url = URI.decode(webfinger_url)
+      nodeinfo_url = "https://blog.example/.well-known/nodeinfo"
+
       Tesla.Mock.mock(fn
-        %{method: :get, url: ^webfinger_url} ->
+        %{method: :get, url: url} when url in [webfinger_url, decoded_webfinger_url] ->
           %Tesla.Env{
             status: 200,
             body:
@@ -272,6 +275,9 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                 ]
               })
           }
+
+        %{method: :get, url: ^nodeinfo_url} ->
+          %Tesla.Env{status: 404, body: ""}
 
         %{method: :get, url: ^actor_url} ->
           %Tesla.Env{
@@ -293,12 +299,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                %{
                  "ap_id" => ^actor_url,
                  "display_name" => "Blog Author",
-                 "source_profile" => "blog_publisher",
-                 "source" => %{
-                   "pleroma" => %{
-                     "activitypub" => %{"outbox" => ^outbox_url}
-                   }
-                 }
+                 "source_profile" => "blog_publisher"
                }
              ] =
                conn
@@ -306,6 +307,73 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                |> json_response(200)
 
       assert %User{outbox_address: ^outbox_url} = User.get_cached_by_ap_id(actor_url)
+    end
+
+    test "resolving a known source updates the existing actor instead of duplicating it", %{
+      conn: conn
+    } do
+      actor_url = "https://blog.example/wp-json/activitypub/1.0/actors/8"
+      outbox_url = actor_url <> "/outbox"
+
+      source =
+        insert(:user,
+          actor_type: "Service",
+          local: false,
+          nickname: "stale-author@blog.example",
+          ap_id: actor_url,
+          uri: actor_url,
+          name: "Stale Blog Author",
+          outbox_address: actor_url <> "/old-outbox"
+        )
+
+      webfinger_url =
+        "https://blog.example/.well-known/webfinger?resource=acct%3Aauthor%40blog.example"
+
+      decoded_webfinger_url = URI.decode(webfinger_url)
+      nodeinfo_url = "https://blog.example/.well-known/nodeinfo"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: url} when url in [webfinger_url, decoded_webfinger_url] ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "subject" => "acct:author@blog.example",
+                "links" => [
+                  %{
+                    "rel" => "self",
+                    "type" => "application/activity+json",
+                    "href" => actor_url
+                  }
+                ]
+              })
+          }
+
+        %{method: :get, url: ^nodeinfo_url} ->
+          %Tesla.Env{status: 404, body: ""}
+
+        %{method: :get, url: ^actor_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => actor_url,
+                "type" => "Person",
+                "preferredUsername" => "author",
+                "name" => "Fresh Blog Author",
+                "inbox" => actor_url <> "/inbox",
+                "outbox" => outbox_url
+              })
+          }
+      end)
+
+      assert [%{"ap_id" => ^actor_url, "display_name" => "Fresh Blog Author"}] =
+               conn
+               |> get("/api/v1/feeds/search?q=#{URI.encode_www_form("@author@blog.example")}")
+               |> json_response(200)
+
+      assert %User{name: "Fresh Blog Author", outbox_address: ^outbox_url} = Repo.reload(source)
     end
 
     test "falls back to Owncast public stream status when the outbox has no preview items", %{
@@ -430,8 +498,11 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
       webfinger_url =
         "https://pixey.example/.well-known/webfinger?resource=acct%3Astux%40pixey.example"
 
+      decoded_webfinger_url = URI.decode(webfinger_url)
+      nodeinfo_url = "https://pixey.example/.well-known/nodeinfo"
+
       Tesla.Mock.mock(fn
-        %{method: :get, url: ^webfinger_url} ->
+        %{method: :get, url: url} when url in [webfinger_url, decoded_webfinger_url] ->
           %Tesla.Env{
             status: 200,
             body:
@@ -451,6 +522,9 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                 ]
               })
           }
+
+        %{method: :get, url: ^nodeinfo_url} ->
+          %Tesla.Env{status: 404, body: ""}
 
         %{method: :get, url: ^actor} ->
           %Tesla.Env{
@@ -540,7 +614,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                    "status" => %{"uri" => ^post}
                  }
                ],
-               "total_items" => 148
+               "total_items" => 1
              } =
                conn
                |> get("/api/v1/feeds/#{source_id}/items")
@@ -566,6 +640,9 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
       webfinger_url =
         "https://public.mitra.example/.well-known/webfinger?resource=acct%3Aadmin%40public.mitra.example"
 
+      decoded_webfinger_url = URI.decode(webfinger_url)
+      nodeinfo_url = "https://public.mitra.example/.well-known/nodeinfo"
+
       note = %{
         "@context" => "https://www.w3.org/ns/activitystreams",
         "id" => post,
@@ -580,7 +657,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
       }
 
       Tesla.Mock.mock(fn
-        %{method: :get, url: ^webfinger_url} ->
+        %{method: :get, url: url} when url in [webfinger_url, decoded_webfinger_url] ->
           %Tesla.Env{
             status: 200,
             body:
@@ -601,6 +678,9 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                 ]
               })
           }
+
+        %{method: :get, url: ^nodeinfo_url} ->
+          %Tesla.Env{status: 404, body: ""}
 
         %{method: :get, url: ^actor} ->
           %Tesla.Env{

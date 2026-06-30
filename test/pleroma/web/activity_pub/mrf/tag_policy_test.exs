@@ -31,6 +31,18 @@ defmodule Pleroma.Web.ActivityPub.MRF.TagPolicyTest do
       message = %{"object" => actor.ap_id, "type" => "Follow", "actor" => follower.ap_id}
       assert {:ok, _message} = TagPolicy.filter(message)
     end
+
+    test "rejects unknown follow request actors without crashing" do
+      actor = insert(:user, tags: ["mrf_tag:disable-remote-subscription"])
+
+      message = %{
+        "object" => actor.ap_id,
+        "type" => "Follow",
+        "actor" => "https://unknown.example/users/alice"
+      }
+
+      assert {:reject, _} = TagPolicy.filter(message)
+    end
   end
 
   describe "mrf_tag:sandbox" do
@@ -43,6 +55,28 @@ defmodule Pleroma.Web.ActivityPub.MRF.TagPolicyTest do
         "object" => %{},
         "to" => [@public, "f"],
         "cc" => [@public, "d"]
+      }
+
+      except_message = %{
+        "actor" => actor.ap_id,
+        "type" => "Create",
+        "object" => %{"to" => ["f", actor.follower_address], "cc" => ["d"]},
+        "to" => ["f", actor.follower_address],
+        "cc" => ["d"]
+      }
+
+      assert TagPolicy.filter(message) == {:ok, except_message}
+    end
+
+    test "normalizes malformed recipients" do
+      actor = insert(:user, tags: ["mrf_tag:sandbox"])
+
+      message = %{
+        "actor" => actor.ap_id,
+        "type" => "Create",
+        "object" => %{},
+        "to" => [%{"id" => @public}, nil, %{"href" => "f"}],
+        "cc" => [%{"id" => @public}, "d"]
       }
 
       except_message = %{
@@ -75,6 +109,28 @@ defmodule Pleroma.Web.ActivityPub.MRF.TagPolicyTest do
         "object" => %{"to" => ["f", actor.follower_address], "cc" => ["d", @public]},
         "to" => ["f", actor.follower_address],
         "cc" => ["d", @public]
+      }
+
+      assert TagPolicy.filter(message) == {:ok, except_message}
+    end
+
+    test "normalizes malformed recipients" do
+      actor = insert(:user, tags: ["mrf_tag:force-unlisted"])
+
+      message = %{
+        "actor" => actor.ap_id,
+        "type" => "Create",
+        "object" => %{},
+        "to" => [%{"id" => @public}, nil, %{"href" => "f"}],
+        "cc" => %{"id" => actor.follower_address}
+      }
+
+      except_message = %{
+        "actor" => actor.ap_id,
+        "type" => "Create",
+        "object" => %{"to" => ["f", actor.follower_address], "cc" => [@public]},
+        "to" => ["f", actor.follower_address],
+        "cc" => [@public]
       }
 
       assert TagPolicy.filter(message) == {:ok, except_message}

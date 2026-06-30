@@ -29,9 +29,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
   end
 
   def cast_and_validate(data) do
-    {:ok, actor} = User.get_or_fetch_by_ap_id(data["actor"])
-
-    {:ok, actor} = maybe_refetch_user(actor)
+    actor = get_or_fetch_actor(data["actor"])
     maybe_fetch_collection_object(data)
 
     data
@@ -40,12 +38,31 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
     |> validate_data(actor)
   end
 
+  defp get_or_fetch_actor(actor) when is_binary(actor) do
+    with {:ok, %User{} = actor} <- User.get_or_fetch_by_ap_id(actor),
+         {:ok, %User{} = actor} <- maybe_refetch_user(actor) do
+      actor
+    else
+      _ -> nil
+    end
+  end
+
+  defp get_or_fetch_actor(_actor), do: nil
+
   defp maybe_fix_data_for_mastodon(data, actor) do
     # Mastodon sends pin/unpin objects without id, to, cc fields
     data
     |> Map.put_new("id", Pleroma.Web.ActivityPub.Utils.generate_activity_id())
     |> Map.put_new("to", [Pleroma.Constants.as_public()])
-    |> Map.put_new("cc", [actor.follower_address])
+    |> maybe_put_mastodon_cc(actor)
+  end
+
+  defp maybe_put_mastodon_cc(data, %User{} = actor) do
+    Map.put_new(data, "cc", [actor.follower_address])
+  end
+
+  defp maybe_put_mastodon_cc(data, _actor) do
+    Map.put_new(data, "cc", [])
   end
 
   defp cast_data(data) do
@@ -61,7 +78,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
     |> validate_object_or_user_presence()
   end
 
-  defp validate_collection_belongs_to_actor(changeset, actor) do
+  defp validate_collection_belongs_to_actor(changeset, %User{} = actor) do
     validate_change(changeset, :target, fn :target, target ->
       cond do
         target == actor.featured_address ->
@@ -79,6 +96,10 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
     end)
   end
 
+  defp validate_collection_belongs_to_actor(changeset, _actor) do
+    changeset
+  end
+
   defp collection_owner(target) when is_binary(target) do
     User
     |> where([user], user.featured_address == ^target or user.attributed_to_address == ^target)
@@ -91,13 +112,23 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
   defp maybe_fetch_collection_object(%{"object" => object, "target" => target})
        when is_binary(object) and is_binary(target) do
     if moderator_collection_target?(target) do
-      User.get_or_fetch_by_ap_id(object)
+      fetch_collection_object(object)
     else
       {:ok, nil}
     end
   end
 
   defp maybe_fetch_collection_object(_), do: {:ok, nil}
+
+  defp fetch_collection_object(object) do
+    case User.get_or_fetch_by_ap_id(object) do
+      {:ok, %User{} = user} -> {:ok, user}
+      _ -> {:ok, nil}
+    end
+  rescue
+    URI.Error -> {:ok, nil}
+    ArgumentError -> {:ok, nil}
+  end
 
   defp moderator_collection_target?(target) do
     case collection_owner(target) do

@@ -25,7 +25,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.QuoteToLinkTagPolicy do
   def history_awareness, do: :auto
 
   defp filter_object(%{"quoteUrl" => quote_url} = object) do
-    tags = object["tag"] || []
+    tags = tag_list(object["tag"])
 
     if Enum.any?(tags, fn tag ->
          CommonFixes.is_object_link_tag(tag) and tag["href"] == quote_url
@@ -46,4 +46,13 @@ defmodule Pleroma.Web.ActivityPub.MRF.QuoteToLinkTagPolicy do
       )
     end
   end
+
+  defp tag_list(values) when is_list(values), do: Enum.filter(values, &valid_tag?/1)
+  defp tag_list(value) when is_map(value), do: [value]
+  defp tag_list(value) when is_binary(value), do: [value]
+  defp tag_list(_), do: []
+
+  defp valid_tag?(value) when is_map(value), do: true
+  defp valid_tag?(value) when is_binary(value), do: true
+  defp valid_tag?(_), do: false
 end

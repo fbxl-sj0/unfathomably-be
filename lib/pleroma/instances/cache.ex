@@ -49,7 +49,10 @@ defmodule Pleroma.Instances.Cache do
           |> Enum.filter(&is_binary/1)
           |> Enum.reduce(%{}, fn entry, acc ->
             host = normalize_host(entry)
-            unreachable_since = Map.get(unreachable_since_by_host, host)
+            unreachable_since =
+              unreachable_since_by_host
+              |> Map.get(host)
+              |> current_unreachable_since(host)
 
             if host && reachable_since?(unreachable_since, threshold) do
               Map.put(acc, entry, unreachable_since)
@@ -68,7 +71,11 @@ defmodule Pleroma.Instances.Cache do
   def reachable?(url_or_host) when is_binary(url_or_host) do
     with %{loaded?: true, unreachable_since_by_host: unreachable_since_by_host} <- state(),
          host when is_binary(host) <- normalize_host(url_or_host) do
-      unreachable_since = Map.get(unreachable_since_by_host, host)
+      unreachable_since =
+        unreachable_since_by_host
+        |> Map.get(host)
+        |> current_unreachable_since(host)
+
       {:ok, reachable_since?(unreachable_since, Instances.reachability_datetime_threshold())}
     else
       _ -> :error
@@ -80,7 +87,11 @@ defmodule Pleroma.Instances.Cache do
   def dormant?(url_or_host) when is_binary(url_or_host) do
     with %{loaded?: true, unreachable_since_by_host: unreachable_since_by_host} <- state(),
          host when is_binary(host) <- normalize_host(url_or_host) do
-      unreachable_since = Map.get(unreachable_since_by_host, host)
+      unreachable_since =
+        unreachable_since_by_host
+        |> Map.get(host)
+        |> current_unreachable_since(host)
+
       {:ok, dormant_since?(unreachable_since, Instances.dormant_datetime_threshold())}
     else
       _ -> :error
@@ -203,6 +214,19 @@ defmodule Pleroma.Instances.Cache do
   defp reachable_since?(unreachable_since, threshold) do
     NaiveDateTime.compare(unreachable_since, threshold) == :gt
   end
+
+  defp current_unreachable_since(nil, _host), do: nil
+
+  defp current_unreachable_since(_unreachable_since, host) when is_binary(host) do
+    Repo.one(
+      from(i in Instance,
+        where: i.host == ^host,
+        select: i.unreachable_since
+      )
+    )
+  end
+
+  defp current_unreachable_since(_unreachable_since, _host), do: nil
 
   defp dormant_since?(nil, _threshold), do: false
 

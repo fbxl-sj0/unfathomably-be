@@ -37,6 +37,20 @@ defmodule Pleroma.ObjectTest do
 
       {:error, _result} = Repo.insert(cs)
     end
+
+    test "create/1 returns the existing object on duplicate AP IDs" do
+      data = %{
+        "id" => "https://remote.example/objects/duplicate",
+        "type" => "Note",
+        "content" => "first copy"
+      }
+
+      assert {:ok, first_object} = Object.create(data)
+      assert {:ok, second_object} = Object.create(Map.put(data, "content", "second copy"))
+
+      assert second_object.id == first_object.id
+      assert second_object.data["content"] == "first copy"
+    end
   end
 
   describe "deletion function" do

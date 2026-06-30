@@ -61,7 +61,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicy do
 
   @impl true
   def filter(%{"object" => %{"emoji" => foreign_emojis, "actor" => actor}} = activity) do
-    host = URI.parse(actor).host
+    host = Pleroma.Instances.host(actor)
 
     if host != Pleroma.Web.Endpoint.host() and accept_host?(host) do
       installed_emoji = Pleroma.Emoji.get_all() |> Enum.map(fn {k, _} -> k end)

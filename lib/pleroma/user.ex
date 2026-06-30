@@ -544,6 +544,7 @@ defmodule Pleroma.User do
     |> cast(params, [:name], empty_values: [])
     |> validate_required([:ap_id])
     |> validate_required([:name], trim: false)
+    |> unique_constraint(:ap_id, name: :users_ap_id_index)
     |> unique_constraint(:nickname)
     |> validate_format(:nickname, @email_regex)
     |> validate_length(:bio, max: bio_limit)
@@ -1327,13 +1328,16 @@ defmodule Pleroma.User do
 
   # This is mostly an SPC migration fix. This guesses the user nickname by taking the last part
   # of the ap_id and the domain and tries to get that user
-  def get_by_guessed_nickname(ap_id) do
-    domain = URI.parse(ap_id).host
+  def get_by_guessed_nickname(ap_id) when is_binary(ap_id) do
+    domain = Pleroma.Instances.host(ap_id)
     name = List.last(String.split(ap_id, "/"))
-    nickname = "#{name}@#{domain}"
 
-    get_cached_by_nickname(nickname)
+    if is_binary(domain) and is_binary(name) and name != "" do
+      get_cached_by_nickname("#{name}@#{domain}")
+    end
   end
+
+  def get_by_guessed_nickname(_), do: nil
 
   def set_cache({:ok, user}), do: set_cache(user)
   def set_cache({:error, err}), do: {:error, err}
@@ -1924,8 +1928,9 @@ defmodule Pleroma.User do
 
   def blocks_domain?(%User{} = user, %User{} = target) do
     domain_blocks = Pleroma.Web.ActivityPub.MRF.subdomains_regex(user.domain_blocks)
-    %{host: host} = URI.parse(target.ap_id)
-    Pleroma.Web.ActivityPub.MRF.subdomain_match?(domain_blocks, host)
+    host = Pleroma.Instances.host(target.ap_id)
+
+    is_binary(host) and Pleroma.Web.ActivityPub.MRF.subdomain_match?(domain_blocks, host)
   end
 
   def blocks_domain?(_, _), do: false
@@ -2446,6 +2451,7 @@ defmodule Pleroma.User do
     }
     |> change
     |> put_private_key()
+    |> unique_constraint(:ap_id, name: :users_ap_id_index)
     |> unique_constraint(:nickname)
     |> Repo.insert()
     |> set_cache()
@@ -3036,7 +3042,7 @@ defmodule Pleroma.User do
   end
 
   def get_host(%User{ap_id: ap_id} = _user) do
-    URI.parse(ap_id).host
+    Pleroma.Instances.host(ap_id)
   end
 
   def update_last_active_at(%__MODULE__{local: true} = user) do

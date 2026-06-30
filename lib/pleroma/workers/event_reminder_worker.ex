@@ -14,8 +14,11 @@ defmodule Pleroma.Workers.EventReminderWorker do
   alias Pleroma.Notification
   alias Pleroma.Object
 
+  defguardp valid_job_id(id) when (is_binary(id) and byte_size(id) > 0) or is_integer(id)
+
   @impl Oban.Worker
-  def perform(%Job{args: %{"op" => "event_reminder", "activity_id" => activity_id}}) do
+  def perform(%Job{args: %{"op" => "event_reminder", "activity_id" => activity_id}})
+      when valid_job_id(activity_id) do
     with %Activity{} = activity <- find_event_activity(activity_id) do
       activity
       |> Notification.create_event_notifications()
@@ -25,10 +28,14 @@ defmodule Pleroma.Workers.EventReminderWorker do
     end
   end
 
+  def perform(%Job{}), do: :discard
+
   defp find_event_activity(activity_id) do
     with nil <- Activity.get_by_id(activity_id) do
       {:error, :event_activity_not_found}
     end
+  rescue
+    _ -> {:error, :event_activity_not_found}
   end
 
   def schedule_event_reminder(%Activity{data: %{"type" => "Create"}, id: activity_id} = activity) do

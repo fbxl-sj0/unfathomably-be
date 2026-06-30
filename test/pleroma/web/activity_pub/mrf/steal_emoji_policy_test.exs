@@ -37,6 +37,15 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
     refute "firedfox" in installed()
   end
 
+  test "ignores malformed actor hosts", %{message: message} do
+    message = put_in(message, ["object", "actor"], "https://%")
+
+    clear_config(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
+
+    assert {:ok, _message} = StealEmojiPolicy.filter(message)
+    refute "firedfox" in installed()
+  end
+
   test "Steals emoji on unknown shortcode from allowed remote host", %{
     message: message,
     path: path

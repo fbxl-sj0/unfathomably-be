@@ -104,4 +104,19 @@ defmodule Pleroma.Workers.ReachabilityWorkerTest do
 
     refute Instances.reachable?("parked.example")
   end
+
+  test "discards malformed reachability jobs without probing" do
+    Tesla.Mock.mock(fn _ ->
+      flunk("malformed reachability jobs should not issue network probes")
+    end)
+
+    assert :discard = ReachabilityWorker.perform(%Oban.Job{args: %{"domain" => ""}})
+
+    assert :discard =
+             ReachabilityWorker.perform(%Oban.Job{
+               args: %{"domain" => "bad host.example"}
+             })
+
+    assert :discard = ReachabilityWorker.perform(%Oban.Job{args: %{"domain" => nil}})
+  end
 end

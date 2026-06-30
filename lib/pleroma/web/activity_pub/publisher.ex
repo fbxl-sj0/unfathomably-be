@@ -28,6 +28,16 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   ActivityPub outgoing federation module.
   """
 
+  @terminal_delivery_statuses %{
+    400 => :bad_request,
+    403 => :forbidden,
+    404 => :not_found,
+    405 => :method_not_allowed,
+    406 => :not_acceptable,
+    410 => :gone,
+    501 => :not_implemented
+  }
+
   @doc """
   Determine if an activity can be represented by running it through Transmogrifier.
   """
@@ -44,61 +54,79 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   * `actor`: the actor which is signing the message
   * `id`: the ActivityStreams URI of the message
   """
+  def publish_one(%{json: json, actor: %User{}, id: id}) when not is_binary(json) do
+    Logger.metadata(activity: id)
+    Logger.debug("Publisher rejected malformed JSON body #{inspect(json)}")
+    {:discard, :bad_request}
+  end
+
   def publish_one(%{inbox: inbox, json: json, actor: %User{} = actor, id: id} = params) do
     Logger.debug("Federating #{id} to #{inbox}")
-    uri = %{path: path} = URI.parse(inbox)
-    digest = "SHA-256=" <> (:crypto.hash(:sha256, json) |> Base.encode64())
 
-    date = Pleroma.Signature.signed_date()
+    with {:ok, uri, path} <- signature_uri(inbox) do
+      digest = "SHA-256=" <> (:crypto.hash(:sha256, json) |> Base.encode64())
 
-    signature =
-      Pleroma.Signature.sign(actor, %{
-        "(request-target)": "post #{path}",
-        host: signature_host(uri),
-        "content-length": byte_size(json),
-        digest: digest,
-        date: date
-      })
+      date = Pleroma.Signature.signed_date()
 
-    with {:ok, %{status: code}} = result when code in 200..299 <-
-           HTTP.post(
-             inbox,
-             json,
-             [
-               {"Content-Type", "application/activity+json"},
-               {"Date", date},
-               {"signature", signature},
-               {"digest", digest}
-             ]
-           ) do
-      if not Map.has_key?(params, :unreachable_since) || params[:unreachable_since] do
-        Instances.set_reachable(inbox)
-      end
+      signature =
+        Pleroma.Signature.sign(actor, %{
+          "(request-target)": "post #{path}",
+          host: signature_host(uri),
+          "content-length": byte_size(json),
+          digest: digest,
+          date: date
+        })
 
-      result
-    else
-      {_post_result, %{status: code} = response} ->
-        unless params[:unreachable_since], do: Instances.set_unreachable(inbox)
-
-        Logger.metadata(activity: id, inbox: inbox, status: code)
-        Logger.debug("Publisher failed to inbox #{inbox} with status #{code}")
-
-        case response do
-          %{status: 403} -> {:discard, :forbidden}
-          %{status: 404} -> {:discard, :not_found}
-          %{status: 410} -> {:discard, :not_found}
-          _ -> {:error, response}
+      with {:ok, %{status: code}} = result when code in 200..299 <-
+             HTTP.post(
+               inbox,
+               json,
+               [
+                 {"Content-Type", "application/activity+json"},
+                 {"Date", date},
+                 {"signature", signature},
+                 {"digest", digest}
+               ]
+             ) do
+        if not Map.has_key?(params, :unreachable_since) || params[:unreachable_since] do
+          Instances.set_reachable(inbox)
         end
 
-      {:error, :pool_full} ->
-        Logger.debug("Publisher snoozing worker job due to full connection pool")
-        {:snooze, 30}
+        result
+      else
+        {_post_result, %{status: code} = response} ->
+          Logger.metadata(activity: id, inbox: inbox, status: code)
+          Logger.debug("Publisher failed to inbox #{inbox} with status #{code}")
 
-      e ->
-        unless params[:unreachable_since], do: Instances.set_unreachable(inbox)
+          case Map.fetch(@terminal_delivery_statuses, code) do
+            {:ok, reason} ->
+              {:discard, reason}
+
+            :error ->
+              unless known_unreachable?(params), do: Instances.set_unreachable(inbox)
+              {:error, response}
+          end
+
+        {:error, :pool_full} ->
+          Logger.debug("Publisher snoozing worker job due to full connection pool")
+          {:snooze, 30}
+
+        e ->
+          Logger.metadata(activity: id, inbox: inbox)
+          Logger.debug("Publisher failed to inbox #{inbox}: #{inspect(e)}")
+
+          if known_unreachable?(params) do
+            {:discard, :unreachable_host}
+          else
+            Instances.set_unreachable(inbox)
+            {:error, e}
+          end
+      end
+    else
+      {:error, reason} ->
         Logger.metadata(activity: id, inbox: inbox)
-        Logger.debug("Publisher failed to inbox #{inbox}: #{inspect(e)}")
-        {:error, e}
+        Logger.debug("Publisher rejected malformed inbox #{inspect(inbox)}")
+        {:discard, reason}
     end
   end
 
@@ -111,6 +139,40 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     |> publish_one()
   end
 
+  def publish_one(%{actor: actor, id: id}) do
+    Logger.metadata(activity: id)
+    Logger.debug("Publisher rejected malformed actor #{inspect(actor)}")
+    {:discard, :bad_request}
+  end
+
+  def publish_one(params) when is_map(params) do
+    Logger.debug("Publisher rejected malformed delivery params #{inspect(params)}")
+    {:discard, :bad_request}
+  end
+
+  defp signature_uri(inbox) when is_binary(inbox) do
+    uri = URI.parse(inbox)
+
+    with %URI{scheme: scheme, host: host} <- uri,
+         true <- scheme in ["http", "https"],
+         true <- is_binary(host),
+         normalized_host when is_binary(normalized_host) <- Instances.host(inbox) do
+      {:ok, uri, uri.path || "/"}
+    else
+      _ -> {:error, :bad_request}
+    end
+  rescue
+    URI.Error -> {:error, :bad_request}
+  end
+
+  defp signature_uri(_), do: {:error, :bad_request}
+
+  defp known_unreachable?(%{unreachable_since: unreachable_since}) when unreachable_since in [nil, false],
+    do: false
+
+  defp known_unreachable?(%{unreachable_since: _unreachable_since}), do: true
+  defp known_unreachable?(_params), do: false
+
   defp signature_host(%URI{port: port, scheme: scheme, host: host}) do
     if port == URI.default_port(scheme) do
       host
@@ -121,16 +183,17 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
   def should_federate?(nil, _), do: false
   def should_federate?(_, true), do: true
+  def should_federate?(inbox, _) when not is_binary(inbox), do: false
 
   def should_federate?(inbox, _) do
-    %{host: host} = URI.parse(inbox)
+    host = uri_host(inbox)
 
     quarantined_instances =
       Config.get([:instance, :quarantined_instances], [])
       |> Pleroma.Web.ActivityPub.MRF.instance_list_from_tuples()
       |> Pleroma.Web.ActivityPub.MRF.subdomains_regex()
 
-    !Pleroma.Web.ActivityPub.MRF.subdomain_match?(quarantined_instances, host)
+    is_binary(host) and !Pleroma.Web.ActivityPub.MRF.subdomain_match?(quarantined_instances, host)
   end
 
   @spec recipients(User.t(), Activity.t()) :: [[User.t()]]
@@ -169,7 +232,7 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
        when is_binary(object_ap_id) do
     with origin_host when is_binary(origin_host) <- announce_origin_host(object_ap_id) do
       Enum.reject(followers, fn %User{ap_id: ap_id} ->
-        URI.parse(ap_id).host == origin_host
+        uri_host(ap_id) == origin_host
       end)
     else
       _ -> followers
@@ -181,19 +244,23 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   defp announce_origin_host(object_ap_id) do
     case Object.get_cached_by_ap_id(object_ap_id) do
       %Object{data: %{"actor" => object_actor}} when is_binary(object_actor) ->
-        URI.parse(object_actor).host
+        uri_host(object_actor)
 
       _ ->
-        URI.parse(object_ap_id).host
+        uri_host(object_ap_id)
     end
   end
 
   defp get_cc_ap_ids(ap_id, recipients) do
-    host = Map.get(URI.parse(ap_id), :host)
+    host = uri_host(ap_id)
 
-    recipients
-    |> Enum.filter(fn %User{ap_id: ap_id} -> Map.get(URI.parse(ap_id), :host) == host end)
-    |> Enum.map(& &1.ap_id)
+    if is_binary(host) do
+      recipients
+      |> Enum.filter(fn %User{ap_id: ap_id} -> uri_host(ap_id) == host end)
+      |> Enum.map(& &1.ap_id)
+    else
+      []
+    end
   end
 
   defp maybe_use_sharedinbox(%User{shared_inbox: nil, inbox: inbox}), do: inbox
@@ -378,4 +445,10 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   end
 
   def gather_nodeinfo_protocol_names, do: ["activitypub"]
+
+  defp uri_host(uri) when is_binary(uri) do
+    Instances.host(uri)
+  end
+
+  defp uri_host(_), do: nil
 end

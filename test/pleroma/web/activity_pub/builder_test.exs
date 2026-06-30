@@ -74,4 +74,47 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
       assert {:ok, ^expected, []} = Builder.note(draft)
     end
   end
+
+  describe "emoji_react/3" do
+    test "does not crash when the target object has malformed addressing" do
+      actor = insert(:user)
+
+      object = %Pleroma.Object{
+        data: %{
+          "id" => "https://remote.example/objects/bad-addressing",
+          "actor" => "https://remote.example/users/missing",
+          "type" => "Note",
+          "to" => nil,
+          "cc" => %{"bad" => "shape"}
+        }
+      }
+
+      assert {:ok, data, []} = Builder.emoji_react(actor, object, "\u{1F44D}")
+      assert data["type"] == "EmojiReact"
+      assert data["object"] == object.data["id"]
+      assert data["to"] == [object.data["actor"]]
+      assert data["cc"] == []
+    end
+  end
+
+  describe "delete/2" do
+    test "does not crash when the deleted object has malformed addressing" do
+      actor = insert(:user)
+      mentioned = insert(:user)
+
+      {:ok, object} =
+        Pleroma.Object.create(%{
+          "id" => "https://remote.example/objects/delete-with-bad-addressing",
+          "actor" => "https://remote.example/users/alice",
+          "type" => "Note",
+          "to" => %{"bad" => "shape"},
+          "cc" => [mentioned.ap_id, nil, %{"id" => "https://ignored.example/users/bob"}]
+        })
+
+      assert {:ok, data, []} = Builder.delete(actor, object.data["id"])
+      assert data["type"] == "Delete"
+      assert data["object"] == object.data["id"]
+      assert data["to"] == [mentioned.ap_id]
+    end
+  end
 end

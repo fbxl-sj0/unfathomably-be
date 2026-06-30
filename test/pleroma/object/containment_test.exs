@@ -75,7 +75,7 @@ defmodule Pleroma.Object.ContainmentTest do
       assert capture_log(fn ->
                {:error, _} = User.get_or_fetch_by_ap_id("https://n1u.moe/users/rye")
              end) =~
-               "[error] Could not decode user at fetch https://n1u.moe/users/rye"
+               "Could not decode user at fetch https://n1u.moe/users/rye"
     end
 
     test "contain_origin_from_id() gracefully handles cases where no ID is present" do
@@ -90,6 +90,41 @@ defmodule Pleroma.Object.ContainmentTest do
 
       :error =
         Containment.contain_origin_from_id("http://example.net/~alyssa/activities/1234", data)
+    end
+
+    test "get_actor() accepts embedded actor maps and attributedTo fallbacks" do
+      assert Containment.get_actor(%{
+               "actor" => %{"id" => "https://example.com/users/alice", "type" => "Person"}
+             }) == "https://example.com/users/alice"
+
+      assert Containment.get_actor(%{
+               "actor" => nil,
+               "attributedTo" => %{"id" => "https://example.com/users/bob", "type" => "Person"}
+             }) == "https://example.com/users/bob"
+    end
+
+    test "get_actor() handles mixed actor arrays without raising" do
+      assert Containment.get_actor(%{
+               "actor" => [
+                 %{"id" => "https://example.com/groups/main", "type" => "Group"},
+                 %{"id" => "https://example.com/users/alice", "type" => "Person"},
+                 "not an actor"
+               ]
+             }) == "https://example.com/users/alice"
+    end
+
+    test "contain_origin() returns error instead of raising when actor data is malformed" do
+      assert :error ==
+               Containment.contain_origin("https://example.com/objects/1", %{
+                 "actor" => [%{"type" => "Person"}]
+               })
+    end
+
+    test "contain_origin() does not accept two hostless malformed URIs as same-origin" do
+      assert :error ==
+               Containment.contain_origin("not a uri", %{
+                 "actor" => "also not a uri"
+               })
     end
   end
 

@@ -66,6 +66,40 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidationTest do
       assert {:object, {"can't find object", []}} in cng.errors
     end
 
+    test "rejects malformed object references without raising", %{
+      valid_announce: valid_announce
+    } do
+      malformed_object =
+        valid_announce
+        |> Map.put("object", ["not", "an", "object"])
+
+      assert {:error, cng} = ObjectValidator.validate(malformed_object, [])
+      refute cng.valid?
+    end
+
+    test "accepts embedded relay activity objects as no-op announces" do
+      group = insert(:user, actor_type: "Group", local: false)
+
+      for type <- ~w[Add Block Dislike Like Remove] do
+        announce = %{
+          "id" => "https://relay.example/activities/#{String.downcase(type)}",
+          "type" => "Announce",
+          "actor" => group.ap_id,
+          "object" => %{
+            "id" => "https://relay.example/activities/embedded-#{String.downcase(type)}",
+            "type" => type,
+            "actor" => "https://relay.example/users/alice",
+            "object" => "https://relay.example/objects/1"
+          },
+          "to" => [Constants.as_public()],
+          "cc" => []
+        }
+
+        assert {:ok, validated, _meta} = ObjectValidator.validate(announce, [])
+        assert validated["object"]["type"] == type
+      end
+    end
+
     test "returns an error if the actor already announced the object", %{
       valid_announce: valid_announce,
       announcer: announcer,
@@ -153,6 +187,24 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidationTest do
       assert validated_announce["to"] == [Constants.as_public()]
       assert validated_announce["cc"] == [group.follower_address]
       refute user.ap_id in (validated_announce["to"] ++ validated_announce["cc"])
+    end
+
+    test "rejects missing recipients during private announce checks without raising", %{
+      user: user
+    } do
+      {:ok, post_activity} =
+        CommonAPI.post(user, %{status: "private announce target", visibility: "private"})
+
+      object = Object.normalize(post_activity, fetch: false)
+      {:ok, announce, []} = Builder.announce(user, object, public: false)
+
+      malformed_recipients =
+        announce
+        |> Map.delete("to")
+        |> Map.delete("cc")
+
+      assert {:error, cng} = ObjectValidator.validate(malformed_recipients, [])
+      refute cng.valid?
     end
   end
 end

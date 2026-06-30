@@ -59,12 +59,30 @@ defmodule Pleroma.Web.MediaProxy do
   def remote_http_url?(url) when is_binary(url) do
     uri = URI.parse(url)
 
-    uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.host != ""
+    uri.scheme in ["http", "https"] and is_binary(uri.host) and valid_remote_host?(uri.host)
   rescue
     URI.Error -> false
   end
 
   def remote_http_url?(_), do: false
+
+  defp valid_remote_host?(host) when is_binary(host) do
+    host = String.trim(host)
+
+    host != "" and not String.contains?(host, ["%", "/", "\\", " "]) and
+      idna_host?(host)
+  end
+
+  defp idna_host?(host) do
+    host
+    |> :idna.encode()
+    |> to_string()
+    |> Kernel.!=("")
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
 
   def verify_remote_http_url(url) do
     if remote_http_url?(url), do: :ok, else: {:error, :unsupported_remote_url}
@@ -87,7 +105,7 @@ defmodule Pleroma.Web.MediaProxy do
   def local?(url), do: String.starts_with?(url, Endpoint.url())
 
   def whitelisted?(url) do
-    %{host: domain} = URI.parse(url)
+    domain = Pleroma.Instances.host(url)
 
     mediaproxy_whitelist_domains =
       [:media_proxy, :whitelist]
@@ -95,14 +113,11 @@ defmodule Pleroma.Web.MediaProxy do
       |> Kernel.++(["#{Upload.base_url()}"])
       |> Enum.map(&maybe_get_domain_from_url/1)
 
-    domain in mediaproxy_whitelist_domains
+    is_binary(domain) and domain in mediaproxy_whitelist_domains
   end
 
-  defp maybe_get_domain_from_url("http" <> _ = url) do
-    URI.parse(url).host
-  end
-
-  defp maybe_get_domain_from_url(domain), do: domain
+  defp maybe_get_domain_from_url(domain) when is_binary(domain), do: Pleroma.Instances.host(domain)
+  defp maybe_get_domain_from_url(_), do: nil
 
   defp base64_sig64(url) do
     base64 = Base.url_encode64(url, @base64_opts)

@@ -24,6 +24,9 @@ defmodule Pleroma.Workers.Cron.ScheduleReachabilityWorkerTest do
     Instances.set_unreachable("dead.example", Instances.dormant_datetime_threshold())
 
     dormant_job = insert_delivery_job("https://dead.example/inbox", state: "retryable")
+    legacy_dormant_job =
+      insert_legacy_delivery_job("https://dead.example/legacy-inbox", state: "retryable")
+
     active_job = insert_delivery_job("https://active.example/inbox", state: "retryable")
     wakeup_job = insert_delivery_job("https://maybe-back.example/inbox", state: "retryable")
 
@@ -34,11 +37,14 @@ defmodule Pleroma.Workers.Cron.ScheduleReachabilityWorkerTest do
     assert {:ok,
             %{
               scheduled_reachability_checks: 2,
-              discarded_dormant_deliveries: 1
+              discarded_dormant_deliveries: 2
             }} = ScheduleReachabilityWorker.perform(%Oban.Job{})
 
     assert %Oban.Job{state: "discarded", discarded_at: %DateTime{}} =
              Repo.get(Oban.Job, dormant_job.id)
+
+    assert %Oban.Job{state: "discarded", discarded_at: %DateTime{}} =
+             Repo.get(Oban.Job, legacy_dormant_job.id)
 
     assert %Oban.Job{state: "retryable", discarded_at: nil} = Repo.get(Oban.Job, active_job.id)
     assert %Oban.Job{state: "retryable", discarded_at: nil} = Repo.get(Oban.Job, wakeup_job.id)
@@ -98,6 +104,19 @@ defmodule Pleroma.Workers.Cron.ScheduleReachabilityWorkerTest do
         "json" => "{}",
         "id" => "https://local.example/activity"
       }
+    })
+    |> insert_job(state: state)
+  end
+
+  defp insert_legacy_delivery_job(inbox, opts) do
+    state = Keyword.fetch!(opts, :state)
+
+    PublisherWorker.new(%{
+      "op" => "publish_one",
+      "module" => "Elixir.Pleroma.Web.ActivityPub.Publisher",
+      "inbox" => inbox,
+      "json" => "{}",
+      "id" => "https://local.example/activity"
     })
     |> insert_job(state: state)
   end

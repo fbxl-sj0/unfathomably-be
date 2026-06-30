@@ -36,8 +36,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations do
     field_name = Keyword.get(options, :field_name, :actor)
 
     cng
-    |> validate_change(field_name, fn field_name, actor ->
-      case User.get_cached_by_ap_id(actor) do
+    |> validate_change(field_name, fn field_name, actor_ref ->
+      case actor_ref |> ap_id() |> User.get_cached_by_ap_id() do
         %User{is_active: false} ->
           [{field_name, "user is deactivated"}]
 
@@ -56,8 +56,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations do
     allowed_types = Keyword.get(options, :allowed_types, false)
 
     cng
-    |> validate_change(field_name, fn field_name, object_id ->
-      object = Object.get_cached_by_ap_id(object_id) || Activity.get_by_ap_id(object_id)
+    |> validate_change(field_name, fn field_name, object_ref ->
+      object_id = ap_id(object_ref)
+      object = object_id && (Object.get_cached_by_ap_id(object_id) || Activity.get_by_ap_id(object_id))
 
       cond do
         !object ->
@@ -131,7 +132,14 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations do
 
   @spec same_domain?(Ecto.Changeset.t(), [atom()]) :: boolean()
   def same_domain?(cng, fields \\ [:actor, :object]) do
-    map_unique?(cng, fields, fn value -> URI.parse(value).host end)
+    hosts =
+      Enum.map(fields, fn field ->
+        cng
+        |> get_field(field)
+        |> uri_host()
+      end)
+
+    Enum.all?(hosts, &is_binary/1) && hosts |> Enum.uniq() |> length() == 1
   end
 
   # This figures out if a user is able to create, delete or modify something
@@ -147,4 +155,20 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations do
       |> add_error(:actor, "is not allowed to modify object")
     end
   end
+
+  defp ap_id(ap_id) when is_binary(ap_id), do: ap_id
+  defp ap_id(%{"id" => ap_id}) when is_binary(ap_id), do: ap_id
+  defp ap_id(_), do: nil
+
+  defp uri_host(%{"id" => uri}) when is_binary(uri), do: uri_host(uri)
+
+  defp uri_host(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:host)
+  rescue
+    URI.Error -> nil
+  end
+
+  defp uri_host(_), do: nil
 end

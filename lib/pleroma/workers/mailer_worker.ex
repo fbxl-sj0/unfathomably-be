@@ -9,13 +9,26 @@ defmodule Pleroma.Workers.MailerWorker do
   # sobelow_skip ["Misc.BinToTerm"]
   def perform(%Job{
         args: %{"op" => "email", "encoded_email" => encoded_email, "config" => config}
-      }) do
-    encoded_email
-    |> Base.decode64!()
-    |> :erlang.binary_to_term([:safe])
-    |> Pleroma.Emails.Mailer.deliver(config)
+      })
+      when is_binary(encoded_email) do
+    with {:ok, email} <- decode_email(encoded_email) do
+      Pleroma.Emails.Mailer.deliver(email, config)
+    else
+      {:error, reason} -> {:cancel, reason}
+    end
   end
+
+  def perform(%Job{}), do: :discard
 
   @impl Oban.Worker
   def timeout(_job), do: :timer.seconds(5)
+
+  defp decode_email(encoded_email) do
+    case Base.decode64(encoded_email) do
+      {:ok, email} -> {:ok, :erlang.binary_to_term(email, [:safe])}
+      :error -> {:error, :invalid_email_payload}
+    end
+  rescue
+    _ -> {:error, :invalid_email_payload}
+  end
 end

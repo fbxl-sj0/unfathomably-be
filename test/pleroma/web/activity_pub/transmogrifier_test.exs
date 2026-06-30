@@ -14,6 +14,8 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
   alias Pleroma.Web.AdminAPI.AccountView
   alias Pleroma.Web.CommonAPI
 
+  require Pleroma.Constants
+
   import Mock
   import Pleroma.Factory
   import ExUnit.CaptureLog
@@ -288,6 +290,51 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
         assert Enum.member?(object["tag"], expected_tag)
         assert Enum.member?(object["tag"], expected_mention)
       end
+    end
+
+    test "it tolerates malformed outgoing tags and recipient shapes when generating mention tags" do
+      mentioned = insert(:user)
+
+      object = %{
+        "id" => "https://local.test/objects/malformed-outgoing-tags",
+        "type" => "Note",
+        "actor" => "https://local.test/users/alice",
+        "to" => %{"id" => mentioned.ap_id},
+        "cc" => %{"unexpected" => "shape"},
+        "tag" => %{"type" => "Hashtag", "name" => "#kept"}
+      }
+
+      object = Transmogrifier.add_mention_tags(object)
+
+      assert %{"type" => "Hashtag", "name" => "#kept"} in object["tag"]
+      assert %{"type" => "Mention", "href" => href} =
+               Enum.find(object["tag"], &(&1["href"] == mentioned.ap_id))
+      assert href == mentioned.ap_id
+    end
+
+    test "it tolerates scalar and object tag shapes when expanding hashtags" do
+      assert %{
+               "tag" => [
+                 %{
+                   "href" => href,
+                   "name" => "#woodworking",
+                   "type" => "Hashtag"
+                 }
+               ]
+             } = Transmogrifier.add_hashtags(%{"tag" => "woodworking"})
+
+      assert href == Pleroma.Web.Endpoint.url() <> "/tags/woodworking"
+
+      assert %{"tag" => [%{"type" => "Hashtag", "name" => "#kept"}]} =
+               Transmogrifier.add_hashtags(%{"tag" => %{"type" => "Hashtag", "name" => "#kept"}})
+    end
+
+    test "it tolerates malformed emoji metadata while preserving existing tags" do
+      assert %{"tag" => [%{"type" => "Hashtag", "name" => "#kept"}]} =
+               Transmogrifier.add_emoji_tags(%{
+                 "emoji" => nil,
+                 "tag" => %{"type" => "Hashtag", "name" => "#kept"}
+               })
     end
 
     test "it does not turn group audience addresses into generated mention tags" do
@@ -730,7 +777,81 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
     end
   end
 
+  test "fix_attachments/1 skips malformed attachment entries instead of raising" do
+    assert Transmogrifier.fix_attachments(%{
+             "attachment" => [
+               "not an attachment",
+               %{
+                 "type" => "Document",
+                 "url" => "https://media.example.tld/valid.jpg",
+                 "mediaType" => "image/jpeg"
+               }
+             ]
+           }) == %{
+             "attachment" => [
+               %{
+                 "type" => "Document",
+                 "mediaType" => "image/jpeg",
+                 "url" => [
+                   %{
+                     "type" => "Link",
+                     "mediaType" => "image/jpeg",
+                     "href" => "https://media.example.tld/valid.jpg"
+                   }
+                 ]
+               }
+             ]
+           }
+  end
+
+  describe "prepare_attachments/1" do
+    test "skips malformed outgoing attachments instead of raising" do
+      object = %{
+        "attachment" => [
+          %{
+            "type" => "Document",
+            "name" => "Good",
+            "url" => [
+              %{
+                "type" => "Link",
+                "mediaType" => "image/jpeg",
+                "href" => "https://media.example/good.jpg"
+              }
+            ]
+          },
+          %{"type" => "Document", "url" => []},
+          "not an attachment"
+        ]
+      }
+
+      assert Transmogrifier.prepare_attachments(object) == %{
+               "attachment" => [
+                 %{
+                   "mediaType" => "image/jpeg",
+                   "name" => "Good",
+                   "type" => "Document",
+                   "url" => "https://media.example/good.jpg"
+                 }
+               ]
+             }
+    end
+  end
+
   describe "prepare_object/1" do
+    test "it keeps actor and attributedTo synchronized for refetched objects" do
+      original = %{
+        "id" => "https://example.test/objects/announced",
+        "type" => "Note",
+        "attributedTo" => "https://example.test/users/alice",
+        "content" => "Threadiverse receivers expect actor on refetched objects."
+      }
+
+      processed = Transmogrifier.prepare_object(original)
+
+      assert processed["actor"] == "https://example.test/users/alice"
+      assert processed["attributedTo"] == "https://example.test/users/alice"
+    end
+
     test "it processes history" do
       original = %{
         "formerRepresentations" => %{

@@ -56,12 +56,14 @@ defmodule Pleroma.Web.ActivityPub.MRF.TagPolicy do
            "to" => to,
            "cc" => cc,
            "actor" => actor,
-           "object" => object
+           "object" => %{} = object
          } = activity
        ) do
     user = User.get_cached_by_ap_id(actor)
+    to = recipient_list(to)
+    cc = recipient_list(cc)
 
-    if Enum.member?(to, Pleroma.Constants.as_public()) do
+    if match?(%User{}, user) and Enum.member?(to, Pleroma.Constants.as_public()) do
       to = List.delete(to, Pleroma.Constants.as_public()) ++ [user.follower_address]
       cc = List.delete(cc, user.follower_address) ++ [Pleroma.Constants.as_public()]
 
@@ -89,13 +91,16 @@ defmodule Pleroma.Web.ActivityPub.MRF.TagPolicy do
            "to" => to,
            "cc" => cc,
            "actor" => actor,
-           "object" => object
+           "object" => %{} = object
          } = activity
        ) do
     user = User.get_cached_by_ap_id(actor)
+    to = recipient_list(to)
+    cc = recipient_list(cc)
 
-    if Enum.member?(to, Pleroma.Constants.as_public()) or
-         Enum.member?(cc, Pleroma.Constants.as_public()) do
+    if match?(%User{}, user) and
+         (Enum.member?(to, Pleroma.Constants.as_public()) or
+            Enum.member?(cc, Pleroma.Constants.as_public())) do
       to = List.delete(to, Pleroma.Constants.as_public()) ++ [user.follower_address]
       cc = List.delete(cc, Pleroma.Constants.as_public())
 
@@ -120,13 +125,13 @@ defmodule Pleroma.Web.ActivityPub.MRF.TagPolicy do
          "mrf_tag:disable-remote-subscription",
          %{"type" => "Follow", "actor" => actor} = activity
        ) do
-    user = User.get_cached_by_ap_id(actor)
+    case User.get_cached_by_ap_id(actor) do
+      %User{local: true} ->
+        {:ok, activity}
 
-    if user.local == true do
-      {:ok, activity}
-    else
-      {:reject,
-       "[TagPolicy] Follow from #{actor} tagged with mrf_tag:disable-remote-subscription"}
+      _ ->
+        {:reject,
+         "[TagPolicy] Follow from #{actor} tagged with mrf_tag:disable-remote-subscription"}
     end
   end
 
@@ -134,6 +139,12 @@ defmodule Pleroma.Web.ActivityPub.MRF.TagPolicy do
     do: {:reject, "[TagPolicy] Follow from #{actor} tagged with mrf_tag:disable-any-subscription"}
 
   defp process_tag(_, activity), do: {:ok, activity}
+
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
 
   def filter_activity(actor, activity) do
     User.get_cached_by_ap_id(actor)

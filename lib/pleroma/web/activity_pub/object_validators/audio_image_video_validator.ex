@@ -157,6 +157,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
       is_binary(right.host) and left.scheme == right.scheme and
       String.downcase(left.host) == String.downcase(right.host) and
       uri_port(left) == uri_port(right)
+  rescue
+    URI.Error -> false
   end
 
   defp same_origin?(_, _), do: false

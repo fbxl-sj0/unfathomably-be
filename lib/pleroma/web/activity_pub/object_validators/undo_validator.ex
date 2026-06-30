@@ -9,7 +9,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UndoValidator do
   alias Pleroma.User
 
   import Ecto.Changeset
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
 
@@ -44,13 +43,13 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UndoValidator do
     |> validate_inclusion(:type, ["Undo"])
     |> validate_required([:id, :type, :object, :actor, :to, :cc])
     |> validate_undo_actor(:actor)
-    |> validate_object_presence()
+    |> validate_activity_presence()
     |> validate_undo_rights()
   end
 
   def validate_undo_rights(cng) do
     actor = get_field(cng, :actor)
-    object = get_field(cng, :object)
+    object = activity_id(get_field(cng, :object))
 
     with %Activity{data: %{"actor" => object_actor}} <- Activity.get_by_ap_id(object),
          true <- object_actor != actor do
@@ -69,4 +68,17 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UndoValidator do
       end
     end)
   end
+
+  defp validate_activity_presence(cng) do
+    validate_change(cng, :object, fn field_name, object_ref ->
+      case object_ref |> activity_id() |> Activity.get_by_ap_id() do
+        %Activity{} -> []
+        _ -> [{field_name, "can't find activity"}]
+      end
+    end)
+  end
+
+  defp activity_id(activity_id) when is_binary(activity_id), do: activity_id
+  defp activity_id(%{"id" => activity_id}) when is_binary(activity_id), do: activity_id
+  defp activity_id(_), do: nil
 end

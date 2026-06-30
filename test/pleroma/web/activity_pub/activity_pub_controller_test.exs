@@ -955,7 +955,17 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       data: data
     } do
       recipient = insert(:user)
-      actor = insert(:user, local: false, actor_type: "Group")
+      actor_ap_id = data["actor"]
+
+      actor =
+        insert(:user,
+          local: false,
+          actor_type: "Group",
+          ap_id: actor_ap_id,
+          nickname: "admin@mastodon.example.org",
+          inbox: actor_ap_id <> "/inbox",
+          outbox_address: actor_ap_id <> "/outbox"
+        )
 
       actor_object = %{
         "id" => actor.ap_id,

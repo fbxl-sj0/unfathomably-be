@@ -82,5 +82,15 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlugTest do
       assert conn.state == :sent
       assert conn.resp_body == "Request not signed"
     end
+
+    test "does not raise when a valid signature maps to a malformed actor id", %{conn: conn} do
+      conn =
+        conn
+        |> assign(:valid_signature, true)
+        |> assign(:actor_id, "https://%")
+        |> HTTPSignaturePlug.call(%{})
+
+      refute conn.halted
+    end
   end
 end

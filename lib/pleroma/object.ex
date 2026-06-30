@@ -51,9 +51,20 @@ defmodule Pleroma.Object do
   end
 
   def create(data) do
-    %Object{}
-    |> Object.change(%{data: data})
-    |> Repo.insert()
+    changeset =
+      %Object{}
+      |> Object.change(%{data: data})
+
+    case Repo.insert(changeset) do
+      {:ok, object} ->
+        {:ok, object}
+
+      {:error, %Ecto.Changeset{} = changeset} = error ->
+        maybe_return_existing_object(data["id"], changeset, error)
+    end
+  rescue
+    e in Ecto.ConstraintError ->
+      maybe_return_existing_object(data["id"], e, {:error, e})
   end
 
   def change(struct, params \\ %{}) do
@@ -64,6 +75,33 @@ defmodule Pleroma.Object do
     # Expecting `maybe_handle_hashtags_change/1` to run last:
     |> maybe_handle_hashtags_change(struct)
   end
+
+  defp maybe_return_existing_object(ap_id, constraint_error, error) do
+    if object_unique_ap_id_error?(constraint_error) do
+      case get_by_ap_id(ap_id) do
+        %Object{} = object -> {:ok, object}
+        _ -> error
+      end
+    else
+      error
+    end
+  end
+
+  defp object_unique_ap_id_error?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {:ap_id, {_message, opts}} ->
+        Keyword.get(opts, :constraint_name) == "objects_unique_apid_index" or
+          Keyword.get(opts, :constraint) == :unique
+
+      _ ->
+        false
+    end)
+  end
+
+  defp object_unique_ap_id_error?(%Ecto.ConstraintError{constraint: "objects_unique_apid_index"}),
+    do: true
+
+  defp object_unique_ap_id_error?(_), do: false
 
   # Note: not checking activity type (assuming non-legacy objects are associated with Create act.)
   defp maybe_handle_hashtags_change(changeset, struct) do

@@ -89,6 +89,15 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LikeValidationTest do
       refute LikeValidator.cast_and_validate(with_invalid_object).valid?
     end
 
+    test "it rejects malformed object references without raising", %{valid_like: valid_like} do
+      malformed_object =
+        valid_like
+        |> Map.put("object", ["not", "an", "object"])
+
+      assert {:error, cng} = ObjectValidator.validate(malformed_object, [])
+      refute cng.valid?
+    end
+
     test "it errors when the actor has already like the object", %{
       valid_like: valid_like,
       user: user,

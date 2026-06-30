@@ -31,7 +31,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
     data =
       Enum.reject(data, fn x ->
-        String.ends_with?(x, "/followers") and x != follower_collection
+        is_binary(follower_collection) and String.ends_with?(x, "/followers") and
+          x != follower_collection
       end)
 
     Map.put(message, field, data)
@@ -68,16 +69,28 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
           context_id(data["target"]) || data["inReplyTo"] || data["id"]
       )
 
-    %User{follower_address: follower_collection} = User.get_cached_by_ap_id(data["attributedTo"])
-
     data
     |> Map.put("context", context)
+    |> fix_object_recipients(User.get_cached_by_ap_id(data["attributedTo"]))
+  end
+
+  defp fix_object_recipients(data, %User{follower_address: follower_collection}) do
+    data
     |> cast_and_filter_recipients("to", follower_collection)
     |> cast_and_filter_recipients("cc", follower_collection)
     |> cast_and_filter_recipients("bto", follower_collection)
     |> cast_and_filter_recipients("bcc", follower_collection)
     |> cast_and_filter_recipients("audience", follower_collection)
     |> Transmogrifier.fix_implicit_addressing(follower_collection)
+  end
+
+  defp fix_object_recipients(data, _user) do
+    data
+    |> cast_and_filter_recipients("to", nil)
+    |> cast_and_filter_recipients("cc", nil)
+    |> cast_and_filter_recipients("bto", nil)
+    |> cast_and_filter_recipients("bcc", nil)
+    |> cast_and_filter_recipients("audience", nil)
   end
 
   defp context_id(id) when is_binary(id), do: id
@@ -86,16 +99,31 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
   defp context_id(_), do: nil
 
   def fix_activity_addressing(activity) do
-    %User{follower_address: follower_collection} = User.get_cached_by_ap_id(activity["actor"])
+    activity = normalize_activity_actor(activity)
 
-    activity
-    |> cast_and_filter_recipients("to", follower_collection)
-    |> cast_and_filter_recipients("cc", follower_collection)
-    |> cast_and_filter_recipients("bto", follower_collection)
-    |> cast_and_filter_recipients("bcc", follower_collection)
-    |> cast_and_filter_recipients("audience", follower_collection)
-    |> Transmogrifier.fix_implicit_addressing(follower_collection)
+    case User.get_cached_by_ap_id(activity["actor"]) do
+      %User{follower_address: follower_collection} ->
+        activity
+        |> cast_and_filter_recipients("to", follower_collection)
+        |> cast_and_filter_recipients("cc", follower_collection)
+        |> cast_and_filter_recipients("bto", follower_collection)
+        |> cast_and_filter_recipients("bcc", follower_collection)
+        |> cast_and_filter_recipients("audience", follower_collection)
+        |> Transmogrifier.fix_implicit_addressing(follower_collection)
+
+      _ ->
+        activity
+    end
   end
+
+  defp normalize_activity_actor(%{"actor" => actor} = activity) do
+    case Containment.get_actor(%{"actor" => actor}) do
+      actor when is_binary(actor) -> Map.put(activity, "actor", actor)
+      _ -> activity
+    end
+  end
+
+  defp normalize_activity_actor(activity), do: activity
 
   def fix_actor(data) do
     actor =
@@ -113,6 +141,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     data
     |> Map.put("context", object_context)
   end
+
+  def fix_activity_context(data, %Object{}), do: data
 
   def fix_object_action_recipients(%{"type" => "Announce", "actor" => actor} = data, object) do
     if group_actor?(actor) do
@@ -149,13 +179,23 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
          %{"actor" => actor} = data,
          %Object{data: %{"actor" => actor}}
        ) do
-    to = ((data["to"] || []) -- [actor]) |> Enum.uniq()
+    to =
+      data
+      |> Map.get("to", [])
+      |> normalize_recipient_value()
+      |> Kernel.--([actor])
+      |> Enum.uniq()
 
     Map.put(data, "to", to)
   end
 
   defp do_fix_object_action_recipients(data, %Object{data: %{"actor" => actor}}) do
-    to = ((data["to"] || []) ++ [actor]) |> Enum.uniq()
+    to =
+      data
+      |> Map.get("to", [])
+      |> normalize_recipient_value()
+      |> Kernel.++([actor])
+      |> Enum.uniq()
 
     Map.put(data, "to", to)
   end

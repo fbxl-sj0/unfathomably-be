@@ -10,6 +10,7 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
   import Tesla.Mock
 
   alias Pleroma.Object
+  alias Pleroma.Instances
   alias Pleroma.Workers.RemoteFetcherWorker
   alias Pleroma.Workers.RemoteRepliesFetcherWorker
 
@@ -155,6 +156,42 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
     )
   end
 
+  test "fetches reply ids from wrapped collection items" do
+    mock(fn
+      %{method: :get, url: @collection_id} ->
+        activitypub_json(%{
+          "id" => @collection_id,
+          "type" => "OrderedCollection",
+          "orderedItems" => [
+            %{"type" => "Create", "object" => @reply_1},
+            %{"object" => %{"id" => @reply_2}},
+            %{"object" => %{"bad" => "shape"}},
+            nil,
+            42
+          ]
+        })
+    end)
+
+    assert :ok =
+             perform_job(RemoteRepliesFetcherWorker, %{
+               "op" => "refresh_replies",
+               "object_id" => @parent_id,
+               "collection_id" => @collection_id,
+               "depth" => 1,
+               "refresh_index" => 0
+             })
+
+    assert_enqueued(
+      worker: RemoteFetcherWorker,
+      args: %{"op" => "fetch_remote", "id" => @reply_1, "depth" => 1, "thread" => true}
+    )
+
+    assert_enqueued(
+      worker: RemoteFetcherWorker,
+      args: %{"op" => "fetch_remote", "id" => @reply_2, "depth" => 1, "thread" => true}
+    )
+  end
+
   test "cancels deleted collections instead of retrying forever" do
     mock(fn
       %{method: :get, url: @collection_id} ->
@@ -168,6 +205,74 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
                "collection_id" => @collection_id,
                "depth" => 1,
                "refresh_index" => 0
+             })
+  end
+
+  test "cancels terminal collection fetch responses instead of retrying forever" do
+    terminal_responses = [
+      {400, :bad_request},
+      {405, :method_not_allowed},
+      {406, :not_acceptable},
+      {501, :not_implemented}
+    ]
+
+    Enum.each(terminal_responses, fn {status, reason} ->
+      mock(fn
+        %{method: :get, url: @collection_id} ->
+          %Tesla.Env{status: status}
+      end)
+
+      assert {:cancel, ^reason} =
+               perform_job(RemoteRepliesFetcherWorker, %{
+                 "op" => "refresh_replies",
+                 "object_id" => @parent_id,
+                 "collection_id" => @collection_id,
+                 "depth" => 1,
+                 "refresh_index" => 0
+               })
+    end)
+  end
+
+  test "cancels dormant-host collection fetches instead of retrying them" do
+    clear_config([:instance, :dormant_instance_timeout_days], 1)
+    Instances.set_unreachable("remote.example", Instances.dormant_datetime_threshold())
+
+    assert {:cancel, :unreachable_host} =
+             perform_job(RemoteRepliesFetcherWorker, %{
+               "op" => "refresh_replies",
+               "object_id" => @parent_id,
+               "collection_id" => @collection_id,
+               "depth" => 1,
+               "refresh_index" => 0
+             })
+  end
+
+  test "cancels malformed refresh jobs before fetching" do
+    assert {:cancel, :bad_request} =
+             RemoteRepliesFetcherWorker.perform(%Oban.Job{
+               args: %{
+                 "op" => "refresh_replies",
+                 "object_id" => @parent_id,
+                 "collection_id" => 42,
+                 "depth" => 1,
+                 "refresh_index" => 0
+               }
+             })
+
+    assert {:cancel, :bad_request} =
+             RemoteRepliesFetcherWorker.perform(%Oban.Job{
+               args: %{
+                 "op" => "refresh_replies",
+                 "object_id" => @parent_id,
+                 "collection_id" => @collection_id,
+                 "depth" => "1",
+                 "refresh_index" => 0
+               }
+             })
+
+    assert {:cancel, :bad_request} =
+             RemoteRepliesFetcherWorker.perform(%Oban.Job{
+               args: %{"op" => "unknown_remote_replies_op"}
              })
   end
 

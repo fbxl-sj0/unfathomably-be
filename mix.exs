@@ -155,7 +155,12 @@ defmodule Pleroma.Mixfile do
       {:csv, "~> 3.2"},
       {:tesla, "~> 1.20", override: true},
       {:castore, "~> 1.0"},
-      {:cowlib, "~> 2.9", override: true},
+      # Hex does not yet publish a cowlib release with the CVE-2026-43969
+      # cookie encoder fix, so pin the Erlang Ecosystem Foundation patch.
+      {:cowlib,
+       git: "https://github.com/erlef/cowlib.git",
+       ref: "177953dd51540da11090666c1f007214127a1144",
+       override: true},
       {:gun, "~> 2.4", override: true},
       {:finch, "~> 0.23"},
       {:jason, "~> 1.2"},

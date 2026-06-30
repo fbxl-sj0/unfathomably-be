@@ -72,13 +72,15 @@ defmodule Pleroma.Web.ActivityPub.MRF.EmojiPolicy do
     {:ok, activity}
   end
 
-  defp match_string?(string, pattern) when is_binary(pattern) do
+  defp match_string?(string, pattern) when is_binary(string) and is_binary(pattern) do
     string == pattern
   end
 
-  defp match_string?(string, %Regex{} = pattern) do
+  defp match_string?(string, %Regex{} = pattern) when is_binary(string) do
     String.match?(string, pattern)
   end
+
+  defp match_string?(_, _), do: false
 
   defp match_any?(string, patterns) do
     Enum.any?(patterns, &match_string?(string, &1))
@@ -87,12 +89,14 @@ defmodule Pleroma.Web.ActivityPub.MRF.EmojiPolicy do
   defp url_from_tag(%{"icon" => %{"url" => url}}), do: url
   defp url_from_tag(_), do: nil
 
-  defp url_from_emoji({_name, url}), do: url
+  defp url_from_emoji({_name, url}) when is_binary(url), do: url
+  defp url_from_emoji(_), do: nil
 
   defp shortcode_from_tag(%{"name" => name}) when is_binary(name), do: String.trim(name, ":")
   defp shortcode_from_tag(_), do: nil
 
-  defp shortcode_from_emoji({name, _url}), do: name
+  defp shortcode_from_emoji({name, _url}) when is_binary(name), do: name
+  defp shortcode_from_emoji(_), do: nil
 
   defp process_remove(object, :url, patterns) do
     process_remove_impl(object, &url_from_tag/1, &url_from_emoji/1, patterns)
@@ -109,7 +113,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.EmojiPolicy do
           object,
           "tag",
           Enum.filter(
-            object["tag"],
+            tag_list(object["tag"]),
             fn
               %{"type" => "Emoji"} = tag ->
                 str = extract_from_tag.(tag)
@@ -135,6 +139,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.EmojiPolicy do
           object,
           "emoji",
           object["emoji"]
+          |> emoji_pairs()
           |> Enum.reduce(%{}, fn {name, url} = emoji, acc ->
             if not match_any?(extract_from_emoji.(emoji), patterns) do
               Map.put(acc, name, url)
@@ -168,6 +173,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.EmojiPolicy do
 
   defp maybe_delist(%{"object" => object, "to" => to, "type" => "Create"} = activity) do
     check = matched_emoji_checker(config_unlist_url(), config_unlist_shortcode())
+    to = recipient_list(to)
+    cc = recipient_list(activity["cc"])
 
     should_delist? = fn object ->
       with {:ok, _} <- Pleroma.Object.Updater.do_with_history(object, check) do
@@ -179,7 +186,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.EmojiPolicy do
 
     if Pleroma.Constants.as_public() in to and should_delist?.(object) do
       to = List.delete(to, Pleroma.Constants.as_public())
-      cc = [Pleroma.Constants.as_public() | activity["cc"] || []]
+      cc = [Pleroma.Constants.as_public() | cc]
 
       activity
       |> Map.put("to", to)
@@ -194,7 +201,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.EmojiPolicy do
   defp any_emoji_match?(object, extract_from_tag, extract_from_emoji, patterns) do
     Kernel.||(
       Enum.any?(
-        object["tag"] || [],
+        tag_list(object["tag"]),
         fn
           %{"type" => "Emoji"} = tag ->
             str = extract_from_tag.(tag)
@@ -209,10 +216,42 @@ defmodule Pleroma.Web.ActivityPub.MRF.EmojiPolicy do
             false
         end
       ),
-      (object["emoji"] || [])
+      object["emoji"]
+      |> emoji_pairs()
       |> Enum.any?(fn emoji -> match_any?(extract_from_emoji.(emoji), patterns) end)
     )
   end
+
+  defp tag_list(values) when is_list(values), do: Enum.filter(values, &valid_tag?/1)
+  defp tag_list(value) when is_map(value), do: [value]
+  defp tag_list(value) when is_binary(value), do: [value]
+  defp tag_list(_), do: []
+
+  defp valid_tag?(value) when is_map(value), do: true
+  defp valid_tag?(value) when is_binary(value), do: true
+  defp valid_tag?(_), do: false
+
+  defp emoji_pairs(values) when is_map(values) do
+    Enum.filter(values, fn
+      {name, url} -> is_binary(name) and is_binary(url)
+      _ -> false
+    end)
+  end
+
+  defp emoji_pairs(values) when is_list(values) do
+    Enum.filter(values, fn
+      {name, url} -> is_binary(name) and is_binary(url)
+      _ -> false
+    end)
+  end
+
+  defp emoji_pairs(_), do: []
+
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
 
   @impl true
   def describe do

@@ -74,5 +74,30 @@ defmodule Pleroma.Object.UpdaterTest do
       assert used_history_in_new_object?
       assert updated_data["formerRepresentations"] == update_object_data["formerRepresentations"]
     end
+
+    test "it ignores malformed poll choices instead of raising" do
+      original_data = %{
+        "id" => "https://example.test/objects/question",
+        "type" => "Question",
+        "published" => "2026-06-29T00:00:00Z",
+        "oneOf" => [
+          %{"name" => "Tea", "type" => "Note", "replies" => %{"totalItems" => 1}},
+          %{"name" => "Coffee", "type" => "Note", "replies" => %{"totalItems" => 2}}
+        ]
+      }
+
+      update_data =
+        original_data
+        |> Map.put("updated", "2026-06-29T00:01:00Z")
+        |> Map.put("oneOf", [
+          %{"name" => "Tea", "type" => "Note", "replies" => %{"totalItems" => 10}},
+          "not a choice"
+        ])
+
+      %{updated_data: updated_data} =
+        Updater.make_new_object_data_from_update_object(original_data, update_data)
+
+      assert updated_data["oneOf"] == original_data["oneOf"]
+    end
   end
 end

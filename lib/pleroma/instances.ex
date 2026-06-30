@@ -71,10 +71,32 @@ defmodule Pleroma.Instances do
   end
 
   def host(url_or_host) when is_binary(url_or_host) do
-    if url_or_host =~ ~r/^http/i do
-      URI.parse(url_or_host).host
-    else
-      url_or_host
+    host =
+      if url_or_host =~ ~r/^https?:\/\//i do
+        url_or_host
+        |> URI.parse()
+        |> Map.get(:host)
+      else
+        url_or_host
+      end
+
+    normalize_host(host)
+  rescue
+    URI.Error -> nil
+  end
+
+  defp normalize_host(host) when is_binary(host) do
+    host =
+      host
+      |> String.downcase()
+      |> String.trim_trailing(".")
+
+    cond do
+      host == "" -> nil
+      String.contains?(host, ["%", "/", "?", "#", " "]) -> nil
+      true -> host
     end
   end
+
+  defp normalize_host(_), do: nil
 end

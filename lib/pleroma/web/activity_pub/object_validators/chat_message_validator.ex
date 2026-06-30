@@ -103,7 +103,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ChatMessageValidator do
     with actor_ap <- get_field(cng, :actor),
          {_, %User{} = actor} <- {:find_actor, User.get_cached_by_ap_id(actor_ap)},
          {_, %User{} = recipient} <-
-           {:find_recipient, User.get_cached_by_ap_id(get_field(cng, :to) |> hd())},
+           {:find_recipient, User.get_cached_by_ap_id(first_recipient(get_field(cng, :to)))},
          {_, false} <- {:not_accepting_chats?, recipient.accepts_chat_messages == false},
          {_, false} <- {:blocking_actor?, User.blocks?(recipient, actor)},
          {_, true} <- {:local?, Enum.any?([actor, recipient], & &1.local)} do
@@ -130,4 +130,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ChatMessageValidator do
         |> add_error(:to, "can't find user")
     end
   end
+
+  defp first_recipient([recipient | _]) when is_binary(recipient), do: recipient
+  defp first_recipient(_), do: nil
 end

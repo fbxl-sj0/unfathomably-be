@@ -43,6 +43,17 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactHandlingTest do
       assert {:content, {"can't be blank", [validation: :required]}} in cng.errors
     end
 
+    test "it rejects malformed object references without raising", %{
+      valid_emoji_react: valid_emoji_react
+    } do
+      malformed_object =
+        valid_emoji_react
+        |> Map.put("object", ["not", "an", "object"])
+
+      assert {:error, cng} = ObjectValidator.validate(malformed_object, [])
+      refute cng.valid?
+    end
+
     test "it is valid when custom emoji is used", %{valid_emoji_react: valid_emoji_react} do
       without_emoji_content =
         valid_emoji_react

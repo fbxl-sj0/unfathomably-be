@@ -214,6 +214,17 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ChatValidationTest do
       assert {:error, _} = ObjectValidator.validate(chat_message, [])
     end
 
+    test "does not raise for a message with no recipients", %{
+      valid_chat_message: valid_chat_message
+    } do
+      chat_message =
+        valid_chat_message
+        |> Map.put("to", [])
+
+      assert {:error, cng} = ObjectValidator.validate(chat_message, [])
+      refute cng.valid?
+    end
+
     test "does not validate if it doesn't concern local users" do
       user = insert(:user, local: false)
       recipient = insert(:user, local: false)

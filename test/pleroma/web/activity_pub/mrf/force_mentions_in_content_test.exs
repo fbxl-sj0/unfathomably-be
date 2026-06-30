@@ -350,4 +350,30 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceMentionsInContentTest do
     assert filtered ==
              "#{Enum.at(inline_mentions, 0)} #{Enum.at(inline_mentions, 1)} erm"
   end
+
+  test "handles malformed content without crashing" do
+    mario = insert(:user, nickname: "mario")
+    luigi = insert(:user, nickname: "luigi")
+
+    {:ok, post} = CommonAPI.post(luigi, %{status: "Mama mia"})
+
+    activity = %{
+      "type" => "Create",
+      "actor" => mario.ap_id,
+      "object" => %{
+        "type" => "Note",
+        "actor" => mario.ap_id,
+        "content" => %{"en" => "I'ma tired..."},
+        "to" => [
+          luigi.ap_id,
+          Constants.as_public()
+        ],
+        "inReplyTo" => Object.normalize(post).data["id"]
+      }
+    }
+
+    {:ok, %{"object" => %{"content" => filtered}}} = ForceMentionsInContent.filter(activity)
+
+    assert filtered =~ "recipients-inline"
+  end
 end

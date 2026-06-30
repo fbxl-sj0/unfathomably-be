@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.LockHandlingTest do
   use Pleroma.DataCase, async: true
 
+  require Pleroma.Constants
+
   import Pleroma.Factory
 
   alias Pleroma.Object
@@ -75,5 +77,25 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.LockHandlingTest do
 
     assert {:ok, _activity} = Transmogrifier.handle_incoming(undo)
     assert Object.get_by_ap_id(object_id).data["commentsEnabled"] == true
+  end
+
+  test "it rejects malformed Lock object references without raising" do
+    actor =
+      insert(:user,
+        local: false,
+        ap_id: "https://malformed-lock.example/u/alice",
+        follower_address: "https://malformed-lock.example/u/alice/followers"
+      )
+
+    lock = %{
+      "id" => "https://malformed-lock.example/activities/lock/1",
+      "actor" => actor.ap_id,
+      "object" => ["not", "an", "object"],
+      "type" => "Lock",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => []
+    }
+
+    assert {:error, _} = Transmogrifier.handle_incoming(lock)
   end
 end

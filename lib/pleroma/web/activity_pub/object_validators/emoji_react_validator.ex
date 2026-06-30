@@ -60,7 +60,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
 
     data = Map.put_new(data, "tag", [])
 
-    case Object.normalize(data["object"]) do
+    case normalize_object_reference(data["object"]) do
       %Object{} = object ->
         data
         |> CommonFixes.fix_activity_context(object)
@@ -71,6 +71,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
         data
     end
   end
+
+  defp normalize_object_reference(object) when is_binary(object) or is_map(object) do
+    Object.normalize(object)
+  end
+
+  defp normalize_object_reference(_object), do: nil
 
   defp fix_emoji_qualification(%{"content" => emoji} = data) do
     new_emoji = Pleroma.Emoji.fully_qualify_emoji(emoji)

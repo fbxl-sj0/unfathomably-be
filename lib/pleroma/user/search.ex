@@ -4,6 +4,7 @@
 
 defmodule Pleroma.User.Search do
   alias Pleroma.EctoType.ActivityPub.ObjectValidators.Uri, as: UriType
+  alias Pleroma.Instances
   alias Pleroma.Instances.Instance
   alias Pleroma.Pagination
   alias Pleroma.User
@@ -202,12 +203,16 @@ defmodule Pleroma.User.Search do
 
   defp filter_blocked_domains(query, %User{domain_blocks: domain_blocks})
        when domain_blocks != [] do
-    domains = Enum.join(domain_blocks, ",")
+    domains =
+      domain_blocks
+      |> Enum.map(&Instances.host/1)
+      |> Enum.filter(&is_binary/1)
 
-    from(
-      q in query,
-      where: fragment("substring(ap_id from '.*://([^/]*)') NOT IN (?)", ^domains)
-    )
+    if domains == [] do
+      query
+    else
+      from(q in query, where: fragment("ap_id_host(?)", q.ap_id) not in ^domains)
+    end
   end
 
   defp filter_blocked_domains(query, _), do: query
@@ -215,7 +220,7 @@ defmodule Pleroma.User.Search do
   defp filter_unreachable_users(query) do
     from(u in query,
       left_join: i in Instance,
-      on: i.host == fragment("substring(? from '.*://([^/]*)')", u.ap_id),
+      on: fragment("lower(?) = ap_id_host(?)", i.host, u.ap_id),
       where: is_nil(i.unreachable_since)
     )
   end

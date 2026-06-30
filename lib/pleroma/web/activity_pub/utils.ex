@@ -321,11 +321,12 @@ defmodule Pleroma.Web.ActivityPub.Utils do
       else
         [object.data["actor"]]
       end
+      |> ap_id_list()
 
     cc =
-      (object.data["to"] ++ (object.data["cc"] || []))
+      (ap_id_list(object.data["to"]) ++ ap_id_list(object.data["cc"]))
       |> List.delete(actor.ap_id)
-      |> List.delete(object_actor.follower_address)
+      |> List.delete(object_actor && object_actor.follower_address)
 
     %{
       "type" => "Like",
@@ -337,6 +338,13 @@ defmodule Pleroma.Web.ActivityPub.Utils do
     }
     |> Maps.put_if_present("id", activity_id)
   end
+
+  defp ap_id_list(values) when is_list(values) do
+    Enum.filter(values, &is_binary/1)
+  end
+
+  defp ap_id_list(value) when is_binary(value), do: [value]
+  defp ap_id_list(_), do: []
 
   def make_emoji_reaction_data(user, object, emoji, activity_id) do
     make_like_data(user, object, activity_id)

@@ -15,13 +15,15 @@ defmodule Pleroma.Web.ActivityPub.MRF.AntiLinkSpamPolicy do
     u.note_count > 0 || u.follower_count > 0
   end
 
-  defp content_contains_links?(content) do
+  defp content_contains_links?(content) when is_binary(content) do
     content
     |> Floki.parse_fragment!()
     |> Floki.filter_out("a.mention,a.hashtag,a[rel~=\"tag\"],a.zrl")
     |> Floki.attribute("a", "href")
     |> length() > 0
   end
+
+  defp content_contains_links?(_), do: false
 
   defp history_items(%{"formerRepresentations" => %{"orderedItems" => items}})
        when is_list(items) do

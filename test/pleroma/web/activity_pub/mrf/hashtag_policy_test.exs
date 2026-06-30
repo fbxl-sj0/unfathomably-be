@@ -1,10 +1,12 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.MRF.HashtagPolicyTest do
   use Oban.Testing, repo: Pleroma.Repo
   use Pleroma.DataCase
+
+  require Pleroma.Constants
 
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.CommonAPI
@@ -97,5 +99,32 @@ defmodule Pleroma.Web.ActivityPub.MRF.HashtagPolicyTest do
     {:ok, modified} = Transmogrifier.prepare_outgoing(activity.data)
 
     refute modified["object"]["sensitive"]
+  end
+
+  test "it normalizes malformed recipients when removing from federated timelines" do
+    clear_config([:mrf_hashtag, :federated_timeline_removal], ["nsfw"])
+
+    public = Pleroma.Constants.as_public()
+
+    activity = %{
+      "type" => "Create",
+      "to" => [%{"id" => public}, nil],
+      "cc" => %{"href" => "https://example.com/users/alice"},
+      "object" => %{
+        "type" => "Note",
+        "tag" => [%{"type" => "Hashtag", "name" => "#nsfw"}]
+      }
+    }
+
+    {:ok, modified} =
+      Pleroma.Web.ActivityPub.MRF.filter_one(
+        Pleroma.Web.ActivityPub.MRF.HashtagPolicy,
+        activity
+      )
+
+    assert modified["to"] == []
+    assert modified["cc"] == [public, "https://example.com/users/alice"]
+    assert modified["object"]["to"] == []
+    assert modified["object"]["cc"] == [public, "https://example.com/users/alice"]
   end
 end

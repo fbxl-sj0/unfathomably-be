@@ -77,10 +77,18 @@ defmodule Pleroma.Gun.ConnectionPool do
 
     case query_result do
       [worker_pid] ->
-        GenServer.call(worker_pid, :remove_client)
+        safe_remove_client(worker_pid)
 
       [] ->
         :ok
     end
+  end
+
+  defp safe_remove_client(worker_pid) do
+    GenServer.call(worker_pid, :remove_client)
+  catch
+    :exit, {:normal, _} -> :ok
+    :exit, {:noproc, _} -> :ok
+    :exit, {:shutdown, _} -> :ok
   end
 end

@@ -166,10 +166,25 @@ defmodule Pleroma.Signature do
   defp validate_with_historical_keys(conn) do
     with %{"keyId" => kid} <- HTTPSignatures.signature_for_conn(conn),
          {:ok, actor_id} <- key_id_to_actor_id(kid),
-         {:ok, public_keys} <- User.get_historical_public_keys_for_ap_id(actor_id) do
+         {:ok, public_keys} <- historical_public_keys_for_ap_id(actor_id) do
       Enum.any?(public_keys, &validate_conn_with_key(conn, &1))
     else
       _ -> false
+    end
+  end
+
+  defp historical_public_keys_for_ap_id(actor_id) do
+    case User.get_historical_public_keys_for_ap_id(actor_id) do
+      {:ok, public_keys} ->
+        {:ok, public_keys}
+
+      _ ->
+        with %User{} = user <- User.get_by_ap_id(actor_id),
+             public_keys when public_keys != [] <- User.historical_public_keys(user) do
+          {:ok, public_keys}
+        else
+          _ -> :error
+        end
     end
   end
 

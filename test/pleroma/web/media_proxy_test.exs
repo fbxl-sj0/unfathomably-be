@@ -38,6 +38,12 @@ defmodule Pleroma.Web.MediaProxyTest do
       assert MediaProxy.verify_remote_http_url(data_url) == {:error, :unsupported_remote_url}
     end
 
+    test "ignores malformed HTTP urls" do
+      assert MediaProxy.url("https://%") == "https://%"
+      refute MediaProxy.url_proxiable?("https://%")
+      refute MediaProxy.remote_http_url?("https://%")
+    end
+
     test "ignores local url" do
       local_url = Endpoint.url() <> "/hello"
       local_root = Endpoint.url()
@@ -229,6 +235,15 @@ defmodule Pleroma.Web.MediaProxyTest do
       encoded = MediaProxy.url(url)
 
       assert String.starts_with?(encoded, media_url)
+    end
+
+    test "ignores malformed whitelist entries" do
+      clear_config([:media_proxy, :whitelist], ["https://%"])
+      clear_config([:media_proxy, :base_url], "https://cache.pleroma.social")
+
+      encoded = MediaProxy.url("https://remote.example/static/logo.png")
+
+      assert String.starts_with?(encoded, "https://cache.pleroma.social")
     end
 
     test "ensure Pleroma.Upload base_url is always whitelisted" do

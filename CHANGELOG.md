@@ -6,11 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security
+- Updated advisory-sensitive dependencies for the current release train: Plug now uses the patched 1.20 series, Markdown rendering uses the mdex 0.13.2 and mdex_native 0.2.3 releases, and cowlib is pinned to the upstream HTTP/1 request-line hardening patch while awaiting the next tagged Hex release.
+- Added deployment promotion tooling that preserves server-local secrets, uploaded media, instance static configuration, dependency builds, and generated artifacts instead of replacing the live tree wholesale.
+
+### Added
+- Added regression coverage for the Gun connection pool `release_conn/1` path where a worker exits normally before replying.
+- Added regression coverage for ActivityPub context repair when an incoming object action targets a tombstoned or otherwise contextless cached object.
+
+### Changed
+- Cleaned project-owned compiler warnings so the backend can continue to build under stricter warnings-as-errors validation while newer Elixir/OTP releases still expose third-party dependency warnings separately.
+
 ### Fixed
 - Fixed addressed inbox handling for servers that send the ActivityPub actor as an embedded object instead of a bare actor URI.
 - Fixed WebFinger resolution for leading-`@` group and feed handles, and preserved actor outbox URLs for source previews discovered through WebFinger.
 - Stopped feed list rendering from performing synchronous NodeInfo refreshes for hosts whose cached instance metadata is blank.
 - Fixed OpenTranslate requests for posts with unknown source languages by using provider auto-detection instead of an empty source language, and by pre-detecting obvious non-Latin scripts before OpenTranslate can misread HTML as English.
+- Fixed incoming Lemmy-style community `Announce` activities wrapping `Like` operations against deleted posts so tombstoned targets no longer raise `FunctionClauseError` in `CommonFixes.fix_activity_context/2` or create Oban retry noise.
 
 ## [2.6.51] - 2026-06-25
 

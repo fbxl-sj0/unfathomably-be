@@ -149,7 +149,7 @@ defmodule Pleroma.Instances.Health do
       |> join(:inner, [job], instance in Instance,
         on:
           fragment(
-            "lower(?) = lower(split_part(substring(? #>> '{params,inbox}' from '.*://([^/]*)'), ':', 1))",
+            "lower(?) = ap_id_host(? #>> '{params,inbox}')",
             instance.host,
             job.args
           )

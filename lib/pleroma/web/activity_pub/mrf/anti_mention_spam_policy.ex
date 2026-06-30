@@ -20,11 +20,14 @@ defmodule Pleroma.Web.ActivityPub.MRF.AntiMentionSpamPolicy do
   end
 
   # copied from HellthreadPolicy
-  defp get_recipient_count(activity) do
-    recipients = (activity["to"] || []) ++ (activity["cc"] || [])
+  defp get_recipient_count(activity) when is_map(activity) do
+    recipients = recipient_list(activity["to"]) ++ recipient_list(activity["cc"])
 
     follower_collection =
-      User.get_cached_by_ap_id(activity["actor"] || activity["attributedTo"]).follower_address
+      case User.get_cached_by_ap_id(activity["actor"] || activity["attributedTo"]) do
+        %User{follower_address: follower_address} -> follower_address
+        _ -> nil
+      end
 
     if Enum.member?(recipients, Pleroma.Constants.as_public()) do
       recipients =
@@ -41,6 +44,14 @@ defmodule Pleroma.Web.ActivityPub.MRF.AntiMentionSpamPolicy do
       {:not_public, length(recipients)}
     end
   end
+
+  defp get_recipient_count(_), do: {:not_public, 0}
+
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
 
   defp object_has_recipients?(%{"object" => object} = activity) do
     {_, object_count} = get_recipient_count(object)

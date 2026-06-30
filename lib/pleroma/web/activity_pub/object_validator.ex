@@ -66,17 +66,24 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
            |> UndoValidator.cast_and_validate()
            |> Ecto.Changeset.apply_action(:insert) do
       object = stringify_keys(object)
-      undone_object = Activity.get_by_ap_id(object["object"])
 
-      meta =
-        meta
-        |> Keyword.put(:object_data, undone_object.data)
+      case Activity.get_by_ap_id(object["object"]) do
+        %Activity{} = undone_object ->
+          meta =
+            meta
+            |> Keyword.put(:object_data, undone_object.data)
 
-      {:ok, object, meta}
+          {:ok, object, meta}
+
+        _ ->
+          {:error, :undone_activity_not_found}
+      end
     end
   end
 
   def validate(%{"type" => "Delete"} = object, meta) do
+    original_object = object
+
     with cng <- DeleteValidator.cast_and_validate(object),
          do_not_federate <- DeleteValidator.do_not_federate?(cng),
          {:ok, object} <- Ecto.Changeset.apply_action(cng, :insert) do
@@ -85,7 +92,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
       meta =
         meta
         |> Keyword.put(:do_not_federate, do_not_federate)
-        |> Keyword.put(:delete_target, DeleteValidator.classify_target(object))
+        |> Keyword.put(:delete_target, DeleteValidator.classify_target(original_object))
 
       {:ok, object, meta}
     end
@@ -145,7 +152,13 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
                object = stringify_keys(object)
 
                # Insert copy of hashtags as strings for the non-hashtag table indexing
-               tag = (object["tag"] || []) ++ Object.hashtags(%Object{data: object})
+               tag =
+                 object
+                 |> Map.get("tag")
+                 |> List.wrap()
+                 |> Enum.filter(fn tag -> is_binary(tag) or is_map(tag) end)
+                 |> Kernel.++(Object.hashtags(%Object{data: object}))
+
                object = Map.put(object, "tag", tag)
 
                {:ok, object}
@@ -281,18 +294,38 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
 
   def stringify_keys(object), do: object
 
-  def fetch_actor(object) do
+  def fetch_actor(object) when is_map(object) do
     with actor <- Containment.get_actor(object),
          {:ok, actor} <- ObjectValidators.ObjectID.cast(actor) do
       User.get_or_fetch_by_ap_id(actor)
     end
   end
 
-  def fetch_actor_and_object(object) do
+  def fetch_actor(_object), do: nil
+
+  def fetch_actor_and_object(%{"type" => type} = object) when type in ~w[Add Remove Lock] do
+    fetch_actor(object)
+    fetch_object_or_user(object["object"])
+    :ok
+  end
+
+  def fetch_actor_and_object(object) when is_map(object) do
     fetch_actor(object)
     fetch_thread_or_object(object["object"])
     :ok
   end
+
+  def fetch_actor_and_object(_object), do: :ok
+
+  defp fetch_object_or_user(object) when is_binary(object) do
+    case User.get_cached_by_ap_id(object) do
+      %User{} -> :ok
+      _ -> Object.normalize(object, fetch: true)
+    end
+  end
+
+  defp fetch_object_or_user(object) when is_map(object), do: Object.normalize(object, fetch: true)
+  defp fetch_object_or_user(_object), do: nil
 
   defp fetch_thread_or_object(object) when is_binary(object) do
     case Pleroma.Web.ActivityPub.RemoteReplies.fetch_thread_from_reply(object, depth: 0) do
@@ -301,7 +334,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
     end
   end
 
-  defp fetch_thread_or_object(object), do: Object.normalize(object, fetch: true)
+  defp fetch_thread_or_object(object) when is_map(object), do: Object.normalize(object, fetch: true)
+
+  defp fetch_thread_or_object(_object), do: nil
 
   defp for_each_history_item(
          %{"type" => "OrderedCollection", "orderedItems" => items} = history,

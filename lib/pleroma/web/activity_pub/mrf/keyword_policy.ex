@@ -24,7 +24,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicy do
 
   defp object_payload(%{} = object) do
     [object["content"], object["summary"], object["name"]]
-    |> Enum.filter(& &1)
+    |> Enum.filter(&is_binary/1)
     |> Enum.join("\n")
   end
 
@@ -47,7 +47,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicy do
     end
   end
 
-  defp check_ftl_removal(%{"type" => "Create", "to" => to, "object" => %{} = object} = activity) do
+  defp check_ftl_removal(%{"type" => "Create", "to" => to, "object" => %{} = object} = activity)
+       when is_list(to) do
     check_keyword = fn object ->
       payload = object_payload(object)
 
@@ -90,7 +91,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicy do
   defp check_replace(%{"object" => %{} = object} = activity) do
     replace_kw = fn object ->
       ["content", "name", "summary"]
-      |> Enum.filter(fn field -> Map.has_key?(object, field) && object[field] end)
+      |> Enum.filter(fn field -> is_binary(object[field]) end)
       |> Enum.reduce(object, fn field, object ->
         data =
           Enum.reduce(

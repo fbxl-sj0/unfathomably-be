@@ -10,7 +10,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.MentionPolicy do
   @impl true
   def filter(%{"type" => "Create"} = activity) do
     reject_actors = Pleroma.Config.get([:mrf_mention, :actors], [])
-    recipients = (activity["to"] || []) ++ (activity["cc"] || [])
+    recipients = recipient_list(activity["to"]) ++ recipient_list(activity["cc"])
 
     if rejected_mention =
          Enum.find(recipients, fn recipient -> Enum.member?(reject_actors, recipient) end) do
@@ -22,6 +22,12 @@ defmodule Pleroma.Web.ActivityPub.MRF.MentionPolicy do
 
   @impl true
   def filter(activity), do: {:ok, activity}
+
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
 
   @impl true
   def describe, do: {:ok, %{}}

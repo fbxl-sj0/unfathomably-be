@@ -134,12 +134,12 @@ defmodule Pleroma.Web.CommonAPI do
   end
 
   defp maybe_accept_subscription_source_follow(
-         %User{} = follower,
-         %User{local: false, is_locked: false} = followed
-       ) do
-    with {:ok, %User{} = source} <- FederatedTarget.resolve_source(followed.ap_id),
+       %User{} = follower,
+       %User{local: false, is_locked: false} = followed
+     ) do
+    with true <- subscription_source?(followed),
+         {:ok, %User{} = source} <- FederatedTarget.resolve_source(followed.ap_id),
          true <- source.id == followed.id,
-         true <- subscription_source?(source),
          {:ok, follower, source} <-
            FollowingRelationship.update(follower, source, :follow_accept) do
       {:ok, follower, source}
@@ -514,7 +514,7 @@ defmodule Pleroma.Web.CommonAPI do
 
   def get_visibility(params, in_reply_to, _) when not is_nil(in_reply_to) do
     visibility = get_replied_to_visibility(in_reply_to)
-    {default_group_visibility(params, in_reply_to, visibility), visibility}
+    {default_group_visibility(visibility, params, in_reply_to), visibility}
   end
 
   def get_visibility(params, in_reply_to, _) do

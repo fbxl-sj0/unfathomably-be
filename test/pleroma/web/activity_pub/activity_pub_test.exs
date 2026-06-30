@@ -1779,11 +1779,13 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
     test "retrieves public activities" do
       _activities = ActivityPub.fetch_public_activities()
 
-      %{public: public} = ActivityBuilder.public_and_non_public()
+      %{public: public, non_public: non_public} = ActivityBuilder.public_and_non_public()
 
       activities = ActivityPub.fetch_public_activities()
-      assert length(activities) == 1
-      assert Enum.at(activities, 0) == public
+      activity_ids = collect_ids(activities)
+
+      assert public.id in activity_ids
+      refute non_public.id in activity_ids
     end
 
     test "retrieves a maximum of 20 activities" do
@@ -3019,7 +3021,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
         ap_id: "https://gensokyo.2hu/users/raymoo",
         following_address: "https://gensokyo.2hu/users/following",
         follower_address: "https://gensokyo.2hu/users/followers",
-        type: "Person"
+        actor_type: "Person"
       }
 
       %{user: user}
@@ -3047,7 +3049,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
     } do
       user =
         user
-        |> Map.put(:type, "Application")
+        |> Map.put(:actor_type, "Application")
 
       refute capture_log(fn ->
                assert ^user = ActivityPub.maybe_update_follow_information(user)
@@ -3231,6 +3233,28 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
                  "first" => "https://social.example/users/alice/collections/featured?page=true"
                })
     end)
+  end
+
+  test "pin_data_from_featured_collection ignores unsupported ordered items" do
+    object_url = "https://social.example/objects/1"
+    second_object_url = "https://social.example/objects/2"
+
+    assert pins =
+             ActivityPub.pin_data_from_featured_collection(%{
+               "type" => "OrderedCollection",
+               "orderedItems" => [
+                 %{"id" => object_url},
+                 second_object_url,
+                 %{"id" => nil},
+                 %{"url" => "https://social.example/objects/not-an-id"},
+                 nil,
+                 42
+               ]
+             })
+
+    assert %{^object_url => %NaiveDateTime{}} = pins
+    assert %{^second_object_url => %NaiveDateTime{}} = pins
+    assert Enum.sort(Map.keys(pins)) == Enum.sort([object_url, second_object_url])
   end
 
   test "fetch_and_prepare_featured_from_ap_id handles embedded first collection pages" do

@@ -16,14 +16,22 @@ defmodule Pleroma.Workers.AttachmentsCleanupWorker do
           "op" => "cleanup_attachments",
           "object" => %{"data" => %{"attachment" => [_ | _] = attachments, "actor" => actor}}
         }
-      }) do
+      })
+      when is_binary(actor) do
     if Pleroma.Config.get([:instance, :cleanup_attachments], false) do
-      attachments
-      |> Enum.flat_map(fn item -> Enum.map(item["url"], & &1["href"]) end)
-      |> fetch_objects
-      |> prepare_objects(actor, Enum.map(attachments, & &1["name"]))
-      |> filter_objects
-      |> do_clean
+      names = attachment_names(attachments)
+
+      case attachment_urls(attachments) do
+        [] ->
+          :ok
+
+        hrefs ->
+          hrefs
+          |> fetch_objects
+          |> prepare_objects(actor, names)
+          |> filter_objects
+          |> do_clean
+      end
     end
 
     {:ok, :success}
@@ -31,8 +39,32 @@ defmodule Pleroma.Workers.AttachmentsCleanupWorker do
 
   def perform(%Job{args: %{"op" => "cleanup_attachments", "object" => _object}}), do: {:ok, :skip}
 
+  def perform(%Job{}), do: {:ok, :skip}
+
   @impl Oban.Worker
   def timeout(_job), do: :timer.seconds(900)
+
+  defp attachment_urls(attachments) do
+    attachments
+    |> Enum.flat_map(fn
+      %{"url" => urls} when is_list(urls) ->
+        Enum.flat_map(urls, fn
+          %{"href" => href} when is_binary(href) -> [href]
+          _ -> []
+        end)
+
+      _ ->
+        []
+    end)
+  end
+
+  defp attachment_names(attachments) do
+    attachments
+    |> Enum.flat_map(fn
+      %{"name" => name} when is_binary(name) -> [name]
+      _ -> []
+    end)
+  end
 
   defp do_clean({object_ids, attachment_urls}) do
     uploader = Pleroma.Config.get([Pleroma.Upload, :uploader])
@@ -72,26 +104,31 @@ defmodule Pleroma.Workers.AttachmentsCleanupWorker do
 
   defp prepare_objects(objects, actor, names) do
     objects
-    |> Enum.reduce(%{}, fn %{
-                             id: id,
-                             data: %{
-                               "url" => [%{"href" => href}],
-                               "actor" => obj_actor,
-                               "name" => name
-                             }
-                           },
-                           acc ->
-      Map.update(acc, href, %{id: id, count: 1}, fn val ->
-        case obj_actor == actor and name in names do
-          true ->
-            # set id of the actor's object that will be deleted
-            %{val | id: id, count: val.count + 1}
+    |> Enum.reduce(%{}, fn
+      %{
+        id: id,
+        data: %{
+          "url" => [%{"href" => href}],
+          "actor" => obj_actor,
+          "name" => name
+        }
+      },
+      acc
+      when is_binary(href) ->
+        Map.update(acc, href, %{id: id, count: 1}, fn val ->
+          case obj_actor == actor and name in names do
+            true ->
+              # set id of the actor's object that will be deleted
+              %{val | id: id, count: val.count + 1}
 
-          false ->
-            # another actor's object, just increase count to not delete file
-            %{val | count: val.count + 1}
-        end
-      end)
+            false ->
+              # another actor's object, just increase count to not delete file
+              %{val | count: val.count + 1}
+          end
+        end)
+
+      _object, acc ->
+        acc
     end)
   end
 

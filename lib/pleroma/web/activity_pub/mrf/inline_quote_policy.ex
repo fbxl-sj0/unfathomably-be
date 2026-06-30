@@ -23,8 +23,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.InlineQuotePolicy do
     end
   end
 
-  defp filter_object(%{"quoteUrl" => quote_url} = object) do
-    content = object["content"] || ""
+  defp filter_object(%{"quoteUrl" => quote_url} = object) when is_binary(quote_url) do
+    content = if is_binary(object["content"]), do: object["content"], else: ""
 
     if has_inline_quote?(content, quote_url) do
       object
@@ -41,6 +41,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.InlineQuotePolicy do
       Map.put(object, "content", content)
     end
   end
+
+  defp filter_object(object), do: object
 
   @impl true
   def filter(%{"object" => %{"quoteUrl" => _} = object} = activity) do

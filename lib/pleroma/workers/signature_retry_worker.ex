@@ -16,6 +16,8 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
 
   use Oban.Worker, queue: :federator_incoming, max_attempts: 5, unique: [period: :infinity]
 
+  @terminal_http_statuses [400, 401, 403, 404, 405, 406, 410, 501]
+
   @impl true
   def perform(%Job{
         args: %{
@@ -52,8 +54,8 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
              {:same_actor, true} <- {:same_actor, validate_same_actor(conn_data)},
              {:host_header, true} <- {:host_header, validate_host_header(conn_data)},
              {:ok, res} <- Federator.perform(:incoming_ap_doc, params) do
-          unless Instances.reachable?(params["actor"]) do
-            domain = URI.parse(params["actor"]).host
+          unless Instances.reachable?(actor_id) do
+            domain = uri_host(actor_id)
             Oban.insert(Pleroma.Workers.ReachabilityWorker.new(%{"domain" => domain}))
           end
 
@@ -134,6 +136,14 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
     _, _ -> false
   end
 
+  defp uri_host(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:host)
+  rescue
+    URI.Error -> nil
+  end
+
   defp signature_actor_id(conn_data) do
     Signature.get_actor_id(conn_data)
   rescue
@@ -149,6 +159,9 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
   defp process_errors(errors, context) do
     result =
       case errors do
+        {:error, {:http, status} = reason} when status in @terminal_http_statuses ->
+          {:cancel, reason}
+
         {:error, :not_found} = reason ->
           {:cancel, reason}
 

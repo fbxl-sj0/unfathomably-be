@@ -7,13 +7,31 @@ defmodule Pleroma.FollowingRelationshipTest do
 
   alias Pleroma.FollowingRelationship
   alias Pleroma.Instances
+  alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.InternalFetchActor
   alias Pleroma.Web.ActivityPub.Relay
 
+  import Ecto.Query
   import Pleroma.Factory
 
   describe "following/1" do
+    test "following the same account twice leaves one relationship row" do
+      user = insert(:user)
+      followed = insert(:user)
+
+      assert {:ok, _, _} = FollowingRelationship.follow(user, followed, :follow_accept)
+      assert {:ok, _, _} = FollowingRelationship.follow(user, followed, :follow_accept)
+
+      count =
+        FollowingRelationship
+        |> where(follower_id: ^user.id, following_id: ^followed.id)
+        |> Repo.aggregate(:count, :id)
+
+      assert count == 1
+      assert FollowingRelationship.following?(user, followed)
+    end
+
     test "returns following addresses without internal.fetch" do
       user = insert(:user)
       fetch_actor = InternalFetchActor.get_actor()

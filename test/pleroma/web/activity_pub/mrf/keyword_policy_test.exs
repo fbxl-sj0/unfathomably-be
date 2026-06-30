@@ -352,5 +352,24 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicyTest do
          }
        }} = KeywordPolicy.filter(message)
     end
+
+    test "ignores non-binary object fields while replacing" do
+      clear_config([:mrf_keyword, :replace], [{"opensource", "free software"}])
+
+      message = %{
+        "type" => "Create",
+        "to" => "https://www.w3.org/ns/activitystreams#Public",
+        "object" => %{
+          "content" => %{"en" => "ZFS is opensource"},
+          "summary" => nil,
+          "name" => "opensource name"
+        }
+      }
+
+      {:ok, result} = KeywordPolicy.filter(message)
+
+      assert result["object"]["content"] == %{"en" => "ZFS is opensource"}
+      assert result["object"]["name"] == "free software name"
+    end
   end
 end

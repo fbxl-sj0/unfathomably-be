@@ -34,6 +34,11 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
     test "returns true when the activity is public" do
       assert Publisher.should_federate?(false, true)
     end
+
+    test "returns false for malformed non-public inboxes" do
+      refute Publisher.should_federate?(false, false)
+      refute Publisher.should_federate?("https://%", false)
+    end
   end
 
   describe "gather_webfinger_links/1" do
@@ -216,17 +221,117 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       refute called(Instances.set_reachable(inbox))
     end
 
-    test_with_mock "calls `Instances.set_unreachable` on target inbox on non-2xx HTTP response code",
+    test_with_mock "does NOT call `Instances.set_unreachable` on terminal delivery response codes",
                    Instances,
                    [:passthrough],
                    [] do
       actor = insert(:user)
-      inbox = "http://404.site/users/nick1/inbox"
+      inbox = "http://terminal-400.site/users/nick1/inbox"
+
+      mock(fn
+        %{method: :post, url: ^inbox} ->
+          {:ok, %Tesla.Env{status: 400, body: "terminal"}}
+      end)
 
       assert capture_log(fn ->
-               assert {:discard, :not_found} =
+               assert {:discard, :bad_request} =
                         Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 1})
-             end) =~ "404"
+             end) =~ "400"
+
+      refute called(Instances.set_unreachable(inbox))
+    end
+
+    test "discards terminal delivery responses instead of retrying them" do
+      actor = insert(:user)
+
+      terminal_responses = [
+        {400, :bad_request},
+        {403, :forbidden},
+        {404, :not_found},
+        {405, :method_not_allowed},
+        {406, :not_acceptable},
+        {410, :gone},
+        {501, :not_implemented}
+      ]
+
+      Enum.each(terminal_responses, fn {status, reason} ->
+        inbox = "http://terminal-#{status}.site/users/nick1/inbox"
+
+        mock(fn
+          %{method: :post, url: ^inbox} ->
+            {:ok, %Tesla.Env{status: status, body: "terminal"}}
+        end)
+
+        assert {:discard, ^reason} =
+                 Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: status})
+      end)
+    end
+
+    test "discards malformed inboxes instead of retrying them" do
+      actor = insert(:user)
+
+      assert {:discard, :bad_request} =
+               Publisher.publish_one(%{
+                 inbox: "https://%",
+                 json: "{}",
+                 actor: actor,
+                 id: "https://local.example/activities/malformed-inbox"
+               })
+    end
+
+    test "discards malformed delivery params instead of retrying them" do
+      actor = insert(:user)
+
+      assert {:discard, :bad_request} =
+               Publisher.publish_one(%{
+                 inbox: "https://remote.example/inbox",
+                 json: %{"not" => "encoded"},
+                 actor: actor,
+                 id: "https://local.example/activities/malformed-json"
+               })
+
+      assert {:discard, :bad_request} =
+               Publisher.publish_one(%{
+                 inbox: "https://remote.example/inbox",
+                 json: "{}",
+                 actor: nil,
+                 id: "https://local.example/activities/missing-actor"
+               })
+
+      assert {:discard, :bad_request} =
+               Publisher.publish_one(%{
+                 inbox: "https://remote.example/inbox",
+                 json: "{}"
+               })
+    end
+
+    test "keeps retrying non-terminal delivery responses" do
+      actor = insert(:user)
+      inbox = "http://temporary-failure.site/users/nick1/inbox"
+
+      mock(fn
+        %{method: :post, url: ^inbox} ->
+          {:ok, %Tesla.Env{status: 502, body: "temporary"}}
+      end)
+
+      assert {:error, %Tesla.Env{status: 502}} =
+               Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 502})
+    end
+
+    test_with_mock "marks the target unreachable on non-terminal delivery response codes",
+                   Instances,
+                   [:passthrough],
+                   [] do
+      actor = insert(:user)
+      inbox = "http://temporary-failure.site/users/nick1/inbox"
+
+      mock(fn
+        %{method: :post, url: ^inbox} ->
+          {:ok, %Tesla.Env{status: 502, body: "temporary"}}
+      end)
+
+      assert {:error, %Tesla.Env{status: 502}} =
+               Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 502})
 
       assert called(Instances.set_unreachable(inbox))
     end
@@ -258,7 +363,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       refute called(Instances.set_unreachable(inbox))
     end
 
-    test_with_mock "does NOT call `Instances.set_unreachable` if target instance has non-nil `unreachable_since`",
+    test_with_mock "discards request errors for already unreachable target instances",
                    Instances,
                    [:passthrough],
                    [] do
@@ -266,7 +371,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       inbox = "http://connrefused.site/users/nick1/inbox"
 
       assert capture_log(fn ->
-               assert {:error, _} =
+               assert {:discard, :unreachable_host} =
                         Publisher.publish_one(%{
                           inbox: inbox,
                           json: "{}",

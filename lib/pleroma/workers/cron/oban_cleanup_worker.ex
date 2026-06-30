@@ -24,6 +24,40 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
   @stale_event_reminder_seconds 24 * 60 * 60
   @stale_cleanup_retry_seconds 24 * 60 * 60
   @stale_federator_retry_seconds 30 * 24 * 60 * 60
+  @incoming_workers [
+    "Pleroma.Workers.ReceiverWorker",
+    "Pleroma.Workers.SignatureRetryWorker"
+  ]
+  @stale_federator_workers @incoming_workers ++ ["Pleroma.Workers.PublisherWorker"]
+  @terminal_publisher_status_pattern "status[^0-9]*(400|403|404|405|406|410|501)"
+  @terminal_incoming_status_pattern "http[^0-9]*(400|401|403|404|405|406|410|501)"
+  @terminal_remote_fetch_status_pattern "http[^0-9]*(400|403|404|405|406|410|501)"
+  @fixed_federation_error_patterns [
+    "%activities_unique_apid_index%",
+    "%objects_unique_apid_index%",
+    "%users_ap_id_index%",
+    "%side_effects.ex:325%",
+    "%common_fixes.ex:89%",
+    "%Object.Containment.get_actor%",
+    "%don't know how to handle\", nil%",
+    "%emoji_react_validator.ex:66%",
+    "%utils.ex:476%",
+    "%web/federator.ex:103%"
+  ]
+  @fixed_remote_fetch_error_patterns [
+    "%objects_unique_apid_index%",
+    "%Object has been deleted%",
+    "%actor_not_found%",
+    "%object_not_found%",
+    "%errors: [likes:%",
+    "%errors: [announcements:%",
+    "%Unsupported URI scheme%",
+    "%unsupported_uri_scheme%",
+    "%id must be a string%",
+    "%invalid_id%",
+    "%terminal_status%",
+    "%unreachable_host%"
+  ]
   @cleanup_workers [
     "Pleroma.Workers.Cron.GroupDiscussionCleanupWorker",
     "Pleroma.Workers.Cron.RemotePostCleanupWorker"
@@ -35,13 +69,20 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     discarded_stale_event_reminders = discard_stale_event_reminders()
     discarded_stale_cleanup_retries = discard_stale_cleanup_retries()
     discarded_stale_federator_retries = discard_stale_federator_retries()
+    discarded_terminal_publisher_retries = discard_terminal_publisher_retries()
+    discarded_unreachable_publisher_jobs = discard_unreachable_publisher_jobs()
+    discarded_fixed_federation_exception_retries = discard_fixed_federation_exception_retries()
 
     {:ok,
      %{
        deleted_far_future_poll_notifications: deleted_far_future_polls,
        discarded_stale_event_reminders: discarded_stale_event_reminders,
        discarded_stale_cleanup_retries: discarded_stale_cleanup_retries,
-       discarded_stale_federator_retries: discarded_stale_federator_retries
+       discarded_stale_federator_retries: discarded_stale_federator_retries,
+       discarded_terminal_publisher_retries: discarded_terminal_publisher_retries,
+       discarded_unreachable_publisher_jobs: discarded_unreachable_publisher_jobs,
+       discarded_fixed_federation_exception_retries:
+         discarded_fixed_federation_exception_retries
      }}
   end
 
@@ -89,12 +130,71 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     discard_jobs(
       Oban.Job
       |> where([job], job.queue in ["federator_incoming", "federator_outgoing"])
-      |> where(
-        [job],
-        job.worker in ["Pleroma.Workers.ReceiverWorker", "Pleroma.Workers.PublisherWorker"]
-      )
+      |> where([job], job.worker in ^@stale_federator_workers)
       |> where([job], job.state == "retryable")
       |> where([job], job.inserted_at < ^stale_before)
+    )
+  end
+
+  def discard_terminal_publisher_retries do
+    discard_jobs(
+      Oban.Job
+      |> where([job], job.queue == "federator_outgoing")
+      |> where([job], job.worker == "Pleroma.Workers.PublisherWorker")
+      |> where([job], job.state == "retryable")
+      |> where([job], fragment("?::text ~ ?", job.errors, ^@terminal_publisher_status_pattern))
+    )
+  end
+
+  def discard_fixed_federation_exception_retries do
+    discard_fixed_receiver_retries() + discard_fixed_remote_fetch_retries()
+  end
+
+  defp discard_fixed_receiver_retries do
+    discard_jobs(
+      Oban.Job
+      |> where([job], job.queue == "federator_incoming")
+      |> where([job], job.worker in ^@incoming_workers)
+      |> where([job], job.state == "retryable")
+      |> where(
+        [job],
+        fragment("?::text ILIKE ANY(?)", job.errors, ^@fixed_federation_error_patterns) or
+          fragment("?::text ~ ?", job.errors, ^@terminal_incoming_status_pattern)
+      )
+    )
+  end
+
+  defp discard_fixed_remote_fetch_retries do
+    discard_jobs(
+      Oban.Job
+      |> where([job], job.queue == "remote_fetcher")
+      |> where([job], job.worker == "Pleroma.Workers.RemoteFetcherWorker")
+      |> where([job], job.state == "retryable")
+      |> where(
+        [job],
+        fragment("?::text ILIKE ANY(?)", job.errors, ^@fixed_remote_fetch_error_patterns) or
+          fragment("?::text ~ ?", job.errors, ^@terminal_remote_fetch_status_pattern)
+      )
+    )
+  end
+
+  def discard_unreachable_publisher_jobs do
+    discard_jobs(
+      Oban.Job
+      |> join(:inner, [job], instance in Pleroma.Instances.Instance,
+        on:
+          fragment(
+            "lower(?) = ap_id_host(coalesce(? #>> '{params,inbox}', ?->>'inbox'))",
+            instance.host,
+            job.args,
+            job.args
+          )
+      )
+      |> where([job, _instance], job.queue == "federator_outgoing")
+      |> where([job, _instance], job.worker == "Pleroma.Workers.PublisherWorker")
+      |> where([job, _instance], job.state in ["available", "scheduled", "retryable"])
+      |> where([job, _instance], job.args["op"] == "publish_one")
+      |> where([_job, instance], not is_nil(instance.unreachable_since))
     )
   end
 

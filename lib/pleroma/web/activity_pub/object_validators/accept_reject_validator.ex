@@ -60,7 +60,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
   end
 
   defp validate_actor(%Activity{data: %{"type" => "Join", "object" => joined_event}}, actor) do
-    %Object{data: %{"actor" => event_author}} = Object.get_cached_by_ap_id(joined_event)
-    event_author == actor
+    with %Object{data: %{"actor" => event_author}} <- Object.get_cached_by_ap_id(joined_event) do
+      event_author == actor
+    else
+      _ -> false
+    end
   end
+
+  defp validate_actor(_, _), do: false
 end

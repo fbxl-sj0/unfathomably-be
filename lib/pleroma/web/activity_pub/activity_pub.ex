@@ -11,6 +11,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   alias Pleroma.Conversation.Participation
   alias Pleroma.Filter
   alias Pleroma.Hashtag
+  alias Pleroma.Instances
   alias Pleroma.Maps
   alias Pleroma.Object
   alias Pleroma.Object.Containment
@@ -63,7 +64,11 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     bcc = recipient_values(data, "bcc")
     audience = recipient_values(data, "audience")
     nested_recipients = nested_object_recipient_values(data)
-    recipients = Enum.concat([to, cc, bcc, audience, nested_recipients])
+    recipients =
+      [to, cc, bcc, audience, nested_recipients]
+      |> Enum.concat()
+      |> Enum.uniq()
+
     {recipients, to, cc}
   end
 
@@ -167,16 +172,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   def persist(object, meta) do
     with local <- Keyword.fetch!(meta, :local),
          {recipients, _, _} <- get_recipients(object),
-         {:ok, activity} <-
-           Repo.insert(%Activity{
-             data: object,
-             local: local,
-             recipients: recipients,
-             actor: object["actor"]
-           }),
-         # Expiration creation stays here so non-object activities keep the same
-         # behavior as the older insertion path.
-         {:ok, _} <- maybe_create_activity_expiration(activity) do
+         {:ok, activity} <- insert_activity_with_expiration(object, local, recipients) do
       {:ok, activity, meta}
     end
   end
@@ -237,16 +233,57 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp insert_activity_with_expiration(data, local, recipients) do
     struct = %Activity{
-      data: data,
       local: local,
-      actor: data["actor"],
-      recipients: recipients
+      actor: data["actor"]
     }
 
-    with {:ok, activity} <- Repo.insert(struct) do
-      maybe_create_activity_expiration(activity)
+    changeset = Activity.change(struct, %{data: data, recipients: recipients})
+
+    case Repo.insert(changeset) do
+      {:ok, activity} ->
+        maybe_create_activity_expiration(activity)
+
+      {:error, %Ecto.Changeset{} = changeset} = error ->
+        maybe_return_existing_activity(data["id"], changeset, error)
+
+      error ->
+        error
+    end
+  rescue
+    e in Ecto.ConstraintError ->
+      maybe_return_existing_activity(data["id"], e, {:error, e})
+  end
+
+  defp maybe_return_existing_activity(ap_id, constraint_error, error) when is_binary(ap_id) do
+    if activity_unique_ap_id_error?(constraint_error) do
+      case Activity.get_by_ap_id(ap_id) do
+        %Activity{} = activity -> {:ok, activity}
+        _ -> error
+      end
+    else
+      error
     end
   end
+
+  defp maybe_return_existing_activity(_ap_id, _constraint_error, error), do: error
+
+  defp activity_unique_ap_id_error?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {:ap_id, {_message, opts}} ->
+        Keyword.get(opts, :constraint_name) == "activities_unique_apid_index" or
+          Keyword.get(opts, :constraint) == :unique
+
+      _ ->
+        false
+    end)
+  end
+
+  defp activity_unique_ap_id_error?(%Ecto.ConstraintError{
+         constraint: "activities_unique_apid_index"
+       }),
+       do: true
+
+  defp activity_unique_ap_id_error?(_), do: false
 
   def notify_and_stream(activity) do
     NotificationWorker.enqueue("create", %{"activity_id" => activity.id})
@@ -1355,23 +1392,30 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp restrict_muted_reblogs(query, _), do: query
 
   defp restrict_instance(query, %{instance: instance}) when is_binary(instance) do
-    from(
-      activity in query,
-      where: fragment("split_part(actor::text, '/'::text, 3) = ?", ^instance)
-    )
+    case Pleroma.Instances.host(instance) do
+      host when is_binary(host) ->
+        from(activity in query, where: fragment("ap_id_host(?::text) = ?", activity.actor, ^host))
+
+      _ ->
+        from(activity in query, where: false)
+    end
   end
 
   defp restrict_instance(query, %{instance: instances}) when is_list(instances) do
     instances =
       instances
       |> Enum.filter(&is_binary/1)
-      |> Enum.map(&String.downcase/1)
+      |> Enum.map(&Pleroma.Instances.host/1)
+      |> Enum.filter(&is_binary/1)
       |> Enum.uniq()
 
-    from(
-      activity in query,
-      where: fragment("lower(split_part(actor::text, '/'::text, 3)) = ANY(?)", ^instances)
-    )
+    if instances == [] do
+      from(activity in query, where: false)
+    else
+      from(activity in query,
+        where: fragment("ap_id_host(?::text) = ANY(?)", activity.actor, ^instances)
+      )
+    end
   end
 
   defp restrict_instance(query, _), do: query
@@ -1715,7 +1759,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     with {:ok, data} <- Upload.store(sanitize_upload_file(file), opts) do
       obj_data = Maps.put_if_present(data, "actor", opts[:actor])
 
-      Repo.insert(%Object{data: obj_data})
+      Object.create(obj_data)
     end
   end
 
@@ -2032,7 +2076,19 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     end
   end
 
+  defp follow_collection_info({:error, {:http, status}}, field) when status in [401, 403] do
+    hidden_follow_info(field)
+  end
+
   defp follow_collection_info({:error, reason}, _field), do: {:error, reason}
+
+  defp hidden_follow_info(:following) do
+    {:ok, %{hide_follows: true, following_count: 0}}
+  end
+
+  defp hidden_follow_info(:followers) do
+    {:ok, %{hide_followers: true, follower_count: 0}}
+  end
 
   def maybe_update_follow_information(user_data) do
     with {:enabled, true} <- {:enabled, Config.get([:instance, :external_user_synchronization])},
@@ -2089,9 +2145,23 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
        when type in ["CollectionPage", "OrderedCollectionPage"],
        do: {:ok, false}
 
-  defp collection_private(%{"type" => type, "totalItems" => counter})
-       when type in ["Collection", "OrderedCollection"] and is_integer(counter),
-       do: {:ok, false}
+  defp collection_private(%{"first" => first}) when is_binary(first) do
+    with {:ok, %{"type" => type}} when type in ["CollectionPage", "OrderedCollectionPage"] <-
+           Fetcher.fetch_and_contain_remote_collection_from_id(first) do
+      {:ok, false}
+    else
+      {:error, _} -> {:ok, true}
+      e -> {:error, e}
+    end
+  end
+
+  defp collection_private(%{"type" => type, "totalItems" => counter} = data)
+       when type in ["Collection", "OrderedCollection"] and is_integer(counter) do
+    visible_items? =
+      Map.has_key?(data, "first") or is_list(data["orderedItems"]) or is_list(data["items"])
+
+    {:ok, not visible_items?}
+  end
 
   defp collection_private(%{"first" => first}) do
     with {:ok, %{"type" => type}} when type in ["CollectionPage", "OrderedCollectionPage"] <-
@@ -2197,16 +2267,22 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         "orderedItems" => objects
       })
       when type in @featured_collection_item_types do
-    Map.new(objects, fn
-      %{"id" => object_ap_id} -> {object_ap_id, NaiveDateTime.utc_now()}
-      object_ap_id when is_binary(object_ap_id) -> {object_ap_id, NaiveDateTime.utc_now()}
-    end)
+    objects
+    |> List.wrap()
+    |> Enum.flat_map(&featured_object_ap_ids/1)
+    |> Map.new(&{&1, NaiveDateTime.utc_now()})
   end
 
   def pin_data_from_featured_collection(obj) do
     Logger.warning("Could not parse featured collection #{inspect(obj)}")
     %{}
   end
+
+  defp featured_object_ap_ids(%{"id" => object_ap_id}) when is_binary(object_ap_id),
+    do: [object_ap_id]
+
+  defp featured_object_ap_ids(object_ap_id) when is_binary(object_ap_id), do: [object_ap_id]
+  defp featured_object_ap_ids(_), do: []
 
   def fetch_and_prepare_featured_from_ap_id(nil) do
     {:ok, %{}}
@@ -2310,17 +2386,21 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp unwrap_error({:error, reason}), do: reason
 
-  def enqueue_pin_fetches(%{pinned_objects: pins}) do
+  def enqueue_pin_fetches(%{pinned_objects: pins}) when is_list(pins) or is_map(pins) do
     # enqueue a task to fetch all pinned objects
-    Enum.each(pins, fn {ap_id, _} ->
-      if is_nil(Object.get_cached_by_ap_id(ap_id)) do
-        Pleroma.Workers.RemoteFetcherWorker.new(%{
-          "op" => "fetch_remote",
-          "id" => ap_id,
-          "depth" => 1
-        })
-        |> Oban.insert()
-      end
+    Enum.each(pins, fn
+      {ap_id, _} when is_binary(ap_id) ->
+        if is_nil(Object.get_cached_by_ap_id(ap_id)) and not Instances.dormant?(ap_id) do
+          Pleroma.Workers.RemoteFetcherWorker.new(%{
+            "op" => "fetch_remote",
+            "id" => ap_id,
+            "depth" => 1
+          })
+          |> Oban.insert()
+        end
+
+      _ ->
+        :ok
     end)
   end
 
@@ -2328,16 +2408,23 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   def pinned_fetch_task(nil), do: nil
 
-  def pinned_fetch_task(%{pinned_objects: pins}) do
-    if Enum.all?(pins, fn {ap_id, _} ->
-         Object.get_cached_by_ap_id(ap_id) ||
-           match?({:ok, _object}, Fetcher.fetch_object_from_id(ap_id))
-       end) do
+  def pinned_fetch_task(%{pinned_objects: pins}) when is_list(pins) or is_map(pins) do
+    if Enum.all?(pins, &pinned_object_available?/1) do
       :ok
     else
       :error
     end
   end
+
+  def pinned_fetch_task(%{pinned_objects: _}), do: :ok
+
+  defp pinned_object_available?({ap_id, _}) when is_binary(ap_id) do
+    Object.get_cached_by_ap_id(ap_id) ||
+      Instances.dormant?(ap_id) ||
+      match?({:ok, _object}, Fetcher.fetch_object_from_id(ap_id))
+  end
+
+  defp pinned_object_available?(_), do: true
 
   def make_user_from_ap_id(ap_id, additional \\ []) do
     user = User.get_cached_by_ap_id(ap_id)
@@ -2355,8 +2442,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
           data
           |> User.remote_user_changeset()
-          |> Repo.insert()
-          |> User.set_cache()
+          |> insert_remote_user(data[:ap_id])
         end
 
       {:error, :actor_tombstone} ->
@@ -2366,6 +2452,46 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         error
     end
   end
+
+  defp insert_remote_user(changeset, ap_id) do
+    case Repo.insert(changeset) do
+      {:ok, user} ->
+        User.set_cache(user)
+
+      {:error, %Ecto.Changeset{} = changeset} = error ->
+        maybe_return_existing_remote_user(ap_id, changeset, error)
+    end
+  rescue
+    e in Ecto.ConstraintError ->
+      maybe_return_existing_remote_user(ap_id, e, {:error, e})
+  end
+
+  defp maybe_return_existing_remote_user(ap_id, constraint_error, error) do
+    if user_unique_ap_id_error?(constraint_error) do
+      case User.get_by_ap_id(ap_id) do
+        %User{} = user -> User.set_cache(user)
+        _ -> error
+      end
+    else
+      error
+    end
+  end
+
+  defp user_unique_ap_id_error?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {:ap_id, {_message, opts}} ->
+        Keyword.get(opts, :constraint_name) == "users_ap_id_index" or
+          Keyword.get(opts, :constraint) == :unique
+
+      _ ->
+        false
+    end)
+  end
+
+  defp user_unique_ap_id_error?(%Ecto.ConstraintError{constraint: "users_ap_id_index"}),
+    do: true
+
+  defp user_unique_ap_id_error?(_), do: false
 
   defp handle_tombstone_user_fetch(%User{local: false} = user),
     do: User.set_remote_deactivated(user)

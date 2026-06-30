@@ -361,6 +361,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       ],
       application: nil,
       language: nil,
+      group: nil,
       emojis: [
         %{
           shortcode: "2hu",
@@ -389,6 +390,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
         pinned_at: nil,
         content_type: nil,
         quotes_count: 0,
+        comments_enabled: true,
         event: nil,
         bookmark_folder: nil
       }

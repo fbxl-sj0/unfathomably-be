@@ -57,7 +57,7 @@ defmodule Pleroma.User.Query do
             internal: boolean(),
             followers: User.t(),
             friends: User.t(),
-            recipients_from_activity: [String.t()],
+            recipients_from_activity: term(),
             nickname: [String.t()] | String.t(),
             ap_id: [String.t()],
             order_by: term(),
@@ -257,6 +257,8 @@ defmodule Pleroma.User.Query do
   end
 
   defp compose_query({:recipients_from_activity, to}, query) do
+    to = recipient_ap_ids(to)
+
     following_query =
       from(u in User,
         join: f in FollowingRelationship,
@@ -313,18 +315,24 @@ defmodule Pleroma.User.Query do
 
   defp compose_query(_unsupported_param, query), do: query
 
+  defp recipient_ap_ids(recipients) when is_list(recipients) do
+    recipients
+    |> Enum.flat_map(&recipient_ap_ids/1)
+    |> Enum.uniq()
+  end
+
+  defp recipient_ap_ids(recipient) when is_binary(recipient), do: [recipient]
+  defp recipient_ap_ids(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_ap_ids(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_ap_ids(_), do: []
+
   defp without_dormant_remote_users(query) do
     dormant_datetime_threshold = Instances.dormant_datetime_threshold()
 
     query
     |> join(:left, [u], i in Instance,
       as: :dormant_instance,
-      on:
-        fragment("lower(?)", i.host) ==
-          fragment(
-            "lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))",
-            u.ap_id
-          )
+      on: fragment("lower(?) = ap_id_host(?)", i.host, u.ap_id)
     )
     |> where(
       [u, dormant_instance: i],

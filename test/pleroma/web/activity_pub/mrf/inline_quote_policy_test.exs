@@ -109,4 +109,19 @@ defmodule Pleroma.Web.ActivityPub.MRF.InlineQuotePolicyTest do
     {:ok, filtered} = InlineQuotePolicy.filter(activity)
     assert filtered == activity
   end
+
+  test "ignores malformed quote fields without crashing" do
+    activity = %{
+      "type" => "Create",
+      "actor" => "https://gleasonator.com/users/alex",
+      "object" => %{
+        "type" => "Note",
+        "content" => %{"en" => "Nice post"},
+        "quoteUrl" => %{"id" => "https://gleasonator.com/objects/1234"}
+      }
+    }
+
+    {:ok, filtered} = InlineQuotePolicy.filter(activity)
+    assert filtered == activity
+  end
 end

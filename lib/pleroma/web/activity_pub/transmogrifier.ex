@@ -61,19 +61,22 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def fix_summary(object), do: Map.put(object, "summary", "")
 
   def fix_addressing_list(map, field) do
-    addrs = map[field]
+    addrs =
+      map
+      |> Map.get(field)
+      |> List.wrap()
+      |> Enum.map(&addressing_value/1)
+      |> Enum.reject(&is_nil/1)
 
-    cond do
-      is_list(addrs) ->
-        Map.put(map, field, Enum.filter(addrs, &is_binary/1))
-
-      is_binary(addrs) ->
-        Map.put(map, field, [addrs])
-
-      true ->
-        Map.put(map, field, [])
-    end
+    Map.put(map, field, addrs)
   end
+
+  defp addressing_value(%{"href" => value}), do: addressing_value(value)
+  defp addressing_value(%{"id" => value}), do: addressing_value(value)
+  defp addressing_value("Public"), do: Pleroma.Constants.as_public()
+  defp addressing_value("as:Public"), do: Pleroma.Constants.as_public()
+  defp addressing_value(value) when is_binary(value), do: value
+  defp addressing_value(_), do: nil
 
   @doc """
   Bovine compatibility.
@@ -85,7 +88,11 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     Map.put(
       map,
       field,
-      Enum.map(Map.get(map, field), fn
+      map
+      |> Map.get(field, [])
+      |> List.wrap()
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(fn
         "Public" -> Pleroma.Constants.as_public()
         "as:Public" -> Pleroma.Constants.as_public()
         x -> x
@@ -97,7 +104,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def fix_explicit_addressing(%{"directMessage" => true} = object, _follower_collection),
     do: object
 
-  def fix_explicit_addressing(%{"to" => to, "cc" => cc} = object, follower_collection) do
+  def fix_explicit_addressing(%{"to" => to, "cc" => cc} = object, follower_collection)
+      when is_list(to) and is_list(cc) do
     explicit_mentions =
       Utils.determine_explicit_mentions(object) ++
         [Pleroma.Constants.as_public(), follower_collection]
@@ -108,6 +116,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     final_cc =
       (cc ++ explicit_cc)
       |> Enum.filter(& &1)
+      |> Enum.filter(&is_binary/1)
       |> Enum.reject(fn x -> String.ends_with?(x, "/followers") and x != follower_collection end)
       |> Enum.uniq()
 
@@ -116,9 +125,17 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     |> Map.put("cc", final_cc)
   end
 
+  def fix_explicit_addressing(%{"to" => _, "cc" => _} = object, follower_collection) do
+    object
+    |> fix_addressing_list("to")
+    |> fix_addressing_list("cc")
+    |> fix_explicit_addressing(follower_collection)
+  end
+
   # if as:Public is addressed, then make sure the followers collection is also addressed
   # so that the activities will be delivered to local users.
-  def fix_implicit_addressing(%{"to" => to, "cc" => cc} = object, followers_collection) do
+  def fix_implicit_addressing(%{"to" => to, "cc" => cc} = object, followers_collection)
+      when is_list(to) and is_list(cc) and is_binary(followers_collection) do
     recipients = to ++ cc
 
     if followers_collection not in recipients do
@@ -138,6 +155,16 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       object
     end
   end
+
+  def fix_implicit_addressing(%{"to" => to, "cc" => cc} = object, followers_collection)
+      when not is_list(to) or not is_list(cc) do
+    object
+    |> fix_addressing_list("to")
+    |> fix_addressing_list("cc")
+    |> fix_implicit_addressing(followers_collection)
+  end
+
+  def fix_implicit_addressing(object, _followers_collection), do: object
 
   def fix_addressing(object) do
     {:ok, %User{follower_address: follower_collection}} =
@@ -247,7 +274,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   def fix_attachments(%{"attachment" => attachment} = object) when is_list(attachment) do
     attachments =
-      Enum.map(attachment, fn data ->
+      Enum.map(attachment, fn
+        data when is_map(data) ->
         url =
           cond do
             is_list(data["url"]) -> List.first(data["url"])
@@ -298,6 +326,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         else
           nil
         end
+
+        _ ->
+          nil
       end)
       |> Enum.filter(& &1)
 
@@ -334,7 +365,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def fix_emoji(%{"tag" => tags} = object) when is_list(tags) do
     emoji =
       tags
-      |> Enum.filter(fn data -> is_map(data) and data["type"] == "Emoji" and data["icon"] end)
+      |> Enum.filter(&valid_emoji_tag?/1)
       |> Enum.reduce(%{}, fn data, mapping ->
         name = String.trim(data["name"], ":")
 
@@ -344,19 +375,34 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     Map.put(object, "emoji", emoji)
   end
 
-  def fix_emoji(%{"tag" => %{"type" => "Emoji"} = tag} = object) do
-    name = String.trim(tag["name"], ":")
-    emoji = %{name => tag["icon"]["url"]}
+  def fix_emoji(%{"tag" => %{"type" => "Emoji", "name" => raw_name} = tag} = object)
+      when is_binary(raw_name) do
+    name = String.trim(raw_name, ":")
+    emoji =
+      if valid_emoji_tag?(tag) do
+        %{name => tag["icon"]["url"]}
+      else
+        %{}
+      end
 
     Map.put(object, "emoji", emoji)
   end
 
   def fix_emoji(object), do: object
 
+  defp valid_emoji_tag?(%{"type" => "Emoji", "name" => name, "icon" => %{"url" => url}})
+       when is_binary(name) and is_binary(url),
+       do: true
+
+  defp valid_emoji_tag?(_), do: false
+
   def fix_tag(%{"tag" => tag} = object) when is_list(tag) do
     tags =
       tag
-      |> Enum.filter(fn data -> data["type"] == "Hashtag" and data["name"] end)
+      |> Enum.filter(fn
+        %{"type" => "Hashtag", "name" => name} -> is_binary(name)
+        _ -> false
+      end)
       |> Enum.map(fn
         %{"name" => "#" <> hashtag} -> String.downcase(hashtag)
         %{"name" => hashtag} -> String.downcase(hashtag)
@@ -373,17 +419,27 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   def fix_tag(object), do: object
 
+  def fix_content_map(%{"content" => content, "contentMap" => content_map} = object)
+      when not_empty_string(content) and is_map(content_map),
+      do: object
+
+  def fix_content_map(%{"content" => content, "contentMap" => _} = object)
+      when not_empty_string(content),
+      do: Map.drop(object, ["contentMap"])
+
   def fix_content_map(%{"content" => content} = object) when not_empty_string(content), do: object
 
   def fix_content_map(%{"contentMap" => nil} = object), do: Map.drop(object, ["contentMap"])
 
   # content map usually only has one language so this will do for now.
-  def fix_content_map(%{"contentMap" => content_map} = object) do
-    content_groups = Map.to_list(content_map)
-    {_, content} = Enum.at(content_groups, 0)
-
-    Map.put(object, "content", content)
+  def fix_content_map(%{"contentMap" => content_map} = object) when is_map(content_map) do
+    case Map.to_list(content_map) do
+      [{_, content} | _] -> Map.put(object, "content", content)
+      [] -> Map.drop(object, ["contentMap"])
+    end
   end
+
+  def fix_content_map(%{"contentMap" => _} = object), do: Map.drop(object, ["contentMap"])
 
   def fix_content_map(object), do: object
 
@@ -565,11 +621,12 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         options
       )
       when type in [
-             "Create",
-             "Like",
-             "Dislike",
-             "Undo",
-             "Delete",
+              "Create",
+              "Like",
+              "EmojiReact",
+              "Dislike",
+              "Undo",
+              "Delete",
              "Update",
              "Add",
              "Remove",
@@ -654,6 +711,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       {:error, {:validate, _}} = e ->
         # Check if we have a create activity for this
         with {:ok, object_id} <- ObjectValidators.ObjectID.cast(data["object"]),
+             :ok <- Containment.contain_origin(object_id, %{"actor" => data["actor"]}),
              %Activity{data: %{"actor" => actor}} <-
                Activity.create_by_object_ap_id(object_id) |> Repo.one(),
              # We have one, insert a tombstone and retry
@@ -1042,7 +1100,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   def add_hashtags(object) do
     tags =
-      (object["tag"] || [])
+      object
+      |> Map.get("tag", [])
+      |> tag_values()
       |> Enum.map(fn
         # Expand internal representation tags into AS2 tags.
         tag when is_binary(tag) ->
@@ -1060,21 +1120,33 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     Map.put(object, "tag", tags)
   end
 
+  defp tag_values(tags) when is_list(tags) do
+    Enum.filter(tags, &(is_binary(&1) or is_map(&1)))
+  end
+
+  defp tag_values(tag) when is_binary(tag) or is_map(tag), do: [tag]
+  defp tag_values(_), do: []
+
   # Mention tags are generated during outgoing transformation so older stored
   # objects that predate mention tag persistence still federate correctly.
   def add_mention_tags(object) do
-    to = object["to"] || []
-    cc = object["cc"] || []
-
     mentioned =
-      User.get_users_from_set(to ++ cc, local_only: false)
+      [object["to"], object["cc"]]
+      |> Enum.flat_map(&ap_id_values/1)
+      |> User.get_users_from_set(local_only: false)
       |> Enum.reject(&Addressing.suppress_implicit_mention_user?(&1, object))
 
     mentions = Enum.map(mentioned, &build_mention_tag/1)
 
-    tags = object["tag"] || []
+    tags = tag_values(object["tag"])
     Map.put(object, "tag", tags ++ mentions)
   end
+
+  defp ap_id_values(values) when is_list(values), do: Enum.flat_map(values, &ap_id_values/1)
+  defp ap_id_values(value) when is_binary(value), do: [value]
+  defp ap_id_values(%{"id" => value}) when is_binary(value), do: [value]
+  defp ap_id_values(%{"href" => value}) when is_binary(value), do: [value]
+  defp ap_id_values(_), do: []
 
   defp build_mention_tag(%{ap_id: ap_id, nickname: nickname} = _) do
     %{"type" => "Mention", "href" => ap_id, "name" => "@#{nickname}"}
@@ -1089,14 +1161,32 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   # Emoji tags use the stable timestamp supplied by Pleroma.Emoji.build_emoji_tag/1
   # because custom emoji packs do not consistently expose per-file mtimes.
   def add_emoji_tags(%{"emoji" => emoji} = object) do
-    tags = object["tag"] || []
+    tags = tag_values(object["tag"])
 
-    out = Enum.map(emoji, &Pleroma.Emoji.build_emoji_tag/1)
+    out =
+      emoji
+      |> emoji_values()
+      |> Enum.map(&Pleroma.Emoji.build_emoji_tag/1)
 
     Map.put(object, "tag", tags ++ out)
   end
 
   def add_emoji_tags(object), do: object
+
+  defp emoji_values(emoji) when is_map(emoji) do
+    emoji
+    |> Map.to_list()
+    |> emoji_values()
+  end
+
+  defp emoji_values(emoji) when is_list(emoji) do
+    Enum.filter(emoji, fn
+      {name, url} when is_binary(name) and is_binary(url) -> true
+      _ -> false
+    end)
+  end
+
+  defp emoji_values(_), do: []
 
   def set_conversation(object) do
     Map.put(object, "conversation", object["context"])
@@ -1108,10 +1198,20 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   def set_type(object), do: object
 
-  def add_attributed_to(object) do
-    attributed_to = object["attributedTo"] || object["actor"]
-    Map.put(object, "attributedTo", attributed_to)
+  def add_attributed_to(%{"actor" => actor} = object) when is_binary(actor) do
+    object
+    |> Map.put("actor", actor)
+    |> Map.put("attributedTo", object["attributedTo"] || actor)
   end
+
+  def add_attributed_to(%{"attributedTo" => attributed_to} = object)
+      when is_binary(attributed_to) do
+    object
+    |> Map.put("actor", attributed_to)
+    |> Map.put("attributedTo", attributed_to)
+  end
+
+  def add_attributed_to(object), do: object
 
   # ChatMessage attachments already use their client-facing shape and should not
   # be flattened like status attachments.
@@ -1121,22 +1221,27 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     attachments =
       object
       |> Map.get("attachment", [])
-      |> Enum.map(fn data ->
-        [%{"mediaType" => media_type, "href" => href} = url | _] = data["url"]
-
-        %{
-          "url" => href,
-          "mediaType" => media_type,
-          "name" => data["name"],
-          "type" => "Document"
-        }
-        |> Maps.put_if_present("width", url["width"])
-        |> Maps.put_if_present("height", url["height"])
-        |> Maps.put_if_present("blurhash", data["blurhash"])
-      end)
+      |> List.wrap()
+      |> Enum.map(&prepare_attachment/1)
+      |> Enum.reject(&is_nil/1)
 
     Map.put(object, "attachment", attachments)
   end
+
+  defp prepare_attachment(%{"url" => [%{"mediaType" => media_type, "href" => href} = url | _]} = data)
+       when is_binary(media_type) and is_binary(href) do
+    %{
+      "url" => href,
+      "mediaType" => media_type,
+      "name" => data["name"],
+      "type" => "Document"
+    }
+    |> Maps.put_if_present("width", url["width"])
+    |> Maps.put_if_present("height", url["height"])
+    |> Maps.put_if_present("blurhash", data["blurhash"])
+  end
+
+  defp prepare_attachment(_), do: nil
 
   def strip_internal_fields(object) do
     Map.drop(object, Pleroma.Constants.object_internal_fields())
@@ -1220,7 +1325,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   defp get_language_from_context(_), do: nil
 
-  defp get_language_from_content_map(%{"contentMap" => content_map, "content" => source_content}) do
+  defp get_language_from_content_map(%{"contentMap" => content_map, "content" => source_content})
+       when is_map(content_map) do
     content_groups = Map.to_list(content_map)
 
     case Enum.find(content_groups, fn {_, content} -> content == source_content end) do

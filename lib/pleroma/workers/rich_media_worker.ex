@@ -9,11 +9,13 @@ defmodule Pleroma.Workers.RichMediaWorker do
   use Oban.Worker, queue: :background, max_attempts: 3, unique: [period: 300]
 
   @impl Oban.Worker
-  def perform(%Job{args: %{"op" => "expire", "url" => url} = _args}) do
+  def perform(%Job{args: %{"op" => "expire", "url" => url} = _args}) when is_binary(url) do
     Card.delete(url)
   end
 
-  def perform(%Job{args: %{"op" => "backfill", "url" => _url} = args}) do
+  def perform(%Job{args: %{"op" => "backfill", "url" => url} = args}) when is_binary(url) do
     Backfill.run(args)
   end
+
+  def perform(%Job{}), do: :discard
 end

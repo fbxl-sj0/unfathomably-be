@@ -296,7 +296,11 @@ defmodule Pleroma.GroupMembership do
       nil ->
         %__MODULE__{}
         |> changeset(attrs)
-        |> Repo.insert()
+        |> Repo.insert(
+          on_conflict: {:replace_all_except, [:id, :inserted_at]},
+          conflict_target: [:group_id, :account_id],
+          returning: true
+        )
         |> preload_membership()
     end
   end

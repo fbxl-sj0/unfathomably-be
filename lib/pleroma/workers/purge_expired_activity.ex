@@ -13,6 +13,8 @@ defmodule Pleroma.Workers.PurgeExpiredActivity do
 
   alias Pleroma.Activity
 
+  defguardp valid_job_id(id) when (is_binary(id) and byte_size(id) > 0) or is_integer(id)
+
   @spec enqueue(map()) ::
           {:ok, Oban.Job.t()}
           | {:error, :expired_activities_disabled}
@@ -28,12 +30,16 @@ defmodule Pleroma.Workers.PurgeExpiredActivity do
   end
 
   @impl true
-  def perform(%Oban.Job{args: %{"activity_id" => id}}) do
+  def perform(%Oban.Job{args: %{"activity_id" => id}}) when valid_job_id(id) do
     with %Activity{} = activity <- find_activity(id),
          %Pleroma.User{} = user <- find_user(activity.object.data["actor"]) do
       Pleroma.Web.CommonAPI.delete(activity.id, user)
+    else
+      {:error, reason} -> {:cancel, reason}
     end
   end
+
+  def perform(%Oban.Job{}), do: :discard
 
   @impl Oban.Worker
   def timeout(_job), do: :timer.seconds(5)
@@ -48,12 +54,16 @@ defmodule Pleroma.Workers.PurgeExpiredActivity do
     with nil <- Activity.get_by_id_with_object(id) do
       {:error, :activity_not_found}
     end
+  rescue
+    _ -> {:error, :activity_not_found}
   end
 
   defp find_user(ap_id) do
     with nil <- Pleroma.User.get_by_ap_id(ap_id) do
       {:error, :user_not_found}
     end
+  rescue
+    _ -> {:error, :user_not_found}
   end
 
   def get_expiration(id) do

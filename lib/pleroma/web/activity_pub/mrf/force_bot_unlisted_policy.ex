@@ -25,7 +25,9 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceBotUnlistedPolicy do
         } = activity
       ) do
     user = User.get_cached_by_ap_id(actor)
-    isbot = check_if_bot(user)
+    to = recipient_list(to)
+    cc = recipient_list(cc)
+    isbot = match?(%User{}, user) and check_if_bot(user)
 
     if isbot and Enum.member?(to, Pleroma.Constants.as_public()) do
       to = List.delete(to, Pleroma.Constants.as_public()) ++ [user.follower_address]
@@ -50,6 +52,12 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceBotUnlistedPolicy do
 
   @impl true
   def filter(activity), do: {:ok, activity}
+
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
 
   @impl true
   def describe, do: {:ok, %{}}

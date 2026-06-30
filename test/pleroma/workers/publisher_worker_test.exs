@@ -10,11 +10,18 @@ defmodule Pleroma.Workers.PublisherWorkerTest do
 
   alias Pleroma.Instances
   alias Pleroma.Object
+  alias Pleroma.Repo
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.Federator
   alias Pleroma.Workers.PublisherWorker
+
+  describe "backoff/1" do
+    test "caps publisher retry delays at one day" do
+      assert PublisherWorker.backoff(%Oban.Job{attempt: 1_000}) == 24 * 60 * 60
+    end
+  end
 
   describe "Oban job priority:" do
     setup do
@@ -59,6 +66,15 @@ defmodule Pleroma.Workers.PublisherWorkerTest do
       assert {:ok, %Oban.Job{args: %{"activity_data" => %{"object" => %{"type" => "Like"}}}}} =
                Federator.publish(activity)
     end
+
+    test "cancels publish jobs for missing activities" do
+      activity = insert(:note_activity)
+      {:ok, _activity} = Repo.delete(activity)
+
+      job = %Oban.Job{args: %{"op" => "publish", "activity_id" => activity.id}}
+
+      assert {:cancel, :activity_not_found} = PublisherWorker.perform(job)
+    end
   end
 
   describe "dormant instance delivery" do
@@ -78,6 +94,38 @@ defmodule Pleroma.Workers.PublisherWorkerTest do
       }
 
       assert {:cancel, :dormant_instance} = PublisherWorker.perform(job)
+    end
+
+    test "cancels publish_one jobs with unknown modules without creating atoms" do
+      job = %Oban.Job{
+        args: %{
+          "op" => "publish_one",
+          "module" => "Elixir.Pleroma.Does.Not.Exist",
+          "params" => %{"inbox" => "https://example.com/inbox"}
+        }
+      }
+
+      assert {:cancel, :unknown_atom} = PublisherWorker.perform(job)
+    end
+
+    test "cancels publish_one jobs with malformed params" do
+      job = %Oban.Job{
+        args: %{
+          "op" => "publish_one",
+          "module" => "Elixir.Pleroma.Web.ActivityPub.Publisher",
+          "params" => %{"totally_unknown_param" => "value"}
+        }
+      }
+
+      assert {:cancel, :unknown_param} = PublisherWorker.perform(job)
+    end
+
+    test "cancels malformed publisher jobs" do
+      assert {:cancel, :invalid_params} =
+               PublisherWorker.perform(%Oban.Job{args: %{"op" => "publish_one"}})
+
+      assert {:cancel, :invalid_params} =
+               PublisherWorker.perform(%Oban.Job{args: %{"op" => "unknown"}})
     end
   end
 end

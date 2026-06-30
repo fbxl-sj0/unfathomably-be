@@ -13,14 +13,21 @@ defmodule Pleroma.Workers.PollWorker do
   alias Pleroma.Notification
   alias Pleroma.Object
 
+  defguardp valid_job_id(id) when (is_binary(id) and byte_size(id) > 0) or is_integer(id)
+
   @default_max_poll_schedule_seconds 365 * 24 * 60 * 60
 
   @impl Oban.Worker
-  def perform(%Job{args: %{"op" => "poll_end", "activity_id" => activity_id}}) do
+  def perform(%Job{args: %{"op" => "poll_end", "activity_id" => activity_id}})
+      when valid_job_id(activity_id) do
     with %Activity{} = activity <- find_poll_activity(activity_id) do
       Notification.create_poll_notifications(activity)
+    else
+      {:error, :poll_activity_not_found} -> {:cancel, :poll_activity_not_found}
     end
   end
+
+  def perform(%Job{}), do: :discard
 
   @impl Oban.Worker
   def timeout(_job), do: :timer.seconds(5)
@@ -29,6 +36,8 @@ defmodule Pleroma.Workers.PollWorker do
     with nil <- Activity.get_by_id(activity_id) do
       {:error, :poll_activity_not_found}
     end
+  rescue
+    _ -> {:error, :poll_activity_not_found}
   end
 
   def schedule_poll_end(%Activity{data: %{"type" => "Create"}, id: activity_id} = activity) do

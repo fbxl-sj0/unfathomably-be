@@ -12,6 +12,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AnnounceHandlingTest do
 
   import Pleroma.Factory
 
+  require Pleroma.Constants
+
   test "it works for incoming honk announces" do
     user = insert(:user, ap_id: "https://honktest/u/test", local: false)
     other_user = insert(:user)
@@ -157,6 +159,42 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AnnounceHandlingTest do
     assert object.data["type"] == "Tombstone"
   end
 
+  @tag capture_log: true
+  test "it rejects announces wrapping malformed activities without raising" do
+    actor =
+      insert(:user,
+        local: false,
+        ap_id: "https://malformed-announce.example/u/alice",
+        follower_address: "https://malformed-announce.example/u/alice/followers"
+      )
+
+    group =
+      insert(:user,
+        local: false,
+        actor_type: "Group",
+        ap_id: "https://malformed-announce.example/c/main",
+        follower_address: "https://malformed-announce.example/c/main/followers"
+      )
+
+    announce = %{
+      "id" => "https://malformed-announce.example/activities/announce/1",
+      "actor" => group.ap_id,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "type" => "Announce",
+      "object" => %{
+        "id" => "https://malformed-announce.example/activities/like/1",
+        "actor" => actor.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [group.follower_address],
+        "object" => %{"type" => "Note", "content" => "missing id"},
+        "type" => "Like"
+      }
+    }
+
+    assert {:error, _} = Transmogrifier.handle_incoming(announce)
+  end
+
   test "it handles threadiverse announces of create activities" do
     actor = insert(:user, local: false, ap_id: "http://piefed.example/u/admin")
 
@@ -249,7 +287,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AnnounceHandlingTest do
           "to" => [group.ap_id, Pleroma.Constants.as_public()],
           "cc" => [author.follower_address],
           "content" => "<p>old body</p>",
-          "context" => "https://mbin.example/m/main/p/1/context"
+          "context" => "https://mbin.example/m/main/p/1/context",
+          "published" => "2026-06-23T00:00:00Z"
         }
       )
 

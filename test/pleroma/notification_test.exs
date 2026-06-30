@@ -964,7 +964,7 @@ defmodule Pleroma.NotificationTest do
 
       {enabled_receivers, _disabled_receivers} = Notification.get_notified_from_activity(activity)
 
-      assert user in enabled_receivers
+      assert Enum.any?(enabled_receivers, &(&1.id == user.id))
     end
 
     test "it does not send notification to mentioned users in likes" do

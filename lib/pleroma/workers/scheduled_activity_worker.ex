@@ -15,8 +15,10 @@ defmodule Pleroma.Workers.ScheduledActivityWorker do
 
   require Logger
 
+  defguardp valid_job_id(id) when (is_binary(id) and byte_size(id) > 0) or is_integer(id)
+
   @impl Oban.Worker
-  def perform(%Job{args: %{"activity_id" => activity_id}}) do
+  def perform(%Job{args: %{"activity_id" => activity_id}}) when valid_job_id(activity_id) do
     with %ScheduledActivity{} = scheduled_activity <- find_scheduled_activity(activity_id),
          %User{} = user <- find_user(scheduled_activity.user_id) do
       params = atomize_keys(scheduled_activity.params)
@@ -27,15 +29,17 @@ defmodule Pleroma.Workers.ScheduledActivityWorker do
         activity
       end)
     else
-      {:error, :scheduled_activity_not_found} = error ->
+      {:error, :scheduled_activity_not_found} ->
         Logger.error("#{__MODULE__} Couldn't find scheduled activity: #{activity_id}")
-        error
+        {:cancel, :scheduled_activity_not_found}
 
-      {:error, :user_not_found} = error ->
+      {:error, :user_not_found} ->
         Logger.error("#{__MODULE__} Couldn't find user for scheduled activity: #{activity_id}")
-        error
+        {:cancel, :user_not_found}
     end
   end
+
+  def perform(%Job{}), do: :discard
 
   @impl Oban.Worker
   def timeout(_job), do: :timer.seconds(5)
@@ -44,12 +48,16 @@ defmodule Pleroma.Workers.ScheduledActivityWorker do
     with nil <- Repo.get(ScheduledActivity, id) do
       {:error, :scheduled_activity_not_found}
     end
+  rescue
+    _ -> {:error, :scheduled_activity_not_found}
   end
 
   defp find_user(id) do
     with nil <- User.get_cached_by_id(id) do
       {:error, :user_not_found}
     end
+  rescue
+    _ -> {:error, :user_not_found}
   end
 
   defp atomize_keys(map) do

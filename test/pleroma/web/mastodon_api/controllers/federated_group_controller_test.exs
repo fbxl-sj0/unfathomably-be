@@ -1,17 +1,21 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
   use Pleroma.Web.ConnCase
+
+  require Pleroma.Constants
 
   alias Pleroma.GroupMembership
   alias Pleroma.Instances
   alias Pleroma.Notification
   alias Pleroma.User
   alias Pleroma.Web.CommonAPI
+  alias Pleroma.Web.FederatedTarget
 
   import Pleroma.Factory
+  import Mock
 
   setup do
     Mox.stub_with(Pleroma.UnstubbedConfigMock, Pleroma.Config)
@@ -276,8 +280,10 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
       webfinger_url =
         "https://wordpress.example/.well-known/webfinger?resource=acct%3Ablog%40wordpress.example"
 
+      decoded_webfinger_url = URI.decode(webfinger_url)
+
       Tesla.Mock.mock(fn
-        %{method: :get, url: ^webfinger_url} ->
+        %{method: :get, url: url} when url in [webfinger_url, decoded_webfinger_url] ->
           %Tesla.Env{
             status: 200,
             body:
@@ -332,7 +338,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
 
     test "returns an empty successful preview for local groups", %{conn: conn, user: owner} do
       {:ok, group} =
-        Pleroma.Web.FederatedTarget.create_local_group(owner, %{
+        FederatedTarget.create_local_group(owner, %{
           "display_name" => "Local Preview Group"
         })
 
@@ -340,6 +346,25 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                conn
                |> get("/api/v1/groups/#{group.id}/preview")
                |> json_response(200)
+    end
+
+    test "local group creation returns a clean duplicate error if nickname selection races", %{
+      user: owner
+    } do
+      insert(:user, nickname: "race_group")
+
+      with_mock User,
+        [:passthrough],
+        get_cached_by_nickname: fn
+          "race_group" -> nil
+          nickname -> passthrough([nickname])
+        end do
+        assert {:error, :already_exists} =
+                 FederatedTarget.create_local_group(owner, %{
+                   "display_name" => "Race Group",
+                   "slug" => "race_group"
+                 })
+      end
     end
   end
 

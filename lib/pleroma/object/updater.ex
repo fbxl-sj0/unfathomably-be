@@ -111,8 +111,8 @@ defmodule Pleroma.Object.Updater do
     with true <- to_be_updated["type"] == "Question",
          key when not is_nil(key) <- choice_key.(updated_object),
          true <- key == choice_key.(to_be_updated),
-         orig_choices <- to_be_updated[key] |> Enum.map(&Map.drop(&1, ["replies"])),
-         new_choices <- updated_object[key] |> Enum.map(&Map.drop(&1, ["replies"])),
+         {:ok, orig_choices} <- comparable_poll_choices(to_be_updated[key]),
+         {:ok, new_choices} <- comparable_poll_choices(updated_object[key]),
          true <- orig_choices == new_choices do
       # Choices are the same, but counts are different
       to_be_updated
@@ -123,6 +123,19 @@ defmodule Pleroma.Object.Updater do
       _ -> to_be_updated
     end
   end
+
+  defp comparable_poll_choices(choices) when is_list(choices) do
+    choices
+    |> Enum.reduce_while({:ok, []}, fn
+      %{} = choice, {:ok, acc} ->
+        {:cont, {:ok, acc ++ [Map.drop(choice, ["replies"])]}}
+
+      _choice, _acc ->
+        {:halt, :error}
+    end)
+  end
+
+  defp comparable_poll_choices(_), do: :error
 
   # This calculates the data to be sent as the object of an Update.
   # new_data's formerRepresentations is not considered.

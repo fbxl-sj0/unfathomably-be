@@ -118,14 +118,23 @@ defmodule Pleroma.Instances.Instance do
         reachable?
 
       :error ->
-        !Repo.one(
-          from(i in Instance,
-            where:
-              i.host == ^host(url_or_host) and
-                i.unreachable_since <= ^Instances.reachability_datetime_threshold(),
-            select: true
-          )
+        reachable_from_database?(url_or_host)
+    end
+  end
+
+  def reachable?(_), do: true
+
+  defp reachable_from_database?(url_or_host) do
+    with host when is_binary(host) <- host(url_or_host) do
+      not Repo.exists?(
+        from(i in Instance,
+          where:
+            i.host == ^host and
+              i.unreachable_since <= ^Instances.reachability_datetime_threshold()
         )
+      )
+    else
+      _ -> true
     end
   end
 
@@ -144,6 +153,8 @@ defmodule Pleroma.Instances.Instance do
         )
     end
   end
+
+  def dormant?(_), do: false
 
   def any_dormant? do
     case InstanceCache.any_dormant?() do
@@ -265,31 +276,56 @@ defmodule Pleroma.Instances.Instance do
   def set_unreachable(url_or_host, unreachable_since) when is_binary(url_or_host) do
     unreachable_since = parse_datetime(unreachable_since) || NaiveDateTime.utc_now()
     host = host(url_or_host)
-    existing_record = Repo.get_by(Instance, %{host: host})
 
-    changes = %{unreachable_since: unreachable_since}
+    with normalized_host when is_binary(normalized_host) <- host do
+      existing_record = Repo.get_by(Instance, %{host: normalized_host})
+      changes = %{unreachable_since: unreachable_since}
 
-    result =
-      cond do
-        is_nil(existing_record) ->
-          %Instance{}
-          |> changeset(Map.put(changes, :host, host))
-          |> Repo.insert()
+      result =
+        cond do
+          is_nil(existing_record) ->
+            %Instance{}
+            |> changeset(Map.put(changes, :host, normalized_host))
+            |> insert_unreachable(normalized_host, unreachable_since)
 
-        existing_record.unreachable_since &&
-            NaiveDateTime.compare(existing_record.unreachable_since, unreachable_since) != :gt ->
-          {:ok, existing_record}
+          existing_record.unreachable_since &&
+              NaiveDateTime.compare(existing_record.unreachable_since, unreachable_since) != :gt ->
+            {:ok, existing_record}
 
-        true ->
-          existing_record
-          |> changeset(changes)
-          |> Repo.update()
-      end
+          true ->
+            existing_record
+            |> changeset(changes)
+            |> Repo.update()
+        end
 
-    tap_cache_update(result)
+      tap_cache_update(result)
+    else
+      _ -> {:error, nil}
+    end
   end
 
   def set_unreachable(_, _), do: {:error, nil}
+
+  defp insert_unreachable(changeset, host, unreachable_since) do
+    case Repo.insert(changeset) do
+      {:error, %Ecto.Changeset{} = changeset} = error ->
+        if instance_unique_host_error?(changeset) do
+          set_unreachable(host, unreachable_since)
+        else
+          error
+        end
+
+      result ->
+        result
+    end
+  rescue
+    e in Ecto.ConstraintError ->
+      if instance_unique_host_error?(e) do
+        set_unreachable(host, unreachable_since)
+      else
+        reraise e, __STACKTRACE__
+      end
+  end
 
   def get_consistently_unreachable do
     reachability_datetime_threshold = Instances.reachability_datetime_threshold()
@@ -324,6 +360,22 @@ defmodule Pleroma.Instances.Instance do
   end
 
   defp parse_datetime(datetime), do: datetime
+
+  defp instance_unique_host_error?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {:host, {_message, opts}} ->
+        Keyword.get(opts, :constraint_name) == "instances_host_index" or
+          Keyword.get(opts, :constraint) == :unique
+
+      _ ->
+        false
+    end)
+  end
+
+  defp instance_unique_host_error?(%Ecto.ConstraintError{constraint: "instances_host_index"}),
+    do: true
+
+  defp instance_unique_host_error?(_), do: false
 
   defp update_instance_health(url_or_host, opts, fun) when is_function(fun, 2) do
     with host when is_binary(host) <- normalize_host(url_or_host) do
@@ -479,7 +531,7 @@ defmodule Pleroma.Instances.Instance do
 
   defp scrape_favicon(%URI{} = instance_uri) do
     try do
-      with {_, true} <- {:reachable, reachable?(instance_uri.host)},
+      with {_, true} <- {:reachable, reachable_from_database?(instance_uri.host)},
            {:ok, %Tesla.Env{body: html}} <-
              Pleroma.HTTP.get(to_string(instance_uri), [{"accept", "text/html"}], pool: :media),
            {_, [favicon_rel | _]} when is_binary(favicon_rel) <-
@@ -523,7 +575,11 @@ defmodule Pleroma.Instances.Instance do
     if fresh_metadata?(existing_record, now) do
       existing_record.metadata
     else
-      metadata = scrape_metadata(instance_uri)
+      metadata =
+        case scrape_metadata(instance_uri) do
+          nil -> existing_metadata(existing_record)
+          metadata -> metadata
+        end
 
       if existing_record do
         existing_record
@@ -538,6 +594,9 @@ defmodule Pleroma.Instances.Instance do
       metadata
     end
   end
+
+  defp existing_metadata(%Instance{metadata: metadata}), do: metadata
+  defp existing_metadata(_), do: nil
 
   defp fresh_metadata?(%Instance{metadata: metadata, metadata_updated_at: updated_at}, now)
        when not is_nil(updated_at) do
@@ -603,7 +662,7 @@ defmodule Pleroma.Instances.Instance do
 
   defp scrape_metadata(%URI{} = instance_uri) do
     try do
-      with {_, true} <- {:reachable, reachable?(instance_uri.host)},
+      with {_, true} <- {:reachable, reachable_from_database?(instance_uri.host)},
            {:ok, %Tesla.Env{body: well_known_body}} <-
              instance_uri
              |> URI.merge("/.well-known/nodeinfo")

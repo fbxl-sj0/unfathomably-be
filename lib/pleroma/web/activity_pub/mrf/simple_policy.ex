@@ -91,11 +91,13 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
 
     activity =
       with true <- MRF.subdomain_match?(timeline_removal, actor_host),
-           user <- User.get_cached_by_ap_id(activity["actor"]),
-           true <- Pleroma.Constants.as_public() in activity["to"] do
-        to = List.delete(activity["to"], Pleroma.Constants.as_public()) ++ [user.follower_address]
+           %User{} = user <- User.get_cached_by_ap_id(activity["actor"]),
+           to <- recipient_list(activity["to"]),
+           cc <- recipient_list(activity["cc"]),
+           true <- Pleroma.Constants.as_public() in to do
+        to = List.delete(to, Pleroma.Constants.as_public()) ++ [user.follower_address]
 
-        cc = List.delete(activity["cc"], user.follower_address) ++ [Pleroma.Constants.as_public()]
+        cc = List.delete(cc, user.follower_address) ++ [Pleroma.Constants.as_public()]
 
         activity
         |> Map.put("to", to)
@@ -118,10 +120,9 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
 
     activity =
       with true <- MRF.subdomain_match?(followers_only, actor_host),
-           user <- User.get_cached_by_ap_id(activity["actor"]) do
-        # Don't use Map.get/3 intentionally, these must not be nil
-        fixed_to = activity["to"] || []
-        fixed_cc = activity["cc"] || []
+           %User{} = user <- User.get_cached_by_ap_id(activity["actor"]) do
+        fixed_to = recipient_list(activity["to"])
+        fixed_cc = recipient_list(activity["cc"])
 
         to = FollowingRelationship.followers_ap_ids(user, fixed_to)
         cc = FollowingRelationship.followers_ap_ids(user, fixed_cc)
@@ -191,11 +192,17 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
     |> MRF.instance_list_from_tuples()
   end
 
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
+
   defp filter_reject({:reject, reason}) when is_binary(reason), do: {:reject, reason}
   defp filter_reject(_), do: {:reject, "[SimplePolicy]"}
 
   @impl true
-  def filter(%{"type" => "Delete", "actor" => actor} = activity) do
+  def filter(%{"type" => "Delete", "actor" => actor} = activity) when is_binary(actor) do
     %{host: actor_host} = URI.parse(actor)
 
     reject_deletes =
@@ -210,7 +217,10 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
   end
 
   @impl true
-  def filter(%{"actor" => actor} = activity) do
+  def filter(%{"type" => "Delete"} = activity), do: {:ok, activity}
+
+  @impl true
+  def filter(%{"actor" => actor} = activity) when is_binary(actor) do
     actor_info = URI.parse(actor)
 
     with {:ok, activity} <- check_accept(actor_info, activity),
@@ -227,8 +237,11 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
     end
   end
 
+  @impl true
+  def filter(%{"actor" => _actor} = activity), do: {:ok, activity}
+
   def filter(%{"id" => actor, "type" => actor_type} = activity)
-      when actor_type in ["Application", "Group", "Organization", "Person", "Service"] do
+      when is_binary(actor) and actor_type in ["Application", "Group", "Organization", "Person", "Service"] do
     actor_info = URI.parse(actor)
 
     with {:ok, activity} <- check_accept(actor_info, activity),

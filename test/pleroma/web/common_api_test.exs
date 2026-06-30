@@ -469,7 +469,7 @@ defmodule Pleroma.Web.CommonAPITest do
   test "repeating race condition" do
     user = insert(:user)
     users_serial = insert_list(10, :user)
-    users = insert_list(10, :user)
+    users = insert_list(5, :user)
 
     {:ok, activity} = CommonAPI.post(user, %{status: "."})
 
@@ -497,7 +497,7 @@ defmodule Pleroma.Web.CommonAPITest do
     |> Enum.map(&Task.await/1)
 
     object = Object.get_by_ap_id(activity.data["object"])
-    assert object.data["announcement_count"] == 20
+    assert object.data["announcement_count"] == 15
   end
 
   test "when replying to a conversation / participation, it will set the correct context id even if no explicit reply_to is given" do

@@ -87,7 +87,7 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlug do
 
   defp maybe_filter_requests(%{assigns: %{actor_id: actor_id}} = conn) when is_binary(actor_id) do
     if Config.get([:activitypub, :authorized_fetch_mode], false) do
-      host = URI.parse(actor_id).host
+      host = uri_host(actor_id)
 
       if is_binary(host) and MRF.subdomain_match?(rejected_domains(), host) do
         conn
@@ -108,5 +108,13 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlug do
     Config.get([:instance, :rejected_instances])
     |> MRF.instance_list_from_tuples()
     |> MRF.subdomains_regex()
+  end
+
+  defp uri_host(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:host)
+  rescue
+    URI.Error -> nil
   end
 end

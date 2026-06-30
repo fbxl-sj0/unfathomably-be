@@ -1,10 +1,12 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.DeleteHandlingTest do
   use Oban.Testing, repo: Pleroma.Repo
   use Pleroma.DataCase
+
+  require Pleroma.Constants
 
   alias Pleroma.Activity
   alias Pleroma.Object
@@ -97,6 +99,33 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.DeleteHandlingTest do
     # This should be changed after we unify objects and activities
     refute Activity.get_by_id(activity.id)
     assert actor == deleting_user.ap_id
+  end
+
+  test "it accepts incoming deletes for embedded remote tombstones as no-ops" do
+    actor =
+      insert(:user,
+        local: false,
+        ap_id: "https://remote-delete.example/users/alice",
+        follower_address: "https://remote-delete.example/users/alice/followers"
+      )
+
+    data = %{
+      "id" => "https://remote-delete.example/activities/delete/already-gone",
+      "type" => "Delete",
+      "actor" => actor.ap_id,
+      "object" => %{
+        "id" => "https://remote-delete.example/objects/already-gone",
+        "type" => "Tombstone"
+      },
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [actor.follower_address]
+    }
+
+    assert {:ok, %Activity{actor: actor_id, local: false, data: %{"id" => id}}} =
+             Transmogrifier.handle_incoming(data)
+
+    assert actor_id == actor.ap_id
+    assert id == data["id"]
   end
 
   test "it fails for incoming deletes with spoofed origin" do

@@ -942,4 +942,23 @@ defmodule Pleroma.Web.ActivityPub.SideEffectsTest do
       assert User.get_follow_state(user, followed, nil) == nil
     end
   end
+
+  describe "rejecting a Join" do
+    test "it marks the Join as rejected" do
+      event_author = insert(:user)
+      participant = insert(:user)
+
+      event = insert(:event, %{user: event_author, data: %{"joinMode" => "restricted"}})
+      event_activity = insert(:event_activity, event: event)
+
+      {:ok, join_activity} = CommonAPI.join(participant, event_activity.id)
+      {:ok, reject_data, []} = Builder.reject(event_author, join_activity)
+      {:ok, reject, _meta} = ActivityPub.persist(reject_data, local: true)
+
+      {:ok, _, _} = SideEffects.handle(reject)
+
+      join_activity = Repo.get(Activity, join_activity.id)
+      assert join_activity.data["state"] == "reject"
+    end
+  end
 end

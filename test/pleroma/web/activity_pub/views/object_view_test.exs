@@ -22,6 +22,16 @@ defmodule Pleroma.Web.ActivityPub.ObjectViewTest do
     assert result["@context"]
   end
 
+  test "renders refetched objects with actor and attributedTo for threadiverse compatibility" do
+    note = insert(:note)
+    object = %{note | data: note.data |> Map.delete("actor") |> Map.put("attributedTo", note.data["actor"])}
+
+    result = ObjectView.render("object.json", %{object: object})
+
+    assert result["actor"] == note.data["actor"]
+    assert result["attributedTo"] == note.data["actor"]
+  end
+
   test "renders a note activity" do
     note = insert(:note_activity)
     object = Object.normalize(note, fetch: false)

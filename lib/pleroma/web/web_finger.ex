@@ -123,8 +123,10 @@ defmodule Pleroma.Web.WebFinger do
 
   defp webfinger_from_json(body) do
     with {:ok, doc} <- Jason.decode(body) do
+      links = if is_list(doc["links"]), do: doc["links"], else: []
+
       data =
-        Enum.reduce(doc["links"], %{"subject" => doc["subject"]}, fn link, data ->
+        Enum.reduce(links, %{"subject" => doc["subject"]}, fn link, data ->
           case {link["type"], link["rel"]} do
             {"application/activity+json", "self"} ->
               Map.put(data, "ap_id", link["href"])
@@ -210,8 +212,7 @@ defmodule Pleroma.Web.WebFinger do
       with [_name, domain] <- String.split(account, "@") do
         domain
       else
-        _e ->
-          URI.parse(account).host
+        _e -> uri_host(account)
       end
 
     with address when is_binary(address) <- get_address_from_domain(domain, account),
@@ -265,6 +266,16 @@ defmodule Pleroma.Web.WebFinger do
   end
 
   defp validate_webfinger(url, data), do: {:error, {:webfinger_invalid, url, data}}
+
+  defp uri_host(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:host)
+  rescue
+    URI.Error -> nil
+  end
+
+  defp uri_host(_), do: nil
 
   defp resolved_webfinger_matches?(request_url, resolved_url, _data)
        when request_url == resolved_url do

@@ -21,9 +21,11 @@ defmodule Pleroma.Web.ActivityPub.MRF.ActivityExpirationPolicy do
   @impl true
   def describe, do: {:ok, %{}}
 
-  defp local?(%{"actor" => actor}) do
+  defp local?(%{"actor" => actor}) when is_binary(actor) do
     String.starts_with?(actor, Pleroma.Web.Endpoint.url())
   end
+
+  defp local?(_), do: false
 
   defp note?(activity) do
     match?(%{"type" => "Create", "object" => %{"type" => "Note"}}, activity)

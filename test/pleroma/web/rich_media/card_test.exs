@@ -29,6 +29,11 @@ defmodule Pleroma.Web.RichMedia.CardTest do
 
   setup do: clear_config([:rich_media, :enabled], true)
 
+  test "treats malformed urls as uncrawlable" do
+    assert Card.get_by_url("https://%") == :error
+    assert is_nil(Card.get_or_backfill_by_url("https://%"))
+  end
+
   test "crawls URL in activity" do
     user = insert(:user)
 

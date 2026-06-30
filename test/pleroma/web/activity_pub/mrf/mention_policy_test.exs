@@ -65,6 +65,18 @@ defmodule Pleroma.Web.ActivityPub.MRF.MentionPolicyTest do
 
       assert MentionPolicy.filter(message) == {:ok, message}
     end
+
+    test "malformed recipients" do
+      clear_config([:mrf_mention], %{actors: ["https://example.com/blocked"]})
+
+      message = %{
+        "type" => "Create",
+        "to" => %{"bad" => "shape"},
+        "cc" => [nil, 42, %{"href" => "https://example.com/ok"}]
+      }
+
+      assert MentionPolicy.filter(message) == {:ok, message}
+    end
   end
 
   describe "deny" do
@@ -87,6 +99,18 @@ defmodule Pleroma.Web.ActivityPub.MRF.MentionPolicyTest do
         "type" => "Create",
         "to" => ["https://example.com/ok"],
         "cc" => ["https://example.com/blocked"]
+      }
+
+      assert MentionPolicy.filter(message) ==
+               {:reject, "[MentionPolicy] Rejected for mention of https://example.com/blocked"}
+    end
+
+    test "embedded recipient map" do
+      clear_config([:mrf_mention], %{actors: ["https://example.com/blocked"]})
+
+      message = %{
+        "type" => "Create",
+        "to" => [%{"id" => "https://example.com/blocked"}]
       }
 
       assert MentionPolicy.filter(message) ==

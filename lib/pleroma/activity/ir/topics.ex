@@ -136,8 +136,12 @@ defmodule Pleroma.Activity.Ir.Topics do
 
   defp remote_topics(%{local: true}), do: []
 
-  defp remote_topics(%{actor: actor}) when is_binary(actor),
-    do: ["public:remote:" <> URI.parse(actor).host]
+  defp remote_topics(%{actor: actor}) when is_binary(actor) do
+    case uri_host(actor) do
+      host when is_binary(host) -> ["public:remote:" <> host]
+      _ -> []
+    end
+  end
 
   defp remote_topics(_), do: []
 
@@ -156,8 +160,20 @@ defmodule Pleroma.Activity.Ir.Topics do
     end
   end
 
-  defp attachment_topics(_object, %{actor: actor}) when is_binary(actor),
-    do: ["public:media", "public:remote:media:" <> URI.parse(actor).host]
+  defp attachment_topics(_object, %{actor: actor}) when is_binary(actor) do
+    case uri_host(actor) do
+      host when is_binary(host) -> ["public:media", "public:remote:media:" <> host]
+      _ -> ["public:media"]
+    end
+  end
 
   defp attachment_topics(_object, _act), do: ["public:media"]
+
+  defp uri_host(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:host)
+  rescue
+    URI.Error -> nil
+  end
 end

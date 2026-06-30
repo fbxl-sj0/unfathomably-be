@@ -88,7 +88,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
 
   @doc "GET /api/v1/sources/:id/items"
   def items(%{assigns: %{user: user}} = conn, %{"id" => id} = params) do
-    with {:ok, %User{} = source} <- FederatedTarget.resolve_source(id),
+    with {:ok, %User{} = source} <- resolve_preview_source(id),
          {:ok, source_items} <- FederatedTarget.source_items_result(source, params, user) do
       json(conn, source_items)
     else
@@ -98,6 +98,35 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
       {:error, reason} ->
         source_items_error(conn, reason)
     end
+  end
+
+  defp resolve_preview_source(id) do
+    case FederatedTarget.resolve_source(id) do
+      {:ok, %User{} = source} ->
+        {:ok, source}
+
+      _ ->
+        resolve_cached_preview_actor(id)
+    end
+  end
+
+  defp resolve_cached_preview_actor(id) do
+    case safe_get_cached_user(id) do
+      %User{local: false, is_active: true, invisible: false, ap_id: ap_id} = source
+      when is_binary(ap_id) ->
+        {:ok, source}
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp safe_get_cached_user(id) do
+    User.get_cached_by_id(id)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
   end
 
   @doc "POST /api/v1/sources/:id/follow"

@@ -121,8 +121,7 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
     with true <- http_url?(context_id),
          true <- same_origin?(context_id, object_id),
          true <- context_id != object_id,
-         {:ok, %{"type" => type} = data} <-
-           Fetcher.fetch_and_contain_remote_object_from_id(context_id),
+         {:ok, %{"type" => type} = data} <- safe_fetch_remote_object(context_id),
          true <- collection_type?(type) do
       data
       |> collection_item_ids(context_id, opts)
@@ -141,7 +140,7 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
 
   defp remote_reply_ids(parent_id, opts) do
     with true <- http_url?(parent_id),
-         {:ok, %{} = data} <- Fetcher.fetch_and_contain_remote_object_from_id(parent_id) do
+         {:ok, %{} = data} <- safe_fetch_remote_object(parent_id) do
       reply_ids_from_data(data, opts)
     else
       _ -> []
@@ -207,7 +206,7 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
     pages_left = Keyword.get(opts, :remote_replies_pages_left, @max_collection_pages)
 
     if pages_left > 0 and same_origin?(collection_url, parent_id) do
-      with {:ok, %{} = page} <- Fetcher.fetch_and_contain_remote_object_from_id(collection_url),
+      with {:ok, %{} = page} <- safe_fetch_remote_object(collection_url),
            type <- page["type"],
            true <- is_nil(type) or collection_type?(type) do
         opts = Keyword.put(opts, :remote_replies_pages_left, pages_left - 1)
@@ -269,7 +268,7 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
   defp fetch_reply_ancestors(reply_id, depth, seen, hops_left) do
     with true <- http_url?(reply_id),
          true <- Federator.allowed_thread_distance?(depth),
-         {:ok, %{} = data} <- Fetcher.fetch_and_contain_remote_object_from_id(reply_id),
+         {:ok, %{} = data} <- safe_fetch_remote_object(reply_id),
          parent_id when is_binary(parent_id) <- in_reply_to_id(data),
          true <- http_url?(parent_id),
          false <- MapSet.member?(seen, parent_id),
@@ -288,6 +287,18 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
     else
       _ -> :ok
     end
+  end
+
+  defp safe_fetch_remote_object(url) do
+    Fetcher.fetch_and_contain_remote_object_from_id(url)
+  rescue
+    error ->
+      Logger.debug("Could not fetch remote reply object #{url}: #{inspect(error)}")
+      {:error, error}
+  catch
+    kind, error ->
+      Logger.debug("Could not fetch remote reply object #{url}: #{inspect({kind, error})}")
+      {:error, error}
   end
 
   defp in_reply_to_id(%{"type" => "Create", "object" => %{} = object}), do: in_reply_to_id(object)

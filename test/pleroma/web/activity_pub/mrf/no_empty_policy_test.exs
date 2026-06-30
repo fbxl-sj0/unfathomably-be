@@ -174,4 +174,18 @@ defmodule Pleroma.Web.ActivityPub.MRF.NoEmptyPolicyTest do
 
     assert NoEmptyPolicy.filter(message) == {:reject, "[NoEmptyPolicy]"}
   end
+
+  test "malformed actor and source values do not crash the policy" do
+    message = %{
+      "actor" => %{"id" => "http://localhost:4001/users/testuser"},
+      "object" => %{
+        "attachment" => [],
+        "source" => %{"content" => %{"en" => "@user2"}},
+        "type" => "Note"
+      },
+      "type" => "Create"
+    }
+
+    assert NoEmptyPolicy.filter(message) == {:ok, message}
+  end
 end

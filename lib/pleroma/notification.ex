@@ -838,7 +838,7 @@ defmodule Pleroma.Notification do
   def exclude_domain_blocker_ap_ids([], _activity, _preloaded_users), do: []
 
   def exclude_domain_blocker_ap_ids(ap_ids, %Activity{} = activity, preloaded_users) do
-    activity_actor_domain = activity.actor && URI.parse(activity.actor).host
+    activity_actor_domain = activity.actor && Pleroma.Instances.host(activity.actor)
 
     users =
       ap_ids

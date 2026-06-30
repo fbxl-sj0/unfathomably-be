@@ -57,4 +57,26 @@ defmodule Pleroma.Web.ActivityPub.MRF.ForceBotUnlistedPolicyTest do
 
     assert ForceBotUnlistedPolicy.filter(message) == {:ok, except_message}
   end
+
+  test "normalizes malformed recipients" do
+    actor = insert(:user, %{actor_type: "Service"})
+
+    message = %{
+      "actor" => actor.ap_id,
+      "type" => "Create",
+      "object" => %{},
+      "to" => [%{"id" => @public}, nil, %{"href" => "f"}],
+      "cc" => %{"id" => actor.follower_address}
+    }
+
+    expected = %{
+      "actor" => actor.ap_id,
+      "type" => "Create",
+      "object" => %{"to" => ["f", actor.follower_address], "cc" => [@public]},
+      "to" => ["f", actor.follower_address],
+      "cc" => [@public]
+    }
+
+    assert ForceBotUnlistedPolicy.filter(message) == {:ok, expected}
+  end
 end

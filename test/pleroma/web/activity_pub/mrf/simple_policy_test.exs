@@ -232,6 +232,34 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicyTest do
       refute "https://www.w3.org/ns/activitystreams#Public" in ftl_message["to"]
       assert "https://www.w3.org/ns/activitystreams#Public" in ftl_message["cc"]
     end
+
+    test "normalizes malformed recipients" do
+      actor = insert(:user)
+
+      ftl_message = %{
+        "actor" => actor.ap_id,
+        "to" => [
+          %{"id" => "https://www.w3.org/ns/activitystreams#Public"},
+          nil,
+          %{"href" => "http://foo.bar/baz"}
+        ],
+        "cc" => %{"id" => actor.follower_address}
+      }
+
+      ftl_message_actor_host =
+        ftl_message
+        |> Map.fetch!("actor")
+        |> URI.parse()
+        |> Map.fetch!(:host)
+
+      clear_config([:mrf_simple, :federated_timeline_removal], [
+        {ftl_message_actor_host, "bad shapes happen"}
+      ])
+
+      assert {:ok, ftl_message} = SimplePolicy.filter(ftl_message)
+      assert ftl_message["to"] == ["http://foo.bar/baz", actor.follower_address]
+      assert ftl_message["cc"] == ["https://www.w3.org/ns/activitystreams#Public"]
+    end
   end
 
   defp build_ftl_actor_and_message do
@@ -359,6 +387,37 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicyTest do
       assert new_dm_activity["to"] == [following_user.ap_id]
       assert new_dm_activity["cc"] == []
     end
+
+    test "normalizes malformed recipients" do
+      actor = insert(:user)
+      following_user = insert(:user)
+      non_following_user = insert(:user)
+
+      {:ok, _, _, _} = CommonAPI.follow(following_user, actor)
+
+      activity = %{
+        "actor" => actor.ap_id,
+        "to" => [
+          %{"id" => "https://www.w3.org/ns/activitystreams#Public"},
+          %{"href" => following_user.ap_id},
+          nil,
+          %{"id" => non_following_user.ap_id}
+        ],
+        "cc" => %{"id" => actor.follower_address}
+      }
+
+      actor_domain =
+        activity
+        |> Map.fetch!("actor")
+        |> URI.parse()
+        |> Map.fetch!(:host)
+
+      clear_config([:mrf_simple, :followers_only], [{actor_domain, ""}])
+
+      assert {:ok, new_activity} = SimplePolicy.filter(activity)
+      assert new_activity["to"] == [following_user.ap_id]
+      assert new_activity["cc"] == [actor.follower_address]
+    end
   end
 
   describe "when :accept" do
@@ -485,6 +544,15 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicyTest do
 
   describe "when :reject_deletes is empty" do
     setup do: clear_config([:mrf_simple, :reject_deletes], [])
+
+    test "it accepts malformed delete actors for later validation" do
+      deletion_message = %{
+        "type" => "Delete",
+        "actor" => %{"id" => "https://remote.instance/users/bob"}
+      }
+
+      assert SimplePolicy.filter(deletion_message) == {:ok, deletion_message}
+    end
 
     test "it accepts deletions even from rejected servers" do
       clear_config([:mrf_simple, :reject], [{"remote.instance", ""}])

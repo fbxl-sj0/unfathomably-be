@@ -11,17 +11,27 @@ defmodule Pleroma.Workers.NotificationWorker do
   alias Pleroma.Activity
   alias Pleroma.Notification
 
+  defguardp valid_job_id(id) when (is_binary(id) and byte_size(id) > 0) or is_integer(id)
+
   @impl Oban.Worker
-  @spec perform(Oban.Job.t()) :: {:error, :activity_not_found} | {:ok, [Pleroma.Notification.t()]}
-  def perform(%Job{args: %{"op" => "create", "activity_id" => activity_id}}) do
+  @spec perform(Oban.Job.t()) ::
+          :discard | {:cancel, :activity_not_found} | {:ok, [Pleroma.Notification.t()]}
+  def perform(%Job{args: %{"op" => "create", "activity_id" => activity_id}})
+      when valid_job_id(activity_id) do
     with %Activity{} = activity <- find_activity(activity_id) do
       Notification.create_notifications(activity)
+    else
+      {:error, :activity_not_found} -> {:cancel, :activity_not_found}
     end
   end
+
+  def perform(%Job{}), do: :discard
 
   defp find_activity(activity_id) do
     with nil <- Activity.get_by_id(activity_id) do
       {:error, :activity_not_found}
     end
+  rescue
+    _ -> {:error, :activity_not_found}
   end
 end

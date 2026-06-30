@@ -42,13 +42,16 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LockValidator do
     |> cast(data, __schema__(:fields))
   end
 
-  defp fix_object_context(%{"object" => object_id} = data) do
+  defp fix_object_context(%{"object" => object_id} = data)
+       when is_binary(object_id) or is_map(object_id) do
     with %Object{} = object <- Object.normalize(object_id, fetch: false) do
       CommonFixes.fix_activity_context(data, object)
     else
       _ -> data
     end
   end
+
+  defp fix_object_context(data), do: data
 
   defp validate_data(data_cng) do
     data_cng

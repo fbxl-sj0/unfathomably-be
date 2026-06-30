@@ -103,6 +103,41 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidationTest do
       assert {:object, {"can't find object", []}} in cng.errors
     end
 
+    test "it accepts embedded remote tombstones as no-op deletes" do
+      actor =
+        insert(:user,
+          local: false,
+          ap_id: "https://remote-tombstone.example/users/alice",
+          follower_address: "https://remote-tombstone.example/users/alice/followers"
+        )
+
+      delete = %{
+        "id" => "https://remote-tombstone.example/activities/delete/1",
+        "type" => "Delete",
+        "actor" => actor.ap_id,
+        "object" => %{
+          "id" => "https://remote-tombstone.example/objects/already-gone",
+          "type" => "Tombstone"
+        },
+        "to" => [actor.follower_address],
+        "cc" => []
+      }
+
+      assert {:ok, _delete, meta} = ObjectValidator.validate(delete, [])
+      assert %{state: :remote_tombstone} = meta[:delete_target]
+    end
+
+    test "it rejects malformed embedded tombstones without raising", %{
+      valid_post_delete: valid_post_delete
+    } do
+      malformed_tombstone =
+        valid_post_delete
+        |> Map.put("object", %{"id" => ["not", "an", "id"], "type" => "Tombstone"})
+
+      assert {:error, cng} = ObjectValidator.validate(malformed_tombstone, [])
+      refute cng.valid?
+    end
+
     test "it's invalid if the actor of the object and the actor of delete are from different domains",
          %{valid_post_delete: valid_post_delete} do
       valid_user = insert(:user)

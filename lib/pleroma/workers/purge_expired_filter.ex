@@ -14,6 +14,8 @@ defmodule Pleroma.Workers.PurgeExpiredFilter do
   alias Oban.Job
   alias Pleroma.Repo
 
+  defguardp valid_job_id(id) when (is_binary(id) and byte_size(id) > 0) or is_integer(id)
+
   @spec enqueue(%{filter_id: integer(), expires_at: DateTime.t()}) ::
           {:ok, Job.t()} | {:error, Ecto.Changeset.t()}
   def enqueue(args) do
@@ -25,14 +27,23 @@ defmodule Pleroma.Workers.PurgeExpiredFilter do
   end
 
   @impl true
-  def perform(%Job{args: %{"filter_id" => id}}) do
-    Pleroma.Filter
-    |> Repo.get(id)
-    |> Repo.delete()
+  def perform(%Job{args: %{"filter_id" => id}}) when valid_job_id(id) do
+    case get_filter(id) do
+      %Pleroma.Filter{} = filter -> Repo.delete(filter)
+      nil -> {:cancel, :filter_not_found}
+    end
   end
+
+  def perform(%Job{}), do: :discard
 
   @impl Oban.Worker
   def timeout(_job), do: :timer.seconds(5)
+
+  defp get_filter(id) do
+    Repo.get(Pleroma.Filter, id)
+  rescue
+    _ -> nil
+  end
 
   @spec get_expiration(pos_integer()) :: Job.t() | nil
   def get_expiration(id) do

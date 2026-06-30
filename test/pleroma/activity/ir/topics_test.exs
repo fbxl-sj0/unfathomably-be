@@ -129,6 +129,14 @@ defmodule Pleroma.Activity.Ir.TopicsTest do
       assert Enum.member?(topics, "public:remote:lain.com")
     end
 
+    test "malformed remote actors do not crash topic generation", %{activity: activity} do
+      activity = %{activity | local: false, actor: "not a uri"}
+      topics = Topics.get_activity_topics(activity)
+
+      assert Enum.member?(topics, "public")
+      refute Enum.any?(topics, &String.starts_with?(&1, "public:remote:"))
+    end
+
     test "local action doesn't produce public:remote topic", %{activity: activity} do
       activity = %{activity | local: true, actor: "https://lain.com/users/lain"}
       topics = Topics.get_activity_topics(activity)
@@ -221,6 +229,16 @@ defmodule Pleroma.Activity.Ir.TopicsTest do
       topics = Topics.get_activity_topics(activity)
 
       assert Enum.member?(topics, "public:remote:media:lain.com")
+    end
+
+    test "malformed remote actors keep the media topic without a host-specific topic", %{
+      activity: activity
+    } do
+      activity = %{activity | local: false, actor: "not a uri"}
+      topics = Topics.get_activity_topics(activity)
+
+      assert Enum.member?(topics, "public:media")
+      refute Enum.any?(topics, &String.starts_with?(&1, "public:remote:media:"))
     end
   end
 

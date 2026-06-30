@@ -604,12 +604,12 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   defp lookup_user(_), do: nil
 
   defp resolve_lookup_user(nickname) do
-    case FederatedTarget.resolve_source(nickname) do
+    case FederatedTarget.resolve_target(nickname) do
       {:ok, %User{} = user} ->
         user
 
       _ ->
-        case FederatedTarget.resolve_target(nickname) do
+        case FederatedTarget.resolve_source(nickname) do
           {:ok, %User{} = user} -> user
           _ -> nil
         end

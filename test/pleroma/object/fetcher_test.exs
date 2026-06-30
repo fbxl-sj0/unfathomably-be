@@ -143,6 +143,22 @@ defmodule Pleroma.Object.FetcherTest do
   end
 
   describe "fetching an object" do
+    test "does not fetch objects or collections from dormant hosts" do
+      clear_config([:instance, :dormant_instance_timeout_days], 1)
+
+      Instances.set_unreachable("dormant-fetch.example", Instances.dormant_datetime_threshold())
+
+      assert {:error, :unreachable_host} =
+               Fetcher.fetch_and_contain_remote_object_from_id(
+                 "https://dormant-fetch.example/objects/1"
+               )
+
+      assert {:error, :unreachable_host} =
+               Fetcher.fetch_and_contain_remote_collection_from_id(
+                 "https://dormant-fetch.example/users/alice/outbox"
+               )
+    end
+
     test "it fetches remote activity URLs without wrapping them in Create" do
       user = insert(:user)
       actor = insert(:user, ap_id: "https://lemmy.example/u/admin", local: false)

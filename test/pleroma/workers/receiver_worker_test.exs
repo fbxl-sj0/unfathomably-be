@@ -11,6 +11,18 @@ defmodule Pleroma.Workers.ReceiverWorkerTest do
 
   alias Pleroma.Workers.ReceiverWorker
 
+  test "it does not retry malformed incoming params" do
+    assert {:cancel, :missing_incoming_ap_doc_params} =
+             ReceiverWorker.perform(%Oban.Job{
+               args: %{"op" => "incoming_ap_doc", "params" => ["not", "a", "map"]}
+             })
+
+    assert {:cancel, :missing_incoming_ap_doc_params} =
+             ReceiverWorker.perform(%Oban.Job{
+               args: %{"op" => "unknown"}
+             })
+  end
+
   test "it does not retry MRF reject" do
     params = insert(:note).data
 
@@ -48,5 +60,19 @@ defmodule Pleroma.Workers.ReceiverWorkerTest do
              ReceiverWorker.perform(%Oban.Job{
                args: %{"op" => "incoming_ap_doc", "params" => params}
              })
+  end
+
+  test "it does not retry terminal HTTP errors" do
+    params = insert(:note_activity).data
+
+    for status <- [400, 405, 406, 501] do
+      with_mock Pleroma.Web.Federator,
+        perform: fn :incoming_ap_doc, _ -> {:error, {:http, status}} end do
+        assert {:cancel, {:http, ^status}} =
+                 ReceiverWorker.perform(%Oban.Job{
+                   args: %{"op" => "incoming_ap_doc", "params" => params}
+                 })
+      end
+    end
   end
 end

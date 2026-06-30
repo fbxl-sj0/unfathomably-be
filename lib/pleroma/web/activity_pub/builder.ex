@@ -168,7 +168,7 @@ defmodule Pleroma.Web.ActivityPub.Builder do
       case {object, user} do
         {%Object{}, _} ->
           # We are deleting an object, address everyone who was originally mentioned
-          (object.data["to"] || []) ++ (object.data["cc"] || [])
+          ap_id_list(object.data["to"]) ++ ap_id_list(object.data["cc"])
 
         {_, %User{follower_address: follower_address}} ->
           # We are deleting a user, address the followers of that user
@@ -474,13 +474,14 @@ defmodule Pleroma.Web.ActivityPub.Builder do
       else
         [object.data["actor"]]
       end
+      |> ap_id_list()
 
     # CC everyone who's been addressed in the object, except ourself and the object actor's
     # follower collection
     cc =
-      (object.data["to"] ++ (object.data["cc"] || []))
+      (ap_id_list(object.data["to"]) ++ ap_id_list(object.data["cc"]))
       |> List.delete(actor.ap_id)
-      |> List.delete(object_actor.follower_address)
+      |> List.delete(object_actor && object_actor.follower_address)
 
     {:ok,
      %{
@@ -492,6 +493,13 @@ defmodule Pleroma.Web.ActivityPub.Builder do
        "context" => object.data["context"]
      }, []}
   end
+
+  defp ap_id_list(values) when is_list(values) do
+    Enum.filter(values, &is_binary/1)
+  end
+
+  defp ap_id_list(value) when is_binary(value), do: [value]
+  defp ap_id_list(_), do: []
 
   @spec pin(User.t(), Object.t()) :: {:ok, map(), keyword()}
   def pin(%User{} = user, object) do

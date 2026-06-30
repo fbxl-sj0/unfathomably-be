@@ -54,9 +54,10 @@ defmodule Pleroma.Web.RichMedia.Card do
 
   @spec get_by_url(String.t() | nil) :: t() | nil | :error
   def get_by_url(url) when is_binary(url) do
-    host = URI.parse(url).host
+    host = Pleroma.Instances.host(url)
 
     with true <- @config_impl.get([:rich_media, :enabled]),
+         true <- is_binary(host),
          true <- host not in @config_impl.get([:rich_media, :ignore_hosts], []) do
       url_hash = url_to_hash(url)
 
@@ -85,9 +86,10 @@ defmodule Pleroma.Web.RichMedia.Card do
 
   @spec get_or_backfill_by_url(String.t(), keyword()) :: t() | nil
   def get_or_backfill_by_url(url, opts \\ []) do
-    host = URI.parse(url).host
+    host = Pleroma.Instances.host(url)
 
     with true <- @config_impl.get([:rich_media, :enabled]),
+         true <- is_binary(host),
          true <- host not in @config_impl.get([:rich_media, :ignore_hosts], []) do
       case get_by_url(url) do
         %Pleroma.Web.RichMedia.Card{} = card ->

@@ -266,18 +266,23 @@ defmodule Pleroma.FollowingRelationship do
   keeps rows where activity's actor is followed by user -or- is NOT domain-blocked by user.
   """
   def keep_following_or_not_domain_blocked(query, user) do
+    domain_blocks =
+      user.domain_blocks
+      |> Enum.map(&Pleroma.Instances.host/1)
+      |> Enum.filter(&is_binary/1)
+
     where(
       query,
       [_, activity],
       fragment(
         # "(actor's domain NOT in domain_blocks) OR (actor IS in followed AP IDs)"
         """
-        NOT (substring(? from '.*://([^/]*)') = ANY(?)) OR
+        NOT (ap_id_host(?) = ANY(?)) OR
           ? = ANY(SELECT ap_id FROM users AS u INNER JOIN following_relationships AS fr
             ON u.id = fr.following_id WHERE fr.follower_id = ? AND fr.state = ?)
         """,
         activity.actor,
-        ^user.domain_blocks,
+        ^domain_blocks,
         activity.actor,
         ^User.binary_id(user.id),
         ^accept_state_code()
@@ -296,12 +301,7 @@ defmodule Pleroma.FollowingRelationship do
 
     query
     |> join(:left, [r, u], i in Instance,
-      on:
-        fragment("lower(?)", i.host) ==
-          fragment(
-            "lower(split_part(substring(? from '.*://([^/]*)'), ':', 1))",
-            u.ap_id
-          )
+      on: fragment("lower(?) = ap_id_host(?)", i.host, u.ap_id)
     )
     |> where(
       [r, u, i],

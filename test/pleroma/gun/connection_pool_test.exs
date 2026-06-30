@@ -9,6 +9,30 @@ defmodule Pleroma.Gun.ConnectionPoolTest do
   import ExUnit.CaptureLog
   alias Pleroma.Gun.ConnectionPool
 
+  defmodule NormalExitWorker do
+    use GenServer
+
+    def start_link(key, conn_pid) do
+      GenServer.start_link(__MODULE__, {key, conn_pid})
+    end
+
+    @impl true
+    def init({key, conn_pid}) do
+      Registry.register(
+        ConnectionPool,
+        key,
+        {conn_pid, [self()], 1, System.monotonic_time(:millisecond)}
+      )
+
+      {:ok, %{}}
+    end
+
+    @impl true
+    def handle_call(:remove_client, _from, state) do
+      {:stop, :normal, state}
+    end
+  end
+
   defp gun_mock(_) do
     Pleroma.GunMock
     |> stub(:open, fn _, _, _ -> Task.start_link(fn -> Process.sleep(100) end) end)
@@ -19,6 +43,16 @@ defmodule Pleroma.Gun.ConnectionPoolTest do
   end
 
   setup :gun_mock
+
+  test "release_conn/1 tolerates a worker that exits normally before replying" do
+    conn_pid = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> if Process.alive?(conn_pid), do: Process.exit(conn_pid, :kill) end)
+
+    {:ok, worker_pid} = NormalExitWorker.start_link("normal-exit-release", conn_pid)
+
+    assert :ok = ConnectionPool.release_conn(conn_pid)
+    refute Process.alive?(worker_pid)
+  end
 
   test "gives the same connection to 2 concurrent requests" do
     Enum.map(

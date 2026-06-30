@@ -29,7 +29,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.RemoteReportPolicy do
     end
   end
 
-  defp maybe_reject_anonymous(%{"actor" => actor} = object) do
+  defp maybe_reject_anonymous(%{"actor" => actor} = object) when is_binary(actor) do
     with true <- Config.get([:mrf_remote_report, :reject_anonymous]),
          %URI{path: "/actor"} <- URI.parse(actor) do
       {:reject, "[RemoteReportPolicy] Anonymous: #{actor}"}
@@ -37,6 +37,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.RemoteReportPolicy do
       _ -> {:ok, object}
     end
   end
+
+  defp maybe_reject_anonymous(object), do: {:ok, object}
 
   defp maybe_reject_third_party(%{"object" => objects} = object) do
     with true <- Config.get([:mrf_remote_report, :reject_third_party]),
@@ -65,9 +67,11 @@ defmodule Pleroma.Web.ActivityPub.MRF.RemoteReportPolicy do
     end
   end
 
-  defp local?(%{"actor" => actor}) do
+  defp local?(%{"actor" => actor}) when is_binary(actor) do
     String.starts_with?(actor, Pleroma.Web.Endpoint.url())
   end
+
+  defp local?(_object), do: false
 
   @impl true
   def describe do

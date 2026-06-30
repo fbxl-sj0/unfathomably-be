@@ -180,10 +180,12 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     if activity_already_undone?(object) do
       delete_object(object)
     else
-      liked_object = Object.get_by_ap_id(object.data["object"])
-      Utils.add_like_to_object(object, liked_object)
+      liked_object = object.data["object"] |> object_ap_id() |> Object.get_by_ap_id()
 
-      Notification.create_notifications(object)
+      if liked_object do
+        Utils.add_like_to_object(object, liked_object)
+        Notification.create_notifications(object)
+      end
     end
 
     {:ok, object, meta}
@@ -265,11 +267,18 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - Stream out the announce
   @impl true
   def handle(%{data: %{"type" => "Announce"}} = object, meta) do
-    announced_object = Object.get_by_ap_id(object.data["object"])
+    announced_object = object.data["object"] |> object_ap_id() |> Object.get_by_ap_id()
     user = User.get_cached_by_ap_id(object.data["actor"])
 
-    if announced_object && !group_actor?(user) do
-      Utils.add_announce_to_object(object, announced_object)
+    cond do
+      announced_object && group_actor?(user) ->
+        ensure_announce_counters(announced_object)
+
+      announced_object ->
+        Utils.add_announce_to_object(object, announced_object)
+
+      true ->
+        nil
     end
 
     if announced_object && !User.is_internal_user?(user) && !group_actor?(user) do
@@ -287,9 +296,12 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
   @impl true
   def handle(%{data: %{"type" => "Undo", "object" => undone_object}} = object, meta) do
-    with undone_object <- Activity.get_by_ap_id(undone_object),
+    with undone_object_id when is_binary(undone_object_id) <- object_ap_id(undone_object),
+         %Activity{} = undone_object <- Activity.get_by_ap_id(undone_object_id),
          :ok <- handle_undoing(undone_object) do
       {:ok, object, meta}
+    else
+      _ -> {:ok, object, meta}
     end
   end
 
@@ -298,7 +310,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - Set up notification
   @impl true
   def handle(%{data: %{"type" => "EmojiReact"}} = object, meta) do
-    reacted_object = Object.get_by_ap_id(object.data["object"])
+    reacted_object = object.data["object"] |> object_ap_id() |> Object.get_by_ap_id()
 
     if reacted_object do
       Utils.add_emoji_reaction_to_object(object, reacted_object)
@@ -315,6 +327,11 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - Reduce the reply count
   # - Stream out the activity
   # - Removes posts from search index (if needed)
+  @impl true
+  def handle(%{data: %{"type" => "Delete", "object" => %{"type" => "Tombstone"}}} = object, meta) do
+    {:ok, object, meta}
+  end
+
   @impl true
   def handle(%{data: %{"type" => "Delete", "object" => deleted_object}} = object, meta) do
     deleted_object =
@@ -354,6 +371,9 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
           with {:ok, _} <- User.delete(deleted_object) do
             :ok
           end
+
+        nil ->
+          handle_missing_delete_target(meta)
       end
 
     if result == :ok do
@@ -436,18 +456,22 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - accepts join if event is local and public
   @impl true
   def handle(%{data: %{"type" => "Join"}} = object, meta) do
-    joined_event = Object.get_by_ap_id(object.data["object"])
+    case Object.get_by_ap_id(object.data["object"]) do
+      %Object{} = joined_event ->
+        if Object.local?(joined_event) and
+             (joined_event.data["joinMode"] == "free" or
+                object.data["actor"] == joined_event.data["actor"]) do
+          {:ok, accept_data, _} = Builder.accept(joined_event, object)
+          {:ok, _activity, _} = Pipeline.common_pipeline(accept_data, local: true)
+        end
 
-    if Object.local?(joined_event) and
-         (joined_event.data["joinMode"] == "free" or
-            object.data["actor"] == joined_event.data["actor"]) do
-      {:ok, accept_data, _} = Builder.accept(joined_event, object)
-      {:ok, _activity, _} = Pipeline.common_pipeline(accept_data, local: true)
-    end
+        if Object.local?(joined_event) and joined_event.data["joinMode"] != "free" and
+             object.data["actor"] != joined_event.data["actor"] do
+          Utils.update_participation_request_count_in_object(joined_event)
+        end
 
-    if Object.local?(joined_event) and joined_event.data["joinMode"] != "free" and
-         object.data["actor"] != joined_event.data["actor"] do
-      Utils.update_participation_request_count_in_object(joined_event)
+      _ ->
+        :ok
     end
 
     Notification.create_notifications(object)
@@ -459,10 +483,14 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   def handle(%{actor: actor_id, data: %{"type" => "Leave", "object" => event_id}} = object, meta) do
     with undone_object <- Utils.get_existing_join(actor_id, event_id),
          :ok <- handle_undoing(undone_object) do
-      event = Object.get_by_ap_id(event_id)
+      case Object.get_by_ap_id(event_id) do
+        %Object{} = event ->
+          if Object.local?(event) and event.data["joinMode"] != "free" do
+            Utils.update_participation_request_count_in_object(event)
+          end
 
-      if Object.local?(event) and event.data["joinMode"] != "free" do
-        Utils.update_participation_request_count_in_object(event)
+        _ ->
+          :ok
       end
 
       {:ok, object, meta}
@@ -473,6 +501,37 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   @impl true
   def handle(object, meta) do
     {:ok, object, meta}
+  end
+
+  defp ensure_announce_counters(%Object{data: data} = object) do
+    announcements =
+      case data["announcements"] do
+        announcements when is_list(announcements) -> announcements
+        _ -> []
+      end
+
+    count = length(announcements)
+
+    if data["announcement_count"] == count do
+      {:ok, object}
+    else
+      Utils.update_element_in_object("announcement", announcements, object, count)
+    end
+  end
+
+  defp handle_missing_delete_target(meta) do
+    case Keyword.get(meta, :delete_target) do
+      %{state: :remote_tombstone} ->
+        :ok
+
+      %{state: :pruned_object_with_create, create_activity: %Activity{} = create_activity} ->
+        with {:ok, _activity} <- Repo.delete(create_activity) do
+          :ok
+        end
+
+      _ ->
+        :missing_delete_target
+    end
   end
 
   defp add_collection_object(data) do
@@ -697,7 +756,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
          actor
        ) do
     with %Object{data: %{"actor" => ^actor}} = joined_event <- Object.get_by_ap_id(event_id),
-         {:o, join_activity} <- Utils.update_join_state(join_activity, "reject") do
+         {:ok, join_activity} <- Utils.update_join_state(join_activity, "reject") do
       Utils.remove_participation_from_object(join_activity, joined_event)
       Notification.dismiss(join_activity)
     end
@@ -754,30 +813,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
   def handle_object_creation(%{"type" => "ChatMessage"} = object, _activity, meta) do
     with {:ok, object, meta} <- Pipeline.common_pipeline(object, meta) do
-      actor = User.get_cached_by_ap_id(object.data["actor"])
-      recipient = User.get_cached_by_ap_id(hd(object.data["to"]))
-
-      streamables =
-        [[actor, recipient], [recipient, actor]]
-        |> Enum.uniq()
-        |> Enum.map(fn [user, other_user] ->
-          if user.local do
-            {:ok, chat} = Chat.bump_or_create(user.id, other_user.ap_id)
-            {:ok, cm_ref} = MessageReference.create(chat, object, user.ap_id != actor.ap_id)
-
-            @cachex.put(
-              :chat_message_id_idempotency_key_cache,
-              cm_ref.id,
-              meta[:idempotency_key]
-            )
-
-            {
-              ["user", "user:pleroma_chat"],
-              {user, %{cm_ref | chat: chat, object: object}}
-            }
-          end
-        end)
-        |> Enum.filter(& &1)
+      streamables = chat_message_streamables(object, meta)
 
       meta =
         meta
@@ -827,6 +863,38 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     {:ok, object, meta}
   end
 
+  defp chat_message_streamables(object, meta) do
+    with %User{} = actor <- User.get_cached_by_ap_id(object.data["actor"]),
+         %User{} = recipient <-
+           object.data["to"] |> chat_message_recipient_id() |> User.get_cached_by_ap_id() do
+      [[actor, recipient], [recipient, actor]]
+      |> Enum.uniq()
+      |> Enum.map(fn [user, other_user] ->
+        if user.local do
+          {:ok, chat} = Chat.bump_or_create(user.id, other_user.ap_id)
+          {:ok, cm_ref} = MessageReference.create(chat, object, user.ap_id != actor.ap_id)
+
+          @cachex.put(
+            :chat_message_id_idempotency_key_cache,
+            cm_ref.id,
+            meta[:idempotency_key]
+          )
+
+          {
+            ["user", "user:pleroma_chat"],
+            {user, %{cm_ref | chat: chat, object: object}}
+          }
+        end
+      end)
+      |> Enum.filter(& &1)
+    else
+      _ -> []
+    end
+  end
+
+  defp chat_message_recipient_id([recipient | _]) when is_binary(recipient), do: recipient
+  defp chat_message_recipient_id(_), do: nil
+
   defp undo_like(nil, object), do: delete_object(object)
 
   defp undo_like(%Object{} = liked_object, object) do
@@ -837,12 +905,14 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
   def handle_undoing(%{data: %{"type" => "Like"}} = object) do
     object.data["object"]
+    |> object_ap_id()
     |> Object.get_by_ap_id()
     |> undo_like(object)
   end
 
   def handle_undoing(%{data: %{"type" => "EmojiReact"}} = object) do
-    with %Object{} = reacted_object <- Object.get_by_ap_id(object.data["object"]),
+    with object_ap_id when is_binary(object_ap_id) <- object_ap_id(object.data["object"]),
+         %Object{} = reacted_object <- Object.get_by_ap_id(object_ap_id),
          {:ok, _} <- Utils.remove_emoji_reaction_from_object(object, reacted_object),
          {:ok, _} <- Repo.delete(object) do
       :ok
@@ -850,7 +920,8 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   end
 
   def handle_undoing(%{data: %{"type" => "Announce"}} = object) do
-    with %Object{} = liked_object <- Object.get_by_ap_id(object.data["object"]),
+    with object_ap_id when is_binary(object_ap_id) <- object_ap_id(object.data["object"]),
+         %Object{} = liked_object <- Object.get_by_ap_id(object_ap_id),
          {:ok, _} <- Utils.remove_announce_from_object(object, liked_object),
          {:ok, _} <- Repo.delete(object) do
       :ok
@@ -897,6 +968,10 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       :ok
     end
   end
+
+  defp object_ap_id(ap_id) when is_binary(ap_id), do: ap_id
+  defp object_ap_id(%{"id" => ap_id}) when is_binary(ap_id), do: ap_id
+  defp object_ap_id(_), do: nil
 
   @spec delete_object(Object.t()) :: :ok | {:error, Ecto.Changeset.t()}
   defp delete_object(object) do

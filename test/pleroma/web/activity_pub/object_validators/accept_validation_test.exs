@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptValidationTest do
   use Pleroma.DataCase, async: true
 
+  alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.ObjectValidator
   alias Pleroma.Web.ActivityPub.Pipeline
@@ -52,5 +53,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptValidationTest do
       |> Map.put("actor", stranger.ap_id)
 
     assert {:error, _} = ObjectValidator.validate(accept_data, [])
+  end
+
+  test "for an accepted join, it fails cleanly if the joined object is missing" do
+    joiner = insert(:user)
+    event_author = insert(:user)
+
+    join_data = %{
+      "id" => "https://local.test/activities/join/missing-event",
+      "type" => "Join",
+      "actor" => joiner.ap_id,
+      "object" => "https://local.test/events/missing",
+      "to" => [event_author.ap_id],
+      "cc" => []
+    }
+
+    {:ok, join_activity, _meta} = ActivityPub.persist(join_data, local: true)
+    {:ok, accept_data, _} = Builder.accept(event_author, join_activity)
+
+    assert {:error, cng} = ObjectValidator.validate(accept_data, [])
+    assert {:actor, {"can't accept or reject the given activity", []}} in cng.errors
   end
 end

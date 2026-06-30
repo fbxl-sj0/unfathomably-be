@@ -140,4 +140,17 @@ defmodule Pleroma.Web.ActivityPub.MRF.RemoteReportPolicyTest do
 
     assert {:reject, _} = RemoteReportPolicy.filter(activity)
   end
+
+  test "malformed report actor does not crash the policy" do
+    clear_config([:mrf_remote_report, :reject_anonymous], true)
+    clear_config([:mrf_remote_report, :reject_empty_message], false)
+
+    activity = %{
+      "type" => "Flag",
+      "actor" => %{"id" => "https://mastodon.social/actor"},
+      "object" => ["https://mastodon.online/users/Gargron"]
+    }
+
+    assert {:ok, _} = RemoteReportPolicy.filter(activity)
+  end
 end

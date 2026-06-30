@@ -170,12 +170,12 @@ defmodule Pleroma.Web.ActivityPub.MRF.NsfwApiPolicy do
   def unlist(%{"to" => to, "cc" => cc, "actor" => actor} = activity) do
     with %User{} = user <- User.get_cached_by_ap_id(actor) do
       to =
-        [user.follower_address | to]
+        [user.follower_address | recipient_list(to)]
         |> List.delete(Constants.as_public())
         |> Enum.uniq()
 
       cc =
-        [Constants.as_public() | cc]
+        [Constants.as_public() | recipient_list(cc)]
         |> List.delete(user.follower_address)
         |> Enum.uniq()
 
@@ -192,12 +192,27 @@ defmodule Pleroma.Web.ActivityPub.MRF.NsfwApiPolicy do
   end
 
   def mark_sensitive(activity) when is_map(activity) do
-    tags = (activity["tag"] || []) ++ ["nsfw"]
+    tags = tag_list(activity["tag"]) ++ ["nsfw"]
 
     activity
     |> Map.put("tag", tags)
     |> Map.put("sensitive", true)
   end
+
+  defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
+  defp recipient_list(%{"href" => href}) when is_binary(href), do: [href]
+  defp recipient_list(_), do: []
+
+  defp tag_list(values) when is_list(values), do: Enum.filter(values, &valid_tag?/1)
+  defp tag_list(value) when is_binary(value), do: [value]
+  defp tag_list(value) when is_map(value), do: [value]
+  defp tag_list(_), do: []
+
+  defp valid_tag?(value) when is_binary(value), do: true
+  defp valid_tag?(value) when is_map(value), do: true
+  defp valid_tag?(_), do: false
 
   # Hackney needs a trailing slash
   defp fix_path(%URI{path: path} = uri) when is_binary(path) do

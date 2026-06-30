@@ -1,9 +1,11 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.MRF.ObjectAgePolicyTest do
   use Pleroma.DataCase
+  require Pleroma.Constants
+
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.MRF.ObjectAgePolicy
   alias Pleroma.Web.ActivityPub.Visibility
@@ -80,6 +82,23 @@ defmodule Pleroma.Web.ActivityPub.MRF.ObjectAgePolicyTest do
       {:ok, data} = ObjectAgePolicy.filter(data)
 
       assert Visibility.get_visibility(%{data: data}) == "unlisted"
+    end
+
+    test "normalizes malformed to or cc fields" do
+      clear_config([:mrf_object_age, :actions], [:delist])
+
+      data = get_old_message()
+      {:ok, user} = User.get_or_fetch_by_ap_id(data["actor"])
+
+      data =
+        data
+        |> Map.put("to", %{"id" => Pleroma.Constants.as_public()})
+        |> Map.put("cc", [%{"href" => user.follower_address}, nil, 42])
+
+      {:ok, data} = ObjectAgePolicy.filter(data)
+
+      assert data["to"] == [user.follower_address]
+      assert data["cc"] == [Pleroma.Constants.as_public()]
     end
 
     test "it delists an old post" do

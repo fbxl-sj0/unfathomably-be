@@ -284,6 +284,19 @@ defmodule Pleroma.UserSearchTest do
       assert length(account_ids) == 3
     end
 
+    test "excludes users from blocked domains by normalized AP ID host" do
+      user = insert(:user, domain_blocks: ["mastodon.social"])
+
+      insert(:user,
+        name: "lain",
+        nickname: "lain@mastodon.social",
+        local: false,
+        ap_id: "https://Mastodon.Social./users/lain"
+      )
+
+      assert [] == User.search("lain", for_user: user)
+    end
+
     test "local user has the same search_rank as for users with the same nickname, but another domain" do
       user = insert(:user)
       insert(:user, nickname: "lain@mastodon.social")

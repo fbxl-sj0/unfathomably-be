@@ -9,6 +9,21 @@ defmodule Pleroma.InstancesTest do
 
   setup_all do: clear_config([:instance, :federation_reachability_timeout_days], 1)
 
+  describe "host/1" do
+    test "normalizes url hosts and host names" do
+      assert Instances.host("https://Example.COM./users/alice") == "example.com"
+      assert Instances.host("Example.COM.") == "example.com"
+    end
+
+    test "only parses actual http urls as urls" do
+      assert Instances.host("http.example") == "http.example"
+    end
+
+    test "returns nil for malformed urls without raising" do
+      assert is_nil(Instances.host("https://%"))
+    end
+  end
+
   describe "reachable?/1" do
     test "returns `true` for host / url with unknown reachability status" do
       assert Instances.reachable?("unknown.site")
@@ -32,9 +47,16 @@ defmodule Pleroma.InstancesTest do
       assert Instances.reachable?(URI.parse(url).host)
     end
 
-    test "raises FunctionClauseError exception on non-binary input" do
-      assert_raise FunctionClauseError, fn -> Instances.reachable?(nil) end
-      assert_raise FunctionClauseError, fn -> Instances.reachable?(1) end
+    test "treats non-binary input as unknown but reachable" do
+      assert Instances.reachable?(nil)
+      assert Instances.reachable?(1)
+    end
+  end
+
+  describe "dormant?/1" do
+    test "treats non-binary input as not dormant" do
+      refute Instances.dormant?(nil)
+      refute Instances.dormant?(1)
     end
   end
 
