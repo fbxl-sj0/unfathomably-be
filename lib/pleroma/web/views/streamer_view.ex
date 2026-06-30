@@ -176,6 +176,8 @@ defmodule Pleroma.Web.StreamerView do
 
   def render("stream.json", %{topic: "user:pleroma_chat:" <> _}), do: ["user:pleroma_chat"]
   def render("stream.json", %{topic: "user:notification:" <> _}), do: ["user:notification"]
+  def render("stream.json", %{topic: "user:groups:" <> _}), do: ["user:groups"]
+  def render("stream.json", %{topic: "user:sources:" <> _}), do: ["user:sources"]
   def render("stream.json", %{topic: "user:" <> _}), do: ["user"]
   def render("stream.json", %{topic: "direct:" <> _}), do: ["direct"]
   def render("stream.json", %{topic: "list:" <> id}), do: ["list", id]

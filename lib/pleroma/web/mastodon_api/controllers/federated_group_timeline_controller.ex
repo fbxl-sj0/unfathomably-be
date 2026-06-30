@@ -42,8 +42,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
     activities =
       user
       |> FederatedTarget.followed_group_ap_ids()
-      |> ActivityPub.fetch_activities_query(activity_params)
-      |> Pagination.fetch_paginated(activity_params)
+      |> fetch_followed_group_activities(activity_params)
       |> unique_group_activities()
 
     conn
@@ -58,6 +57,14 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   end
 
   def index(conn, _params), do: render_error(conn, :unauthorized, "authorization required")
+
+  defp fetch_followed_group_activities([], _activity_params), do: []
+
+  defp fetch_followed_group_activities(group_ap_ids, activity_params) do
+    group_ap_ids
+    |> ActivityPub.fetch_activities_query(activity_params)
+    |> Pagination.fetch_paginated(activity_params)
+  end
 
   @doc """
   GET /api/v1/timelines/group/:id

@@ -58,11 +58,31 @@ defmodule Pleroma.Web.PublicSurfaceSecurityTest do
                Streamer.get_topic("source", user, token, %{"source" => source.ap_id})
     end
 
+    test "aggregate group and source streams require authenticated local users" do
+      assert {:error, :unauthorized} = Streamer.get_topic("user:groups", nil, nil, %{})
+      assert {:error, :unauthorized} = Streamer.get_topic("user:sources", nil, nil, %{})
+
+      %{user: user, token: token} = oauth_access(["read"])
+      group_topic = "user:groups:#{user.id}"
+      source_topic = "user:sources:#{user.id}"
+
+      assert {:ok, ^group_topic} =
+               Streamer.get_topic("user:groups", user, token, %{})
+
+      assert {:ok, ^source_topic} =
+               Streamer.get_topic("user:sources", user, token, %{})
+    end
+
     test "does not fan out private group or source activity to public target streams" do
       group = remote_group("private@groups.example", "https://groups.example/c/private")
 
       source =
         remote_source("private-library@audio.example", "https://audio.example/channels/private")
+
+      local_user = insert(:user)
+
+      {:ok, _, _} = Pleroma.FollowingRelationship.follow(local_user, group, :follow_accept)
+      {:ok, _, _} = Pleroma.FollowingRelationship.follow(local_user, source, :follow_accept)
 
       note =
         insert(:note,
@@ -86,6 +106,8 @@ defmodule Pleroma.Web.PublicSurfaceSecurityTest do
 
       refute "group:#{group.id}" in topics
       refute "source:#{source.id}" in topics
+      refute "user:groups:#{local_user.id}" in topics
+      refute "user:sources:#{local_user.id}" in topics
     end
   end
 
@@ -189,6 +211,10 @@ defmodule Pleroma.Web.PublicSurfaceSecurityTest do
     test "public target streams are derived for public source posts into groups" do
       group = remote_group()
       source = remote_source()
+      local_user = insert(:user)
+
+      {:ok, _, _} = Pleroma.FollowingRelationship.follow(local_user, group, :follow_accept)
+      {:ok, _, _} = Pleroma.FollowingRelationship.follow(local_user, source, :follow_accept)
 
       note =
         insert(:note,
@@ -212,6 +238,8 @@ defmodule Pleroma.Web.PublicSurfaceSecurityTest do
 
       assert "group:#{group.id}" in topics
       assert "source:#{source.id}" in topics
+      assert "user:groups:#{local_user.id}" in topics
+      assert "user:sources:#{local_user.id}" in topics
       assert "public" in topics
     end
   end

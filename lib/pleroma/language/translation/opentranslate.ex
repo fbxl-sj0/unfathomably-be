@@ -12,6 +12,8 @@ defmodule Pleroma.Language.Translation.Opentranslate do
   @behaviour Provider
 
   @name "OpenTranslate"
+  @default_request_timeout_ms :timer.seconds(180)
+  @default_language_timeout_ms :timer.seconds(15)
 
   @impl Provider
   def configured?, do: not_empty_string(base_url())
@@ -25,7 +27,8 @@ defmodule Pleroma.Language.Translation.Opentranslate do
       case Pleroma.HTTP.post(
              endpoint("/translate"),
              request_body(content, source_language, target_language),
-             [{"Content-Type", "application/json"}]
+             [{"Content-Type", "application/json"}],
+             recv_timeout: request_timeout_ms()
            ) do
         {:ok, %{status: 429}} ->
           {:error, :too_many_requests}
@@ -48,7 +51,7 @@ defmodule Pleroma.Language.Translation.Opentranslate do
   def supported_languages(:target), do: {:ok, ["en"]}
 
   def supported_languages(:source) do
-    case Pleroma.HTTP.get(endpoint("/languages")) do
+    case Pleroma.HTTP.get(endpoint("/languages"), [], recv_timeout: language_timeout_ms()) do
       {:ok, %{status: 200} = res} ->
         with {:ok, languages} <- decode_languages(res.body) do
           {:ok, add_auto_language(languages)}
@@ -73,6 +76,30 @@ defmodule Pleroma.Language.Translation.Opentranslate do
 
   defp endpoint(path) do
     base_url() <> path
+  end
+
+  defp request_timeout_ms do
+    configured_timeout_ms(:request_timeout_ms, @default_request_timeout_ms)
+  end
+
+  defp language_timeout_ms do
+    configured_timeout_ms(:language_timeout_ms, @default_language_timeout_ms)
+  end
+
+  defp configured_timeout_ms(key, default) do
+    case Pleroma.Config.get([__MODULE__, key], default) do
+      value when is_integer(value) and value > 0 ->
+        value
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {parsed, ""} when parsed > 0 -> parsed
+          _ -> default
+        end
+
+      _ ->
+        default
+    end
   end
 
   defp request_body(content, source_language, target_language) do

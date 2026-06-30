@@ -40,6 +40,7 @@ Options:
   --no-activate         Only rsync source. Do not deps.get, compile, migrate, or restart.
   --no-restart          Run deps.get, compile, and migrate, but do not restart service.
   --service NAME        systemd service name. Default: pleroma.
+  --service-path PATH   PATH used for activation commands.
   -h, --help            Show this help.
 
 The script excludes server-local state and secrets by default. In particular,
@@ -52,6 +53,7 @@ SOURCE=""
 TARGET=""
 SERVICE_USER="${SERVICE_USER:-pleroma}"
 SERVICE_NAME="${SERVICE_NAME:-pleroma}"
+SERVICE_PATH="${SERVICE_PATH:-/var/lib/pleroma/.asdf/shims:/var/lib/pleroma/.asdf/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups}"
 ACTIVATE=1
 RESTART=1
@@ -76,6 +78,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --service)
             SERVICE_NAME="${2:-}"
+            shift 2
+            ;;
+        --service-path)
+            SERVICE_PATH="${2:-}"
             shift 2
             ;;
         --no-activate)
@@ -159,7 +165,7 @@ if [ "$ACTIVATE" -eq 0 ]; then
     exit 0
 fi
 
-sudo -u "$SERVICE_USER" -H env MIX_ENV=prod bash -lc "
+sudo -u "$SERVICE_USER" -H env MIX_ENV=prod PATH="$SERVICE_PATH" bash -lc "
     set -euo pipefail
     cd '$TARGET'
     mix deps.get

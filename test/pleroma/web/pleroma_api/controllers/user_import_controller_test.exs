@@ -6,10 +6,15 @@ defmodule Pleroma.Web.PleromaAPI.UserImportControllerTest do
   use Pleroma.Web.ConnCase
   use Oban.Testing, repo: Pleroma.Repo
 
+  alias Pleroma.Activity
+  alias Pleroma.Object
+  alias Pleroma.Repo
   alias Pleroma.Tests.ObanHelpers
   alias Pleroma.User.PostArchiveImport
   alias Pleroma.Workers.PostArchiveImportWorker
+  alias Pleroma.Workers.RemoteFetcherWorker
 
+  import Ecto.Query
   import Pleroma.Factory
   import Mock
 
@@ -323,27 +328,116 @@ defmodule Pleroma.Web.PleromaAPI.UserImportControllerTest do
       assert PostArchiveImport.get(response["id"]).state == :awaiting_review
       assert all_enqueued(worker: PostArchiveImportWorker) == []
     end
+
+    test "restores public archive posts into local history and queues affected thread fetches", %{
+      user: user
+    } do
+      old_actor = "https://old.example/users/alice"
+      activity_id = "https://old.example/activities/reply"
+      object_id = "https://old.example/objects/reply"
+      parent_id = "https://old.example/objects/root"
+      context = "https://old.example/contexts/thread"
+      public = "https://www.w3.org/ns/activitystreams#Public"
+
+      item = %{
+        "id" => activity_id,
+        "type" => "Create",
+        "actor" => old_actor,
+        "to" => [public],
+        "cc" => [old_actor <> "/followers"],
+        "published" => "2024-01-01T00:00:00Z",
+        "object" => %{
+          "id" => object_id,
+          "type" => "Note",
+          "actor" => old_actor,
+          "attributedTo" => old_actor,
+          "content" => "This imported reply should remain part of the old thread.",
+          "source" => "This imported reply should remain part of the old thread.",
+          "context" => context,
+          "conversation" => context,
+          "inReplyTo" => parent_id,
+          "to" => [public],
+          "cc" => [old_actor <> "/followers"],
+          "published" => "2024-01-01T00:00:00Z"
+        }
+      }
+
+      import = post_archive_import(user, [item])
+
+      assert {:ok, import} = PostArchiveImport.process(import)
+      assert import.state == :complete
+      assert import.imported_count == 1
+
+      imported_activity =
+        Activity
+        |> where(actor: ^user.ap_id)
+        |> where(
+          [a],
+          fragment("(?->'_unfathomably_import'->>'activity_id') = ?", a.data, ^activity_id)
+        )
+        |> Repo.one()
+
+      assert imported_activity.local == false
+      assert imported_activity.data["_unfathomably_import"]["object_id"] == object_id
+
+      imported_object = Object.get_by_ap_id(imported_activity.data["object"])
+
+      assert imported_object.data["actor"] == user.ap_id
+      assert imported_object.data["attributedTo"] == user.ap_id
+      assert imported_object.data["context"] == context
+      assert imported_object.data["conversation"] == context
+      assert imported_object.data["inReplyTo"] == parent_id
+
+      assert_enqueued(
+        worker: RemoteFetcherWorker,
+        args: %{"op" => "fetch_remote", "id" => parent_id, "depth" => 1, "thread" => true}
+      )
+    end
+  end
+
+  defp post_archive_import(user, items) do
+    dir = temp_post_archive_dir("post-archive-import-process-test")
+    clear_config([PostArchiveImport, :dir], dir)
+
+    file_name = "archive.zip"
+    path = PostArchiveImport.path(file_name)
+
+    write_post_archive!(path, items)
+
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    Repo.insert!(%PostArchiveImport{
+      user_id: user.id,
+      file_name: file_name,
+      content_type: "application/zip",
+      file_size: File.stat!(path).size,
+      state: :pending
+    })
   end
 
   defp empty_post_archive_path do
-    dir =
-      Path.join(
-        System.tmp_dir!(),
-        "post-archive-import-test-#{System.unique_integer([:positive])}"
-      )
-
+    dir = temp_post_archive_dir("post-archive-import-test")
     path = Path.join(dir, "archive.zip")
 
-    File.mkdir_p!(dir)
+    write_post_archive!(path, [])
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    path
+  end
+
+  defp temp_post_archive_dir(prefix) do
+    Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
+  end
+
+  defp write_post_archive!(path, items) do
+    File.mkdir_p!(Path.dirname(path))
 
     files = [
       {~c"actor.json", Jason.encode!(%{"id" => "https://old.example/users/alice"})},
-      {~c"outbox.json", Jason.encode!(%{"type" => "OrderedCollection", "orderedItems" => []})}
+      {~c"outbox.json", Jason.encode!(%{"type" => "OrderedCollection", "orderedItems" => items})}
     ]
 
     {:ok, _} = :zip.create(String.to_charlist(path), files)
-
-    on_exit(fn -> File.rm_rf(dir) end)
 
     path
   end

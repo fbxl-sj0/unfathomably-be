@@ -3826,6 +3826,23 @@ config :pleroma, :config_description, [
           "Optional. Leave blank for an internal OpenTranslate service without API keys.",
         type: :string,
         suggestions: ["YOUR_API_KEY"]
+      },
+      %{
+        group: {:subgroup, Pleroma.Language.Translation.Opentranslate},
+        key: :request_timeout_ms,
+        label: "OpenTranslate request timeout",
+        description:
+          "Timeout, in milliseconds, for OpenTranslate translation requests. Slow internal translation hosts may need a longer timeout for full-length posts.",
+        type: :integer,
+        suggestions: [180_000]
+      },
+      %{
+        group: {:subgroup, Pleroma.Language.Translation.Opentranslate},
+        key: :language_timeout_ms,
+        label: "OpenTranslate language-list timeout",
+        description: "Timeout, in milliseconds, for OpenTranslate language-list requests.",
+        type: :integer,
+        suggestions: [15_000]
       }
     ]
   },

@@ -29,7 +29,14 @@ defmodule Pleroma.Web.Streamer do
 
   @public_streams Pleroma.Constants.public_streams()
   @local_streams ["public:local", "public:local:media"]
-  @user_streams ["user", "user:notification", "direct", "user:pleroma_chat"]
+  @user_streams [
+    "user",
+    "user:notification",
+    "user:groups",
+    "user:sources",
+    "direct",
+    "user:pleroma_chat"
+  ]
   @max_target_stream_identifier_bytes 2048
 
   @doc "Expands and authorizes a stream, and registers the process for streaming."

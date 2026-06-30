@@ -355,6 +355,12 @@ defmodule Pleroma.Integration.MastodonWebsocketTest do
 
       assert {:ok, _} =
                start_socket_path("/api/v1/streaming/user/notification", "?access_token=#{token.token}")
+
+      assert {:ok, _} =
+               start_socket_path("/api/v1/streaming/user/groups", "?access_token=#{token.token}")
+
+      assert {:ok, _} =
+               start_socket_path("/api/v1/streaming/user/sources", "?access_token=#{token.token}")
     end
 
     test "accepts the 'user' stream", %{token: token} = _state do

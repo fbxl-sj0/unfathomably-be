@@ -3,7 +3,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Activity.Ir.Topics do
+  import Ecto.Query, only: [select: 3, where: 3]
+
+  alias Pleroma.FollowingRelationship
   alias Pleroma.Object
+  alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.FederatedTarget
@@ -34,7 +38,9 @@ defmodule Pleroma.Activity.Ir.Topics do
 
   defp federated_target_tags(object, activity) do
     if Visibility.get_visibility(activity) in ["public", "local"] do
-      source_tags(activity) ++ group_tags(object, activity)
+      target_tags = source_tags(activity) ++ group_tags(object, activity)
+
+      target_tags ++ aggregate_federated_target_tags(target_tags)
     else
       []
     end
@@ -51,6 +57,42 @@ defmodule Pleroma.Activity.Ir.Topics do
   end
 
   defp source_tags(_), do: []
+
+  defp aggregate_federated_target_tags(target_tags) do
+    target_tags
+    |> Enum.flat_map(&aggregate_federated_target_tag/1)
+    |> Enum.uniq()
+  end
+
+  defp aggregate_federated_target_tag("group:" <> id) do
+    aggregate_followed_target_tags(id, "user:groups")
+  end
+
+  defp aggregate_federated_target_tag("source:" <> id) do
+    aggregate_followed_target_tags(id, "user:sources")
+  end
+
+  defp aggregate_federated_target_tag(_topic), do: []
+
+  defp aggregate_followed_target_tags(id, stream_prefix) do
+    case User.get_cached_by_id(id) do
+      %User{} = target ->
+        target
+        |> local_follower_ids()
+        |> Enum.map(fn user_id -> "#{stream_prefix}:#{user_id}" end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp local_follower_ids(%User{} = target) do
+    target
+    |> FollowingRelationship.followers_query()
+    |> where([_r, u], u.local == true and u.is_active == true)
+    |> select([_r, u], u.id)
+    |> Repo.all()
+  end
 
   defp group_tags(object, activity) do
     object

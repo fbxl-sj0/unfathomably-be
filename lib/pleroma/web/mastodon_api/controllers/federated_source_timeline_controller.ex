@@ -32,8 +32,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedSourceTimelineController do
     activities =
       user
       |> FederatedTarget.followed_source_ap_ids()
-      |> ActivityPub.fetch_activities_query(activity_params)
-      |> Pagination.fetch_paginated(activity_params)
+      |> fetch_followed_source_activities(activity_params)
       |> unique_source_activities()
 
     conn
@@ -48,6 +47,14 @@ defmodule Pleroma.Web.MastodonAPI.FederatedSourceTimelineController do
   end
 
   def index(conn, _params), do: render_error(conn, :unauthorized, "authorization required")
+
+  defp fetch_followed_source_activities([], _activity_params), do: []
+
+  defp fetch_followed_source_activities(source_ap_ids, activity_params) do
+    source_ap_ids
+    |> ActivityPub.fetch_activities_query(activity_params)
+    |> Pagination.fetch_paginated(activity_params)
+  end
 
   defp pagination_params(params) do
     [:limit, :max_id, :min_id, :since_id, :only_media, :with_muted, :with_replies]

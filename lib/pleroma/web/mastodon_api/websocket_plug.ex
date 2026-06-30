@@ -90,6 +90,8 @@ defmodule Pleroma.Web.MastodonAPI.WebsocketPlug do
   defp stream_from_path_parts(["health"]), do: :health
   defp stream_from_path_parts(["user"]), do: {:stream, "user"}
   defp stream_from_path_parts(["user", "notification"]), do: {:stream, "user:notification"}
+  defp stream_from_path_parts(["user", "groups"]), do: {:stream, "user:groups"}
+  defp stream_from_path_parts(["user", "sources"]), do: {:stream, "user:sources"}
   defp stream_from_path_parts(["public"]), do: {:stream, "public"}
   defp stream_from_path_parts(["public", "local"]), do: {:stream, "public:local"}
   defp stream_from_path_parts(["public", "remote"]), do: {:stream, "public:remote"}

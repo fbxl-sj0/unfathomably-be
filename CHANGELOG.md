@@ -7,21 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Security
+- Updated current Hex dependencies within the existing release train, including Plug 1.20.2, Phoenix LiveView 1.2.5, PromEx 1.12.0, Swoosh 1.26.2, and tzdata 1.1.4; this removes the retired Plug 1.20.1 advisory while keeping the Phoenix/Plug stack intact.
 - Updated advisory-sensitive dependencies for the current release train: Plug now uses the patched 1.20 series, Markdown rendering uses the mdex 0.13.2 and mdex_native 0.2.3 releases, and cowlib is pinned to the upstream HTTP/1 request-line hardening patch while awaiting the next tagged Hex release.
 - Added deployment promotion tooling that preserves server-local secrets, uploaded media, instance static configuration, dependency builds, and generated artifacts instead of replacing the live tree wholesale.
+- Made deployment activation use an explicit service PATH so source promotion runs the same Mix/Elixir toolchain as the systemd service.
 
 ### Added
+- Added authenticated aggregate websocket streams for followed groups and feeds at `/api/v1/streaming/user/groups` and `/api/v1/streaming/user/sources`.
+- Added websocket fanout for public group and source activity so accepted local followers receive live aggregate feed updates without polling every followed target.
 - Added regression coverage for the Gun connection pool `release_conn/1` path where a worker exits normally before replying.
 - Added regression coverage for ActivityPub context repair when an incoming object action targets a tombstoned or otherwise contextless cached object.
+- Added post archive import regression coverage for restoring historical posts as non-federating local history while reconnecting imported replies to affected remote threads where possible.
 
 ### Changed
+- Extended Mastodon-compatible streaming aliases and stream metadata so Unfathomably FE can subscribe to followed group and feed aggregates over one authenticated connection per feed.
 - Cleaned project-owned compiler warnings so the backend can continue to build under stricter warnings-as-errors validation while newer Elixir/OTP releases still expose third-party dependency warnings separately.
+- Improved post archive imports so replies imported from ActivityPub archives queue a best-effort fetch of their original parent thread without republishing the imported post.
 
 ### Fixed
 - Fixed addressed inbox handling for servers that send the ActivityPub actor as an embedded object instead of a bare actor URI.
 - Fixed WebFinger resolution for leading-`@` group and feed handles, and preserved actor outbox URLs for source previews discovered through WebFinger.
 - Stopped feed list rendering from performing synchronous NodeInfo refreshes for hosts whose cached instance metadata is blank.
 - Fixed OpenTranslate requests for posts with unknown source languages by using provider auto-detection instead of an empty source language, and by pre-detecting obvious non-Latin scripts before OpenTranslate can misread HTML as English.
+- Increased and documented OpenTranslate request timeouts so slower internal translators can handle full-length posts.
 - Fixed incoming Lemmy-style community `Announce` activities wrapping `Like` operations against deleted posts so tombstoned targets no longer raise `FunctionClauseError` in `CommonFixes.fix_activity_context/2` or create Oban retry noise.
 
 ## [2.6.51] - 2026-06-25

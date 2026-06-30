@@ -983,7 +983,9 @@ config :pleroma, Pleroma.Language.Translation, allow_unauthenticated: false, all
 
 config :pleroma, Pleroma.Language.Translation.Opentranslate,
   base_url: nil,
-  api_key: nil
+  api_key: nil,
+  request_timeout_ms: 180_000,
+  language_timeout_ms: 15_000
 
 config :pleroma, Pleroma.Language.Translation.TranslateLocally,
   models: nil,
