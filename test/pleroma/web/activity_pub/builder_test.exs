@@ -9,6 +9,8 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
 
   import Pleroma.Factory
 
+  require Pleroma.Constants
+
   describe "note/1" do
     test "returns note data" do
       user = insert(:user)
@@ -97,7 +99,72 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
     end
   end
 
+  describe "undo/2" do
+    test "embeds vote activities so remote community software can validate UndoVote" do
+      actor = insert(:user)
+
+      like =
+        insert(:like_activity,
+          data_attrs: %{
+            "actor" => actor.ap_id,
+            "audience" => ["https://lemmy.example/c/main"],
+            "to" => ["https://lemmy.example/u/poster"],
+            "cc" => ["https://www.w3.org/ns/activitystreams#Public"]
+          }
+        )
+
+      {:ok, data, []} = Builder.undo(actor, like)
+
+      assert data["type"] == "Undo"
+      assert data["object"] == like.data
+      assert data["audience"] == ["https://lemmy.example/c/main"]
+    end
+
+    test "keeps non-vote Undo objects as activity ids" do
+      actor = insert(:user)
+      follow = insert(:follow_activity)
+
+      {:ok, data, []} = Builder.undo(actor, follow)
+
+      assert data["type"] == "Undo"
+      assert data["object"] == follow.data["id"]
+      refute Map.has_key?(data, "audience")
+    end
+  end
+
   describe "delete/2" do
+    test "keeps empty summary markers for group moderator removals" do
+      actor = insert(:user)
+      object = insert(:note, user: actor)
+
+      assert {:ok, data, []} = Builder.delete(actor, object.data["id"], summary: "")
+
+      assert data["type"] == "Delete"
+      assert data["summary"] == ""
+    end
+
+    test "keeps group context when deleting group-addressed objects" do
+      actor = insert(:user)
+      group = insert(:user, actor_type: "Group", local: true)
+
+      {:ok, object} =
+        Pleroma.Object.create(%{
+          "id" => "https://remote.example/objects/group-reply-delete",
+          "actor" => actor.ap_id,
+          "type" => "Note",
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [group.ap_id],
+          "audience" => group.ap_id
+        })
+
+      assert {:ok, data, []} = Builder.delete(actor, object.data["id"])
+
+      assert data["type"] == "Delete"
+      assert data["object"] == object.data["id"]
+      assert data["audience"] == group.ap_id
+      assert data["cc"] == [group.ap_id]
+    end
+
     test "does not crash when the deleted object has malformed addressing" do
       actor = insert(:user)
       mentioned = insert(:user)

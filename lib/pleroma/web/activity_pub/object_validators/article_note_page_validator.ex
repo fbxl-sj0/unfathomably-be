@@ -8,6 +8,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.HTML
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
   alias Pleroma.Web.ActivityPub.Transmogrifier
@@ -78,6 +79,44 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
     do: Map.drop(data, ["replies"])
 
   defp fix_replies(data), do: data
+
+  defp fix_interaction_collection(data, field, count_field) do
+    case data[field] do
+      %{"items" => items} when is_list(items) ->
+        Map.put(data, field, items)
+
+      %{"orderedItems" => items} when is_list(items) ->
+        Map.put(data, field, items)
+
+      %{"totalItems" => total_items} = collection when is_integer(total_items) ->
+        data
+        |> maybe_put_collection_count(count_field, collection)
+        |> Map.delete(field)
+
+      collection when is_map(collection) ->
+        Map.delete(data, field)
+
+      _ ->
+        data
+    end
+  end
+
+  defp maybe_put_collection_count(data, count_field, %{"totalItems" => total_items})
+       when is_integer(total_items) and total_items >= 0 do
+    case data[count_field] do
+      nil -> Map.put(data, count_field, total_items)
+      _ -> data
+    end
+  end
+
+  defp maybe_put_collection_count(data, _count_field, _collection), do: data
+
+  defp fix_interaction_collections(data) do
+    data
+    |> fix_interaction_collection("likes", "like_count")
+    |> fix_interaction_collection("announcements", "announcement_count")
+    |> fix_interaction_collection("shares", "announcement_count")
+  end
 
   defp fix_replies_collection(data) do
     collection_id =
@@ -263,6 +302,53 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
 
   defp fix_misskey_content(object), do: object
 
+  defp fix_group_thread_root_type(%{"type" => "Note"} = object) do
+    if group_thread_root?(object) do
+      object
+      |> Map.put("type", "Page")
+      |> Map.put("name", group_page_name(object))
+    else
+      object
+    end
+  end
+
+  defp fix_group_thread_root_type(object), do: object
+
+  defp group_thread_root?(object) do
+    Addressing.group_addressing_context?(object) and root_object?(object)
+  end
+
+  defp root_object?(%{"inReplyTo" => value}) do
+    value in [nil, "", []]
+  end
+
+  defp root_object?(_object), do: true
+
+  defp group_page_name(object) do
+    [
+      object["name"],
+      object["summary"],
+      object["content"]
+    ]
+    |> Enum.find_value(&compact_title/1)
+    |> Kernel.||("Untitled group post")
+  end
+
+  defp compact_title(value) when is_binary(value) do
+    value =
+      value
+      |> String.replace(~r/<[^>]*>/, " ")
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+
+    case value do
+      "" -> nil
+      value -> String.slice(value, 0, 200)
+    end
+  end
+
+  defp compact_title(_value), do: nil
+
   def fix(data) do
     data
     |> CommonFixes.fix_actor()
@@ -271,10 +357,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
     |> fix_tag()
     |> fix_replies_collection()
     |> fix_replies()
+    |> fix_interaction_collections()
     |> fix_quote_url()
     |> fix_attachments()
     |> normalize_source()
     |> fix_misskey_content()
+    |> fix_group_thread_root_type()
     |> CommonFixes.fix_quote_url()
     |> Transmogrifier.fix_emoji()
     |> Transmogrifier.fix_content_map()

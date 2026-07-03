@@ -17,6 +17,7 @@ defmodule Pleroma.NotificationTest do
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.CommonAPI
+  alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.NotificationView
   alias Pleroma.Web.Push
   alias Pleroma.Web.Streamer
@@ -649,6 +650,73 @@ defmodule Pleroma.NotificationTest do
       assert [_notification] = Notification.for_user(user)
       {:ok, _follower} = CommonAPI.reject_follow_request(follower, user)
       assert [] = Notification.for_user(user)
+    end
+
+    test "it creates `group_follow` notification for approved local group follows" do
+      owner = insert(:user)
+      follower = insert(:user)
+
+      {:ok, group} =
+        FederatedTarget.create_local_group(owner, %{
+          "display_name" => "Coffee Club",
+          "group_visibility" => "everyone"
+        })
+
+      {:ok, _, _, _activity} = CommonAPI.follow(follower, group)
+
+      assert FollowingRelationship.following?(follower, group)
+      refute FollowingRelationship.following?(follower, owner)
+      assert [notification] = Notification.for_user(owner)
+
+      group_id = to_string(group.id)
+
+      assert %{type: "group_follow", target: %{id: ^group_id}} =
+               NotificationView.render("show.json", %{
+                 notification: notification,
+                 for: owner
+               })
+    end
+
+    test "it creates `group_follow_request` notification for pending local group follows" do
+      owner = insert(:user)
+      follower = insert(:user)
+
+      {:ok, group} =
+        FederatedTarget.create_local_group(owner, %{
+          "display_name" => "Closed Coffee Club",
+          "group_visibility" => "members_only"
+        })
+
+      {:ok, _, _, _activity} = CommonAPI.follow(follower, group)
+
+      refute FollowingRelationship.following?(follower, group)
+      refute FollowingRelationship.following?(follower, owner)
+      assert [notification] = Notification.for_user(owner)
+
+      group_id = to_string(group.id)
+
+      assert %{type: "group_follow_request", target: %{id: ^group_id}} =
+               NotificationView.render("show.json", %{
+                 notification: notification,
+                 for: owner
+               })
+    end
+
+    test "it skips local group follow notifications when the group disabled them" do
+      owner = insert(:user)
+      follower = insert(:user)
+
+      {:ok, group} =
+        FederatedTarget.create_local_group(owner, %{
+          "display_name" => "Quiet Coffee Club",
+          "group_visibility" => "everyone",
+          "group_join_notifications" => "false"
+        })
+
+      {:ok, _, _, _activity} = CommonAPI.follow(follower, group)
+
+      assert FollowingRelationship.following?(follower, group)
+      assert [] = Notification.for_user(owner)
     end
   end
 

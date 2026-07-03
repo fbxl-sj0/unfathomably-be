@@ -8,6 +8,7 @@ defmodule Pleroma.Web.CommonAPI do
   alias Pleroma.Conversation.Participation
   alias Pleroma.FollowingRelationship
   alias Pleroma.Formatter
+  alias Pleroma.GroupMembership
   alias Pleroma.ModerationLog
   alias Pleroma.Object
   alias Pleroma.Rule
@@ -189,11 +190,15 @@ defmodule Pleroma.Web.CommonAPI do
   def delete(activity_id, user) do
     with {_, %Activity{data: %{"object" => _, "type" => "Create"}} = activity} <-
            {:find_activity, Activity.get_by_id(activity_id, filter: [])},
-         {_, %Object{} = object, _} <-
-           {:find_object, Object.normalize(activity, fetch: false), activity},
-         true <- User.privileged?(user, :messages_delete) || user.ap_id == object.data["actor"],
-         {:ok, delete_data, _} <- Builder.delete(user, object.data["id"]),
-         {:ok, delete, _} <- Pipeline.common_pipeline(delete_data, local: true) do
+          {_, %Object{} = object, _} <-
+            {:find_object, Object.normalize(activity, fetch: false), activity},
+          group_moderation_delete = group_moderation_delete?(user, object),
+          true <-
+            User.privileged?(user, :messages_delete) || user.ap_id == object.data["actor"] ||
+              group_moderation_delete,
+          delete_options = delete_options_for(user, object, group_moderation_delete),
+          {:ok, delete_data, _} <- Builder.delete(user, object.data["id"], delete_options),
+          {:ok, delete, _} <- Pipeline.common_pipeline(delete_data, local: true) do
       if User.privileged?(user, :messages_delete) and user.ap_id != object.data["actor"] do
         action =
           if object.data["type"] == "ChatMessage" do
@@ -233,6 +238,30 @@ defmodule Pleroma.Web.CommonAPI do
         {:error, dgettext("errors", "Could not delete")}
     end
   end
+
+  defp delete_options_for(%User{ap_id: ap_id}, %Object{data: %{"actor" => ap_id}}, _), do: []
+
+  defp delete_options_for(_user, _object, true) do
+    # Lemmy-compatible group moderation:
+    #
+    # Lemmy uses a Delete activity for both author deletion and moderator
+    # removal. The presence of `summary` marks the activity as moderation.
+    # An empty summary means "removed by a moderator, with no public reason."
+    [summary: ""]
+  end
+
+  defp delete_options_for(_user, _object, _), do: []
+
+  defp group_moderation_delete?(%User{} = actor, %Object{data: data}) do
+    data
+    |> Addressing.addressed_group_ap_ids()
+    |> User.get_all_by_ap_id()
+    |> Enum.any?(fn group ->
+      GroupMembership.local_group?(group) && GroupMembership.manager?(actor, group)
+    end)
+  end
+
+  defp group_moderation_delete?(_actor, _object), do: false
 
   def repeat(id, user, params \\ %{}) do
     with %Activity{data: %{"type" => "Create"}} = activity <- Activity.get_by_id(id),

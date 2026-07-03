@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.UtilsTest do
+  use Oban.Testing, repo: Pleroma.Repo
   use Pleroma.DataCase, async: true
   alias Pleroma.Activity
   alias Pleroma.Object
@@ -116,7 +117,12 @@ defmodule Pleroma.Web.ActivityPub.UtilsTest do
         )
 
       assert :ok = Utils.maybe_handle_group_posts(activity)
-      assert Utils.get_existing_announce(group.ap_id, object)
+      assert announce = Utils.get_existing_announce(group.ap_id, object)
+
+      assert_enqueued(
+        worker: Pleroma.Workers.PublisherWorker,
+        args: %{"op" => "publish", "params" => %{"id" => announce.data["id"]}}
+      )
     end
 
     test "repeats public posts into local groups addressed through attributedTo group objects" do

@@ -110,6 +110,58 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AnnounceHandlingTest do
     assert Activity.get_create_by_object_ap_id(data["object"]).id == activity.id
   end
 
+  test "outgoing group announces embed root Notes as Lemmy-style Create/Page activities" do
+    author = insert(:user, local: false, ap_id: "https://lotide.example/apub/users/1")
+    group = insert(:user, actor_type: "Group")
+
+    object =
+      insert(:note,
+        user: author,
+        data: %{
+          "id" => "https://lotide.example/apub/posts/1",
+          "type" => "Note",
+          "actor" => author.ap_id,
+          "attributedTo" => author.ap_id,
+          "to" => [group.ap_id, Pleroma.Constants.as_public()],
+          "cc" => [],
+          "audience" => group.ap_id,
+          "name" => "Lotide-shaped group root",
+          "content" => "<p>A group post body.</p>",
+          "context" => "https://lotide.example/apub/posts/1"
+        }
+      )
+
+    announce = %{
+      "id" => Pleroma.Web.ActivityPub.Utils.generate_activity_id(),
+      "type" => "Announce",
+      "actor" => group.ap_id,
+      "object" => object.data["id"],
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address]
+    }
+
+    assert {:ok, outgoing} = Transmogrifier.prepare_outgoing(announce)
+
+    assert outgoing["object"]["type"] == "Create"
+    assert outgoing["object"]["actor"] == author.ap_id
+    assert outgoing["object"]["audience"] == group.ap_id
+    assert outgoing["object"]["to"] == [Pleroma.Constants.as_public()]
+    assert outgoing["object"]["cc"] == [group.ap_id]
+
+    page = outgoing["object"]["object"]
+
+    assert page["id"] == object.data["id"]
+    assert page["type"] == "Page"
+    assert page["attributedTo"] == author.ap_id
+    assert page["name"] == "Lotide-shaped group root"
+    assert page["audience"] == group.ap_id
+    assert page["to"] == [group.ap_id, Pleroma.Constants.as_public()]
+    assert page["cc"] == []
+    refute Map.has_key?(page, "actor")
+    refute Map.has_key?(page, "bto")
+    refute Map.has_key?(page, "bcc")
+  end
+
   test "it handles Lemmy-style announces of delete activities" do
     actor = insert(:user, local: false, ap_id: "http://lemmy.example/u/admin")
 

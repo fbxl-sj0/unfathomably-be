@@ -40,7 +40,7 @@ defmodule Pleroma.Activity.Ir.Topics do
     if Visibility.get_visibility(activity) in ["public", "local"] do
       target_tags = source_tags(activity) ++ group_tags(object, activity)
 
-      target_tags ++ aggregate_federated_target_tags(target_tags)
+      target_tags ++ aggregate_federated_target_tags(target_tags, object)
     else
       []
     end
@@ -58,11 +58,30 @@ defmodule Pleroma.Activity.Ir.Topics do
 
   defp source_tags(_), do: []
 
-  defp aggregate_federated_target_tags(target_tags) do
+  defp aggregate_federated_target_tags(target_tags, object) do
+    if discussion_root?(object) do
+      do_aggregate_federated_target_tags(target_tags)
+    else
+      []
+    end
+  end
+
+  defp do_aggregate_federated_target_tags(target_tags) do
     target_tags
     |> Enum.flat_map(&aggregate_federated_target_tag/1)
     |> Enum.uniq()
   end
+
+  defp discussion_root?(%{data: %{} = data}) do
+    case Map.get(data, "inReplyTo") do
+      nil -> true
+      "" -> true
+      [] -> true
+      _ -> false
+    end
+  end
+
+  defp discussion_root?(_), do: false
 
   defp aggregate_federated_target_tag("group:" <> id) do
     aggregate_followed_target_tags(id, "user:groups")

@@ -11,6 +11,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.UndoHandlingTest do
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.CommonAPI
 
+  require Pleroma.Constants
+
   import Pleroma.Factory
 
   test "it works for incoming emoji reaction undos" do
@@ -32,7 +34,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.UndoHandlingTest do
     assert activity.data["type"] == "Undo"
   end
 
-  test "it returns an error for incoming unlikes wihout a like activity" do
+  test "it ignores incoming unlikes without a like activity" do
     user = insert(:user)
     {:ok, activity} = CommonAPI.post(user, %{status: "leave a like pls"})
 
@@ -41,7 +43,24 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.UndoHandlingTest do
       |> Jason.decode!()
       |> Map.put("object", activity.data["object"])
 
-    assert Transmogrifier.handle_incoming(data) == :error
+    assert {:ok, :ignored} = Transmogrifier.handle_incoming(data)
+  end
+
+  test "it ignores compact Undo activities for unknown remote activity ids" do
+    data = %{
+      "id" => "https://annihilation.social/activities/fb505108-5807-4305-a650-4bbe9424f594",
+      "type" => "Undo",
+      "actor" => "https://annihilation.social/users/amerika",
+      "object" => "https://annihilation.social/activities/40e813bd-6788-4ce0-8f97-d8d2d896e67f",
+      "to" => [
+        "https://annihilation.social/users/amerika/followers",
+        "https://social.linux.pizza/users/balasubramanium"
+      ],
+      "cc" => [Pleroma.Constants.as_public()]
+    }
+
+    assert {:ok, :ignored} = Transmogrifier.handle_incoming(data)
+    refute Activity.get_by_ap_id(data["id"])
   end
 
   test "it works for incoming unlikes with an existing like activity" do

@@ -13,6 +13,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
   alias Pleroma.Workers.PublisherWorker
   alias Pleroma.Workers.ReceiverWorker
   alias Pleroma.Workers.RemoteFetcherWorker
+  alias Pleroma.Workers.RichMediaWorker
   alias Pleroma.Workers.SignatureRetryWorker
 
   setup do
@@ -100,6 +101,27 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
         errors: [%{"error" => "{:error, {:http, 405}}"}]
       )
 
+    tombstone_reaction =
+      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [%{"error" => "do_fix_object_action_recipients tombstoned Page"}]
+      )
+
+    pinned_limit =
+      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [%{"error" => "side_effects {:error, :pinned_statuses_limit_reached}"}]
+      )
+
+    duplicate_object =
+      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [%{"error" => "The object to create already exists"}]
+      )
+
     unknown_error =
       ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
       |> insert_job(now,
@@ -107,10 +129,13 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
         errors: [%{"error" => "fresh unclassified receiver error"}]
       )
 
-    assert 2 = ObanCleanupWorker.discard_fixed_federation_exception_retries()
+    assert 5 = ObanCleanupWorker.discard_fixed_federation_exception_retries()
 
     assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, duplicate_activity.id)
     assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, terminal_signature_retry.id)
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, tombstone_reaction.id)
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, pinned_limit.id)
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, duplicate_object.id)
     assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, unknown_error.id)
   end
 
@@ -152,14 +177,74 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
       PublisherWorker.new(%{"op" => "publish_one"})
       |> insert_job(now, state: "retryable", errors: [%{"error" => "status: 405"}])
 
+    minds_html_500 =
+      PublisherWorker.new(%{"op" => "publish_one"})
+      |> insert_job(now,
+        state: "retryable",
+        errors: [
+          %{
+            "error" =>
+              "url: \"https://www.minds.com/api/activitypub/inbox\", headers: [{\"x-minds\", \"Something is wrong\"}], status: 500"
+          }
+        ]
+      )
+
     temporary_job =
       PublisherWorker.new(%{"op" => "publish_one"})
       |> insert_job(now, state: "retryable", errors: [%{"error" => "status: 502"}])
 
-    assert 1 = ObanCleanupWorker.discard_terminal_publisher_retries()
+    assert 2 = ObanCleanupWorker.discard_terminal_publisher_retries()
 
     assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, terminal_job.id)
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, minds_html_500.id)
     assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, temporary_job.id)
+  end
+
+  test "discards terminal background retries" do
+    now = DateTime.utc_now()
+
+    oversized_rich_media =
+      RichMediaWorker.new(%{"op" => "backfill", "url" => "https://remote.example/big"})
+      |> insert_job(now, state: "retryable", errors: [%{"error" => "{:error, :body_too_large}"}])
+
+    invalid_content_type =
+      RichMediaWorker.new(%{"op" => "backfill", "url" => "https://remote.example/not-html"})
+      |> insert_job(now, state: "retryable", errors: [%{"error" => "{:error, :content_type}"}])
+
+    temporary_job =
+      RichMediaWorker.new(%{"op" => "backfill", "url" => "https://remote.example/slow"})
+      |> insert_job(now, state: "retryable", errors: [%{"error" => "{:error, :timeout}"}])
+
+    assert 2 = ObanCleanupWorker.discard_terminal_background_retries()
+
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, oversized_rich_media.id)
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, invalid_content_type.id)
+    assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, temporary_job.id)
+  end
+
+  test "discards exhausted incoming transaction retries" do
+    now = DateTime.utc_now()
+
+    exhausted_job =
+      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
+      |> insert_job(now,
+        state: "retryable",
+        attempt: 10,
+        errors: [%{"error" => "ERROR 25P02 (in_failed_sql_transaction) current transaction is aborted"}]
+      )
+
+    recent_job =
+      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
+      |> insert_job(now,
+        state: "retryable",
+        attempt: 2,
+        errors: [%{"error" => "ERROR 25P02 (in_failed_sql_transaction) current transaction is aborted"}]
+      )
+
+    assert 1 = ObanCleanupWorker.discard_exhausted_incoming_transaction_retries()
+
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, exhausted_job.id)
+    assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, recent_job.id)
   end
 
   test "discards publisher jobs aimed at unreachable hosts" do
@@ -210,6 +295,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
   defp insert_job(changeset, scheduled_at, opts \\ []) do
     state = Keyword.get(opts, :state, "scheduled")
     errors = Keyword.get(opts, :errors, [])
+    attempt = Keyword.get(opts, :attempt, 0)
 
     {:ok, job} =
       changeset
@@ -217,6 +303,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
       |> Ecto.Changeset.put_change(:inserted_at, scheduled_at)
       |> Ecto.Changeset.put_change(:state, state)
       |> Ecto.Changeset.put_change(:errors, errors)
+      |> Ecto.Changeset.put_change(:attempt, attempt)
       |> Oban.insert()
 
     job

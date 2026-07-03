@@ -94,6 +94,19 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
     end)
   end
 
+  test "cancels non-ActivityPub content-type fetches" do
+    with_mock Fetcher,
+      fetch_object_from_id: fn _, _ -> {:error, {:content_type, "text/html; charset=utf-8"}} end do
+      assert {:cancel, {:content_type, "text/html; charset=utf-8"}} =
+               RemoteFetcherWorker.perform(%Oban.Job{
+                 args: %{
+                   "op" => "fetch_remote",
+                   "id" => "https://remote.example/html-page"
+                 }
+               })
+    end
+  end
+
   test "cancels reaction activities whose actor or object cannot be fetched" do
     with_mock Fetcher,
       fetch_object_from_id: fn _, _ ->

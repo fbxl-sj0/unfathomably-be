@@ -360,6 +360,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
             ap_streamer().stream_out(object)
             ap_streamer().stream_out_participations(deleted_object, user)
+            Utils.maybe_handle_group_deletes(object)
             :ok
           else
             {:actor, _} ->

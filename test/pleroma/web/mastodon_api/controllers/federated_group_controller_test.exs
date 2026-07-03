@@ -486,7 +486,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
       %{conn: owner_conn, user: owner} =
         oauth_access(["write", "write:accounts", "read:accounts", "read:follows"])
 
-      moderator = insert(:user)
+      moderator = insert(:user, is_admin: true)
       third = insert(:user)
 
       %{conn: moderator_conn} =
@@ -544,6 +544,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
 
       assert %GroupMembership{state: "banned"} = GroupMembership.get(group, third)
       assert %GroupMembership{role: "owner"} = GroupMembership.get(group, owner)
+      assert %{is_active: true} = User.get_cached_by_id(third.id)
 
       assert %{"error" => "You are banned from this group"} =
                third_conn

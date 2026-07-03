@@ -8,12 +8,15 @@ defmodule Pleroma.Web.MastodonAPI.FederatedSourceTimelineController do
   import Pleroma.Web.ControllerHelper, only: [add_link_headers: 2]
 
   alias Pleroma.Activity
+  alias Pleroma.Constants
   alias Pleroma.Pagination
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.StatusView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
+
+  require Pleroma.Constants
 
   plug(OAuthScopesPlug, %{scopes: ["read:statuses"], fallback: :proceed_unauthenticated})
 
@@ -51,8 +54,12 @@ defmodule Pleroma.Web.MastodonAPI.FederatedSourceTimelineController do
   defp fetch_followed_source_activities([], _activity_params), do: []
 
   defp fetch_followed_source_activities(source_ap_ids, activity_params) do
-    source_ap_ids
-    |> ActivityPub.fetch_activities_query(activity_params)
+    # Feed actors normally author their items rather than addressing the
+    # items to themselves.  Groups are recipient-oriented, but feeds are
+    # actor-oriented, so the followed feed timeline must restrict by actor
+    # while still using normal public-recipient visibility limits.
+    [Constants.as_public()]
+    |> ActivityPub.fetch_activities_query(Map.put(activity_params, :actor_id, source_ap_ids))
     |> Pagination.fetch_paginated(activity_params)
   end
 

@@ -1061,6 +1061,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp restrict_remote(query, _), do: query
 
+  defp restrict_actor(query, %{actor_id: actor_ids}) when is_list(actor_ids) do
+    from(activity in query, where: activity.actor in ^actor_ids)
+  end
+
   defp restrict_actor(query, %{actor_id: actor_id}) do
     from(activity in query, where: activity.actor == ^actor_id)
   end

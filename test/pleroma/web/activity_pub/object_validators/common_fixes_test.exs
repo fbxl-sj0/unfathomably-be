@@ -74,6 +74,26 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixesTest do
       assert %{"to" => to} = CommonFixes.fix_object_action_recipients(data, object)
       assert Enum.sort(to) == Enum.sort([existing, object_actor])
     end
+
+    test "leaves recipients unchanged when the target object has no actor" do
+      data = %{
+        "actor" => "https://lemmy.example/u/alice",
+        "object" => "https://lemmy.example/post/1",
+        "to" => [],
+        "type" => "EmojiReact"
+      }
+
+      object = %Object{
+        data: %{
+          "deleted" => "2026-07-02T07:31:16Z",
+          "formerType" => "Page",
+          "id" => "https://lemmy.example/post/1",
+          "type" => "Tombstone"
+        }
+      }
+
+      assert ^data = CommonFixes.fix_object_action_recipients(data, object)
+    end
   end
 
   describe "fix_activity_context/2" do

@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidationTest do
   use Pleroma.DataCase, async: false
 
+  alias Pleroma.GroupMembership
   alias Pleroma.Object
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.ObjectValidator
@@ -28,6 +29,17 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidationTest do
       {:ok, valid_post_delete, _} = ObjectValidator.validate(valid_post_delete, [])
 
       assert valid_post_delete["deleted_activity_id"]
+    end
+
+    test "it preserves empty summary on moderator removal deletes", %{
+      valid_post_delete: valid_post_delete
+    } do
+      delete =
+        valid_post_delete
+        |> Map.put("summary", "")
+
+      assert {:ok, delete, _} = ObjectValidator.validate(delete, [])
+      assert delete["summary"] == ""
     end
 
     test "it is valid when the object was pruned but the Create activity remains", %{
@@ -155,6 +167,44 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidationTest do
       {:error, cng} = ObjectValidator.validate(invalid_other_actor, [])
 
       assert {:actor, {"is not allowed to modify object", []}} in cng.errors
+    end
+
+    test "it allows local group managers to remove remote group posts" do
+      group = insert(:user, local: true, actor_type: "Group")
+      moderator = insert(:user)
+
+      {:ok, _membership} = GroupMembership.ensure_owner(group, moderator)
+
+      remote_author =
+        insert(:user,
+          local: false,
+          ap_id: "https://remote-delete.example/users/alice",
+          follower_address: "https://remote-delete.example/users/alice/followers"
+        )
+
+      {:ok, object} =
+        Object.create(%{
+          "id" => "https://remote-delete.example/objects/group-post",
+          "actor" => remote_author.ap_id,
+          "type" => "Note",
+          "to" => [Pleroma.Constants.as_public(), group.ap_id],
+          "cc" => [],
+          "audience" => group.ap_id
+        })
+
+      delete = %{
+        "id" => "https://#{Pleroma.Web.Endpoint.host()}/activities/delete/group-post",
+        "actor" => moderator.ap_id,
+        "type" => "Delete",
+        "object" => object.data["id"],
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [group.ap_id],
+        "audience" => group.ap_id,
+        "summary" => ""
+      }
+
+      assert {:ok, delete, _meta} = ObjectValidator.validate(delete, [])
+      assert delete["summary"] == ""
     end
 
     test "it's only valid if the actor of the object is a privileged local user",

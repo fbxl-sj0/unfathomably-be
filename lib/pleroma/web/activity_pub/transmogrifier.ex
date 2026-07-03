@@ -276,56 +276,56 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     attachments =
       Enum.map(attachment, fn
         data when is_map(data) ->
-        url =
-          cond do
-            is_list(data["url"]) -> List.first(data["url"])
-            is_map(data["url"]) -> data["url"]
-            true -> nil
-          end
+          url =
+            cond do
+              is_list(data["url"]) -> List.first(data["url"])
+              is_map(data["url"]) -> data["url"]
+              true -> nil
+            end
 
-        media_type =
-          cond do
-            is_map(url) && valid_media_type?(url["mediaType"]) ->
-              url["mediaType"]
+          media_type =
+            cond do
+              is_map(url) && valid_media_type?(url["mediaType"]) ->
+                url["mediaType"]
 
-            valid_media_type?(data["mediaType"]) ->
-              data["mediaType"]
+              valid_media_type?(data["mediaType"]) ->
+                data["mediaType"]
 
-            valid_media_type?(data["mimeType"]) ->
-              data["mimeType"]
+              valid_media_type?(data["mimeType"]) ->
+                data["mimeType"]
 
-            true ->
-              nil
-          end
+              true ->
+                nil
+            end
 
-        href =
-          cond do
-            is_map(url) && is_binary(url["href"]) -> url["href"]
-            is_binary(data["url"]) -> data["url"]
-            is_binary(data["href"]) -> data["href"]
-            true -> nil
-          end
+          href =
+            cond do
+              is_map(url) && is_binary(url["href"]) -> url["href"]
+              is_binary(data["url"]) -> data["url"]
+              is_binary(data["href"]) -> data["href"]
+              true -> nil
+            end
 
-        if href do
-          attachment_url =
+          if href do
+            attachment_url =
+              %{
+                "href" => href,
+                "type" => Map.get(url || %{}, "type", "Link")
+              }
+              |> Maps.put_if_present("mediaType", media_type)
+              |> Maps.put_if_present("width", (url || %{})["width"] || data["width"])
+              |> Maps.put_if_present("height", (url || %{})["height"] || data["height"])
+
             %{
-              "href" => href,
-              "type" => Map.get(url || %{}, "type", "Link")
+              "url" => [attachment_url],
+              "type" => data["type"] || "Document"
             }
             |> Maps.put_if_present("mediaType", media_type)
-            |> Maps.put_if_present("width", (url || %{})["width"] || data["width"])
-            |> Maps.put_if_present("height", (url || %{})["height"] || data["height"])
-
-          %{
-            "url" => [attachment_url],
-            "type" => data["type"] || "Document"
-          }
-          |> Maps.put_if_present("mediaType", media_type)
-          |> Maps.put_if_present("name", data["name"])
-          |> Maps.put_if_present("blurhash", data["blurhash"])
-        else
-          nil
-        end
+            |> Maps.put_if_present("name", data["name"])
+            |> Maps.put_if_present("blurhash", data["blurhash"])
+          else
+            nil
+          end
 
         _ ->
           nil
@@ -378,6 +378,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def fix_emoji(%{"tag" => %{"type" => "Emoji", "name" => raw_name} = tag} = object)
       when is_binary(raw_name) do
     name = String.trim(raw_name, ":")
+
     emoji =
       if valid_emoji_tag?(tag) do
         %{name => tag["icon"]["url"]}
@@ -550,6 +551,26 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def handle_incoming(%{"type" => type}, _options) when type in ~w{View Read},
     do: {:ok, :ignored}
 
+  # Owncast publishes stream state as ActivityStreams lifecycle messages with
+  # Owncast extension keys. We do not yet store live-stream presence state, but
+  # these messages are valid federation traffic and should not be treated as
+  # malformed inbox data.
+  def handle_incoming(%{"type" => "Offer"} = data, _options) do
+    if owncast_stream_lifecycle_activity?(data), do: {:ok, :ignored}, else: :error
+  end
+
+  def handle_incoming(%{"type" => "Leave"} = data, _options) do
+    if owncast_stream_lifecycle_activity?(data) do
+      {:ok, :ignored}
+    else
+      with {:ok, %User{}} <- ObjectValidator.fetch_actor(data),
+           {:ok, activity, _} <-
+             Pipeline.common_pipeline(data, local: false) do
+        {:ok, activity}
+      end
+    end
+  end
+
   def handle_incoming(
         %{"type" => "Listen", "object" => %{"type" => "Audio"} = object} = data,
         options
@@ -621,12 +642,12 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         options
       )
       when type in [
-              "Create",
-              "Like",
-              "EmojiReact",
-              "Dislike",
-              "Undo",
-              "Delete",
+             "Create",
+             "Like",
+             "EmojiReact",
+             "Dislike",
+             "Undo",
+             "Delete",
              "Update",
              "Add",
              "Remove",
@@ -692,7 +713,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         %{"type" => type} = data,
         _options
       )
-      when type in ~w{Update Follow Accept Reject Join Leave} do
+      when type in ~w{Update Follow Accept Reject Join} do
     with {:ok, %User{}} <- ObjectValidator.fetch_actor(data),
          {:ok, activity, _} <-
            Pipeline.common_pipeline(data, local: false) do
@@ -753,8 +774,12 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       when type in ["Like", "EmojiReact", "Announce", "Block", "Join", "Lock"] do
     data = fix_undo_object_id(data)
 
-    with {:ok, activity, _} <- Pipeline.common_pipeline(data, local: false) do
+    with false <- unknown_undo_activity?(data),
+         {:ok, activity, _} <- Pipeline.common_pipeline(data, local: false) do
       {:ok, activity}
+    else
+      true -> {:ok, :ignored}
+      error -> error
     end
   end
 
@@ -772,7 +797,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       |> Map.put("object", data)
       |> handle_incoming(options)
     else
-      _e -> :error
+      _e ->
+        if unknown_undo_activity?(activity), do: {:ok, :ignored}, else: :error
     end
   end
 
@@ -976,14 +1002,23 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       |> Object.normalize(fetch: false)
 
     data =
-      if Visibility.is_private?(object) && object.data["actor"] == ap_id do
-        data |> Map.put("object", object |> Map.get(:data) |> prepare_object)
-      else
-        data |> maybe_fix_object_url
+      cond do
+        group_announce_root?(ap_id, object) ->
+          data
+          |> Map.put("object", object |> Map.get(:data) |> prepare_group_announce_object(ap_id))
+
+        Visibility.is_private?(object) && object.data["actor"] == ap_id ->
+          data |> Map.put("object", object |> Map.get(:data) |> prepare_object)
+
+        true ->
+          data |> maybe_fix_object_url
       end
 
     data =
       data
+      |> normalize_threadiverse_vote_audience()
+      |> normalize_threadiverse_delete_audience()
+      |> strip_empty_audience()
       |> strip_internal_fields
       |> Map.merge(Utils.make_json_ld_header(data))
       |> Map.delete("bcc")
@@ -1040,12 +1075,192 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def prepare_outgoing(%{"type" => _type} = data) do
     data =
       data
+      |> normalize_threadiverse_vote_audience()
+      |> normalize_threadiverse_delete_audience()
+      |> strip_empty_audience()
       |> strip_internal_fields
       |> maybe_fix_object_url
       |> Map.merge(Utils.make_json_ld_header(data))
 
     {:ok, data}
   end
+
+  defp normalize_threadiverse_vote_audience(
+         %{"type" => "Announce", "object" => object} = data
+       )
+       when is_map(object) do
+    Map.put(data, "object", normalize_threadiverse_vote_audience(object))
+  end
+
+  defp normalize_threadiverse_vote_audience(%{"type" => type} = data)
+       when type in ["Like", "Dislike"] do
+    maybe_scalarize_threadiverse_vote_audience(data)
+  end
+
+  defp normalize_threadiverse_vote_audience(%{"type" => "Undo", "object" => object_id} = data)
+       when is_binary(object_id) do
+    with %Activity{data: %{"type" => type} = object} when type in ["Like", "Dislike"] <-
+           Activity.normalize(object_id) do
+      data
+      |> Map.put("object", prepare_threadiverse_vote_object(object))
+      |> maybe_scalarize_threadiverse_vote_audience()
+    else
+      _ -> data
+    end
+  end
+
+  defp normalize_threadiverse_vote_audience(
+         %{"type" => "Undo", "object" => %{"type" => type} = object} = data
+       )
+       when type in ["Like", "Dislike"] do
+    data
+    |> Map.put("object", maybe_scalarize_threadiverse_vote_audience(object))
+    |> maybe_scalarize_threadiverse_vote_audience()
+  end
+
+  defp normalize_threadiverse_vote_audience(data), do: data
+
+  defp normalize_threadiverse_delete_audience(
+         %{"type" => "Announce", "object" => object} = data
+       )
+       when is_map(object) do
+    Map.put(data, "object", normalize_threadiverse_delete_audience(object))
+  end
+
+  defp normalize_threadiverse_delete_audience(%{"type" => "Delete"} = data) do
+    if Pleroma.Web.ActivityPub.Addressing.group_addressing_context?(data) do
+      maybe_scalarize_threadiverse_group_audience(data)
+    else
+      data
+    end
+  end
+
+  defp normalize_threadiverse_delete_audience(data), do: data
+
+  defp strip_empty_audience(%{"audience" => []} = data) do
+    # Lemmy's Threadiverse activity structs model `audience` as an optional
+    # single community id on activities such as Delete. An empty internal
+    # recipient list is meaningful to us, but invalid on the wire there.
+    Map.delete(data, "audience")
+  end
+
+  defp strip_empty_audience(data), do: data
+
+  defp prepare_threadiverse_vote_object(object) do
+    object
+    |> normalize_threadiverse_vote_audience()
+    |> strip_internal_fields()
+    |> maybe_fix_object_url()
+  end
+
+  defp maybe_scalarize_threadiverse_vote_audience(data) do
+    if Pleroma.Web.ActivityPub.Addressing.group_addressing_context?(data) do
+      maybe_scalarize_threadiverse_group_audience(data)
+    else
+      data
+    end
+  end
+
+  defp maybe_scalarize_threadiverse_group_audience(data) do
+    scalarize_single_audience(data)
+  end
+
+  defp scalarize_single_audience(%{"audience" => [audience]} = data) when is_binary(audience) do
+    # Lemmy's Vote and UndoVote protocol structs model `audience` as one
+    # community ObjectId, not a list. We keep our internal recipient data
+    # normalized as lists, then restore the scalar ActivityPub shape only at
+    # the outgoing boundary so community vote announcements can deserialize.
+    Map.put(data, "audience", audience)
+  end
+
+  defp scalarize_single_audience(data), do: data
+
+  defp group_announce_root?(ap_id, %Object{data: data}) when is_binary(ap_id) do
+    with %User{actor_type: "Group"} <- User.get_cached_by_ap_id(ap_id) do
+      Addressing.group_addressing_context?(data) && root_object?(data)
+    else
+      _ -> false
+    end
+  end
+
+  defp group_announce_root?(_ap_id, _object), do: false
+
+  defp prepare_group_announce_object(data, group_ap_id) do
+    page =
+      data
+      |> normalize_group_announce_root_type()
+      |> normalize_group_announce_addressing(group_ap_id)
+      |> prepare_object()
+      |> Map.drop(["actor", "bcc", "bto"])
+
+    group_announce_create(data, page, group_ap_id)
+  end
+
+  defp normalize_group_announce_addressing(data, group_ap_id) do
+    data
+    |> Map.put("audience", group_ap_id)
+    |> Map.put("to", [group_ap_id, Pleroma.Constants.as_public()])
+    |> Map.put("cc", [])
+    |> Map.drop(["bcc", "bto"])
+  end
+
+  defp group_announce_create(data, page, group_ap_id) do
+    create = Activity.get_create_by_object_ap_id(data["id"])
+    create_data = if create, do: create.data, else: %{}
+    actor = create_data["actor"] || page["attributedTo"]
+
+    %{
+      "id" => create_data["id"] || "#{data["id"]}#create",
+      "type" => "Create",
+      "actor" => actor,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group_ap_id],
+      "audience" => group_ap_id,
+      "object" => page
+    }
+    |> Pleroma.Maps.put_if_present("context", data["context"] || create_data["context"])
+    |> Pleroma.Maps.put_if_present("published", create_data["published"] || data["published"])
+    |> Map.drop(["bcc", "bto"])
+  end
+
+  defp normalize_group_announce_root_type(%{"type" => "Note"} = data) do
+    data
+    |> Map.put("type", "Page")
+    |> Map.put("name", group_page_name(data))
+  end
+
+  defp normalize_group_announce_root_type(data), do: data
+
+  defp root_object?(%{"inReplyTo" => value}) do
+    value in [nil, "", []]
+  end
+
+  defp root_object?(_data), do: true
+
+  defp group_page_name(data) do
+    [
+      data["name"],
+      data["summary"],
+      data["content"]
+    ]
+    |> Enum.find_value(&compact_title/1)
+    |> Kernel.||("Untitled group post")
+  end
+
+  defp compact_title(value) when is_binary(value) do
+    value =
+      value
+      |> String.replace(~r/<[^>]*>/, " ")
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+
+    case value do
+      "" -> nil
+      value -> String.slice(value, 0, 200)
+    end
+  end
+
+  defp compact_title(_value), do: nil
 
   def maybe_fix_object_url(%{"object" => object} = data) when is_binary(object) do
     with false <- String.starts_with?(object, "http"),
@@ -1064,6 +1279,85 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   end
 
   def maybe_fix_object_url(data), do: data
+
+  defp owncast_stream_lifecycle_activity?(%{"type" => "Offer"} = data) do
+    owncast_stream_metadata?(data) && same_origin_iri?(data["actor"], data["object"])
+  end
+
+  defp owncast_stream_lifecycle_activity?(%{"type" => "Leave"} = data) do
+    owncast_streamer_actor?(data["actor"]) && same_origin_iri?(data["actor"], data["object"])
+  end
+
+  defp owncast_stream_lifecycle_activity?(_data), do: false
+
+  defp owncast_stream_metadata?(data) do
+    Enum.any?(Map.keys(data), fn
+      "https://owncast.online/ns#" <> _ -> true
+      _ -> false
+    end)
+  end
+
+  defp owncast_streamer_actor?(actor) when is_binary(actor) do
+    case URI.parse(actor) do
+      %URI{scheme: scheme, host: host, path: "/federation/user/streamer"}
+      when scheme in ["http", "https"] and is_binary(host) ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp owncast_streamer_actor?(_actor), do: false
+
+  defp unknown_undo_activity?(%{"actor" => actor, "object" => object})
+       when is_binary(object) do
+    remote_iri?(actor) && remote_iri?(object) && is_nil(Activity.get_by_ap_id(object))
+  end
+
+  defp unknown_undo_activity?(%{
+         "actor" => actor,
+         "object" => %{"id" => object_id, "actor" => actor}
+       })
+       when is_binary(object_id) do
+    remote_iri?(actor) && remote_iri?(object_id) && is_nil(Activity.get_by_ap_id(object_id))
+  end
+
+  defp unknown_undo_activity?(%{
+         "actor" => actor,
+         "object" => %{"actor" => actor, "object" => target_id, "type" => type}
+       })
+       when type in ["Like", "EmojiReact", "Announce", "Block", "Join", "Lock"] and
+              is_binary(target_id) do
+    remote_iri?(actor) && remote_iri?(target_id)
+  end
+
+  defp unknown_undo_activity?(_data), do: false
+
+  defp same_origin_iri?(left, right) do
+    case {iri_origin(left), iri_origin(right)} do
+      {{left_scheme, left_host}, {right_scheme, right_host}} ->
+        left_scheme == right_scheme && left_host == right_host
+
+      _ ->
+        false
+    end
+  end
+
+  defp remote_iri?(value), do: not is_nil(iri_origin(value))
+
+  defp iri_origin(value) when is_binary(value) do
+    case URI.parse(value) do
+      %URI{scheme: scheme, host: host}
+      when scheme in ["http", "https"] and is_binary(host) ->
+        {scheme, String.downcase(host)}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp iri_origin(_value), do: nil
 
   defp fix_undo_object_id(
          %{"object" => %{"type" => "Like", "actor" => actor, "object" => object_id}} = data
@@ -1228,7 +1522,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     Map.put(object, "attachment", attachments)
   end
 
-  defp prepare_attachment(%{"url" => [%{"mediaType" => media_type, "href" => href} = url | _]} = data)
+  defp prepare_attachment(
+         %{"url" => [%{"mediaType" => media_type, "href" => href} = url | _]} = data
+       )
        when is_binary(media_type) and is_binary(href) do
     %{
       "url" => href,

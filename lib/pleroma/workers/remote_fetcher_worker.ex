@@ -32,6 +32,9 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
       {:error, {:http, code}} when code in @terminal_http_statuses ->
         {:cancel, http_cancel_reason(code)}
 
+      {:error, {:content_type, _} = reason} ->
+        {:cancel, reason}
+
       {:error, {:transmogrifier, {:error, reason}}}
       when reason in [:actor_not_found, :object_not_found] ->
         {:cancel, reason}

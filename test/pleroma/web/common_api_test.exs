@@ -9,6 +9,7 @@ defmodule Pleroma.Web.CommonAPITest do
   alias Pleroma.Activity
   alias Pleroma.Chat
   alias Pleroma.Conversation.Participation
+  alias Pleroma.GroupMembership
   alias Pleroma.Notification
   alias Pleroma.Object
   alias Pleroma.Repo
@@ -384,6 +385,66 @@ defmodule Pleroma.Web.CommonAPITest do
       refute Activity.get_by_id(post.id)
     end
 
+    test "it lets local group managers remove remote posts from their group" do
+      group = insert(:user, local: true, actor_type: "Group")
+      moderator = insert(:user)
+
+      {:ok, _membership} = GroupMembership.ensure_owner(group, moderator)
+
+      remote_author =
+        insert(:user,
+          local: false,
+          ap_id: "https://remote-group-delete.example/users/alice",
+          follower_address: "https://remote-group-delete.example/users/alice/followers"
+        )
+
+      object =
+        insert(:note,
+          user: remote_author,
+          data: %{
+            "id" => "https://remote-group-delete.example/objects/post",
+            "actor" => remote_author.ap_id,
+            "type" => "Note",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id],
+            "cc" => [],
+            "audience" => group.ap_id
+          }
+        )
+
+      activity =
+        insert(:note_activity,
+          user: remote_author,
+          note: object,
+          local: false,
+          data_attrs: %{
+            "id" => "https://remote-group-delete.example/activities/create-post",
+            "actor" => remote_author.ap_id,
+            "object" => object.data["id"],
+            "type" => "Create",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id],
+            "cc" => [],
+            "audience" => group.ap_id
+          }
+        )
+
+      with_mock Pleroma.Web.Federator, publish: fn _ -> nil end do
+        assert {:ok, delete} = CommonAPI.delete(activity.id, moderator)
+
+        assert delete.data["type"] == "Delete"
+        assert delete.data["summary"] == ""
+        assert delete.data["audience"] == group.ap_id
+
+        assert %Activity{} = announce = group_delete_announce(delete)
+        assert announce.data["actor"] == group.ap_id
+        assert announce.data["object"] == delete.data["id"]
+
+        refute called(Pleroma.Web.Federator.publish(delete))
+        assert called(Pleroma.Web.Federator.publish(announce))
+      end
+
+      refute Activity.get_by_id(activity.id)
+    end
+
     test "it doesn't allow unprivileged mods or admins to delete other user's posts" do
       clear_config([:instance, :admin_privileges], [])
       clear_config([:instance, :moderator_privileges], [])
@@ -437,6 +498,16 @@ defmodule Pleroma.Web.CommonAPITest do
 
       refute Activity.get_by_id(post.id)
     end
+  end
+
+  defp group_delete_announce(activity) do
+    Repo.one(
+      from(a in Activity,
+        where:
+          fragment("?->>'type' = 'Announce'", a.data) and
+            fragment("?->>'object' = ?", a.data, ^activity.data["id"])
+      )
+    )
   end
 
   test "favoriting race condition" do

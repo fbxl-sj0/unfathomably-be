@@ -173,6 +173,9 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
       "move" ->
         put_target(response, activity, reading_user, %{})
 
+      type when type in ["group_follow", "group_follow_request"] ->
+        put_follow_target(response, activity, reading_user, %{})
+
       "pleroma:emoji_reaction" ->
         response
         |> put_status(parent_activity_fn.(), reading_user, status_render_opts)
@@ -354,6 +357,19 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
     target_render = AccountView.render("show.json", target_render_opts)
 
     Map.put(response, :target, target_render)
+  end
+
+  defp put_follow_target(response, activity, reading_user, opts) do
+    case User.get_cached_by_ap_id(activity.data["object"]) do
+      %User{} = target_user ->
+        target_render_opts = Map.merge(opts, %{user: target_user, for: reading_user})
+        target_render = AccountView.render("show.json", target_render_opts)
+
+        Map.put(response, :target, target_render)
+
+      _ ->
+        response
+    end
   end
 
   defp put_participation_request(response, activity) do

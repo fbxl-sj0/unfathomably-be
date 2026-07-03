@@ -17,6 +17,8 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   import Pleroma.Web.Gettext
   import Pleroma.Web.Utils.Guards, only: [not_empty_string: 1]
 
+  @group_page_title_limit 200
+
   defstruct valid?: true,
             errors: [],
             user: nil,
@@ -370,6 +372,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
 
     object =
       note_data
+      |> maybe_promote_group_root_to_page(draft)
       |> Addressing.put_addressed_groups(draft.addressed_groups)
       |> Map.put("emoji", emoji)
       |> Map.put("source", %{
@@ -383,6 +386,47 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
 
     %__MODULE__{draft | object: object}
   end
+
+  defp maybe_promote_group_root_to_page(
+         object,
+         %__MODULE__{
+           addressed_groups: [_ | _],
+           in_reply_to: nil
+         } = draft
+       ) do
+    object
+    |> Map.put("type", "Page")
+    |> Map.put("name", group_page_title(draft))
+  end
+
+  defp maybe_promote_group_root_to_page(object, _draft), do: object
+
+  defp group_page_title(%__MODULE__{} = draft) do
+    [
+      draft.params[:title],
+      draft.params["title"],
+      draft.params[:name],
+      draft.params["name"],
+      draft.summary,
+      draft.status
+    ]
+    |> Enum.find_value(&present_string/1)
+    |> Kernel.||("Untitled group post")
+  end
+
+  defp present_string(value) when is_binary(value) do
+    value =
+      value
+      |> String.replace(~r/\s+/, " ")
+      |> String.trim()
+
+    case value do
+      "" -> nil
+      value -> String.slice(value, 0, @group_page_title_limit)
+    end
+  end
+
+  defp present_string(_value), do: nil
 
   defp maybe_put(map, key, value, true), do: Map.put(map, key, value)
   defp maybe_put(map, _key, _value, _condition), do: map

@@ -168,6 +168,49 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       end
     end
 
+    test "it acknowledges Owncast stream lifecycle activities without storing presence state" do
+      public = Pleroma.Constants.as_public()
+
+      offer = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => "https://silo.ffmuc.net/federation/stream-live",
+        "type" => "Offer",
+        "actor" => "https://silo.ffmuc.net/federation/user/streamer",
+        "object" => "https://silo.ffmuc.net",
+        "to" => public,
+        "cc" => "https://silo.ffmuc.net/federation/user/streamer/followers",
+        "https://owncast.online/ns#serverName" => "Freifunk München - Weather Stream",
+        "https://owncast.online/ns#streamStatus" => "live",
+        "https://owncast.online/ns#streamTitle" => "Heimstettner See Cam"
+      }
+
+      leave = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => "https://silo.ffmuc.net/federation/stream-offline",
+        "type" => "Leave",
+        "actor" => "https://silo.ffmuc.net/federation/user/streamer",
+        "object" => "https://silo.ffmuc.net",
+        "to" => public,
+        "cc" => "https://silo.ffmuc.net/federation/user/streamer/followers"
+      }
+
+      for message <- [offer, leave] do
+        assert {:ok, :ignored} = Transmogrifier.handle_incoming(message)
+        refute Activity.get_by_ap_id(message["id"])
+      end
+    end
+
+    test "it rejects ordinary Offer activities without Owncast stream metadata" do
+      message = %{
+        "id" => "https://example.org/activities/offer/1",
+        "type" => "Offer",
+        "actor" => "https://example.org/users/alice",
+        "object" => "https://example.org/objects/1"
+      }
+
+      assert :error = Transmogrifier.handle_incoming(message)
+    end
+
     test "it accepts Move activities" do
       old_user = insert(:user)
       new_user = insert(:user)
@@ -370,6 +413,94 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       refute Map.has_key?(object, "pleroma_internal")
       refute group.ap_id in mention_hrefs
       refute parent_author.ap_id in mention_hrefs
+    end
+
+    test "it serializes group vote audience as a scalar for threadiverse receivers" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "main@lemmy.example",
+          ap_id: "https://lemmy.example/c/main"
+        )
+
+      like = %{
+        "id" => "https://local.example/activities/like-1",
+        "type" => "Like",
+        "actor" => "https://local.example/users/alice",
+        "object" => "https://lemmy.example/post/1",
+        "audience" => [group.ap_id],
+        "to" => ["https://lemmy.example/u/poster"],
+        "cc" => [Pleroma.Constants.as_public()]
+      }
+
+      undo = %{
+        "id" => "https://local.example/activities/undo-like-1",
+        "type" => "Undo",
+        "actor" => like["actor"],
+        "object" => like,
+        "audience" => [group.ap_id],
+        "to" => ["https://lemmy.example/u/poster"],
+        "cc" => [Pleroma.Constants.as_public()]
+      }
+
+      like_activity = insert(:like_activity, data_attrs: like)
+
+      undo_by_id =
+        undo
+        |> Map.put("id", "https://local.example/activities/undo-like-2")
+        |> Map.put("object", like_activity.data["id"])
+
+      {:ok, outgoing_like} = Transmogrifier.prepare_outgoing(like)
+      {:ok, outgoing_undo} = Transmogrifier.prepare_outgoing(undo)
+      {:ok, outgoing_undo_by_id} = Transmogrifier.prepare_outgoing(undo_by_id)
+
+      assert outgoing_like["audience"] == group.ap_id
+      assert outgoing_undo["audience"] == group.ap_id
+      assert outgoing_undo["object"]["audience"] == group.ap_id
+      assert outgoing_undo_by_id["audience"] == group.ap_id
+      assert outgoing_undo_by_id["object"]["type"] == "Like"
+      assert outgoing_undo_by_id["object"]["audience"] == group.ap_id
+    end
+
+    test "it serializes group delete audience as a scalar for threadiverse receivers" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "main@lemmy.example",
+          ap_id: "https://lemmy.example/c/main"
+        )
+
+      delete = %{
+        "id" => "https://local.example/activities/delete-1",
+        "type" => "Delete",
+        "actor" => "https://local.example/users/alice",
+        "object" => "https://local.example/objects/comment-1",
+        "audience" => [group.ap_id],
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [group.ap_id]
+      }
+
+      {:ok, outgoing_delete} = Transmogrifier.prepare_outgoing(delete)
+
+      assert outgoing_delete["audience"] == group.ap_id
+    end
+
+    test "it omits empty outgoing audiences for threadiverse delete receivers" do
+      delete = %{
+        "id" => "https://local.example/activities/delete-ordinary-1",
+        "type" => "Delete",
+        "actor" => "https://local.example/users/alice",
+        "object" => "https://local.example/objects/comment-1",
+        "audience" => [],
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => []
+      }
+
+      {:ok, outgoing_delete} = Transmogrifier.prepare_outgoing(delete)
+
+      refute Map.has_key?(outgoing_delete, "audience")
     end
 
     test "it adds the json-ld context and the conversation property" do

@@ -97,6 +97,51 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest 
       assert cng.valid?
       refute Map.has_key?(cng.changes, :replies_collection)
     end
+
+    test "a top-level group Note is normalized to a Page", %{user: user} do
+      group = insert(:user, actor_type: "Group")
+
+      note = %{
+        "id" => "https://remote.example/post/1",
+        "type" => "Note",
+        "actor" => user.ap_id,
+        "attributedTo" => user.ap_id,
+        "to" => [group.ap_id, Pleroma.Constants.as_public()],
+        "cc" => [],
+        "audience" => group.ap_id,
+        "name" => "A group thread title",
+        "content" => "<p>A group thread body.</p>",
+        "context" => "https://remote.example/post/1"
+      }
+
+      cng = ArticleNotePageValidator.cast_and_validate(note)
+
+      assert cng.valid?
+      assert cng.changes.type == "Page"
+      assert cng.changes.name == "A group thread title"
+    end
+
+    test "a group reply Note remains a Note", %{user: user} do
+      group = insert(:user, actor_type: "Group")
+
+      note = %{
+        "id" => "https://remote.example/comment/1",
+        "type" => "Note",
+        "actor" => user.ap_id,
+        "attributedTo" => user.ap_id,
+        "to" => [group.ap_id, Pleroma.Constants.as_public()],
+        "cc" => [],
+        "audience" => group.ap_id,
+        "inReplyTo" => "https://remote.example/post/1",
+        "content" => "<p>A group comment.</p>",
+        "context" => "https://remote.example/post/1"
+      }
+
+      cng = ArticleNotePageValidator.cast_and_validate(note)
+
+      assert cng.valid?
+      assert cng.changes.type == "Note"
+    end
   end
 
   describe "Note with history" do

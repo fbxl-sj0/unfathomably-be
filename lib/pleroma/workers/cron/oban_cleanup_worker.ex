@@ -41,6 +41,9 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     "%Object.Containment.get_actor%",
     "%don't know how to handle\", nil%",
     "%emoji_react_validator.ex:66%",
+    "%do_fix_object_action_recipients%",
+    "%pinned_statuses_limit_reached%",
+    "%The object to create already exists%",
     "%utils.ex:476%",
     "%web/federator.ex:103%"
   ]
@@ -62,6 +65,10 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     "Pleroma.Workers.Cron.GroupDiscussionCleanupWorker",
     "Pleroma.Workers.Cron.RemotePostCleanupWorker"
   ]
+  @terminal_background_error_patterns [
+    "%body_too_large%",
+    "%content_type%"
+  ]
 
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
@@ -70,8 +77,11 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     discarded_stale_cleanup_retries = discard_stale_cleanup_retries()
     discarded_stale_federator_retries = discard_stale_federator_retries()
     discarded_terminal_publisher_retries = discard_terminal_publisher_retries()
+    discarded_terminal_background_retries = discard_terminal_background_retries()
     discarded_unreachable_publisher_jobs = discard_unreachable_publisher_jobs()
     discarded_fixed_federation_exception_retries = discard_fixed_federation_exception_retries()
+    discarded_exhausted_incoming_transaction_retries =
+      discard_exhausted_incoming_transaction_retries()
 
     {:ok,
      %{
@@ -80,9 +90,12 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
        discarded_stale_cleanup_retries: discarded_stale_cleanup_retries,
        discarded_stale_federator_retries: discarded_stale_federator_retries,
        discarded_terminal_publisher_retries: discarded_terminal_publisher_retries,
+       discarded_terminal_background_retries: discarded_terminal_background_retries,
        discarded_unreachable_publisher_jobs: discarded_unreachable_publisher_jobs,
        discarded_fixed_federation_exception_retries:
-         discarded_fixed_federation_exception_retries
+         discarded_fixed_federation_exception_retries,
+       discarded_exhausted_incoming_transaction_retries:
+         discarded_exhausted_incoming_transaction_retries
      }}
   end
 
@@ -142,12 +155,42 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
       |> where([job], job.queue == "federator_outgoing")
       |> where([job], job.worker == "Pleroma.Workers.PublisherWorker")
       |> where([job], job.state == "retryable")
-      |> where([job], fragment("?::text ~ ?", job.errors, ^@terminal_publisher_status_pattern))
+      |> where(
+        [job],
+        fragment("?::text ~ ?", job.errors, ^@terminal_publisher_status_pattern) or
+          (fragment("?::text ILIKE ?", job.errors, ^"%https://www.minds.com/api/activitypub/inbox%") and
+             fragment("?::text ILIKE ?", job.errors, ^"%x-minds%") and
+             fragment("?::text ILIKE ?", job.errors, ^"%Something is wrong%"))
+      )
+    )
+  end
+
+  def discard_terminal_background_retries do
+    discard_jobs(
+      Oban.Job
+      |> where([job], job.queue == "background")
+      |> where([job], job.worker == "Pleroma.Workers.RichMediaWorker")
+      |> where([job], job.state == "retryable")
+      |> where(
+        [job],
+        fragment("?::text ILIKE ANY(?)", job.errors, ^@terminal_background_error_patterns)
+      )
     )
   end
 
   def discard_fixed_federation_exception_retries do
     discard_fixed_receiver_retries() + discard_fixed_remote_fetch_retries()
+  end
+
+  def discard_exhausted_incoming_transaction_retries do
+    discard_jobs(
+      Oban.Job
+      |> where([job], job.queue == "federator_incoming")
+      |> where([job], job.worker in ^@incoming_workers)
+      |> where([job], job.state == "retryable")
+      |> where([job], job.attempt >= 10)
+      |> where([job], fragment("?::text ILIKE ?", job.errors, ^"%in_failed_sql_transaction%"))
+    )
   end
 
   defp discard_fixed_receiver_retries do

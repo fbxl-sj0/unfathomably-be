@@ -157,6 +157,7 @@ defmodule Pleroma.User do
     field(:attributed_to_address, :string)
     field(:is_indexable, :boolean, default: nil)
     field(:posting_restricted_to_mods, :boolean, default: false)
+    field(:group_join_notifications, :boolean, default: true)
     field(:accepts_chat_messages, :boolean, default: nil)
     field(:last_active_at, :naive_datetime)
     field(:disclose_client, :boolean, default: true)
@@ -650,6 +651,7 @@ defmodule Pleroma.User do
         :raw_fields,
         :pleroma_settings_store,
         :is_discoverable,
+        :group_join_notifications,
         :actor_type,
         :accepts_chat_messages,
         :disclose_client,

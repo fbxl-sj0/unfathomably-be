@@ -9,9 +9,11 @@ defmodule Pleroma.Web.ActivityPub.Builder do
   This module encodes our addressing policies and general shape of our objects.
   """
 
+  alias Pleroma.Activity
   alias Pleroma.Emoji
   alias Pleroma.Object
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.Relay
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.Visibility
@@ -147,19 +149,49 @@ defmodule Pleroma.Web.ActivityPub.Builder do
 
   @spec undo(User.t(), Activity.t()) :: {:ok, map(), keyword()}
   def undo(actor, object) do
-    {:ok,
-     %{
-       "id" => Utils.generate_activity_id(),
-       "actor" => actor.ap_id,
-       "type" => "Undo",
-       "object" => object.data["id"],
-       "to" => object.data["to"] || [],
-       "cc" => object.data["cc"] || []
-     }, []}
+    data =
+      %{
+        "id" => Utils.generate_activity_id(),
+        "actor" => actor.ap_id,
+        "type" => "Undo",
+        "object" => undo_object(object),
+        "to" => object.data["to"] || [],
+        "cc" => object.data["cc"] || []
+      }
+      |> maybe_copy_undo_vote_audience(object)
+
+    {:ok, data, []}
   end
 
-  @spec delete(User.t(), String.t()) :: {:ok, map(), keyword()}
-  def delete(actor, object_id) do
+  defp undo_object(%Activity{data: data}) when is_map(data) do
+    if undo_vote_object?(data) do
+      # Threadiverse vote receivers such as Lemmy validate UndoVote as an Undo
+      # containing the full Vote object. The Like or Dislike may be deleted by
+      # local side effects before remote peers fetch the Undo, so keep a copy of
+      # the vote inside the Undo activity from the start.
+      data
+    else
+      data["id"] || data[:id]
+    end
+  end
+
+  defp undo_vote_object?(%{"type" => type}) when type in ["Like", "Dislike"], do: true
+  defp undo_vote_object?(%{type: type}) when type in ["Like", "Dislike", :Like, :Dislike], do: true
+  defp undo_vote_object?(_), do: false
+
+  defp maybe_copy_undo_vote_audience(data, %Activity{data: %{"type" => type} = object})
+       when type in ["Like", "Dislike"] do
+    # Threadiverse UndoVote activities identify the affected community on the
+    # Undo activity itself, not only on the embedded Like or Dislike. Keep the
+    # internal audience shape unchanged here; Transmogrifier converts the
+    # single-item group audience to Lemmy's scalar wire shape at federation time.
+    Map.put(data, "audience", object["audience"] || [])
+  end
+
+  defp maybe_copy_undo_vote_audience(data, _object), do: data
+
+  @spec delete(User.t(), String.t(), keyword()) :: {:ok, map(), keyword()}
+  def delete(actor, object_id, options \\ []) do
     object = Object.normalize(object_id, fetch: false)
 
     user = !object && User.get_cached_by_ap_id(object_id)
@@ -178,14 +210,47 @@ defmodule Pleroma.Web.ActivityPub.Builder do
           []
       end
 
-    {:ok,
-     %{
-       "id" => Utils.generate_activity_id(),
-       "actor" => actor.ap_id,
-       "object" => object_id,
-       "to" => to,
-       "type" => "Delete"
-     }, []}
+    data =
+      %{
+        "id" => Utils.generate_activity_id(),
+        "actor" => actor.ap_id,
+        "object" => object_id,
+        "to" => to,
+        "type" => "Delete"
+      }
+      |> maybe_copy_delete_group_context(object)
+      |> maybe_put_delete_summary(options)
+
+    {:ok, data, []}
+  end
+
+  defp maybe_copy_delete_group_context(data, %Object{data: object_data}) do
+    case Addressing.addressed_group_ap_ids(object_data) do
+      [] ->
+        data
+
+      [group_ap_id] ->
+        data
+        |> Map.put("audience", group_ap_id)
+        |> Map.put("cc", [group_ap_id])
+
+      group_ap_ids ->
+        data
+        |> Map.put("audience", group_ap_ids)
+        |> Map.put("cc", group_ap_ids)
+    end
+  end
+
+  defp maybe_copy_delete_group_context(data, _object), do: data
+
+  defp maybe_put_delete_summary(data, options) do
+    case Keyword.fetch(options, :summary) do
+      {:ok, summary} when is_binary(summary) ->
+        Map.put(data, "summary", summary)
+
+      _ ->
+        data
+    end
   end
 
   def create(actor, object, recipients) do

@@ -200,9 +200,7 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   defp recipients(actor, activity) do
     followers =
       if actor.follower_address in activity.recipients do
-        actor
-        |> User.get_external_followers()
-        |> maybe_skip_group_announce_origin(actor, activity)
+        User.get_external_followers(actor)
       else
         []
       end
@@ -222,33 +220,6 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     non_mentioned = (followers ++ fetchers) -- mentioned
 
     [mentioned, non_mentioned]
-  end
-
-  defp maybe_skip_group_announce_origin(
-         followers,
-         %User{actor_type: "Group"},
-         %Activity{data: %{"type" => "Announce", "object" => object_ap_id}}
-       )
-       when is_binary(object_ap_id) do
-    with origin_host when is_binary(origin_host) <- announce_origin_host(object_ap_id) do
-      Enum.reject(followers, fn %User{ap_id: ap_id} ->
-        uri_host(ap_id) == origin_host
-      end)
-    else
-      _ -> followers
-    end
-  end
-
-  defp maybe_skip_group_announce_origin(followers, _actor, _activity), do: followers
-
-  defp announce_origin_host(object_ap_id) do
-    case Object.get_cached_by_ap_id(object_ap_id) do
-      %Object{data: %{"actor" => object_actor}} when is_binary(object_actor) ->
-        uri_host(object_actor)
-
-      _ ->
-        uri_host(object_ap_id)
-    end
   end
 
   defp get_cc_ap_ids(ap_id, recipients) do

@@ -713,6 +713,7 @@ SMOKE_A_PORT="$A_PORT" \
 SMOKE_B_PORT="$B_PORT" \
 SMOKE_IMAGE="$IMAGE" \
 SMOKE_USER_PASSWORD="$PASSWORD" \
+SMOKE_SKIP_SOURCE_CHECKS=1 \
 build_scripts/two-instance-federation-smoke.sh >/tmp/unfathomably-piefed-bootstrap.log 2>&1 || {
     cat /tmp/unfathomably-piefed-bootstrap.log >&2 || true
     fail "Unfathomably bootstrap smoke failed"

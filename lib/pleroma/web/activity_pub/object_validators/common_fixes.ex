@@ -178,7 +178,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
   defp do_fix_object_action_recipients(
          %{"actor" => actor} = data,
          %Object{data: %{"actor" => actor}}
-       ) do
+       )
+       when is_binary(actor) do
     to =
       data
       |> Map.get("to", [])
@@ -189,7 +190,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     Map.put(data, "to", to)
   end
 
-  defp do_fix_object_action_recipients(data, %Object{data: %{"actor" => actor}}) do
+  defp do_fix_object_action_recipients(data, %Object{data: %{"actor" => actor}})
+       when is_binary(actor) do
     to =
       data
       |> Map.get("to", [])
@@ -199,6 +201,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
     Map.put(data, "to", to)
   end
+
+  defp do_fix_object_action_recipients(data, %Object{}), do: data
+  defp do_fix_object_action_recipients(data, _object), do: data
 
   defp group_actor?(actor) when is_binary(actor) do
     case User.get_by_ap_id(actor) do

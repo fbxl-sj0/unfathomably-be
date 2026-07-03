@@ -8,9 +8,11 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   alias Pleroma.Activity
   alias Pleroma.Activity.Queries
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
+  alias Pleroma.GroupMembership
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Addressing
 
   import Ecto.Changeset
   import Ecto.Query
@@ -28,6 +30,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     end
 
     field(:deleted_activity_id, ObjectValidators.ObjectID)
+    field(:summary, :string)
   end
 
   def cast_data(data) do
@@ -63,7 +66,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     |> validate_required([:id, :type, :actor, :to, :cc, :object])
     |> validate_inclusion(:type, ["Delete"])
     |> validate_delete_actor(:actor)
-    |> validate_modification_rights(:messages_delete)
+    |> validate_delete_modification_rights()
     |> validate_delete_target()
     |> add_deleted_activity_id()
   end
@@ -197,4 +200,45 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
       end
     end)
   end
+
+  defp validate_delete_modification_rights(cng) do
+    actor = User.get_cached_by_ap_id(get_field(cng, :actor))
+
+    cond do
+      User.privileged?(actor, :messages_delete) ->
+        cng
+
+      same_domain?(cng) ->
+        cng
+
+      group_moderation_delete?(actor, cng) ->
+        cng
+
+      true ->
+        add_error(cng, :actor, "is not allowed to modify object")
+    end
+  end
+
+  defp group_moderation_delete?(%User{} = actor, cng) do
+    is_binary(get_field(cng, :summary)) && managed_local_group_target?(actor, get_field(cng, :object))
+  end
+
+  defp group_moderation_delete?(_actor, _cng), do: false
+
+  defp managed_local_group_target?(%User{} = actor, object_id) when is_binary(object_id) do
+    case Object.get_cached_by_ap_id(object_id) do
+      %Object{data: data} ->
+        data
+        |> Addressing.addressed_group_ap_ids()
+        |> User.get_all_by_ap_id()
+        |> Enum.any?(fn group ->
+          GroupMembership.local_group?(group) && GroupMembership.manager?(actor, group)
+        end)
+
+      _ ->
+        false
+    end
+  end
+
+  defp managed_local_group_target?(_actor, _object_id), do: false
 end

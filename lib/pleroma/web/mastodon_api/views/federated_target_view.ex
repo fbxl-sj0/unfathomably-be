@@ -39,6 +39,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
       note: account[:note] || "",
       owner: %{id: to_string(group.id)},
       posting_restricted_to_mods: group.posting_restricted_to_mods,
+      discoverable: !!group.is_discoverable,
+      group_join_notifications: !!group.group_join_notifications,
       relationship: relationship,
       slug: to_string(group.id),
       source: %{

@@ -83,8 +83,20 @@ defmodule Pleroma.Workers.ReceiverWorker do
       {:error, :not_found} = reason -> {:cancel, reason}
       {:error, :forbidden} = reason -> {:cancel, reason}
       {:error, {:user_active, false} = reason} -> {:cancel, reason}
-      {:error, {:validate, {:error, _changeset} = reason}} -> {:cancel, reason}
-      {:error, %Ecto.Changeset{} = changeset} -> {:cancel, {:error, changeset}}
+      {:error, {:validate, {:error, %Ecto.Changeset{} = changeset} = reason}} ->
+        if transient_missing_reference_changeset?(changeset) do
+          {:error, reason}
+        else
+          {:cancel, reason}
+        end
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        if transient_missing_reference_changeset?(changeset) do
+          {:error, changeset}
+        else
+          {:cancel, {:error, changeset}}
+        end
+
       {:error, :origin_containment_failed} -> {:cancel, :origin_containment_failed}
       {:error, :already_present} -> {:cancel, :already_present}
       {:error, {:http, status}} when status in [400, 401, 403, 404, 405, 406, 410, 501] ->
@@ -104,5 +116,13 @@ defmodule Pleroma.Workers.ReceiverWorker do
       {:error, _} = e -> e
       e -> e
     end
+  end
+
+  defp transient_missing_reference_changeset?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn
+      {:object, {"can't find object", _}} -> true
+      {:object, {"can't find activity", _}} -> true
+      _ -> false
+    end)
   end
 end

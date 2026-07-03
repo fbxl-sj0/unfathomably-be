@@ -962,6 +962,12 @@ defmodule Pleroma.Web.Router do
     get("/apps/verify_credentials", AppController, :verify_credentials)
   end
 
+  scope "/api/v3", Pleroma.Web.LemmyAPI do
+    pipe_through(:api)
+
+    get("/community/list", CommunityController, :list)
+  end
+
   scope "/api/v1", Pleroma.Web.MastodonAPI do
     pipe_through(:api)
 

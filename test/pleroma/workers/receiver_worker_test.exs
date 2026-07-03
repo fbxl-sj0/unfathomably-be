@@ -53,6 +53,23 @@ defmodule Pleroma.Workers.ReceiverWorkerTest do
     end
   end
 
+  test "it retries validation failures caused by missing remote references" do
+    params = insert(:note_activity).data
+
+    changeset =
+      {%{}, %{object: :string}}
+      |> Ecto.Changeset.cast(%{}, [:object])
+      |> Ecto.Changeset.add_error(:object, "can't find object")
+
+    with_mock Pleroma.Web.Federator,
+      perform: fn :incoming_ap_doc, _ -> {:error, changeset} end do
+      assert {:error, %Ecto.Changeset{}} =
+               ReceiverWorker.perform(%Oban.Job{
+                 args: %{"op" => "incoming_ap_doc", "params" => params}
+               })
+    end
+  end
+
   test "it does not retry duplicates" do
     params = insert(:note_activity).data
 

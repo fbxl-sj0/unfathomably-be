@@ -225,6 +225,10 @@ defmodule Pleroma.Object.Fetcher do
     Logger.warning("Remote object #{id} returned HTTP #{code} while fetching")
   end
 
+  defp log_fetch_error(id, {:error, {:content_type, content_type}}) do
+    Logger.debug("Error while fetching #{id}: remote returned content-type #{inspect(content_type)}")
+  end
+
   defp log_fetch_error(id, e) do
     case Churn.mark_deactivated_actor(e, id) do
       {:ok, actor_id} ->

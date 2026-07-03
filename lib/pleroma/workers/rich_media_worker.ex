@@ -14,8 +14,16 @@ defmodule Pleroma.Workers.RichMediaWorker do
   end
 
   def perform(%Job{args: %{"op" => "backfill", "url" => url} = args}) when is_binary(url) do
-    Backfill.run(args)
+    args
+    |> Backfill.run()
+    |> handle_backfill_result()
   end
 
   def perform(%Job{}), do: :discard
+
+  defp handle_backfill_result({:error, reason}) when reason in [:body_too_large, :content_type] do
+    {:cancel, reason}
+  end
+
+  defp handle_backfill_result(result), do: result
 end

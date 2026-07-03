@@ -504,7 +504,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
              )
     end
 
-    test_with_mock "does not publish group announces back to the announced object's origin host",
+    test_with_mock "publishes group announces back to origin-host followers as community approval",
                    Pleroma.Web.Federator.Publisher,
                    [:passthrough],
                    [] do
@@ -573,7 +573,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                )
              )
 
-      refute called(
+      assert called(
                Pleroma.Web.Federator.Publisher.enqueue_one(
                  Publisher,
                  %{

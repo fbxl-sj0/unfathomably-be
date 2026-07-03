@@ -899,7 +899,11 @@ defmodule Pleroma.Web.FederatedTarget do
         followed_targets(kind, user, params)
 
       _ ->
-        search_targets(kind, params)
+        if followed_scope?(params) do
+          followed_targets(kind, user, params)
+        else
+          search_targets(kind, params)
+        end
     end
   end
 
@@ -909,6 +913,7 @@ defmodule Pleroma.Web.FederatedTarget do
     user
     |> FollowingRelationship.following_query()
     |> filter_followed_kind(kind)
+    |> filter_target_search(params)
     |> order_by([r, _u], desc: r.updated_at)
     |> select([_r, u], u)
     |> offset(^offset_param(params))
@@ -990,6 +995,23 @@ defmodule Pleroma.Web.FederatedTarget do
         ^reachability_datetime_threshold
       )
     )
+  end
+
+  defp filter_target_search(query, params) do
+    case search_param(params) do
+      "" ->
+        query
+
+      query_text ->
+        term = "%#{query_text}%"
+
+        where(
+          query,
+          [_r, u],
+          ilike(u.nickname, ^term) or ilike(u.name, ^term) or ilike(u.ap_id, ^term) or
+            ilike(u.uri, ^term)
+        )
+    end
   end
 
   defp search_targets(kind, params) do
@@ -1799,6 +1821,15 @@ defmodule Pleroma.Web.FederatedTarget do
     end
   end
 
+  defp followed_scope?(params) do
+    params
+    |> param(:scope)
+    |> case do
+      value when value in [:followed, "followed"] -> true
+      _ -> false
+    end
+  end
+
   defp limit_param(params) do
     params
     |> param(:limit)
@@ -1888,6 +1919,7 @@ defmodule Pleroma.Web.FederatedTarget do
         is_approved: true,
         is_confirmed: true,
         is_discoverable: local_group_truthy_param(params, "discoverable", true),
+        group_join_notifications: local_group_truthy_param(params, "group_join_notifications", true),
         is_indexable: local_group_truthy_param(params, "indexable", true),
         is_locked: local_group_locked_param(params),
         keys: keys,
@@ -1955,6 +1987,14 @@ defmodule Pleroma.Web.FederatedTarget do
       |> maybe_put(
         :is_discoverable,
         local_group_truthy_param(params, "discoverable", group.is_discoverable)
+      )
+      |> maybe_put(
+        :group_join_notifications,
+        local_group_truthy_param(
+          params,
+          "group_join_notifications",
+          group.group_join_notifications
+        )
       )
       |> maybe_put(
         :is_indexable,

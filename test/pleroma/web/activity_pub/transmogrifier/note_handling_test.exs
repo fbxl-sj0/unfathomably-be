@@ -219,6 +219,52 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
       assert object.data["audience"] == [group.ap_id]
     end
 
+    test "it accepts Lemmy-style Page creates with the community address split across activity and object" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "main@lemmy.example",
+          ap_id: "https://lemmy.example/c/main"
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          nickname: "alice@lemmy.example",
+          ap_id: "https://lemmy.example/u/alice"
+        )
+
+      data = %{
+        "id" => "https://lemmy.example/activities/create/1",
+        "type" => "Create",
+        "actor" => author.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [group.ap_id],
+        "object" => %{
+          "id" => "https://lemmy.example/post/1",
+          "type" => "Page",
+          "attributedTo" => author.ap_id,
+          "to" => [group.ap_id, Pleroma.Constants.as_public()],
+          "cc" => [],
+          "audience" => group.ap_id,
+          "name" => "Lemmy-style community root",
+          "content" => "<p>A root post addressed like Lemmy sends it.</p>",
+          "mediaType" => "text/html",
+          "published" => "2026-07-02T15:50:31Z"
+        }
+      }
+
+      assert {:ok, %Activity{recipients: recipients} = activity} =
+               Transmogrifier.handle_incoming(data)
+
+      object = Object.normalize(activity, fetch: false)
+
+      assert group.ap_id in recipients
+      assert object.data["audience"] == [group.ap_id]
+      assert object.data["name"] == "Lemmy-style community root"
+    end
+
     test "it records group actors from attributedTo arrays as audience" do
       group =
         insert(:user,

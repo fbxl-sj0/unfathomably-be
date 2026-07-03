@@ -137,7 +137,7 @@ defmodule Pleroma.ReverseProxy do
     else
       {:ok, true} ->
         conn
-        |> error_or_redirect(url, 500, "Request failed", opts)
+        |> error_or_redirect(url, 502, "Request failed: cached upstream failure", opts)
         |> halt()
 
       {:ok, code, headers} ->
@@ -148,11 +148,13 @@ defmodule Pleroma.ReverseProxy do
         log_http_response_error(url, code)
         track_failed_url(url, code, opts)
 
+        status = downstream_status_for_invalid_http_response(code)
+
         conn
         |> error_or_redirect(
           url,
-          code,
-          "Request failed: " <> Plug.Conn.Status.reason_phrase(code),
+          status,
+          "Request failed: upstream returned HTTP status #{code}",
           opts
         )
         |> halt()
@@ -161,8 +163,10 @@ defmodule Pleroma.ReverseProxy do
         log_request_error(url, error)
         track_failed_url(url, error, opts)
 
+        status = downstream_status_for_request_error(error)
+
         conn
-        |> error_or_redirect(url, 500, "Request failed", opts)
+        |> error_or_redirect(url, status, "Request failed: #{status_reason_phrase(status)}", opts)
         |> halt()
     end
   end
@@ -286,6 +290,34 @@ defmodule Pleroma.ReverseProxy do
     |> put_resp_header("cache-control", "public, max-age=60")
     |> send_resp(200, @failed_image_placeholder)
     |> halt()
+  end
+
+  defp downstream_status_for_invalid_http_response(code) when code in 400..499 do
+    if known_status_code?(code), do: code, else: 502
+  end
+
+  defp downstream_status_for_invalid_http_response(_code), do: 502
+
+  defp downstream_status_for_request_error(error)
+       when error in [:timeout, :recv_response_timeout, :recv_chunk_timeout] do
+    504
+  end
+
+  defp downstream_status_for_request_error(:read_duration_exceeded), do: 504
+  defp downstream_status_for_request_error(:body_too_large), do: 413
+  defp downstream_status_for_request_error(_error), do: 502
+
+  defp known_status_code?(code) do
+    _ = Plug.Conn.Status.reason_phrase(code)
+    true
+  rescue
+    ArgumentError -> false
+  end
+
+  defp status_reason_phrase(code) do
+    Plug.Conn.Status.reason_phrase(code)
+  rescue
+    ArgumentError -> "Bad Gateway"
   end
 
   defp downcase_headers(headers) do

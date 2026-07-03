@@ -64,7 +64,7 @@ defmodule Pleroma.Notification do
     |> Repo.aggregate(:count, :id)
   end
 
-  @groupable_notification_types ~w{favourite follow reblog}
+  @groupable_notification_types ~w{favourite follow group_follow reblog}
   @group_bucket_seconds 12 * 60 * 60
 
   def groupable_notification_types, do: @groupable_notification_types
@@ -144,7 +144,7 @@ defmodule Pleroma.Notification do
     end
   end
 
-  defp group_target_id("follow", %{data: %{"object" => ap_id}}) do
+  defp group_target_id(type, %{data: %{"object" => ap_id}}) when type in ["follow", "group_follow"] do
     case User.get_cached_by_ap_id(ap_id) do
       %User{id: id} -> to_string(id)
       _ -> nil
@@ -161,6 +161,8 @@ defmodule Pleroma.Notification do
     favourite
     follow
     follow_request
+    group_follow
+    group_follow_request
     mention
     move
     pleroma:chat_mention
@@ -532,11 +534,7 @@ defmodule Pleroma.Notification do
   defp type_from_activity(%{data: %{"type" => type}} = activity) do
     case type do
       "Follow" ->
-        if Activity.follow_accepted?(activity) do
-          "follow"
-        else
-          "follow_request"
-        end
+        follow_notification_type(activity)
 
       "Announce" ->
         "reblog"
@@ -572,6 +570,21 @@ defmodule Pleroma.Notification do
 
       t ->
         raise "No notification type for activity type #{t}"
+    end
+  end
+
+  defp follow_notification_type(%Activity{data: %{"object" => object_id}} = activity) do
+    group_follow? =
+      case User.get_cached_by_ap_id(object_id) do
+        %User{actor_type: "Group", local: true} -> true
+        _ -> false
+      end
+
+    case {group_follow?, Activity.follow_accepted?(activity)} do
+      {true, true} -> "group_follow"
+      {true, false} -> "group_follow_request"
+      {false, true} -> "follow"
+      {false, false} -> "follow_request"
     end
   end
 
@@ -771,6 +784,9 @@ defmodule Pleroma.Notification do
 
   def get_potential_receiver_ap_ids(%{data: %{"type" => "Join", "object" => object_id}}) do
     case User.get_cached_by_ap_id(object_id) do
+      %User{actor_type: "Group", local: true, group_join_notifications: false} ->
+        []
+
       %User{actor_type: "Group", local: true} = group ->
         GroupMembership.local_group_moderator_ap_ids(group)
 
@@ -781,6 +797,9 @@ defmodule Pleroma.Notification do
 
   def get_potential_receiver_ap_ids(%{data: %{"type" => "Follow", "object" => object_id}}) do
     case User.get_cached_by_ap_id(object_id) do
+      %User{actor_type: "Group", local: true, group_join_notifications: false} ->
+        []
+
       %User{actor_type: "Group", local: true} = group ->
         GroupMembership.local_group_moderator_ap_ids(group)
 
@@ -944,10 +963,11 @@ defmodule Pleroma.Notification do
         _opts
       ) do
     actor = activity.data["actor"]
+    object = activity.data["object"]
 
     Notification.for_user(user)
     |> Enum.any?(fn
-      %{activity: %{data: %{"type" => "Follow", "actor" => ^actor}}} -> true
+      %{activity: %{data: %{"type" => "Follow", "actor" => ^actor, "object" => ^object}}} -> true
       _ -> false
     end)
   end

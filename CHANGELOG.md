@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Made deployment activation use an explicit service PATH so source promotion runs the same Mix/Elixir toolchain as the systemd service.
 
 ### Added
+- Added Docker smoke coverage for PieFed and MBin threadiverse federation, including bidirectional group follows, posts, likes, unlikes, replies, reply deletes, post deletes, and unfollows.
+- Added group-specific follow and follow-request notification types for local groups, including group target payloads so moderators can see which group was followed.
+- Added a per-group moderator setting to disable join and join-request notifications for busy local groups.
+- Added a Lemmy-compatible `/api/v3/community/list` discovery endpoint for local groups, limited to groups whose moderators opt into public discovery.
 - Added authenticated aggregate websocket streams for followed groups and feeds at `/api/v1/streaming/user/groups` and `/api/v1/streaming/user/sources`.
 - Added websocket fanout for public group and source activity so accepted local followers receive live aggregate feed updates without polling every followed target.
 - Added regression coverage for the Gun connection pool `release_conn/1` path where a worker exits normally before replying.
@@ -20,11 +24,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Added post archive import regression coverage for restoring historical posts as non-federating local history while reconnecting imported replies to affected remote threads where possible.
 
 ### Changed
+- Updated the MBin smoke harness to resolve remote Unfathomably groups through MBin's federated search API instead of dispatching bare actor objects through MBin's inbox import command.
 - Extended Mastodon-compatible streaming aliases and stream metadata so Unfathomably FE can subscribe to followed group and feed aggregates over one authenticated connection per feed.
 - Cleaned project-owned compiler warnings so the backend can continue to build under stricter warnings-as-errors validation while newer Elixir/OTP releases still expose third-party dependency warnings separately.
 - Improved post archive imports so replies imported from ActivityPub archives queue a best-effort fetch of their original parent thread without republishing the imported post.
 
 ### Fixed
+- Acknowledged Owncast stream lifecycle `Offer` and `Leave` activities as no-op live-stream state updates instead of cancelling them as unsupported incoming federation.
+- Treated unknown remote `Undo` activities as idempotent no-ops when the local activity being undone is absent, covering out-of-order or irrelevant remote unlikes/unboosts without writing bogus state.
+- Made ReceiverWorker retry validation failures caused by temporarily missing remote object or activity references instead of permanently cancelling slow upstream reaction, like, announce, or undo traffic as malformed.
+- Accepted Mastodon-style poll updates whose `likes` or `shares` fields are ActivityStreams collections, preserving collection totals as local interaction counts instead of rejecting the poll object.
+- Fixed group Announces so accepted followers on the original post's host also receive the community's Announce, allowing Lotide-style origin servers to mark submitted local posts as approved by the remote community.
+- Fixed group auto-distribution so local group Announces are explicitly queued for outbound federation, preventing accepted Lemmy-family followers from missing group roots even though the Announce existed locally.
+- Normalized incoming top-level group `Note` roots into ActivityPub `Page` objects during validation and embedded Lemmy-style `Create(Page)` activities with community addressing in outgoing group Announces, so Lotide/Mbin/PieFed-style thread roots can be redistributed to Lemmy-family followers with the expected community post shape while replies remain `Note` comments.
+- Fixed local group thread starters so top-level posts addressed to groups federate as ActivityPub `Page` objects with a title, while group replies continue to federate as `Note` comments for Lemmy, Lotide, Mbin, and PieFed compatibility.
+- Fixed Lemmy-style community `Create` activities whose outer activity and embedded Page/Note object repeat the same group audience in different recipient fields, so valid group posts are no longer cancelled before they can enter group timelines.
+- Fixed local group follows so following a group owned by a user does not look like following that user, and so duplicate suppression is scoped to the followed group as well as the follower.
+- Fixed followed feed timelines so feed posts are selected by source actor instead of requiring the source to be a recipient, and kept aggregate group/feed websocket fanout limited to root posts so live comments do not leak into the root feed views.
+- Made followed-feed search support a followed-only scope so the My Feeds search can filter the small local followed set instead of triggering broad source discovery for ordinary text searches.
+- Fixed media proxy handling for non-standard upstream status codes such as Cloudflare-style `523` responses so remote media failures return gateway errors or image placeholders instead of crashing into local 500 responses.
+- Fixed media proxy request and read timeouts so upstream stalls return `504 Gateway Timeout` rather than local 500 errors.
+- Fixed incoming object action recipient repair for reactions and dislikes that target tombstoned or otherwise actorless remote objects, eliminating a ReceiverWorker retry storm seen from Lemmy-style group traffic.
+- Fixed RichMedia backfill handling for deterministic `:body_too_large` and `:content_type` failures so those jobs cancel instead of retrying the same non-actionable URL.
+- Fixed remote fetch jobs for non-ActivityPub HTML responses so content-type mismatches cancel cleanly and are logged below warning level.
+- Reduced noisy connection-pool warnings by logging routine client `:normal` and `:shutdown` exits at debug level while keeping abnormal exits visible.
+- Expanded the Oban cleanup janitor to discard retryable jobs for fixed tombstone-reaction crashes, pinned-status limit failures, duplicate object creation races, terminal RichMedia backfill failures, persistent Minds inbox HTML-500 failures, and exhausted incoming jobs repeatedly stuck in aborted database transactions.
 - Fixed addressed inbox handling for servers that send the ActivityPub actor as an embedded object instead of a bare actor URI.
 - Fixed WebFinger resolution for leading-`@` group and feed handles, and preserved actor outbox URLs for source previews discovered through WebFinger.
 - Stopped feed list rendering from performing synchronous NodeInfo refreshes for hosts whose cached instance metadata is blank.

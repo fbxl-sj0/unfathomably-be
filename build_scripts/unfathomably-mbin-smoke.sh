@@ -1621,6 +1621,17 @@ mbin_import_object() {
     run_mbin_queue_until 4
 }
 
+mbin_resolve_ap_actor() {
+    local uri="$1"
+
+    http_form GET \
+        "$MBIN_URL/api/search/v2?q=$(urlencode "$uri")&onlyAP=true" \
+        "$MBIN_TOKEN" \
+        200 >/dev/null
+
+    run_mbin_queue_until 4
+}
+
 docker rm -f \
     "$PREFIX-mbin-php" \
     "$PREFIX-mbin-messenger" \
@@ -1638,6 +1649,7 @@ SMOKE_A_PORT="$A_PORT" \
 SMOKE_B_PORT="$B_PORT" \
 SMOKE_IMAGE="$IMAGE" \
 SMOKE_USER_PASSWORD="$PASSWORD" \
+SMOKE_SKIP_SOURCE_CHECKS=1 \
 bash build_scripts/two-instance-federation-smoke.sh >/tmp/unfathomably-mbin-bootstrap.log 2>&1 || {
     cat /tmp/unfathomably-mbin-bootstrap.log >&2 || true
     fail "Unfathomably bootstrap smoke failed"
@@ -1685,7 +1697,7 @@ poll_mbin_magazine_subscription \
     "$ALICE_AP_ID" \
     "MBin did not record Unfathomably's follow of the MBin magazine"
 
-mbin_import_object "$BE_GROUP_AP_ID"
+mbin_resolve_ap_actor "$BE_GROUP_AP_ID"
 MBIN_REMOTE_BE_MAGAZINE_INFO="$(
     poll_mbin_magazine_by_ap_profile "$BE_GROUP_AP_ID" "MBin resolves the Unfathomably group"
 )"
