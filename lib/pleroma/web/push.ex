@@ -21,13 +21,31 @@ defmodule Pleroma.Web.Push do
   end
 
   def vapid_config do
-    case Application.get_env(:web_push_encryption, :vapid_details, []) do
-      config when is_list(config) -> config
-      _ -> []
-    end
+    Application.get_env(:web_push_encryption, :vapid_details, [])
   end
 
-  def enabled, do: match?([subject: _, public_key: _, private_key: _], vapid_config())
+  def enabled do
+    config = vapid_config()
+
+    Enum.all?([:subject, :public_key, :private_key], &present_config_value?(config, &1))
+  end
+
+  defp present_config_value?(config, key) when is_list(config) do
+    config
+    |> Keyword.get(key)
+    |> present_config_value?()
+  end
+
+  defp present_config_value?(config, key) when is_map(config) do
+    value = Map.get(config, key) || Map.get(config, Atom.to_string(key))
+
+    present_config_value?(value)
+  end
+
+  defp present_config_value?(_config, _key), do: false
+
+  defp present_config_value?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_config_value?(_value), do: false
 
   @spec send(Notification.t()) :: {:ok, Oban.Job.t()} | {:error, Ecto.Changeset.t()}
   def send(notification) do

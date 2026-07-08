@@ -68,6 +68,8 @@ defmodule Pleroma.Web.StreamerTest do
     test "disallows user streams" do
       assert {:error, _} = Streamer.get_topic("user", nil, nil)
       assert {:error, _} = Streamer.get_topic("user:notification", nil, nil)
+      assert {:error, _} = Streamer.get_topic("user:groups", nil, nil)
+      assert {:error, _} = Streamer.get_topic("user:sources", nil, nil)
       assert {:error, _} = Streamer.get_topic("direct", nil, nil)
     end
 
@@ -160,11 +162,19 @@ defmodule Pleroma.Web.StreamerTest do
 
       expected_user_topic = "user:#{user.id}"
       expected_notification_topic = "user:notification:#{user.id}"
+      expected_groups_topic = "user:groups:#{user.id}"
+      expected_sources_topic = "user:sources:#{user.id}"
       expected_direct_topic = "direct:#{user.id}"
       expected_pleroma_chat_topic = "user:pleroma_chat:#{user.id}"
 
       for valid_user_token <- [read_oauth_token, read_statuses_token] do
         assert {:ok, ^expected_user_topic} = Streamer.get_topic("user", user, valid_user_token)
+
+        assert {:ok, ^expected_groups_topic} =
+                 Streamer.get_topic("user:groups", user, valid_user_token)
+
+        assert {:ok, ^expected_sources_topic} =
+                 Streamer.get_topic("user:sources", user, valid_user_token)
 
         assert {:ok, ^expected_direct_topic} =
                  Streamer.get_topic("direct", user, valid_user_token)
@@ -174,7 +184,7 @@ defmodule Pleroma.Web.StreamerTest do
       end
 
       for invalid_user_token <- [read_notifications_token, badly_scoped_token],
-          user_topic <- ["user", "direct", "user:pleroma_chat"] do
+          user_topic <- ["user", "user:groups", "user:sources", "direct", "user:pleroma_chat"] do
         assert {:error, :unauthorized} = Streamer.get_topic(user_topic, user, invalid_user_token)
       end
 
@@ -1124,12 +1134,9 @@ defmodule Pleroma.Web.StreamerTest do
                Streamer.get_topic("source:#{source.ap_id}", nil, nil, %{})
     end
 
-    test "renders aggregate group and source stream names distinctly" do
-      assert StreamerView.render("stream.json", %{topic: "user:groups:42"}) == ["user:groups"]
-      assert StreamerView.render("stream.json", %{topic: "user:sources:42"}) == ["user:sources"]
-    end
-
     test "publishes public group and source creates to target streams" do
+      follower = insert(:user)
+
       group =
         insert(:user,
           local: false,
@@ -1145,6 +1152,9 @@ defmodule Pleroma.Web.StreamerTest do
           ap_id: "https://funkwhale.example/channels/library",
           nickname: "library@funkwhale.example"
         )
+
+      {:ok, _, _} = User.follow(follower, group, :follow_accept)
+      {:ok, _, _} = User.follow(follower, source, :follow_accept)
 
       note =
         insert(:note,
@@ -1168,6 +1178,26 @@ defmodule Pleroma.Web.StreamerTest do
 
       assert "group:#{group.id}" in topics
       assert "source:#{source.id}" in topics
+
+      {:ok, _} =
+        Streamer.get_topic_and_add_socket(
+          "user:groups",
+          follower,
+          insert(:oauth_token, user: follower)
+        )
+
+      Streamer.stream("group:#{group.id}", activity)
+      assert_receive {:render_with_user, Pleroma.Web.StreamerView, "update.json", ^activity, _}
+
+      {:ok, _} =
+        Streamer.get_topic_and_add_socket(
+          "user:sources",
+          follower,
+          insert(:oauth_token, user: follower)
+        )
+
+      Streamer.stream("source:#{source.id}", activity)
+      assert_receive {:render_with_user, Pleroma.Web.StreamerView, "update.json", ^activity, _}
     end
 
     test "rejects blank and oversized group and source stream identifiers" do

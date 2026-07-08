@@ -24,12 +24,11 @@ config :pleroma, :mrf,
     Pleroma.Web.ActivityPub.MRF.InlineQuotePolicy
   ]
 
-# Increase the pool size and timeout
-config :pleroma, :dangerzone, override_repo_pool_size: true
-
-config :pleroma, Pleroma.Repo,
-  pool_size: 40,
-  timeout: 30_000
+# Keep the default connection pool size unless a deployment-specific secret
+# config deliberately overrides it. The live database limit is intentionally
+# lower than the historical Soapbox pool, so this file should not force a
+# dangerzone override for every source install.
+config :pleroma, Pleroma.Repo, timeout: 30_000
 
 # Allow privileged staff
 config :pleroma, :instance, privileged_staff: true
@@ -49,7 +48,8 @@ config :pleroma, :instance, max_media_attachments: 20
 config :pleroma, :instance,
   name: "Unfathomably",
   description: "A federated social platform powered by unfathomably-be and unfathomably-fe.",
-  instance_thumbnail: "/instance/thumbnail.png"
+  instance_thumbnail: "/instance/thumbnail.png",
+  stats_refresh_interval: :timer.minutes(15)
 
 config :pleroma, :frontend_configurations,
   soapbox_fe: %{

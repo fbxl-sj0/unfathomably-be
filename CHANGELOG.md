@@ -5,465 +5,373 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Fixed
+- Completed the frontend list workflow by wiring exclusive lists through
+  create/edit state, clarifying member management, fixing the list editor close
+  action, preventing blank member searches, and making list member additions
+  duplicate-safe.
+- Fixed list timeline routing in the frontend so `/list/:id` uses the route id
+  supplied by the app wrapper instead of opening list, timeline, and WebSocket
+  requests for `undefined`.
+- Fixed list creation and editing in the frontend so Mastodon lists no longer
+  show or submit the unsupported emoji field that caused `/api/v1/lists` to
+  reject otherwise valid list names.
+- Hardened frontend fallback routing so encoded credential, key, certificate,
+  and environment-file probe paths return 404 instead of the single-page app
+  shell.
+- Cleaned follow-collection refresh logging so expected remote private or
+  missing collections are one-line debug entries instead of warning noise.
+- Refreshed warning-clean backend source on the live service so startup compile
+  logs no longer hide runtime signal behind stale grouping and unreachable
+  clause warnings.
+- Fixed followed group/source aggregate streaming so frontend group and source
+  feeds connect to path-style WebSocket endpoints and the backend fans target
+  updates out to local followers' aggregate streams.
+- Fixed protected frontend streaming hooks so user, notification, direct, list,
+  group-feed, and source-feed streams wait for an OAuth token before opening
+  WebSocket connections.
 
 ## [3.3.0] - 2026-07-06
-
 ### Added
-- Added `build_scripts/unfathomably-friendica-smoke.sh` for stock Friendica forum federation coverage, including
-  bidirectional follows, group posts, replies, local reactions, deletes where stock Friendica applies them, and
+- Added `build_scripts/unfathomably-friendica-smoke.sh` for stock Friendica
+  forum federation coverage, including bidirectional follows, group posts,
+  replies, local reactions, deletes where stock Friendica applies them, and
   explicit stock limitation reporting.
-- Added `build_scripts/unfathomably-hubzilla-smoke.sh` for stock Hubzilla forum/channel federation coverage,
-  including bidirectional follows, Hubzilla-to-Unfathomably group posting, Unfathomably-to-Hubzilla group
-  posting, local reactions, cleanup, and explicit stock limitation reporting for reply, reaction, delete, and
-  CLI/API unfollow gaps.
-- Added `build_scripts/unfathomably-discourse-smoke.sh`, a stock Discourse ActivityPub bidirectional
-  group-federation harness covering follow, top-level posts, replies, likes, unlikes, deletes, and unfollow
-  behavior insofar as Discourse category actors support each operation.
-- Added `build_scripts/unfathomably-wide-federation-smoke.sh` to run the live compatibility audit against broad
-  group/forum/channel platforms and record per-platform `tested` or `not_tested` reports without stopping at the
-  first unavailable public target.
-- Added `build_scripts/unfathomably-nodebb-smoke.sh` for stock NodeBB local federation coverage, including
-  supported category follow, topic delivery, like/unlike, reply/delete, cleanup, and explicit stock limitation
-  reporting.
-- Added `build_scripts/unfathomably-peertube-smoke.sh` for stock PeerTube local federation coverage across HTTPS
-  channel follow, video delivery, likes, comments in both directions, comment deletes, video deletes, and
-  explicit non-video group limitation reporting.
-- Added regression coverage for Pleroma notification mark-read requests that receive grouped notification keys,
-  ensuring they fail as client errors rather than server errors.
-- Added `mix pleroma.config fix_mrf_policies` and documentation so stale ConfigDB MRF module entries can be
-  repaired without manual database edits.
+- Added `build_scripts/unfathomably-hubzilla-smoke.sh` for stock Hubzilla
+  forum/channel federation coverage, including bidirectional follows,
+  Hubzilla-to-Unfathomably group posting, Unfathomably-to-Hubzilla group
+  posting, local reactions, cleanup, and explicit stock limitation reporting
+  for reply, reaction, delete, and CLI/API unfollow gaps.
+- Added `build_scripts/unfathomably-gotosocial-smoke.sh` for stock GoToSocial
+  local federation coverage, including bidirectional account follows, posts,
+  replies, likes, unlikes, deletes, unfollow cleanup, and explicit stock
+  Group actor probe reporting.
+- Added `build_scripts/unfathomably-misskey-smoke.sh` for stock Misskey local
+  federation coverage, including bidirectional account follows, posts, replies,
+  favourites, emoji reactions, quote notes, profile summaries, deletes,
+  unfollow cleanup, and explicit stock Group actor limitation reporting.
+- Added `build_scripts/unfathomably-iceshrimp-smoke.sh` for stock Iceshrimp.NET
+  local federation coverage, including bidirectional account follows, posts,
+  replies, favourites, emoji reactions, quote posts, deletes, unfollow cleanup,
+  profile summaries, and explicit stock Group actor probe reporting.
+- Added `build_scripts/unfathomably-pixelfed-smoke.sh` for stock Pixelfed local
+  federation coverage, including bidirectional account follows, media posts,
+  replies, favourites, local unfavourite cleanup, Pixelfed-origin deletes,
+  unfollow cleanup, remote media attachment visibility, and explicit stock
+  remote-unfavourite, remote-delete, and Group actor probe reporting.
+- Added `build_scripts/unfathomably-funkwhale-smoke.sh` for stock Funkwhale
+  local federation coverage, including account discovery/follow, public
+  library and audio-track federation, local favourite/unfavourite behavior,
+  outbound inbox delivery checks, and explicit stock remote-favourite,
+  audio-delete, account, and Group actor probe reporting.
+- Added `build_scripts/unfathomably-discourse-smoke.sh`, a stock Discourse
+  ActivityPub bidirectional group-federation harness covering follow,
+  top-level posts, replies, likes, unlikes, deletes, and unfollow behavior
+  insofar as Discourse category actors support each operation.
+- Added `build_scripts/unfathomably-wide-federation-smoke.sh` to run the live
+  compatibility audit against broad group/forum/channel platforms and record
+  per-platform `tested` or `not_tested` reports without stopping at the first
+  unavailable public target.
+- Added `build_scripts/unfathomably-nodebb-smoke.sh` for stock NodeBB local
+  federation coverage, including supported category follow, topic delivery,
+  like/unlike, reply/delete, cleanup, and explicit stock limitation reporting.
+- Added `build_scripts/unfathomably-peertube-smoke.sh` for stock PeerTube local
+  federation coverage across HTTPS channel follow, video delivery, likes,
+  comments in both directions, comment deletes, video deletes, and explicit
+  non-video group limitation reporting.
+- Added a combined group/feed target discovery endpoint so clients can search
+  known and newly resolved groups, forums, feeds, blogs, libraries, and channel
+  actors through one ranked catalog.
+- Added a shared federation-safety smoke gate covering local defederation
+  awareness, blocked group relationship messaging, federated group Block
+  delivery, source/account follow refusal, and frontend disabled-state
+  rendering before the platform peer matrix runs.
+- Added `build_scripts/unfathomably-release-gate.sh`, a non-interactive
+  release gate that runs the federation smoke matrix before unit tests,
+  warning gates, package freshness checks, and the final `ready to release`
+  confirmation.
+- Fixed missing VAPID web-push configuration handling so test and local deployments report absent push keys cleanly instead of crashing instance metadata.
+- Fixed incoming top-level posts from group-unaware clients that mention a local
+  group as plain `@group@host` text, so Pleroma, Rebased, Mastodon, and similar
+  clients can post into groups after following the group actor.
+- Fixed ActivityPub follower and following collection rendering to include
+  compatibility `count` and `results` aliases alongside OrderedCollection
+  fields, improving compatibility with Funkwhale-style actor collection
+  parsers during account and group probes.
+- Fixed incoming replies from group-unaware clients so replies to known group
+  posts inherit the parent group context and appear in the group timeline.
+- Fixed the Pleroma/Rebased smoke harness so CLI user creation runs with a
+  no-server config while the actual reference servers still boot normally.
+- Fixed remote account search normalization so hyphenated domains such as `mastodon-ref.test` survive remote resolution.
+- Fixed local group moderator add/remove and group ban/unban API actions so they emit federated ActivityPub moderation activities for Threadiverse peers.
+- Fixed group moderation Announces so accepted remote followers receive moderator and ban activity fanout instead of seeing local-only state.
+- Fixed Threadiverse group moderation fanout for MBin and PieFed by embedding the moderated activity inside the group Announce, publishing a group profile Update first, and delaying moderation Announces briefly so asynchronous peers can refresh moderator collections before applying Add, Remove, Block, or Undo Block activities.
+- Fixed top-level group posts without an explicit title so they derive an ActivityPub `Page.name`, improving MBin and PieFed compatibility.
+- Fixed HTTP TLS CA selection so smoke and source deployments respect
+  `SSL_CERT_FILE` before falling back to the bundled CA store.
+- Fixed chat read endpoints so browser JSON requests with string-key route
+  parameters return normal client responses instead of falling through to a
+  controller action-clause error.
+- Added regression coverage for Pleroma notification mark-read requests that
+  receive grouped notification keys, ensuring they fail as client errors rather
+  than server errors.
+- Deduplicated recent remote object fetch jobs by fetch target and mode,
+  including terminal cancelled fetches during a cooldown window, and taught the
+  Oban janitor to collapse pre-existing duplicate remote fetch rows so repeated
+  reply refreshes cannot flood the remote fetch queue.
+- Fixed the notification receiver fallback so unsupported or fake activities
+  return the normal `{enabled, disabled}` tuple shape instead of a bare list,
+  avoiding future MatchError-class crashes in notification helper callers.
+- Backported and strengthened Pleroma's explicit-mention handling so outgoing
+  ActivityPub `Mention` tags are generated from `to` recipients only, preventing
+  cc-only delivery recipients from being advertised to remote software as
+  human-visible mentions.
+- Hardened Mastodon status rendering for titled Page/Article-style objects whose
+  ActivityPub `url` arrives as a map, list, or malformed value, and kept nil
+  content rendering as an empty string instead of risking a render failure.
+- Fixed Mastodon incoming edits whose objects inline `likes` as ActivityStreams collections by dropping the wire-level collection before local object validation.
+- Fixed upload metadata extraction for grayscale images so blurhash failures do not discard successfully extracted image dimensions.
+- Fixed integer-ID keyset pagination by honoring `:id_type` for `min_id`, `since_id`, and `max_id`, which makes followed-tag pagination and other integer-backed paginated resources advance correctly.
+- Fixed frontend archive installation on OTP 27.1+ by skipping archive entries that resolve to directories instead of trying to write them as files.
+- Fixed Meilisearch index setup so ranking-rule and searchable-attribute updates use `PUT`, and removed the stale unused `meili_post/2` import from the indexing task.
+- Fixed release-task lookup so dotted `pleroma_ctl` task names such as `search.meilisearch` resolve through `Code.ensure_loaded/1`, with regression coverage.
+- Stopped rendering local Atom feed alternate links for remote account profile pages.
+- Fixed local emoji reactions on remote statuses with no local notification
+  target so the notification pipeline returns an empty notification list instead
+  of raising a `MatchError` and returning HTTP 500.
+- Fixed instance feature metadata so `pleroma:language_detection` is advertised when a language detector provider is configured.
+- Fixed RichMedia streaming support for Tesla Finch by adding a Finch adapter helper that maps `stream: true` to Finch's `response: :stream` option.
+- Fixed account relationship rendering so `following`, `followed_by`, and `requested` do not report stale follow-request state after the authenticated account already follows the viewed account.
+- Fixed ActivityPub language-code validation so newline-tainted values such as `en-US\n` are rejected instead of accepted by a loose end-of-line regex.
+- Fixed `GET /api/v1/statuses` compatibility by accepting Mastodon-style `id[]` while keeping the deprecated `ids[]` form.
+- Fixed status translation compatibility by accepting Mastodon-style `lang` while preserving deprecated `target_language`.
+- Fixed streaming follow-relationship updates so hidden follower and following counts are not leaked when the target account hides those counts.
+- Fixed Gun publisher pool race handling so routine `:already_started` and `:pool_full` cases snooze briefly instead of producing noisy failures.
+- Fixed remote user profile fields so over-limit remote field arrays are truncated to the configured limit instead of dropping or rejecting the whole field list.
+- Fixed marker updates so setting the notifications marker also marks notifications read up to the supplied `last_read_id`.
+- Fixed LDAP authentication and automatic registration on newer OTP by starting `:eldap`, accepting both LDAP search-result tuple shapes, and logging structured bind/search failures.
+- Fixed queued federation publish cleanup so deletes, unlikes, unboosts, and emoji unreactions cancel undelivered outbound jobs for the affected activity after authorization succeeds.
+- Fixed incoming ActivityPub Delete handling so non-validation pipeline errors return normal error tuples instead of leaking worker exceptions.
+- Fixed RichMedia preview jobs so deterministic GET, HEAD, content, validation, and malformed URL failures cancel cleanly and negative-cache where appropriate instead of retrying indefinitely.
+- Fixed RichMedia preview suppression so posts marked sensitive or tagged `#nsfw` do not generate or cache link previews.
+- Fixed reachability cleanup so marking a host reachable can cancel outstanding reachability probe jobs instead of warning about a missing helper.
+- Fixed metadata rendering for objects with no summary or content by keeping the empty-string fallback covered by regression tests.
+- Fixed newer-Elixir warning noise in feed templates, OAuth/app specs, object maybe-refetch, invite revoke handling, password reset handling, and HTTPSecurity test startup warnings.
+- Added `mix pleroma.config fix_mrf_policies` and documentation so stale ConfigDB MRF module entries can be repaired without manual database edits.
 - Added ActivityPub alternate-link metadata tags for rendered local profiles and statuses.
-- Extended Pleroma, Rebased, and Mastodon smoke coverage to prove account-style group follow, receive, like,
-  unlike, reply, delete, top-level mention posting, and unfollow behavior for platforms without native group UI.
-- Added an S3 uploader `force_media_proxy` option so operators can route stored S3 media URLs through the media
-  proxy instead of exposing the configured public S3 endpoint directly.
+- Extended Pleroma, Rebased, and Mastodon smoke coverage to prove account-style
+  group follow, receive, like, unlike, reply, delete, top-level mention posting,
+  and unfollow behavior for platforms without native group UI.
+- Added an S3 uploader `force_media_proxy` option so operators can route stored S3 media URLs through the media proxy instead of exposing the configured public S3 endpoint directly.
 - Added an OpenLDAP self-service ACL example for LDAP-backed password changes.
-- Added an Oban-backed remote actor refresh worker so stale cached actors refresh asynchronously instead of
-  blocking request and render paths.
-- Backported Pleroma/Akkoma `mix pleroma.database prune_objects` options for `--keep-threads`,
-  `--keep-non-public`, and `--prune-orphaned-activities` so large remote-data cleanup can be safer and more
-  selective.
-- Added the Mastodon-style dashed /authorize-interaction route alias alongside the existing
-  /authorize_interaction remote interaction path.
-- Added the DNSRBL MRF policy from upstream Pleroma, with fail-open resolver handling so local DNS configuration
-  mistakes do not crash federation filtering.
+- Added an Oban-backed remote actor refresh worker so stale cached actors refresh asynchronously instead of blocking request and render paths.
+- Backported Pleroma/Akkoma `mix pleroma.database prune_objects` options for `--keep-threads`, `--keep-non-public`, and `--prune-orphaned-activities` so large remote-data cleanup can be safer and more selective.
+- Added the Mastodon-style dashed /authorize-interaction route alias alongside the existing /authorize_interaction remote interaction path.
+- Added the DNSRBL MRF policy from upstream Pleroma, with fail-open resolver handling so local DNS configuration mistakes do not crash federation filtering.
 - Added Pleroma's missing foreign-key index migration for relationship and activity lookup paths.
-- Added Mastodon-compatible rule hints to instance and admin rule APIs, including schema rendering and a
-  live-safe migration for existing rule tables.
-- Added `followers.json` and `following.json` to backup archives, with `actor.json` linking to the archived
-  local collections.
-- Added Pleroma upstream `MRF.ForceMention`, with defaults for mentioning parent and quoted-post authors when
-  the policy is enabled.
-- Backported Mastodon-compatible followed hashtags, including tag follow/unfollow/list endpoints, home timeline
-  inclusion for public posts with followed tags, and websocket fanout to followed-tag recipients.
-- Added startup validation for configured MRF policy modules so missing or incorrectly named policies fail fast
-  instead of silently weakening moderation policy.
-- Backported Pleroma's search backend healthcheck worker so unhealthy external search backends pause indexing
-  work until their health endpoint recovers.
-- Added FEP-2c59 WebFinger metadata to local ActivityPub actors so compatible peers can discover the actor's
-  acct URI directly from actor JSON.
-- Backported Pleroma optional IPFS upload backend support, including gateway configuration metadata and
-  regression coverage for upload, URL, and delete behavior.
-- Backported Pleroma synchronized per-application settings storage at `/api/v1/pleroma/settings/:app`, using the
-  existing `pleroma_settings_store` user field and OAuth-scoped read/write access.
-- Backported Pleroma's plaintext alternatives for password-reset, invitation, account-confirmation,
-  approval-pending, successful-registration, and account-backup emails so non-HTML mail clients and
-  deliverability checks receive useful message bodies.
-- Backported Pleroma's ActivityPub actor `published` field so local actors advertise their creation timestamp.
-- Backported Pleroma's auth-backend password-change flow so configured authenticators handle
-  `/api/pleroma/change_password`, including LDAP password updates.
-- Added Argon2 password-hash verification for Akkoma-style migrations and converted successful Argon2 logins
-  into the local PBKDF2 password format, with regression coverage.
-- Added direct Swoosh Mua adapter dependencies and exposed `Swoosh.Adapters.Mua` in mailer adapter suggestions.
-- Exposed avatar and header descriptions under the `pleroma` account extension object while keeping the existing
-  top-level fields as deprecated aliases for compatibility.
-- Added `multipart` as a direct optional dependency so Swoosh Mailgun support has the parser dependency it needs
-  when configured.
-- Added per-request Tesla middleware support to `Pleroma.HTTP` and used it to enforce configurable RichMedia
-  HTTP timeouts.
-- Backported Pleroma's `CastAndValidate` `replace_params` option support so controllers can validate OpenAPI
-  bodies without replacing Plug request params.
+- Added Mastodon-compatible rule hints to instance and admin rule APIs, including schema rendering and a live-safe migration for existing rule tables.
+- Added `followers.json` and `following.json` to backup archives, with `actor.json` linking to the archived local collections.
+- Added Pleroma upstream `MRF.ForceMention`, with defaults for mentioning parent and quoted-post authors when the policy is enabled.
+- Backported Mastodon-compatible followed hashtags, including tag follow/unfollow/list endpoints, home timeline inclusion for public posts with followed tags, and websocket fanout to followed-tag recipients.
+- Added startup validation for configured MRF policy modules so missing or incorrectly named policies fail fast instead of silently weakening moderation policy.
+- Backported Pleroma's search backend healthcheck worker so unhealthy external search backends pause indexing work until their health endpoint recovers.
+- Added FEP-2c59 WebFinger metadata to local ActivityPub actors so compatible peers can discover the actor's acct URI directly from actor JSON.
+- Backported Pleroma optional IPFS upload backend support, including gateway configuration metadata and regression coverage for upload, URL, and delete behavior.
+- Backported Pleroma synchronized per-application settings storage at `/api/v1/pleroma/settings/:app`, using the existing `pleroma_settings_store` user field and OAuth-scoped read/write access.
+- Backported Pleroma's plaintext alternatives for password-reset, invitation, account-confirmation, approval-pending, successful-registration, and account-backup emails so non-HTML mail clients and deliverability checks receive useful message bodies.
+- Added a PostgreSQL-compatible remote-peer host index that matches the live
+  stats query expression, avoiding repeated sequential scans over remote users
+  when refreshing instance peer counts.
+- Reworked remote peer stats refreshes to use the compact host index with a
+  loose-index scan and slowed the default stats refresh cadence for large
+  federation-heavy source installs.
 
 ### Changed
-- Classified FediGroups' documented stock limitations in the wide federation matrix so unsupported Delete,
-  reaction, threaded-comment, follow, and moderation checks are not confused with untested local harness
-  coverage.
-- Expanded federation testing documentation with a broad public-platform smoke lane for PeerTube, NodeBB,
-  Discourse, FediGroups, Hubzilla, and Friendica.
-- Updated Hex dependencies to the newest resolvable releases in the current release train, including h2,
-  hackney, hpax, mail, makeup, multipart, quic, Swoosh, and WebTransport.
-- Relaxed the direct `mail` and optional `multipart` constraints to their current release trains so Swoosh
-  adapter support no longer holds the lockfile behind.
+- Classified FediGroups' documented stock limitations in the wide federation
+  matrix so unsupported Delete, reaction, threaded-comment, follow, and
+  moderation checks are not confused with untested local harness coverage.
+- Expanded federation testing documentation with a broad public-platform smoke
+  lane for PeerTube, NodeBB, Discourse, FediGroups, Hubzilla, and Friendica.
+- Updated Hex dependencies to the newest resolvable releases in the current
+  release train, including h2, hackney, hpax, mail, makeup, multipart, quic,
+  Swoosh, and WebTransport.
+- Relaxed the direct `mail` and optional `multipart` constraints to their
+  current release trains so Swoosh adapter support no longer holds the lockfile
+  behind.
+- Backported Pleroma's ActivityPub actor `published` field so local actors advertise their creation timestamp.
+- Backported Pleroma's permanent media-preview redirect behavior so GIF previews and too-small preview candidates return `301` redirects to the media proxy URL.
 - Updated OpenBSD nginx ACME documentation to avoid conflicting server names during certificate acquisition.
-- Removed the stale StatusNet preload-provider configuration suggestion and corrected the improved hashtag
-  timeline cheatsheet section.
+- Removed the stale StatusNet preload-provider configuration suggestion and corrected the improved hashtag timeline cheatsheet section.
+- Hardened translation and language-detection metadata so translated HTML is scrubbed before caching and language-detection features are advertised only when the detector is configured.
 - Backported Pleroma's release VM busywait tuning so source releases do not waste CPU while idle.
+- Backported Pleroma's auth-backend password-change flow so configured authenticators handle `/api/pleroma/change_password`, including LDAP password updates.
 - Updated BSD installation docs to include libvips/vips where media-processing dependencies need it.
-- Backported Pleroma's upload-dedupe sharding so new filesystem-backed media paths are spread across stable
-  SHA-256 prefix directories instead of accumulating in one large upload directory.
-- Updated OpenBSD service, relayd/httpd, nginx, ACME-renewal, login-class, PostgreSQL SCRAM/UTF-8 database
-  initialization, daemon workdir, and dependency examples with the maintained Pleroma upstream fixes, including
-  the corrected `/media/` alias pattern and permanent HTTP redirects.
-- Backported compatible Pleroma Dialyzer cleanup around ActivityPub pipeline return types, object fetcher error
-  specs, import-worker error wrapping, backup export unreachable branches, and CommonAPI pipeline error
-  pass-through.
-- Changed follow/block/mute imports to enqueue one background job per target actor, while preserving backward
-  compatibility for already-queued legacy batch import jobs.
-- Backported Oban operational hardening from upstream Pleroma: removed the unused ingestion queue, raised
-  background/slow queue capacity, moved slow user and instance deletion work into a dedicated delete worker,
-  added bounded worker timeouts, and extended Oban pruner retention while preserving Lifeline.
+- Backported Pleroma's upload-dedupe sharding so new filesystem-backed media paths are spread across stable SHA-256 prefix directories instead of accumulating in one large upload directory.
+- Updated OpenBSD service, relayd/httpd, nginx, ACME-renewal, login-class, PostgreSQL SCRAM/UTF-8 database initialization, daemon workdir, and dependency examples with the maintained Pleroma upstream fixes, including the corrected `/media/` alias pattern and permanent HTTP redirects.
+- Backported Unix timestamp support for `date_to_asctime/1` so legacy OStatus/TwitterAPI date values emitted as integers or floats render correctly instead of falling back to an empty string.
+- Restored the legacy `/api/statusnet/config(.json)` action and backported `site.safeDMMentionsEnabled` so older Pleroma-style clients can discover safe-DM mode.
+- Backported reverse-proxy filename hardening so attachment responses parse common filename forms and safely quote the emitted filename.
+- Backported HTTP adapter-safety handling in modern Tesla form so adapter exceptions, throws, and exits return ordinary error tuples instead of crashing callers.
+- Made RichMedia background jobs unique across the full pending lifetime of the URL job, matching upstream's duplicate-work guard while preserving Unfathomably's richer RichMedia backfill pipeline.
+- Backported compatible Pleroma Dialyzer cleanup around ActivityPub pipeline return types, object fetcher error specs, import-worker error wrapping, backup export unreachable branches, and CommonAPI pipeline error pass-through.
+- Added Argon2 password-hash verification for Akkoma-style migrations and converted successful Argon2 logins into the local PBKDF2 password format, with regression coverage.
+- Hardened LDAP SSL/STARTTLS handling so implicit LDAPS and STARTTLS both use verified certificates and hostname checks by default, support `LDAP_CACERTFILE` / `:cacertfile` CA bundle overrides, and do not continue to bind after a failed STARTTLS upgrade.
+- Added direct Swoosh Mua adapter dependencies and exposed `Swoosh.Adapters.Mua` in mailer adapter suggestions.
+- Kept Tesla timeout middleware off RichMedia streaming responses while preserving it for the non-streaming fallback fetch path.
+- Changed follow/block/mute imports to enqueue one background job per target actor, while preserving backward compatibility for already-queued legacy batch import jobs.
+- Exposed avatar and header descriptions under the `pleroma` account extension object while keeping the existing top-level fields as deprecated aliases for compatibility.
+- Made outgoing ActivityPub publisher payloads include `cc: []` when the source activity has no carbon-copy recipients, matching upstream Pleroma's compatibility fix without taking the larger publisher job refactor.
+- Added `multipart` as a direct optional dependency so Swoosh Mailgun support has the parser dependency it needs when configured.
+- Backported Oban operational hardening from upstream Pleroma: removed the unused ingestion queue, raised background/slow queue capacity, moved slow user and instance deletion work into a dedicated delete worker, added bounded worker timeouts, and extended Oban pruner retention while preserving Lifeline.
+- Added per-request Tesla middleware support to `Pleroma.HTTP` and used it to enforce configurable RichMedia HTTP timeouts.
 - Made backup worker timeout configurable with a 30-minute default.
-- Extended the PieFed federation smoke harness to resolve group-ban target actors before moderation checks,
-  matching PieFed's requirement that banned users already be known locally before community-ban modlog entries
-  can be applied.
-- Extended Lemmy, MBin, and PieFed smoke coverage to prove local groups are advertised through the
-  Lemmy-compatible community list and that Unfathomably group search can discover their remote communities
-  before follow tests begin.
-- Completed the reopened historical Pleroma upstream audit through row 15431, closing the 2022-2023 Rebased
-  lineage window with explicit dispositions for every non-ancestor exception and keeping the native Vips
-  media-preview branch deferred.
+- Hardened ActivityPub C2S local `Update` validation so local clients can only update objects they are authorized to access, with rejected changesets returning clean 400 responses.
+- Made the Mastodon and PieFed federation smoke harnesses more robust by using a local trusted smoke CA, avoiding executable-bit assumptions, and bounding PieFed queue-drain commands.
+- Extended the PieFed federation smoke harness to resolve group-ban target actors before moderation checks, matching PieFed's requirement that banned users already be known locally before community-ban modlog entries can be applied.
+- Extended Lemmy, MBin, and PieFed smoke coverage to prove local groups are advertised through the Lemmy-compatible community list and that Unfathomably group search can discover their remote communities before follow tests begin.
+- Completed the reopened historical Pleroma upstream audit through row 15431, closing the 2022-2023 Rebased lineage window with explicit dispositions for every non-ancestor exception and keeping the native Vips media-preview branch deferred.
 - Made the AntiMentionSpam account-age threshold configurable instead of hard-coding the upstream default.
-- Rebalanced HTTP/Gun pool sizing for federation, media, uploads, and default traffic while keeping the
-  dedicated rich-media pool.
+- Rebalanced HTTP/Gun pool sizing for federation, media, uploads, and default traffic while keeping the dedicated rich-media pool.
 - Removed unused RichMedia and MediaProxyWarming concurrent limiter processes after the upstream pool refactor.
-- Advanced the reopened historical Pleroma upstream audit cursor through row 14800 with per-commit ancestry
-  proof, including the inherited GoToSocial key-resolution fix.
-- Enhanced request logging metadata for inbound ActivityPub inboxes and authenticated requests so federation
-  logs include actor/type/path/user context without carrying low-value request IDs.
-- Backported the PostgreSQL 11+ baseline cleanup by disabling PostgreSQL JIT in repo parameters, removing
-  startup-time PostgreSQL version probing, and using `websearch_to_tsquery` directly for database search.
-- Backported Pleroma's Dialyzer-oriented typespec cleanup across bookmarks, chats, reports, streaming, uploads,
-  OAuth token queries, rich media, bare URI validation, and related helpers.
+- Advanced the reopened historical Pleroma upstream audit cursor through row 14800 with per-commit ancestry proof, including the inherited GoToSocial key-resolution fix.
+- Aligned with upstream's object actor-strip revert so embedded object `actor` fields are preserved for compatibility.
+- Backported Pleroma's PleromaAPI notification-read behavior so marking notifications read returns a simple `"ok"` response instead of re-rendering notification payloads.
+- Enhanced request logging metadata for inbound ActivityPub inboxes and authenticated requests so federation logs include actor/type/path/user context without carrying low-value request IDs.
+- Backported the PostgreSQL 11+ baseline cleanup by disabling PostgreSQL JIT in repo parameters, removing startup-time PostgreSQL version probing, and using `websearch_to_tsquery` directly for database search.
+- Backported Pleroma's `CastAndValidate` `replace_params` option support so controllers can validate OpenAPI bodies without replacing Plug request params.
+- Backported Pleroma's Dialyzer-oriented typespec cleanup across bookmarks, chats, reports, streaming, uploads, OAuth token queries, rich media, bare URI validation, and related helpers.
+- Backported Pleroma's Finch redirect middleware handling and full Tesla response preservation for retryable publisher HTTP failures.
 - Backported Pleroma's shared CIDR parsing helper for RemoteIp and authorized-fetch exception handling.
-- Backported Pleroma's runtime-configurable test emoji loading so emoji fixtures are controlled by loader config
-  instead of a compile-time environment branch.
-- Backported Pleroma's runtime streamer send gate so stream delivery decisions use application configuration
-  instead of a compile-time environment branch.
-- Backported Pleroma's runtime-configurable uploader callback timeout so upload backend callbacks no longer
-  depend on a compile-time Mix environment branch.
-- Backported Pleroma's runtime-configurable application supervision switches so tests and smoke stacks can
-  disable custom module loading, internal fetch initialization, background migrators, streamer registry, and
-  all-HTTP-pool startup without compile-time environment branches.
-- Kept Unfathomably's broader Misskey-family quote compatibility by retaining `_misskey_quote` emission
-  alongside `quoteUri`, despite upstream Pleroma later dropping that extra field.
-- Corrected the upstream report-notification demotion audit to follow Pleroma's final query-side visibility
-  guard instead of retaining the reverted notification-deletion hook.
-- Removed the stale `Quack.Logger` admin-config suggestion now that the Quack backend has been removed from the
-  dependency set and ConfigDB migration path.
-- Filled out Mastodon-compatible instance metadata and OpenAPI descriptions for URL character reservation,
-  pinned-status limits, featured-tag limits, and card image descriptions.
-- Filled out Mastodon-compatible v2 instance metadata with registration URL, status URL, featured-tag limits,
-  supported-media placeholders, and existing VAPID/translation details.
-- Moved new-user digest cron work onto the background Oban queue and removed the obsolete `new_users_digest`
-  queue entry, matching upstream Pleroma queue consolidation.
-- Followed upstream's row-14128 revert of the temporary slow-query telemetry branch, removing the
-  disabled-by-default hook added during the previous audit slice instead of carrying a feature upstream backed
-  out.
-- Regenerated `docs/UPSTREAM_PLEROMA_FULL_MANIFEST.md` as a compact one-row-per-upstream-commit ledger with
-  explicit reviewed ranges, removing duplicated audit-note blocks so future Pleroma backport passes resume from
-  a stable next-row cursor.
-- Replaced stale Prometheus metrics documentation for the old `prometheus_ex` `/api/pleroma/app_metrics` path
-  with the current PromEx `/api/metrics` endpoint and bearer-token setup.
+- Backported Pleroma's runtime-configurable test emoji loading so emoji fixtures are controlled by loader config instead of a compile-time environment branch.
+- Backported Pleroma's runtime streamer send gate so stream delivery decisions use application configuration instead of a compile-time environment branch.
+- Backported Pleroma's runtime-configurable uploader callback timeout so upload backend callbacks no longer depend on a compile-time Mix environment branch.
+- Backported Pleroma's runtime-configurable application supervision switches so tests and smoke stacks can disable custom module loading, internal fetch initialization, background migrators, streamer registry, and all-HTTP-pool startup without compile-time environment branches.
+- Kept Unfathomably's broader Misskey-family quote compatibility by retaining `_misskey_quote` emission alongside `quoteUri`, despite upstream Pleroma later dropping that extra field.
+- Matched Pleroma's final media-host-validation state by not retaining the intermediate uploaded-media Host header check, avoiding breakage for alternate media-domain and reverse-proxy deployments while preserving signed media URL/path checks and sandbox headers.
+- Corrected the upstream report-notification demotion audit to follow Pleroma's final query-side visibility guard instead of retaining the reverted notification-deletion hook.
+- Backported Pleroma's object fetcher bang-helper cleanup so remote object normalization uses the explicit non-bang fetch result path while preserving Unfathomably's quieter transient fetch logging.
+- Removed the stale `Quack.Logger` admin-config suggestion now that the Quack backend has been removed from the dependency set and ConfigDB migration path.
+- Filled out Mastodon-compatible instance metadata and OpenAPI descriptions for URL character reservation, pinned-status limits, featured-tag limits, and card image descriptions.
+- Tightened the default Content-Security-Policy script source so unsafe eval and wasm eval are only emitted when `:http_security, :allow_unsafe_eval` is explicitly enabled.
+- Filled out Mastodon-compatible v2 instance metadata with registration URL, status URL, featured-tag limits, supported-media placeholders, and existing VAPID/translation details.
+- Moved new-user digest cron work onto the background Oban queue and removed the obsolete `new_users_digest` queue entry, matching upstream Pleroma queue consolidation.
+- Followed upstream Pleroma's later full revert of uploaded-media Host-header validation, avoiding alternate-domain and reverse-proxy media breakage while retaining path-safe media handling.
+- Followed upstream's row-14128 revert of the temporary slow-query telemetry branch, removing the disabled-by-default hook added during the previous audit slice instead of carrying a feature upstream backed out.
+- Regenerated `docs/UPSTREAM_PLEROMA_FULL_MANIFEST.md` as a compact one-row-per-upstream-commit ledger with explicit reviewed ranges, removing duplicated audit-note blocks so future Pleroma backport passes resume from a stable next-row cursor.
+- Replaced stale Prometheus metrics documentation for the old `prometheus_ex` `/api/pleroma/app_metrics` path with the current PromEx `/api/metrics` endpoint and bearer-token setup.
+- Kept the default source-install database pool size aligned with PostgreSQL
+  limits instead of forcing the historical Soapbox dangerzone pool override
+  from the shared Unfathomably defaults.
 
 ### Fixed
-- Fixed missing VAPID web-push configuration handling so test and local deployments report absent push keys
-  cleanly instead of crashing instance metadata.
-- Fixed incoming top-level posts from group-unaware clients that mention a local group as plain `@group@host`
-  text, so Pleroma, Rebased, Mastodon, and similar clients can post into groups after following the group actor.
-- Fixed incoming replies from group-unaware clients so replies to known group posts inherit the parent group
-  context and appear in the group timeline.
-- Fixed the Pleroma/Rebased smoke harness so CLI user creation runs with a no-server config while the actual
-  reference servers still boot normally.
-- Fixed remote account search normalization so hyphenated domains such as `mastodon-ref.test` survive remote
-  resolution.
-- Fixed local group moderator add/remove and group ban/unban API actions so they emit federated ActivityPub
-  moderation activities for Threadiverse peers.
-- Fixed group moderation Announces so accepted remote followers receive moderator and ban activity fanout
-  instead of seeing local-only state.
-- Fixed Threadiverse group moderation fanout for MBin and PieFed by embedding the moderated activity inside the
-  group Announce, publishing a group profile Update first, and delaying moderation Announces briefly so
-  asynchronous peers can refresh moderator collections before applying Add, Remove, Block, or Undo Block
-  activities.
-- Fixed top-level group posts without an explicit title so they derive an ActivityPub `Page.name`, improving
-  MBin and PieFed compatibility.
-- Fixed Gun TLS CA selection so smoke and source deployments respect `SSL_CERT_FILE` before falling back to the
-  bundled CA store.
-- Fixed chat read endpoints so browser JSON requests with string-key route parameters return normal client
-  responses instead of falling through to a controller action-clause error.
-- Deduplicated recent remote object fetch jobs by fetch target and mode, including terminal cancelled fetches
-  during a cooldown window, and taught the Oban janitor to collapse pre-existing duplicate remote fetch rows so
-  repeated reply refreshes cannot flood the remote fetch queue.
-- Fixed the notification receiver fallback so unsupported or fake activities return the normal `{enabled,
-  disabled}` tuple shape instead of a bare list, avoiding future MatchError-class crashes in notification helper
-  callers.
-- Backported and strengthened Pleroma's explicit-mention handling so outgoing ActivityPub `Mention` tags are
-  generated from `to` recipients only, preventing cc-only delivery recipients from being advertised to remote
-  software as human-visible mentions.
-- Hardened Mastodon status rendering for titled Page/Article-style objects whose ActivityPub `url` arrives as a
-  map, list, or malformed value, and kept nil content rendering as an empty string instead of risking a render
-  failure.
-- Fixed Mastodon incoming edits whose objects inline `likes` as ActivityStreams collections by dropping the
-  wire-level collection before local object validation.
-- Fixed upload metadata extraction for grayscale images so blurhash failures do not discard successfully
-  extracted image dimensions.
-- Fixed integer-ID keyset pagination by honoring `:id_type` for `min_id`, `since_id`, and `max_id`, which makes
-  followed-tag pagination and other integer-backed paginated resources advance correctly.
-- Fixed frontend archive installation on OTP 27.1+ by skipping archive entries that resolve to directories
-  instead of trying to write them as files.
-- Fixed Meilisearch index setup so ranking-rule and searchable-attribute updates use `PUT`, and removed the
-  stale unused `meili_post/2` import from the indexing task.
-- Fixed release-task lookup so dotted `pleroma_ctl` task names such as `search.meilisearch` resolve through
-  `Code.ensure_loaded/1`, with regression coverage.
-- Stopped rendering local Atom feed alternate links for remote account profile pages.
-- Fixed local emoji reactions on remote statuses with no local notification target so the notification pipeline
-  returns an empty notification list instead of raising a `MatchError` and returning HTTP 500.
-- Fixed instance feature metadata so `pleroma:language_detection` is advertised when a language detector
-  provider is configured.
-- Fixed RichMedia streaming support for Tesla Finch by adding a Finch adapter helper that maps `stream: true` to
-  Finch's `response: :stream` option.
-- Fixed account relationship rendering so `following`, `followed_by`, and `requested` do not report stale
-  follow-request state after the authenticated account already follows the viewed account.
-- Fixed ActivityPub language-code validation so newline-tainted values such as `en-US\n` are rejected instead of
-  accepted by a loose end-of-line regex.
-- Fixed `GET /api/v1/statuses` compatibility by accepting Mastodon-style `id[]` while keeping the deprecated
-  `ids[]` form.
-- Fixed status translation compatibility by accepting Mastodon-style `lang` while preserving deprecated
-  `target_language`.
-- Fixed streaming follow-relationship updates so hidden follower and following counts are not leaked when the
-  target account hides those counts.
-- Fixed Gun publisher pool race handling so routine `:already_started` and `:pool_full` cases snooze briefly
-  instead of producing noisy failures.
-- Fixed remote user profile fields so over-limit remote field arrays are truncated to the configured limit
-  instead of dropping or rejecting the whole field list.
-- Fixed marker updates so setting the notifications marker also marks notifications read up to the supplied
-  `last_read_id`.
-- Fixed LDAP authentication and automatic registration on newer OTP by starting `:eldap`, accepting both LDAP
-  search-result tuple shapes, and logging structured bind/search failures.
-- Fixed queued federation publish cleanup so deletes, unlikes, unboosts, and emoji unreactions cancel
-  undelivered outbound jobs for the affected activity after authorization succeeds.
-- Fixed incoming ActivityPub Delete handling so non-validation pipeline errors return normal error tuples
-  instead of leaking worker exceptions.
-- Fixed RichMedia preview jobs so deterministic GET, HEAD, content, validation, and malformed URL failures
-  cancel cleanly and negative-cache where appropriate instead of retrying indefinitely.
-- Fixed RichMedia preview suppression so posts marked sensitive or tagged `#nsfw` do not generate or cache link
-  previews.
-- Fixed reachability cleanup so marking a host reachable can cancel outstanding reachability probe jobs instead
-  of warning about a missing helper.
-- Fixed metadata rendering for objects with no summary or content by keeping the empty-string fallback covered
-  by regression tests.
-- Fixed newer-Elixir warning noise in feed templates, OAuth/app specs, object maybe-refetch, invite revoke
-  handling, password reset handling, and HTTPSecurity test startup warnings.
-- Backported Pleroma's permanent media-preview redirect behavior so GIF previews and too-small preview
-  candidates return `301` redirects to the media proxy URL.
-- Hardened translation and language-detection metadata so translated HTML is scrubbed before caching and
-  language-detection features are advertised only when the detector is configured.
-- Backported Unix timestamp support for `date_to_asctime/1` so legacy OStatus/TwitterAPI date values emitted as
-  integers or floats render correctly instead of falling back to an empty string.
-- Restored the legacy `/api/statusnet/config(.json)` action and backported `site.safeDMMentionsEnabled` so older
-  Pleroma-style clients can discover safe-DM mode.
-- Backported HTTP adapter-safety handling in modern Tesla form so adapter exceptions, throws, and exits return
-  ordinary error tuples instead of crashing callers.
-- Made RichMedia background jobs unique across the full pending lifetime of the URL job, matching upstream's
-  duplicate-work guard while preserving Unfathomably's richer RichMedia backfill pipeline.
-- Kept Tesla timeout middleware off RichMedia streaming responses while preserving it for the non-streaming
-  fallback fetch path.
-- Made outgoing ActivityPub publisher payloads include `cc: []` when the source activity has no carbon-copy
-  recipients, matching upstream Pleroma's compatibility fix without taking the larger publisher job refactor.
-- Made the Mastodon and PieFed federation smoke harnesses more robust by using a local trusted smoke CA,
-  avoiding executable-bit assumptions, and bounding PieFed queue-drain commands.
-- Aligned with upstream's object actor-strip revert so embedded object `actor` fields are preserved for
-  compatibility.
-- Backported Pleroma's PleromaAPI notification-read behavior so marking notifications read returns a simple
-  `"ok"` response instead of re-rendering notification payloads.
-- Backported Pleroma's Finch redirect middleware handling and full Tesla response preservation for retryable
-  publisher HTTP failures.
-- Matched Pleroma's final media-host-validation state by not retaining the intermediate uploaded-media Host
-  header check, avoiding breakage for alternate media-domain and reverse-proxy deployments while preserving
-  signed media URL/path checks and sandbox headers.
-- Backported Pleroma's object fetcher bang-helper cleanup so remote object normalization uses the explicit
-  non-bang fetch result path while preserving Unfathomably's quieter transient fetch logging.
-- Followed upstream Pleroma's later full revert of uploaded-media Host-header validation, avoiding
-  alternate-domain and reverse-proxy media breakage while retaining path-safe media handling.
-- Fixed ActivityPub actor content negotiation on bare profile URLs so ActivityPub clients requesting actor JSON
-  no longer receive frontend HTML.
-- Fixed ActivityPub object fetches for deleted local objects so peers receive a `410 Gone` Tombstone response
-  instead of a generic 404 while processing federated Delete activities.
-- Fixed outgoing local group-root post compatibility with Discourse category actors by emitting Article objects
-  for known Discourse groups while preserving Page objects for Threadiverse-style group peers.
-- Cleaned formatting, alias ordering, numeric literal style, and line-ending drift so strict compile, format,
-  and Credo validation stays clean under the current OTP 28 and Elixir 1.20 toolchain.
-- Removed UTF-8 BOMs from Elixir source/config files and restored corrupted controller sources that newer Elixir
-  releases rejected or warned about during live compilation.
-- Backported Pleroma's poll notification streaming improvements so completed poll notifications are created
-  without duplicate immediate delivery and then streamed/pushed by the poll worker.
-- Backported Pleroma's stricter VAPID configuration check and web-push user loading fix so push delivery no
-  longer treats partial key configuration as enabled or requires a preloaded notification user.
-- Backported Pleroma's media-proxy whitelist fallback, strict API request-path logging, `prune_code_paths:
-  false` mix option, and PNG metadata stripping hardening.
-- Removed stale MediaProxyWarmingPolicy ConcurrentLimiter configuration and synchronous test-only branching so
-  media warming follows the upstream pool-refactor shape.
-- Backported Pleroma DNSRBL, Web Push, IDNA, OAuth token, database search, and upload-filter type/spec cleanups
-  from the May 2024 dialyzer pass.
-- Backported Pleroma IPFS uploader hardening so multipart uploads use the upload HTTP pool, parse Tesla `status`
-  correctly on delete, and report malformed gateway responses cleanly.
-- Backported Pleroma's GenerateUnsetUserKeys migration safety fix so the historical migration uses a
-  migration-local user schema instead of depending on the current Pleroma.User schema.
-- Backported Pleroma's Repo.exists?-based rule validation helper so report rule_ids can be checked without
-  loading every referenced rule.
-- Fixed media proxy preview and helper fetches to respect configured HTTP client options instead of bypassing
-  per-pool proxy settings.
-- Fixed reverse proxy streaming compatibility so Cowboy-backed responses can preserve content length while other
-  adapters keep safe chunked semantics.
-- Fixed strict ApiSpec validation logging and documented missing admin notification API types for easier
-  client/debug compatibility work.
-- Fixed fake-activity notification fallback helpers to return empty receiver lists in the same shape upstream
-  expects.
+- Fixed account unfollow cleanup when a compatibility follow relationship has
+  no stored `Follow` activity, so cleanup succeeds instead of returning a 500
+  after removing the relationship.
+- Fixed ActivityPub actor content negotiation on bare profile URLs so ActivityPub
+  clients requesting actor JSON no longer receive frontend HTML.
+- Fixed ActivityPub object fetches for deleted local objects so peers receive a
+  `410 Gone` Tombstone response instead of a generic 404 while processing
+  federated Delete activities.
+- Fixed outgoing local group-root post compatibility with Discourse category
+  actors by emitting Article objects for known Discourse groups while preserving
+  Page objects for Threadiverse-style group peers.
+- Cleaned formatting, alias ordering, numeric literal style, and line-ending
+  drift so strict compile, format, and Credo validation stays clean under the
+  current OTP 28 and Elixir 1.20 toolchain.
+- Fixed frontend archive installation on OTP 27.1+ by skipping archive entries that resolve to directories instead of trying to write them as files.
+- Removed UTF-8 BOMs from Elixir source/config files and restored corrupted controller sources that newer Elixir releases rejected or warned about during live compilation.
+- Backported Pleroma's poll notification streaming improvements so completed poll notifications are created without duplicate immediate delivery and then streamed/pushed by the poll worker.
+- Backported Pleroma's stricter VAPID configuration check and web-push user loading fix so push delivery no longer treats partial key configuration as enabled or requires a preloaded notification user.
+- Backported Pleroma's media-proxy whitelist fallback, strict API request-path logging, `prune_code_paths: false` mix option, and PNG metadata stripping hardening.
+- Removed stale MediaProxyWarmingPolicy ConcurrentLimiter configuration and synchronous test-only branching so media warming follows the upstream pool-refactor shape.
+- Backported Pleroma DNSRBL, Web Push, IDNA, OAuth token, database search, and upload-filter type/spec cleanups from the May 2024 dialyzer pass.
+- Backported Pleroma IPFS uploader hardening so multipart uploads use the upload HTTP pool, parse Tesla `status` correctly on delete, and report malformed gateway responses cleanly.
+- Backported Pleroma's GenerateUnsetUserKeys migration safety fix so the historical migration uses a migration-local user schema instead of depending on the current Pleroma.User schema.
+- Backported Pleroma's Repo.exists?-based rule validation helper so report rule_ids can be checked without loading every referenced rule.
+- Fixed media proxy preview and helper fetches to respect configured HTTP client options instead of bypassing per-pool proxy settings.
+- Fixed reverse proxy streaming compatibility so Cowboy-backed responses can preserve content length while other adapters keep safe chunked semantics.
+- Fixed strict ApiSpec validation logging and documented missing admin notification API types for easier client/debug compatibility work.
+- Fixed fake-activity notification fallback helpers to return empty receiver lists in the same shape upstream expects.
 - Backported Pleroma's `pleroma_ctl` portability fix to use `realpath` instead of GNU-specific `readlink -f`.
-- Stripped internal `actor` copies from outbound ActivityPub object payloads before federation, matching
-  upstream Pleroma compatibility hardening while preserving local object storage.
-- Fixed notification domain-block filtering so the relationship helper filters on the joined user actor instead
-  of the raw activity actor binding.
+- Stripped internal `actor` copies from outbound ActivityPub object payloads before federation, matching upstream Pleroma compatibility hardening while preserving local object storage.
+- Fixed notification domain-block filtering so the relationship helper filters on the joined user actor instead of the raw activity actor binding.
 - Backported Pleroma's OAuth authorization template handle rendering through `User.full_nickname/1`.
-- Restored corrupted `Pleroma.Web` module references in the admin instance-document and Mastodon domain-block
-  controllers.
-- Completed object-fetch atomization for HTTP 404/410 responses by returning :not_found and keeping affected
-  remote user/follow-counter logging at debug level.
-- Completed runtime support for :activitypub, :authorized_fetch_mode_exceptions so controlled CIDR/IP exceptions
-  are honored before unsigned ActivityPub fetches are rejected.
-- Removed the stale Exiftool ReadDescription filter spec that no longer matched the upload filter callback
-  shape.
-- Fixed cached public-key helper lookups and optimistic inbox retry enqueue priority so cached users are matched
-  correctly and Oban receives supported priorities.
-- Backported Pleroma's concurrent quoteUrl object-index migration safety by disabling the migration transaction
-  and creating the index concurrently.
-- Removed stale startup checks requiring ImageMagick `mogrify` and `convert` for AnalyzeMetadata; the filter now
-  only requires `ffprobe` in the application requirement check.
-- Backported Pleroma's MRF policy module-loading guard before policy filtering and config-description
-  introspection.
-- Finished the scrobble/listen `externalLink` backport so new listens store `externalLink`, legacy `url` inputs
-  still work, and responses expose both fields for compatibility.
-- Improved chat message posting, mascot uploads, admin activation responses, and profile-directory auth skipping
-  after the upstream Dialyzer/controller pass so client failures return explicit errors instead of opaque
-  controller misses.
-- Fixed multiple Admin, Pleroma, Twitter, and Mastodon API controllers to accept string-keyed OpenAPI-cast
-  request bodies for affected JSON and multipart endpoints, preventing valid requests from falling through to
-  function-clause errors.
-- Fixed HTTP signature key-id fallback actor resolution so WebFinger results are matched against the current
-  `{:ok, result}` return shape.
-- Improved ActivityPub Delete side-effect diagnostics by distinguishing object deletion failures, missing
-  deleted-object actors, and actor IDs that cannot resolve to local users.
-- Hardened announcement changeset handling by backporting Pleroma's changeset entrypoint and safely accepting
-  missing or string-keyed announcement data maps without crashing.
-- Backported Pleroma's background migrator fault-rate cleanup so no-failure migration stats report 0 instead of
-  :error.
-- Fixed quote posting so quoting a status no longer implicitly mentions the original poster.
-- Fixed server-generated frontend metadata so fallback-rendered pages advertise the configured favicon and
-  /manifest.json PWA manifest.
-- Backported Pleroma status language rendering so Mastodon API statuses return `null` for undetermined
-  ActivityPub language values instead of exposing `"und"`.
-- Backported Pleroma's notification enum down-migration fix so rollback recreates both `poll` and `update`
-  notification values correctly.
-- Updated rel=me metadata generation to match Pleroma's final profile-field behavior by appending profile field
-  HTML to the bio before parsing, so profile-field rel=me links use the same selector path as bio links.
-- Confirmed Pleroma's Delete side-effect notification suppression is already present, while preserving
-  Unfathomably's intentional group and event Join notifications.
-- Backported Pleroma's outbound publisher 401 handling so permanently unauthorized inbox deliveries discard
-  cleanly instead of retrying as transient failures.
-- Backported Pleroma's QTFastStart bitstring-match hardening so malformed video atoms abort fast-start rewriting
-  and fall back to the original binary instead of raising.
-- Fixed Rich Media TTL handling for Amazon URLs without query parameters so nil queries do not raise during
-  signed-URL detection.- Corrected the remote-fetcher reachability backport so explicit remote fetch jobs can
-  retry hosts marked unreachable while deterministic terminal misses still cancel cleanly.
-- Backported Pleroma config-permission and reverse-proxy header hardening so release config checks follow
-  symlinks and proxied responses do not forward stale upstream content-length headers.
-- Backported Pleroma atom-leak fixes for PBKDF2 digest selection and import background workers by resolving only
-  existing atoms.
-- Backported Pleroma notification filtering and ReceiverWorker error wrapping fixes so notification block checks
-  use the joined actor row and non-ok incoming federation results cannot be treated as success.
-- Expanded ActivityPub empty-value filtering to drop empty lists and maps when repairing object defaults,
-  matching newer upstream cleanup behavior.
-- Cached failed media-helper framegrab URLs briefly so repeated broken video preview attempts do not keep
-  spawning ffmpeg work.
-- Backported additional Pleroma remote-fetch terminal handling so max-depth, forbidden, deleted, and
-  deterministic remote object misses cancel cleanly, while explicit remote-fetch jobs can still probe hosts
-  currently marked unreachable.
-- Backported Pleroma signed-inbox inactive actor guards so deactivated recipients or senders receive clear
-  bad-request responses instead of risking with-clause failures.
-- Backported Pleroma account-rendering self-check behavior so hidden follow counters stay visible to the account
-  owner even after profile HTML sanitization.
-- Backported Pleroma MRF and emoji edge-case fixes for invalid subdomain regex diagnostics and extensionless
-  stolen remote emoji filenames.
-- Backported Pleroma OAuthPlug cached-user lookup cleanup so bearer-token authentication no longer performs an
-  unused user preload before reading the cached user record.
-- Backported Pleroma's Mastodon-compatible account lookup behavior so `/api/v1/accounts/lookup` skips auth and
-  account visibility checks while retaining Unfathomably's remote group/source-aware lookup fallback.
-- Backported Pleroma's StatusView stream-rendering guard so activities whose object is not loaded return `nil`
-  through the existing safe-render path instead of crashing websocket/event rendering.
-- Restored the legacy `chat:public` shout channel module behind a disabled-by-default `:shout` configuration so
-  the existing socket route is complete without unexpectedly enabling the old public shoutbox.
-- Fixed instance metadata background-image URL rendering so `/api/v1/instance` and `/api/v2/instance` preserve
-  absolute configured URLs while still expanding local relative paths.
-- Fixed AP C2S Note length validation so the configured character limit is inclusive, matching Mastodon/Pleroma
-  expectations while still rejecting over-limit posts.
-- Backported Pleroma chat-index hardening so chats whose recipient user has been deleted are filtered before
-  rendering, matching the existing deleted-recipient regression coverage and preventing nil account rendering
-  crashes.
-- Removed fragile compile-time imports and module-plug compile dependencies from ActivityPub validators, webhook
-  notification dispatch, and controllers so clean production compiles do not trip dependency cycles after source
-  promotion.
-- Normalized account registration reasons through the User registration changeset so all registration paths
-  strip HTML before pending-account review storage.
-- Fixed the API scope translator module so gettext placeholder macros compile without warnings under the current
-  Elixir toolchain.
-- Added actor_account_id as a deprecated alias for chat message account_id, matching older Pleroma chat API
-  clients without changing the current response shape.
-- Restored the deprecated /api/statusnet/config(.json) compatibility endpoint and legacy NodeInfo
-  metadata.characterLimit / metadata.vapidPublicKey aliases for older Pleroma-style clients.
-- Backported Pleroma's RemoteIp-aware rate-limiter fallback so missing forwarded client IP metadata disables
-  that limiter path with a clear warning instead of rate-limiting all proxied visitors as localhost.
-- Backported Pleroma's localhost/socket rate-limiter bypass so deployments bound to loopback without `RemoteIp`
-  do not throttle every client behind the reverse proxy.
-- Cleaned a stale API spec gettext require so production compilation stays warning-free after the rate-limiter
-  backport.
-- Fixed direct-conversation read acknowledgements so marking a conversation as read no longer refreshes its
-  `updated_at` timestamp or moves it to the top of the conversation list.
-- Backported Pleroma's ActivityPub content-type helper cleanup for local group featured and moderators
-  collections so JSON content types keep the expected charset handling.
-- Backported Pleroma's default `:instance, :chat_limit` configuration and ConfigDB description so local
-  chat-message length enforcement always has a safe default.
-- Fixed addressed inbox handling for servers that send the ActivityPub actor as an embedded object instead of a
-  bare actor URI.
-- Fixed WebFinger resolution for leading-`@` group and feed handles, and preserved actor outbox URLs for source
-  previews discovered through WebFinger.
-- Stopped feed list rendering from performing synchronous NodeInfo refreshes for hosts whose cached instance
-  metadata is blank.
-- Fixed OpenTranslate requests for posts with unknown source languages by using provider auto-detection instead
-  of an empty source language, and by pre-detecting obvious non-Latin scripts before OpenTranslate can misread
-  HTML as English.
-- Hardened Kocaptcha validation so missing or malformed answer data returns an invalid captcha result instead of
-  raising.
+- Restored corrupted `Pleroma.Web` module references in the admin instance-document and Mastodon domain-block controllers.
+- Completed object-fetch atomization for HTTP 404/410 responses by returning :not_found and keeping affected remote user/follow-counter logging at debug level.
+- Completed runtime support for :activitypub, :authorized_fetch_mode_exceptions so controlled CIDR/IP exceptions are honored before unsigned ActivityPub fetches are rejected.
+- Removed the stale Exiftool ReadDescription filter spec that no longer matched the upload filter callback shape.
+- Fixed cached public-key helper lookups and optimistic inbox retry enqueue priority so cached users are matched correctly and Oban receives supported priorities.
+- Backported Pleroma's concurrent quoteUrl object-index migration safety by disabling the migration transaction and creating the index concurrently.
+- Removed stale startup checks requiring ImageMagick `mogrify` and `convert` for AnalyzeMetadata; the filter now only requires `ffprobe` in the application requirement check.
+- Backported Pleroma's MRF policy module-loading guard before policy filtering and config-description introspection.
+- Finished the scrobble/listen `externalLink` backport so new listens store `externalLink`, legacy `url` inputs still work, and responses expose both fields for compatibility.
+- Improved chat message posting, mascot uploads, admin activation responses, and profile-directory auth skipping after the upstream Dialyzer/controller pass so client failures return explicit errors instead of opaque controller misses.
+- Fixed multiple Admin, Pleroma, Twitter, and Mastodon API controllers to accept string-keyed OpenAPI-cast request bodies for affected JSON and multipart endpoints, preventing valid requests from falling through to function-clause errors.
+- Fixed HTTP signature key-id fallback actor resolution so WebFinger results are matched against the current `{:ok, result}` return shape.
+- Improved ActivityPub Delete side-effect diagnostics by distinguishing object deletion failures, missing deleted-object actors, and actor IDs that cannot resolve to local users.
+- Hardened announcement changeset handling by backporting Pleroma's changeset entrypoint and safely accepting missing or string-keyed announcement data maps without crashing.
+- Backported Pleroma's background migrator fault-rate cleanup so no-failure migration stats report 0 instead of :error.
+- Fixed quote posting so quoting a status no longer implicitly mentions the
+  original poster.
+- Fixed server-generated frontend metadata so fallback-rendered pages advertise
+  the configured favicon and /manifest.json PWA manifest.
+- Backported Pleroma status language rendering so Mastodon API statuses return `null` for undetermined ActivityPub language values instead of exposing `"und"`.
+- Backported Pleroma's notification enum down-migration fix so rollback recreates both `poll` and `update` notification values correctly.
+- Updated rel=me metadata generation to match Pleroma's final profile-field behavior by appending profile field HTML to the bio before parsing, so profile-field rel=me links use the same selector path as bio links.
+- Confirmed Pleroma's Delete side-effect notification suppression is already present, while preserving Unfathomably's intentional group and event Join notifications.
+- Backported Pleroma's outbound publisher 401 handling so permanently unauthorized inbox deliveries discard cleanly instead of retrying as transient failures.
+- Backported Pleroma's QTFastStart bitstring-match hardening so malformed video atoms abort fast-start rewriting and fall back to the original binary instead of raising.
+- Fixed Rich Media TTL handling for Amazon URLs without query parameters so nil queries do not raise during signed-URL detection.- Corrected the remote-fetcher reachability backport so explicit remote fetch jobs can retry hosts marked unreachable while deterministic terminal misses still cancel cleanly.
+- Backported Pleroma config-permission and reverse-proxy header hardening so release config checks follow symlinks and proxied responses do not forward stale upstream content-length headers.
+- Backported Pleroma atom-leak fixes for PBKDF2 digest selection and import background workers by resolving only existing atoms.
+- Backported Pleroma notification filtering and ReceiverWorker error wrapping fixes so notification block checks use the joined actor row and non-ok incoming federation results cannot be treated as success.
+- Expanded ActivityPub empty-value filtering to drop empty lists and maps when repairing object defaults, matching newer upstream cleanup behavior.
+- Cached failed media-helper framegrab URLs briefly so repeated broken video preview attempts do not keep spawning ffmpeg work.
+- Backported additional Pleroma remote-fetch terminal handling so max-depth, forbidden, deleted, and deterministic remote object misses cancel cleanly, while explicit remote-fetch jobs can still probe hosts currently marked unreachable.
+- Backported Pleroma signed-inbox inactive actor guards so deactivated recipients or senders receive clear bad-request responses instead of risking with-clause failures.
+- Backported Pleroma account-rendering self-check behavior so hidden follow counters stay visible to the account owner even after profile HTML sanitization.
+- Backported Pleroma MRF and emoji edge-case fixes for invalid subdomain regex diagnostics and extensionless stolen remote emoji filenames.
+- Backported Pleroma OAuthPlug cached-user lookup cleanup so bearer-token authentication no longer performs an unused user preload before reading the cached user record.
+- Backported Pleroma's Mastodon-compatible account lookup behavior so `/api/v1/accounts/lookup` skips auth and account visibility checks while retaining Unfathomably's remote group/source-aware lookup fallback.
+- Backported Pleroma's StatusView stream-rendering guard so activities whose object is not loaded return `nil` through the existing safe-render path instead of crashing websocket/event rendering.
+- Restored the legacy `chat:public` shout channel module behind a disabled-by-default `:shout` configuration so the existing socket route is complete without unexpectedly enabling the old public shoutbox.
+- Fixed instance metadata background-image URL rendering so `/api/v1/instance` and `/api/v2/instance` preserve absolute configured URLs while still expanding local relative paths.
+- Fixed AP C2S Note length validation so the configured character limit is inclusive, matching Mastodon/Pleroma expectations while still rejecting over-limit posts.
+- Backported Pleroma chat-index hardening so chats whose recipient user has been deleted are filtered before rendering, matching the existing deleted-recipient regression coverage and preventing nil account rendering crashes.
+- Removed fragile compile-time imports and module-plug compile dependencies from ActivityPub validators, webhook notification dispatch, and controllers so clean production compiles do not trip dependency cycles after source promotion.
+- Normalized account registration reasons through the User registration changeset so all registration paths strip HTML before pending-account review storage.
+- Fixed the API scope translator module so gettext placeholder macros compile without warnings under the current Elixir toolchain.
+- Added actor_account_id as a deprecated alias for chat message account_id, matching older Pleroma chat API clients without changing the current response shape.
+- Restored the deprecated /api/statusnet/config(.json) compatibility endpoint and legacy NodeInfo metadata.characterLimit / metadata.vapidPublicKey aliases for older Pleroma-style clients.
+- Backported Pleroma's RemoteIp-aware rate-limiter fallback so missing forwarded client IP metadata disables that limiter path with a clear warning instead of rate-limiting all proxied visitors as localhost.
+- Backported Pleroma's localhost/socket rate-limiter bypass so deployments bound
+  to loopback without `RemoteIp` do not throttle every client behind the reverse
+  proxy.
+- Cleaned a stale API spec gettext require so production compilation stays
+  warning-free after the rate-limiter backport.
+- Fixed direct-conversation read acknowledgements so marking a conversation as
+  read no longer refreshes its `updated_at` timestamp or moves it to the top of
+  the conversation list.
+- Backported Pleroma's ActivityPub content-type helper cleanup for local group featured and moderators collections so JSON content types keep the expected charset handling.
+- Backported Pleroma's default `:instance, :chat_limit` configuration and ConfigDB description so local chat-message length enforcement always has a safe default.
+- Fixed addressed inbox handling for servers that send the ActivityPub actor as an embedded object instead of a bare actor URI.
+- Fixed WebFinger resolution for leading-`@` group and feed handles, and preserved actor outbox URLs for source previews discovered through WebFinger.
+- Stopped feed list rendering from performing synchronous NodeInfo refreshes for hosts whose cached instance metadata is blank.
+- Fixed OpenTranslate requests for posts with unknown source languages by using provider auto-detection instead of an empty source language, and by pre-detecting obvious non-Latin scripts before OpenTranslate can misread HTML as English.
+- Hardened Kocaptcha validation so missing or malformed answer data returns an invalid captcha result instead of raising.
+- Fixed lingering incoming federation retries from uncached object-action
+  context normalization and remote featured-collection pin-limit failures so
+  the receiver worker and Oban janitor classify them as terminal instead of
+  retrying stale jobs.
+- Fixed VAPID web-push enabled detection so valid runtime configuration is not
+  mistaken for missing keys when ConfigDB or runtime loading changes keyword
+  ordering or representation.
 
 ### Security
-- Backported reverse-proxy filename hardening so attachment responses parse common filename forms and safely
-  quote the emitted filename.
-- Hardened LDAP SSL/STARTTLS handling so implicit LDAPS and STARTTLS both use verified certificates and hostname
-  checks by default, support `LDAP_CACERTFILE` / `:cacertfile` CA bundle overrides, and do not continue to bind
-  after a failed STARTTLS upgrade.
-- Hardened ActivityPub C2S local `Update` validation so local clients can only update objects they are
-  authorized to access, with rejected changesets returning clean 400 responses.
-- Tightened the default Content-Security-Policy script source so unsafe eval and wasm eval are only emitted when
-  `:http_security, :allow_unsafe_eval` is explicitly enabled.
-- Wired the InboxGuard-style ActivityPub inbox guard into the runtime inbox pipeline, rejecting unsupported
-  activity types early and limiting unsigned unknown-actor first contact to a narrow allowlist that still
-  preserves Unfathomably group/source compatibility.
-- Removed Logger runtime configuration from ConfigDB/AdminFE-facing descriptions and added a cleanup migration
-  for persisted `:logger` ConfigDB rows, matching upstream Pleroma's hardening against live logger
-  reconfiguration.
-- Backported Pleroma's XML entity-resolution hardening by explicitly disabling entity expansion during XML
-  parsing.
-- Hardened PromEx metrics access so `/api/metrics` fails closed unless an explicit bearer token is configured,
-  uses safe token comparison, and preserves unauthenticated metrics only as a deliberate source-config opt-in
-  for trusted private deployments.
+- Wired the InboxGuard-style ActivityPub inbox guard into the runtime inbox pipeline, rejecting unsupported activity types early and limiting unsigned unknown-actor first contact to a narrow allowlist that still preserves Unfathomably group/source compatibility.
+- Removed Logger runtime configuration from ConfigDB/AdminFE-facing descriptions and added a cleanup migration for persisted `:logger` ConfigDB rows, matching upstream Pleroma's hardening against live logger reconfiguration.
+- Backported Pleroma's XML entity-resolution hardening by explicitly disabling entity expansion during XML parsing.
+- Hardened PromEx metrics access so `/api/metrics` fails closed unless an explicit bearer token is configured, uses safe token comparison, and preserves unauthenticated metrics only as a deliberate source-config opt-in for trusted private deployments.
 
 ## [2.6.51] - 2026-06-25
 

@@ -17,8 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 Based on Pleroma 2.4 develop.
 
-The full upstream Soapbox changelog for this release was not preserved in this
-fork.
+TODO: a full changelog
 
 ### Added
 

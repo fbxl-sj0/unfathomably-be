@@ -6,12 +6,39 @@ defmodule Pleroma.Stats do
   use GenServer
 
   import Ecto.Query
+  require Logger
 
   alias Pleroma.CounterCache
   alias Pleroma.Repo
   alias Pleroma.User
 
   @default_interval :timer.minutes(5)
+  @peer_hosts_query """
+  WITH RECURSIVE peer_hosts(host) AS (
+    (
+      SELECT lower(split_part(nickname::text, '@', 2)) AS host
+      FROM users
+      WHERE local = false
+        AND nickname IS NOT NULL
+        AND lower(split_part(nickname::text, '@', 2)) <> ''
+      ORDER BY host
+      LIMIT 1
+    )
+    UNION ALL
+    SELECT next_host.host
+    FROM peer_hosts current_host
+    CROSS JOIN LATERAL (
+      SELECT lower(split_part(nickname::text, '@', 2)) AS host
+      FROM users
+      WHERE local = false
+        AND nickname IS NOT NULL
+        AND lower(split_part(nickname::text, '@', 2)) > current_host.host
+      ORDER BY host
+      LIMIT 1
+    ) next_host
+  )
+  SELECT host FROM peer_hosts
+  """
   @state_key {__MODULE__, :state}
   @empty_state %{
     peers: [],
@@ -75,14 +102,7 @@ defmodule Pleroma.Stats do
           }
         }
   def calculate_stat_data do
-    peers =
-      from(
-        u in User,
-        select: fragment("distinct split_part(?, '@', 2)", u.nickname),
-        where: u.local != ^true
-      )
-      |> Repo.all()
-      |> Enum.filter(& &1)
+    peers = remote_peer_hosts()
 
     domain_count = Enum.count(peers)
 
@@ -155,6 +175,17 @@ defmodule Pleroma.Stats do
 
   defp cached_state do
     :persistent_term.get(@state_key, @empty_state)
+  end
+
+  defp remote_peer_hosts do
+    case Repo.query(@peer_hosts_query) do
+      {:ok, %{rows: rows}} ->
+        List.flatten(rows)
+
+      {:error, error} ->
+        Logger.warning("Could not refresh remote peer host stats: #{inspect(error)}")
+        []
+    end
   end
 
   defp refresh_interval do

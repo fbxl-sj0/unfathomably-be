@@ -6,14 +6,18 @@ defmodule Pleroma.Web.Streamer do
   require Logger
   require Pleroma.Constants
 
+  import Ecto.Query
+
   alias Pleroma.Activity
   alias Pleroma.Chat.MessageReference
   alias Pleroma.Config
   alias Pleroma.Conversation.Participation
+  alias Pleroma.FollowingRelationship
   alias Pleroma.Hashtag
   alias Pleroma.Marker
   alias Pleroma.Notification
   alias Pleroma.Object
+  alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.Visibility
@@ -30,14 +34,9 @@ defmodule Pleroma.Web.Streamer do
 
   @public_streams Pleroma.Constants.public_streams()
   @local_streams ["public:local", "public:local:media"]
-  @user_streams [
-    "user",
-    "user:notification",
-    "user:groups",
-    "user:sources",
-    "direct",
-    "user:pleroma_chat"
-  ]
+  @aggregate_target_streams ["user:groups", "user:sources"]
+  @user_streams ["user", "user:notification", "direct", "user:pleroma_chat"] ++
+                  @aggregate_target_streams
   @max_target_stream_identifier_bytes 2048
 
   @doc "Expands and authorizes a stream, and registers the process for streaming."
@@ -376,10 +375,41 @@ defmodule Pleroma.Web.Streamer do
     end)
   end
 
+  defp do_stream("group:" <> group_id = topic, %Activity{} = item) do
+    stream_followed_target("user:groups", group_id, item)
+    stream_target(topic, item)
+  end
+
+  defp do_stream("source:" <> source_id = topic, %Activity{} = item) do
+    stream_followed_target("user:sources", source_id, item)
+    stream_target(topic, item)
+  end
+
   defp do_stream(topic, item) do
+    stream_target(topic, item)
+  end
+
+  defp stream_target(topic, item) do
     Logger.debug("Trying to push to #{topic}")
     Logger.debug("Pushing item to #{topic}")
     push_to_socket(topic, item)
+  end
+
+  defp stream_followed_target(user_stream, target_id, item) when is_binary(target_id) do
+    target_id
+    |> local_follower_ids()
+    |> Enum.each(fn user_id ->
+      push_to_socket("#{user_stream}:#{user_id}", item)
+    end)
+  end
+
+  defp local_follower_ids(target_id) do
+    FollowingRelationship
+    |> join(:inner, [r], follower in User, on: r.follower_id == follower.id)
+    |> where([r, follower], r.following_id == ^target_id and r.state == ^:follow_accept)
+    |> where([_r, follower], follower.local == true and follower.is_active == true)
+    |> select([_r, follower], follower.id)
+    |> Repo.all()
   end
 
   defp push_to_socket(topic, %Participation{} = participation) do

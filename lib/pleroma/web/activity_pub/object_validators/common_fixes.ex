@@ -72,8 +72,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     data
     |> Map.put("context", context)
     |> fix_object_recipients(User.get_cached_by_ap_id(data["attributedTo"]))
-    |> Addressing.put_mentioned_groups()
-    |> Addressing.put_replied_to_groups()
   end
 
   defp fix_object_recipients(data, %User{follower_address: follower_collection}) do
@@ -144,7 +142,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     |> Map.put("context", object_context)
   end
 
-  def fix_activity_context(data, %Object{}), do: data
+  def fix_activity_context(data, _object), do: data
 
   def fix_object_action_recipients(%{"type" => "Announce", "actor" => actor} = data, object) do
     if group_actor?(actor) do
@@ -201,8 +199,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
     Map.put(data, "to", to)
   end
-
-  defp do_fix_object_action_recipients(data, %Object{}), do: data
 
   defp group_actor?(actor) when is_binary(actor) do
     case User.get_by_ap_id(actor) do

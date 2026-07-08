@@ -435,6 +435,8 @@ defmodule Pleroma.Web.ApiSpec.StreamingOperation do
               "user",
               "user:pleroma_chat",
               "user:notification",
+              "user:groups",
+              "user:sources",
               "direct",
               "list",
               "hashtag"

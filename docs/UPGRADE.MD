@@ -7,8 +7,8 @@ This guide covers source installs that currently run either:
 
 The target system is:
 
-- Backend: `https://github.com/unfathomably/unfathomably-be`
-- Frontend: `https://github.com/unfathomably/unfathomably-fe`
+- Backend: `https://github.com/fbxl-sj0/unfathomably-be`
+- Frontend: `https://github.com/fbxl-sj0/unfathomably-fe`
 
 Unfathomably keeps the Pleroma OTP application name, database layout,
 configuration keys, service conventions, and many `mix pleroma.*` commands.
@@ -154,7 +154,7 @@ sudo mv /opt/pleroma /opt/pleroma-before-unfathomably
 sudo mkdir -p /opt/pleroma
 sudo chown pleroma:pleroma /opt/pleroma
 
-sudo -Hu pleroma git clone https://github.com/unfathomably/unfathomably-be.git /opt/pleroma
+sudo -Hu pleroma git clone https://github.com/fbxl-sj0/unfathomably-be.git /opt/pleroma
 sudo cp /opt/pleroma-before-unfathomably/config/prod.secret.exs /opt/pleroma/config/prod.secret.exs
 sudo chown -R pleroma:pleroma /opt/pleroma
 ```
@@ -188,7 +188,7 @@ sudo rm -rf /opt/unfathomably-fe
 sudo mkdir -p /opt/unfathomably-fe
 sudo chown pleroma:pleroma /opt/unfathomably-fe
 
-sudo -Hu pleroma git clone https://github.com/unfathomably/unfathomably-fe.git /opt/unfathomably-fe
+sudo -Hu pleroma git clone https://github.com/fbxl-sj0/unfathomably-fe.git /opt/unfathomably-fe
 
 cd /opt/unfathomably-fe
 pleroma-run asdf install

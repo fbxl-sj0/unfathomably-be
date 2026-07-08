@@ -77,7 +77,7 @@ into something broader than the original Rebased installation.
 ## Frontend Pairing
 
 unfathomably-be is designed to pair with
-`https://github.com/unfathomably/unfathomably-fe`.
+`https://github.com/fbxl-sj0/unfathomably-fe`.
 
 The backend owns accounts, federation, moderation, timelines, search,
 translation, websocket streams, post archive jobs, media proxying, and cleanup
