@@ -206,7 +206,14 @@ defmodule Pleroma.User.Backup do
     end
   end
 
-  @files [~c"actor.json", ~c"outbox.json", ~c"likes.json", ~c"bookmarks.json"]
+  @files [
+    ~c"actor.json",
+    ~c"outbox.json",
+    ~c"likes.json",
+    ~c"bookmarks.json",
+    ~c"followers.json",
+    ~c"following.json"
+  ]
   def export(%__MODULE__{} = backup, caller_pid) do
     backup = Repo.preload(backup, :user)
     dir = backup_tempdir(backup)
@@ -216,6 +223,8 @@ defmodule Pleroma.User.Backup do
          :ok <- statuses(dir, backup.user, caller_pid),
          :ok <- likes(dir, backup.user, caller_pid),
          :ok <- bookmarks(dir, backup.user, caller_pid),
+         :ok <- followers(dir, backup.user, caller_pid),
+         :ok <- following(dir, backup.user, caller_pid),
          {:ok, zip_path} <-
            :zip.create(String.to_charlist(dir <> ".zip"), @files, cwd: to_charlist(dir)),
          {:ok, _} <- File.rm_rf(dir) do
@@ -247,7 +256,13 @@ defmodule Pleroma.User.Backup do
   defp actor(dir, user, caller_pid) do
     with {:ok, json} <-
            UserView.render("user.json", %{user: user})
-           |> Map.merge(%{"likes" => "likes.json", "bookmarks" => "bookmarks.json"})
+           |> Map.merge(%{
+             "likes" => "likes.json",
+             "bookmarks" => "bookmarks.json",
+             "followers" => "followers.json",
+             "following" => "following.json",
+             "outbox" => "outbox.json"
+           })
            |> Jason.encode() do
       send(caller_pid, {:progress, 1})
       File.write(Path.join(dir, "actor.json"), json)
@@ -311,9 +326,6 @@ defmodule Pleroma.User.Backup do
               )
 
               acc
-
-            _ ->
-              acc
           end
         end)
 
@@ -364,5 +376,17 @@ defmodule Pleroma.User.Backup do
       end,
       caller_pid
     )
+  end
+
+  defp followers(dir, user, caller_pid) do
+    user
+    |> User.get_followers_query()
+    |> write(dir, "followers", fn a -> {:ok, a.ap_id} end, caller_pid)
+  end
+
+  defp following(dir, user, caller_pid) do
+    user
+    |> User.get_friends_query()
+    |> write(dir, "following", fn a -> {:ok, a.ap_id} end, caller_pid)
   end
 end

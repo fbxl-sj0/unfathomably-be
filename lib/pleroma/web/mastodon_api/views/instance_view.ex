@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.InstanceView do
@@ -50,7 +50,8 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       avatar_upload_limit: Keyword.get(instance, :avatar_upload_limit),
       background_upload_limit: Keyword.get(instance, :background_upload_limit),
       banner_upload_limit: Keyword.get(instance, :banner_upload_limit),
-      background_image: Pleroma.Web.Endpoint.url() <> Keyword.get(instance, :background_image),
+      background_image: instance_asset_url(Keyword.get(instance, :background_image)),
+      shout_limit: Config.get([:shout, :limit]),
       description_limit: Keyword.get(instance, :description_limit),
       unfathomably: unfathomably_configuration(),
       pleroma: pleroma_configuration(instance),
@@ -80,7 +81,8 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       registrations: %{
         enabled: Keyword.get(instance, :registrations_open),
         approval_required: Keyword.get(instance, :account_approval_required),
-        message: nil
+        message: nil,
+        url: nil
       },
       contact: %{
         email: Keyword.get(instance, :email),
@@ -104,8 +106,9 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
 
   def render("rule.json", %{rule: rule}) do
     %{
-      id: rule.id,
-      text: rule.text
+      id: to_string(rule.id),
+      text: rule.text,
+      hint: rule.hint || ""
     }
   end
 
@@ -191,6 +194,12 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       "pleroma_emoji_reactions",
       "pleroma_custom_emoji_reactions",
       "pleroma_chat_messages",
+      if Config.get([:shout, :enabled]) do
+        "chat"
+      end,
+      if Config.get([:shout, :enabled]) do
+        "shout"
+      end,
       "email_list",
       "groups",
       "groups_discovery",
@@ -213,6 +222,9 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       "pleroma:get:main/ostatus",
       if Pleroma.Language.Translation.configured?() do
         "translation"
+      end,
+      if Pleroma.Language.LanguageDetector.configured?() do
+        "pleroma:language_detection"
       end,
       "events"
     ]
@@ -297,14 +309,15 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
 
   defp configuration do
     %{
-      accounts: %{},
+      accounts: %{max_featured_tags: 0},
       statuses: %{
         max_characters: Config.get([:instance, :limit]),
         max_media_attachments: Config.get([:instance, :max_media_attachments])
       },
       media_attachments: %{
         image_size_limit: Config.get([:instance, :upload_limit]),
-        video_size_limit: Config.get([:instance, :upload_limit])
+        video_size_limit: Config.get([:instance, :upload_limit]),
+        supported_mime_types: ["application/octet-stream"]
       },
       polls: %{
         max_options: Config.get([:instance, :poll_limits, :max_options]),
@@ -317,6 +330,7 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
 
   defp configuration2 do
     configuration()
+    |> put_in([:statuses, :characters_reserved_per_url], 0)
     |> put_in([:accounts, :max_pinned_statuses], Config.get([:instance, :max_pinned_statuses], 0))
     |> put_in([:accounts, :max_profile_fields], Config.get([:instance, :max_account_fields]))
     |> put_in(
@@ -328,7 +342,10 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       Config.get([:instance, :account_field_value_length])
     )
     |> Map.merge(%{
-      urls: %{streaming: Pleroma.Web.Endpoint.websocket_url()},
+      urls: %{
+        streaming: Pleroma.Web.Endpoint.websocket_url(),
+        status: Config.get([:instance, :status_page])
+      },
       translation: %{enabled: Pleroma.Language.Translation.configured?()},
       vapid: %{public_key: Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key)}
     })
@@ -395,11 +412,18 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
           avatar_upload_limit: Keyword.get(instance, :avatar_upload_limit),
           background_upload_limit: Keyword.get(instance, :background_upload_limit),
           banner_upload_limit: Keyword.get(instance, :banner_upload_limit),
-          background_image:
-            Pleroma.Web.Endpoint.url() <> Keyword.get(instance, :background_image),
+          background_image: instance_asset_url(Keyword.get(instance, :background_image)),
           description_limit: Keyword.get(instance, :description_limit)
         })
     })
+  end
+
+  defp instance_asset_url(nil), do: nil
+
+  defp instance_asset_url(path) when is_binary(path) do
+    Pleroma.Web.Endpoint.url()
+    |> URI.merge(path)
+    |> to_string()
   end
 
   defp translation_configuration do

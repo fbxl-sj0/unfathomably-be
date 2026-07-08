@@ -7,6 +7,8 @@ defmodule Pleroma.Web.ApiSpec.Scopes.Compiler do
     strings = __MODULE__.extract_all_scopes()
 
     quote do
+      require Pleroma.Web.Gettext
+
       def placeholder do
         unquote do
           Enum.map(

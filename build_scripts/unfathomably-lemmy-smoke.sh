@@ -441,6 +441,40 @@ lemmy_get_auth() {
     http_form GET "$LEMMY_URL/api/v3/$path" "$LEMMY_JWT" 200
 }
 
+assert_be_public_group_listed() {
+    local ap_id="$1"
+    local name="$2"
+    local message="$3"
+    local result
+
+    result="$(
+        http_form GET \
+            "$BASE_URL/api/v3/community/list?type_=All&sort=Active&limit=50" \
+            "" \
+            200
+    )"
+
+    json_assert "$result" \
+        "any(c.get('community', {}).get('actor_id') == '$ap_id' and c.get('community', {}).get('name') == '$name' for c in data.get('communities', []))" \
+        "$message"
+}
+
+assert_be_group_search_finds() {
+    local query="$1"
+    local ap_id="$2"
+    local token="$3"
+    local message="$4"
+
+    poll_json_assert GET \
+        "$BASE_URL/api/v1/groups/search?q=$(urlencode "$query")" \
+        "$token" \
+        200 \
+        "any(group.get('ap_id') == '$ap_id' for group in data)" \
+        "$message" \
+        90 \
+        2 >/dev/null
+}
+
 resolve_be_status_id() {
     local uri="$1"
     local token="$2"
@@ -799,6 +833,10 @@ BE_GROUP="$(
 )"
 BE_GROUP_ID="$(json_get "$BE_GROUP" id)"
 BE_GROUP_AP_ID="$(json_get "$BE_GROUP" ap_id)"
+assert_be_public_group_listed \
+    "$BE_GROUP_AP_ID" \
+    "unfathomably_lemmy_smoke" \
+    "Unfathomably did not advertise the local Lemmy smoke group through /api/v3/community/list"
 
 LEMMY_COMMUNITY="$(
     lemmy_post community \
@@ -806,6 +844,11 @@ LEMMY_COMMUNITY="$(
 )"
 LEMMY_COMMUNITY_ID="$(json_get "$LEMMY_COMMUNITY" community_view.community.id)"
 LEMMY_COMMUNITY_AP_ID="$(json_get "$LEMMY_COMMUNITY" community_view.community.actor_id)"
+assert_be_group_search_finds \
+    "$LEMMY_COMMUNITY_AP_ID" \
+    "$LEMMY_COMMUNITY_AP_ID" \
+    "$ALICE_TOKEN" \
+    "Unfathomably group search could not find the Lemmy community"
 
 log "Following groups in both directions"
 BE_REMOTE_LEMMY_GROUP="$(
@@ -822,7 +865,7 @@ BE_JOIN_LEMMY="$(
 json_assert "$BE_JOIN_LEMMY" 'data.get("member") is True or data.get("requested") is True' \
     "Unfathomably could not follow the Lemmy community"
 
-LEMMY_REMOTE_BE_GROUP="$(resolve_lemmy_object "$BE_GROUP_AP_ID" "Lemmy resolves the Unfathomably group")"
+LEMMY_REMOTE_BE_GROUP="$(resolve_lemmy_object "$BE_GROUP_AP_ID" "Lemmy search could not resolve the Unfathomably group")"
 LEMMY_REMOTE_BE_GROUP_ID="$(json_get "$LEMMY_REMOTE_BE_GROUP" community.community.id)"
 LEMMY_FOLLOW_BE="$(
     lemmy_post community/follow \

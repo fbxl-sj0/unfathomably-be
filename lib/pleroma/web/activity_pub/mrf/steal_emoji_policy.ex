@@ -35,7 +35,9 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicy do
           |> Path.extname()
 
         shortcode = Path.basename(shortcode)
-        file_path = Path.join(emoji_dir_path, shortcode <> (extension || ".png"))
+        extension = if extension == "", do: ".png", else: extension
+
+        file_path = Path.join(emoji_dir_path, shortcode <> extension)
 
         case File.write(file_path, response.body) do
           :ok ->

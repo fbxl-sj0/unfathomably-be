@@ -8,15 +8,14 @@ defmodule Pleroma.Web.CommonAPI do
   alias Pleroma.Conversation.Participation
   alias Pleroma.FollowingRelationship
   alias Pleroma.Formatter
-  alias Pleroma.GroupMembership
   alias Pleroma.ModerationLog
   alias Pleroma.Object
   alias Pleroma.Rule
   alias Pleroma.ThreadMute
   alias Pleroma.User
   alias Pleroma.UserRelationship
-  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Utils
@@ -25,6 +24,7 @@ defmodule Pleroma.Web.CommonAPI do
   alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.Utils.Params
 
+  import Ecto.Query, only: [where: 3]
   import Pleroma.Web.Gettext
   import Pleroma.Web.CommonAPI.Utils
 
@@ -59,7 +59,7 @@ defmodule Pleroma.Web.CommonAPI do
             )} do
       {:ok, activity}
     else
-      {:common_pipeline, {:reject, _} = e} -> e
+      {:common_pipeline, e} -> e
       e -> e
     end
   end
@@ -135,9 +135,9 @@ defmodule Pleroma.Web.CommonAPI do
   end
 
   defp maybe_accept_subscription_source_follow(
-       %User{} = follower,
-       %User{local: false, is_locked: false} = followed
-     ) do
+         %User{} = follower,
+         %User{local: false, is_locked: false} = followed
+       ) do
     with true <- subscription_source?(followed),
          {:ok, %User{} = source} <- FederatedTarget.resolve_source(followed.ap_id),
          true <- source.id == followed.id,
@@ -190,15 +190,12 @@ defmodule Pleroma.Web.CommonAPI do
   def delete(activity_id, user) do
     with {_, %Activity{data: %{"object" => _, "type" => "Create"}} = activity} <-
            {:find_activity, Activity.get_by_id(activity_id, filter: [])},
-          {_, %Object{} = object, _} <-
-            {:find_object, Object.normalize(activity, fetch: false), activity},
-          group_moderation_delete = group_moderation_delete?(user, object),
-          true <-
-            User.privileged?(user, :messages_delete) || user.ap_id == object.data["actor"] ||
-              group_moderation_delete,
-          delete_options = delete_options_for(user, object, group_moderation_delete),
-          {:ok, delete_data, _} <- Builder.delete(user, object.data["id"], delete_options),
-          {:ok, delete, _} <- Pipeline.common_pipeline(delete_data, local: true) do
+         {_, %Object{} = object, _} <-
+           {:find_object, Object.normalize(activity, fetch: false), activity},
+         true <- User.privileged?(user, :messages_delete) || user.ap_id == object.data["actor"],
+         {_, {:ok, _}} <- {:cancel_jobs, maybe_cancel_jobs(activity)},
+         {:ok, delete_data, _} <- Builder.delete(user, object.data["id"]),
+         {:ok, delete, _} <- Pipeline.common_pipeline(delete_data, local: true) do
       if User.privileged?(user, :messages_delete) and user.ap_id != object.data["actor"] do
         action =
           if object.data["type"] == "ChatMessage" do
@@ -239,30 +236,6 @@ defmodule Pleroma.Web.CommonAPI do
     end
   end
 
-  defp delete_options_for(%User{ap_id: ap_id}, %Object{data: %{"actor" => ap_id}}, _), do: []
-
-  defp delete_options_for(_user, _object, true) do
-    # Lemmy-compatible group moderation:
-    #
-    # Lemmy uses a Delete activity for both author deletion and moderator
-    # removal. The presence of `summary` marks the activity as moderation.
-    # An empty summary means "removed by a moderator, with no public reason."
-    [summary: ""]
-  end
-
-  defp delete_options_for(_user, _object, _), do: []
-
-  defp group_moderation_delete?(%User{} = actor, %Object{data: data}) do
-    data
-    |> Addressing.addressed_group_ap_ids()
-    |> User.get_all_by_ap_id()
-    |> Enum.any?(fn group ->
-      GroupMembership.local_group?(group) && GroupMembership.manager?(actor, group)
-    end)
-  end
-
-  defp group_moderation_delete?(_actor, _object), do: false
-
   def repeat(id, user, params \\ %{}) do
     with %Activity{data: %{"type" => "Create"}} = activity <- Activity.get_by_id(id),
          object = %Object{} <- Object.normalize(activity, fetch: false),
@@ -285,6 +258,7 @@ defmodule Pleroma.Web.CommonAPI do
            {:find_activity, Activity.get_by_id(id)},
          %Object{} = note <- Object.normalize(activity, fetch: false),
          %Activity{} = announce <- Utils.get_existing_announce(user.ap_id, note),
+         {_, {:ok, _}} <- {:cancel_jobs, maybe_cancel_jobs(announce)},
          {:ok, undo, _} <- Builder.undo(user, announce),
          {:ok, activity, _} <- Pipeline.common_pipeline(undo, local: true) do
       {:ok, activity}
@@ -342,6 +316,7 @@ defmodule Pleroma.Web.CommonAPI do
          %Object{} = note <- Object.normalize(activity, fetch: false),
          {_, true} <- {:visibility_error, activity_visible_to_actor(note, user)},
          %Activity{} = like <- Utils.get_existing_like(user.ap_id, note),
+         {_, {:ok, _}} <- {:cancel_jobs, maybe_cancel_jobs(like)},
          {:ok, undo, _} <- Builder.undo(user, like),
          {:ok, activity, _} <- Pipeline.common_pipeline(undo, local: true) do
       {:ok, activity}
@@ -370,6 +345,7 @@ defmodule Pleroma.Web.CommonAPI do
 
   def unreact_with_emoji(id, user, emoji) do
     with %Activity{} = reaction_activity <- Utils.get_latest_reaction(id, user, emoji),
+         {_, {:ok, _}} <- {:cancel_jobs, maybe_cancel_jobs(reaction_activity)},
          {:ok, undo, _} <- Builder.undo(user, reaction_activity),
          {:ok, activity, _} <- Pipeline.common_pipeline(undo, local: true) do
       {:ok, activity}
@@ -685,7 +661,7 @@ defmodule Pleroma.Web.CommonAPI do
     end
   end
 
-  @spec pin(String.t(), User.t()) :: {:ok, Activity.t()} | {:error, term()}
+  @spec pin(String.t(), User.t()) :: {:ok, Activity.t()} | Pipeline.errors()
   def pin(id, %User{} = user) do
     with %Activity{} = activity <- create_activity_by_id(id),
          true <- activity_visible_to_actor(activity, user),
@@ -728,13 +704,23 @@ defmodule Pleroma.Web.CommonAPI do
     end
   end
 
+  defp maybe_cancel_jobs(%Activity{data: %{"id" => ap_id}}) when is_binary(ap_id) do
+    Oban.Job
+    |> where([j], j.worker == "Pleroma.Workers.PublisherWorker")
+    |> where([j], j.args["op"] == "publish_one")
+    |> where([j], j.args["params"]["id"] == ^ap_id)
+    |> Oban.cancel_all_jobs()
+  end
+
+  defp maybe_cancel_jobs(_), do: {:ok, 0}
+
   defp activity_is_public(activity) do
     with false <- Visibility.is_public?(activity) do
       {:error, :non_public_error}
     end
   end
 
-  @spec unpin(String.t(), User.t()) :: {:ok, User.t()} | {:error, term()}
+  @spec unpin(String.t(), User.t()) :: {:ok, Activity.t()} | Pipeline.errors()
   def unpin(id, user) do
     with %Activity{} = activity <- create_activity_by_id(id),
          true <- activity_visible_to_actor(activity, user),
@@ -849,8 +835,7 @@ defmodule Pleroma.Web.CommonAPI do
 
   defp get_report_rules(rule_ids) do
     rule_ids
-    |> Rule.get()
-    |> Enum.map(& &1.id)
+    |> Enum.filter(&Rule.exists?/1)
   end
 
   def update_report_state(activity_ids, state) when is_list(activity_ids) do
@@ -865,7 +850,6 @@ defmodule Pleroma.Web.CommonAPI do
       Utils.update_report_state(activity, state)
     else
       nil -> {:error, :not_found}
-      _ -> {:error, dgettext("errors", "Could not update state")}
     end
   end
 
@@ -891,7 +875,6 @@ defmodule Pleroma.Web.CommonAPI do
       set_visibility(activity, opts)
     else
       nil -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
     end
   end
 

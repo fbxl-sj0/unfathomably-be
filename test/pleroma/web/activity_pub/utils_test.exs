@@ -121,7 +121,7 @@ defmodule Pleroma.Web.ActivityPub.UtilsTest do
 
       assert_enqueued(
         worker: Pleroma.Workers.PublisherWorker,
-        args: %{"op" => "publish", "params" => %{"id" => announce.data["id"]}}
+        args: %{"op" => "publish", "activity_id" => announce.id}
       )
     end
 

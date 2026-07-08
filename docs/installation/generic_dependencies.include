@@ -12,5 +12,6 @@
 ## Optional dependencies
 
 * ImageMagick
+* libvips
 * FFmpeg
 * exiftool

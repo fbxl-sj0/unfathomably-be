@@ -64,9 +64,15 @@ defmodule Pleroma.Conversation.Participation do
   end
 
   def mark_as_read(%__MODULE__{} = participation) do
-    participation
-    |> change(read: true)
-    |> Repo.update()
+    __MODULE__
+    |> where(id: ^participation.id)
+    |> update(set: [read: true])
+    |> select([p], p)
+    |> Repo.update_all([])
+    |> case do
+      {1, [participation]} -> {:ok, participation}
+      _ -> {:error, :not_found}
+    end
   end
 
   def mark_all_as_read(%User{local: true} = user, %User{} = target_user) do

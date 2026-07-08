@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Constants do
@@ -88,6 +88,54 @@ defmodule Pleroma.Constants do
       "Organization",
       "Person",
       "Service"
+    ]
+  )
+
+  const(activity_types,
+    do: [
+      "Accept",
+      "Add",
+      "Announce",
+      "Answer",
+      "Block",
+      "ChatMessage",
+      "Create",
+      "Delete",
+      "Dislike",
+      "EmojiReact",
+      "Flag",
+      "Follow",
+      "Join",
+      "Leave",
+      "Like",
+      "Listen",
+      "Lock",
+      "Move",
+      "Offer",
+      "Read",
+      "Reject",
+      "Remove",
+      "Undo",
+      "Update",
+      "View"
+    ]
+  )
+
+  const(allowed_activity_types_from_strangers,
+    do: [
+      "Announce",
+      "Block",
+      "Create",
+      "Dislike",
+      "EmojiReact",
+      "Flag",
+      "Follow",
+      "Join",
+      "Leave",
+      "Like",
+      "Offer",
+      "Read",
+      "View"
     ]
   )
 

@@ -52,6 +52,7 @@ defmodule Pleroma.HTTP.AdapterHelper do
     case adapter() do
       Tesla.Adapter.Gun -> AdapterHelper.Gun
       Tesla.Adapter.Hackney -> AdapterHelper.Hackney
+      {Tesla.Adapter.Finch, _} -> AdapterHelper.Finch
       _ -> AdapterHelper.Default
     end
   end
@@ -60,6 +61,7 @@ defmodule Pleroma.HTTP.AdapterHelper do
   def can_stream? do
     case adapter() do
       Tesla.Adapter.Gun -> true
+      {Tesla.Adapter.Finch, _} -> true
       _ -> false
     end
   end

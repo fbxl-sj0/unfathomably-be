@@ -26,7 +26,7 @@ defmodule Pleroma.Web.XML do
 
   def parse_document(text) do
     try do
-      doc = SweetXml.parse(text, dtd: :none)
+      doc = SweetXml.parse(text, dtd: :none, allow_entities: false)
       {:ok, doc}
     rescue
       _e ->

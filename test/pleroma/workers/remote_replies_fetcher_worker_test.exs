@@ -9,8 +9,8 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
   import Pleroma.Factory
   import Tesla.Mock
 
-  alias Pleroma.Object
   alias Pleroma.Instances
+  alias Pleroma.Object
   alias Pleroma.Workers.RemoteFetcherWorker
   alias Pleroma.Workers.RemoteRepliesFetcherWorker
 
@@ -154,6 +154,39 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
       worker: RemoteFetcherWorker,
       args: %{"op" => "fetch_remote", "id" => @reply_2, "depth" => 1, "thread" => true}
     )
+  end
+
+  test "does not pile up duplicate fetch jobs when reply refreshes repeat" do
+    mock(fn
+      %{method: :get, url: @collection_id} ->
+        activitypub_json(%{
+          "id" => @collection_id,
+          "type" => "OrderedCollection",
+          "orderedItems" => [@reply_1]
+        })
+    end)
+
+    args = %{
+      "op" => "refresh_replies",
+      "object_id" => @parent_id,
+      "collection_id" => @collection_id,
+      "depth" => 1,
+      "refresh_index" => 0
+    }
+
+    assert :ok = perform_job(RemoteRepliesFetcherWorker, args)
+    assert :ok = perform_job(RemoteRepliesFetcherWorker, args)
+
+    assert [
+             %Oban.Job{
+               args: %{
+                 "op" => "fetch_remote",
+                 "id" => @reply_1,
+                 "depth" => 1,
+                 "thread" => true
+               }
+             }
+           ] = all_enqueued(worker: RemoteFetcherWorker)
   end
 
   test "fetches reply ids from wrapped collection items" do

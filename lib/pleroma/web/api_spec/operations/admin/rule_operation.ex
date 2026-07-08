@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ApiSpec.Admin.RuleOperation do
@@ -84,7 +84,8 @@ defmodule Pleroma.Web.ApiSpec.Admin.RuleOperation do
       required: [:text],
       properties: %{
         priority: %Schema{type: :integer},
-        text: %Schema{type: :string}
+        text: %Schema{type: :string},
+        hint: %Schema{type: :string, nullable: true}
       }
     }
   end
@@ -94,7 +95,8 @@ defmodule Pleroma.Web.ApiSpec.Admin.RuleOperation do
       type: :object,
       properties: %{
         priority: %Schema{type: :integer},
-        text: %Schema{type: :string}
+        text: %Schema{type: :string},
+        hint: %Schema{type: :string, nullable: true}
       }
     }
   end
@@ -103,9 +105,10 @@ defmodule Pleroma.Web.ApiSpec.Admin.RuleOperation do
     %Schema{
       type: :object,
       properties: %{
-        id: %Schema{type: :integer},
+        id: %Schema{type: :string},
         priority: %Schema{type: :integer},
         text: %Schema{type: :string},
+        hint: %Schema{type: :string, nullable: true},
         created_at: %Schema{type: :string, format: :"date-time"}
       }
     }

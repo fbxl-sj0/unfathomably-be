@@ -6,7 +6,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.FollowValidator do
   use Ecto.Schema
 
   import Ecto.Changeset
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
 
@@ -34,8 +34,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.FollowValidator do
     |> validate_required([:id, :type, :actor, :to, :object])
     |> validate_inclusion(:type, ["Follow"])
     |> validate_inclusion(:state, ~w{pending reject accept})
-    |> validate_actor_presence()
-    |> validate_actor_presence(field_name: :object)
+    |> CommonValidations.validate_actor_presence()
+    |> CommonValidations.validate_actor_presence(field_name: :object)
   end
 
   def cast_and_validate(data) do

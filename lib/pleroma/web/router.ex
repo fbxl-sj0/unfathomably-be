@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.Router do
@@ -60,6 +60,7 @@ defmodule Pleroma.Web.Router do
     plug(Pleroma.Web.Plugs.SetUserSessionIdPlug)
     plug(Pleroma.Web.Plugs.EnsureUserTokenAssignsPlug)
     plug(Pleroma.Web.Plugs.UserTrackingPlug)
+    plug(Pleroma.Web.Plugs.LoggerMetadataUser)
   end
 
   pipeline :base_api do
@@ -75,7 +76,7 @@ defmodule Pleroma.Web.Router do
     plug(Pleroma.Web.Plugs.IdempotencyPlug)
   end
 
-  # Pipeline for app-related endpoints (no user auth checks — app-bound tokens must be supported)
+  # Pipeline for app-related endpoints (no user auth checks â€” app-bound tokens must be supported)
   pipeline :app_api do
     plug(:no_auth_or_privacy_expectations_api)
   end
@@ -179,6 +180,7 @@ defmodule Pleroma.Web.Router do
     plug(:browser)
     plug(:authenticate)
     plug(Pleroma.Web.Plugs.EnsureUserTokenAssignsPlug)
+    plug(Pleroma.Web.Plugs.LoggerMetadataUser)
   end
 
   pipeline :well_known do
@@ -541,6 +543,7 @@ defmodule Pleroma.Web.Router do
     post("/ostatus_subscribe", RemoteFollowController, :do_follow)
 
     get("/authorize_interaction", RemoteFollowController, :authorize_interaction)
+    get("/authorize-interaction", RemoteFollowController, :authorize_interaction)
   end
 
   scope "/api/pleroma", Pleroma.Web.TwitterAPI do
@@ -701,6 +704,8 @@ defmodule Pleroma.Web.Router do
       post("/accounts/:id/unsubscribe", AccountController, :unsubscribe)
 
       get("/birthdays", AccountController, :birthdays)
+      get("/settings/:app", SettingsController, :show)
+      patch("/settings/:app", SettingsController, :update)
     end
 
     post("/accounts/confirmation_resend", AccountController, :confirmation_resend)
@@ -799,6 +804,8 @@ defmodule Pleroma.Web.Router do
     get("/endorsements", AccountController, :own_endorsements)
     get("/blocks", AccountController, :blocks)
     get("/mutes", AccountController, :mutes)
+    get("/tags/:id", TagController, :show)
+    get("/followed_tags", TagController, :show_followed)
 
     post("/follows", AccountController, :follow_by_uri)
     post("/accounts/:id/follow", AccountController, :follow)
@@ -813,6 +820,8 @@ defmodule Pleroma.Web.Router do
     post("/accounts/:id/endorse", AccountController, :endorse)
     post("/accounts/:id/unendorse", AccountController, :unendorse)
     post("/accounts/:id/remove_from_followers", AccountController, :remove_from_followers)
+    post("/tags/:id/follow", TagController, :follow)
+    post("/tags/:id/unfollow", TagController, :unfollow)
 
     get("/conversations", ConversationController, :index)
     post("/conversations/:id/read", ConversationController, :mark_as_read)
@@ -962,12 +971,6 @@ defmodule Pleroma.Web.Router do
     get("/apps/verify_credentials", AppController, :verify_credentials)
   end
 
-  scope "/api/v3", Pleroma.Web.LemmyAPI do
-    pipe_through(:api)
-
-    get("/community/list", CommunityController, :list)
-  end
-
   scope "/api/v1", Pleroma.Web.MastodonAPI do
     pipe_through(:api)
 
@@ -1043,10 +1046,17 @@ defmodule Pleroma.Web.Router do
     get("/instance", InstanceController, :show2)
   end
 
+  scope "/api/v3", Pleroma.Web.LemmyAPI do
+    pipe_through(:api)
+
+    get("/community/list", CommunityController, :list)
+  end
+
   scope "/api", Pleroma.Web do
     pipe_through(:config)
 
     get("/pleroma/frontend_configurations", TwitterAPI.UtilController, :frontend_configurations)
+    get("/statusnet/config", TwitterAPI.UtilController, :config)
   end
 
   scope "/api", Pleroma.Web do
@@ -1145,6 +1155,10 @@ defmodule Pleroma.Web.Router do
     plug(:http_signature)
   end
 
+  pipeline :inbox_guard do
+    plug(Pleroma.Web.Plugs.InboxGuardPlug)
+  end
+
   # Client to Server (C2S) AP interactions
   pipeline :activitypub_client do
     plug(:ap_service_actor)
@@ -1172,7 +1186,7 @@ defmodule Pleroma.Web.Router do
   end
 
   scope "/", Pleroma.Web.ActivityPub do
-    pipe_through(:activitypub)
+    pipe_through([:activitypub, :inbox_guard])
     post("/inbox", ActivityPubController, :inbox)
     post("/users/:nickname/inbox", ActivityPubController, :inbox)
   end

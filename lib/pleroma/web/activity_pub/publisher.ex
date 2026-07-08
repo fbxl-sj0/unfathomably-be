@@ -30,6 +30,7 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
   @terminal_delivery_statuses %{
     400 => :bad_request,
+    401 => :unauthorized,
     403 => :forbidden,
     404 => :not_found,
     405 => :method_not_allowed,
@@ -57,7 +58,7 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   def publish_one(%{json: json, actor: %User{}, id: id}) when not is_binary(json) do
     Logger.metadata(activity: id)
     Logger.debug("Publisher rejected malformed JSON body #{inspect(json)}")
-    {:discard, :bad_request}
+    {:cancel, :bad_request}
   end
 
   def publish_one(%{inbox: inbox, json: json, actor: %User{} = actor, id: id} = params) do
@@ -100,23 +101,27 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
           case Map.fetch(@terminal_delivery_statuses, code) do
             {:ok, reason} ->
-              {:discard, reason}
+              {:cancel, reason}
 
             :error ->
               unless known_unreachable?(params), do: Instances.set_unreachable(inbox)
               {:error, response}
           end
 
+        {:error, {:already_started, _}} ->
+          Logger.debug("Publisher snoozing worker job due worker :already_started race condition")
+          connection_pool_snooze()
+
         {:error, :pool_full} ->
           Logger.debug("Publisher snoozing worker job due to full connection pool")
-          {:snooze, 30}
+          connection_pool_snooze()
 
         e ->
           Logger.metadata(activity: id, inbox: inbox)
           Logger.debug("Publisher failed to inbox #{inbox}: #{inspect(e)}")
 
           if known_unreachable?(params) do
-            {:discard, :unreachable_host}
+            {:cancel, :unreachable_host}
           else
             Instances.set_unreachable(inbox)
             {:error, e}
@@ -126,7 +131,7 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
       {:error, reason} ->
         Logger.metadata(activity: id, inbox: inbox)
         Logger.debug("Publisher rejected malformed inbox #{inspect(inbox)}")
-        {:discard, reason}
+        {:cancel, reason}
     end
   end
 
@@ -142,12 +147,12 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   def publish_one(%{actor: actor, id: id}) do
     Logger.metadata(activity: id)
     Logger.debug("Publisher rejected malformed actor #{inspect(actor)}")
-    {:discard, :bad_request}
+    {:cancel, :bad_request}
   end
 
   def publish_one(params) when is_map(params) do
     Logger.debug("Publisher rejected malformed delivery params #{inspect(params)}")
-    {:discard, :bad_request}
+    {:cancel, :bad_request}
   end
 
   defp signature_uri(inbox) when is_binary(inbox) do
@@ -172,6 +177,8 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
   defp known_unreachable?(%{unreachable_since: _unreachable_since}), do: true
   defp known_unreachable?(_params), do: false
+
+  defp connection_pool_snooze, do: {:snooze, 3}
 
   defp signature_host(%URI{port: port, scheme: scheme, host: host}) do
     if port == URI.default_port(scheme) do
@@ -200,7 +207,9 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   defp recipients(actor, activity) do
     followers =
       if actor.follower_address in activity.recipients do
-        User.get_external_followers(actor)
+        actor
+        |> User.get_external_followers()
+        |> maybe_skip_group_announce_origin(actor, activity)
       else
         []
       end
@@ -220,6 +229,33 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     non_mentioned = (followers ++ fetchers) -- mentioned
 
     [mentioned, non_mentioned]
+  end
+
+  defp maybe_skip_group_announce_origin(
+         followers,
+         %User{actor_type: "Group"},
+         %Activity{data: %{"type" => "Announce", "object" => object_ap_id}}
+       )
+       when is_binary(object_ap_id) do
+    with origin_host when is_binary(origin_host) <- announce_origin_host(object_ap_id) do
+      Enum.reject(followers, fn %User{ap_id: ap_id} ->
+        uri_host(ap_id) == origin_host
+      end)
+    else
+      _ -> followers
+    end
+  end
+
+  defp maybe_skip_group_announce_origin(followers, _actor, _activity), do: followers
+
+  defp announce_origin_host(object_ap_id) do
+    case Object.get_cached_by_ap_id(object_ap_id) do
+      %Object{data: %{"actor" => object_actor}} when is_binary(object_actor) ->
+        uri_host(object_actor)
+
+      _ ->
+        uri_host(object_ap_id)
+    end
   end
 
   defp get_cc_ap_ids(ap_id, recipients) do
@@ -349,7 +385,10 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
     {:ok, data} = Transmogrifier.prepare_outgoing(activity.data)
     {actor, activity, data} = maybe_replace_actor(actor, activity, data)
-    json = Jason.encode!(data)
+    json =
+      data
+      |> Map.put_new("cc", [])
+      |> Jason.encode!()
 
     [priority_inboxes, inboxes] =
       recipients(actor, activity)
@@ -423,3 +462,4 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
   defp uri_host(_), do: nil
 end
+

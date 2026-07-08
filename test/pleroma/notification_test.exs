@@ -17,7 +17,6 @@ defmodule Pleroma.NotificationTest do
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.CommonAPI
-  alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.NotificationView
   alias Pleroma.Web.Push
   alias Pleroma.Web.Streamer
@@ -38,6 +37,12 @@ defmodule Pleroma.NotificationTest do
       {:ok, activity} = CommonAPI.react_with_emoji(activity.id, other_user, "☕")
 
       refute {:ok, [nil]} == Notification.create_notifications(activity)
+    end
+
+    test "unsupported activities return the normal empty receiver tuple" do
+      activity = %Pleroma.Activity{data: %{"type" => "Unsupported"}}
+
+      assert {[], []} = Notification.get_notified_from_activity(activity)
     end
 
     test "creates a report notification only for privileged users" do
@@ -84,6 +89,18 @@ defmodule Pleroma.NotificationTest do
 
       assert notification.user_id == user.id
       assert notification.type == "pleroma:emoji_reaction"
+    end
+
+    test "does not crash when an emoji reaction has no local notification target" do
+      user = insert(:user)
+      remote_user = insert(:user, local: false)
+
+      note = insert(:note, user: remote_user)
+      activity = insert(:note_activity, note: note)
+
+      {:ok, reaction} = CommonAPI.react_with_emoji(activity.id, user, "☕")
+
+      assert {:ok, []} = Notification.create_notifications(reaction)
     end
 
     test "notifies someone when they are directly addressed" do
@@ -651,73 +668,6 @@ defmodule Pleroma.NotificationTest do
       {:ok, _follower} = CommonAPI.reject_follow_request(follower, user)
       assert [] = Notification.for_user(user)
     end
-
-    test "it creates `group_follow` notification for approved local group follows" do
-      owner = insert(:user)
-      follower = insert(:user)
-
-      {:ok, group} =
-        FederatedTarget.create_local_group(owner, %{
-          "display_name" => "Coffee Club",
-          "group_visibility" => "everyone"
-        })
-
-      {:ok, _, _, _activity} = CommonAPI.follow(follower, group)
-
-      assert FollowingRelationship.following?(follower, group)
-      refute FollowingRelationship.following?(follower, owner)
-      assert [notification] = Notification.for_user(owner)
-
-      group_id = to_string(group.id)
-
-      assert %{type: "group_follow", target: %{id: ^group_id}} =
-               NotificationView.render("show.json", %{
-                 notification: notification,
-                 for: owner
-               })
-    end
-
-    test "it creates `group_follow_request` notification for pending local group follows" do
-      owner = insert(:user)
-      follower = insert(:user)
-
-      {:ok, group} =
-        FederatedTarget.create_local_group(owner, %{
-          "display_name" => "Closed Coffee Club",
-          "group_visibility" => "members_only"
-        })
-
-      {:ok, _, _, _activity} = CommonAPI.follow(follower, group)
-
-      refute FollowingRelationship.following?(follower, group)
-      refute FollowingRelationship.following?(follower, owner)
-      assert [notification] = Notification.for_user(owner)
-
-      group_id = to_string(group.id)
-
-      assert %{type: "group_follow_request", target: %{id: ^group_id}} =
-               NotificationView.render("show.json", %{
-                 notification: notification,
-                 for: owner
-               })
-    end
-
-    test "it skips local group follow notifications when the group disabled them" do
-      owner = insert(:user)
-      follower = insert(:user)
-
-      {:ok, group} =
-        FederatedTarget.create_local_group(owner, %{
-          "display_name" => "Quiet Coffee Club",
-          "group_visibility" => "everyone",
-          "group_join_notifications" => "false"
-        })
-
-      {:ok, _, _, _activity} = CommonAPI.follow(follower, group)
-
-      assert FollowingRelationship.following?(follower, group)
-      assert [] = Notification.for_user(owner)
-    end
   end
 
   describe "get notification" do
@@ -821,9 +771,7 @@ defmodule Pleroma.NotificationTest do
 
       Pleroma.Tests.ObanHelpers.perform_all()
 
-      [_, read_notification] = Notification.set_read_up_to(other_user, n2.id)
-
-      assert read_notification.activity.object
+      assert {:ok, _} = Notification.set_read_up_to(other_user, n2.id)
 
       [n3, n2, n1] = Notification.for_user(other_user)
 

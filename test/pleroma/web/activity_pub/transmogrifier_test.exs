@@ -350,9 +350,32 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       object = Transmogrifier.add_mention_tags(object)
 
       assert %{"type" => "Hashtag", "name" => "#kept"} in object["tag"]
+
       assert %{"type" => "Mention", "href" => href} =
                Enum.find(object["tag"], &(&1["href"] == mentioned.ap_id))
+
       assert href == mentioned.ap_id
+    end
+
+    test "it does not turn cc-only delivery recipients into generated mention tags" do
+      mentioned = insert(:user)
+
+      object =
+        Transmogrifier.add_mention_tags(%{
+          "id" => "https://local.test/objects/cc-only-recipient",
+          "type" => "Note",
+          "actor" => "https://local.test/users/alice",
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [mentioned.ap_id],
+          "tag" => []
+        })
+
+      mention_hrefs =
+        object["tag"]
+        |> Enum.filter(&(is_map(&1) and &1["type"] == "Mention"))
+        |> Enum.map(& &1["href"])
+
+      refute mentioned.ap_id in mention_hrefs
     end
 
     test "it tolerates scalar and object tag shapes when expanding hashtags" do
@@ -632,6 +655,22 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       {:ok, activity} = CommonAPI.listen(user, %{"title" => "lain radio episode 1"})
 
       {:ok, _modified} = Transmogrifier.prepare_outgoing(activity.data)
+    end
+
+    test "it refuses to serve Update activities for static embedded objects" do
+      data = %{
+        "actor" => "https://example.com/users/alice",
+        "id" => "https://example.com/activities/update-static",
+        "object" => %{
+          "id" => "https://example.com/static/banner.png",
+          "type" => "Image"
+        },
+        "type" => "Update"
+      }
+
+      assert_raise RuntimeError, ~r/non-updateable object type/, fn ->
+        Transmogrifier.prepare_outgoing(data)
+      end
     end
 
     test "custom emoji urls are URI encoded" do

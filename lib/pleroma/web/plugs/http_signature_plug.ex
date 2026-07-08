@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.Plugs.HTTPSignaturePlug do
+  alias Pleroma.Helpers.InetHelper
+
   import Plug.Conn
   import Phoenix.Controller, only: [get_format: 1, text: 2]
 
@@ -72,15 +74,25 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlug do
 
   defp maybe_require_signature(%{assigns: %{valid_signature: true}} = conn), do: conn
 
-  defp maybe_require_signature(conn) do
+  defp maybe_require_signature(%{remote_ip: remote_ip} = conn) do
     if Pleroma.Config.get([:activitypub, :authorized_fetch_mode], false) do
-      conn
-      |> put_status(:unauthorized)
-      |> text("Request not signed")
-      |> halt()
+      if authorized_fetch_exception?(remote_ip) do
+        conn
+      else
+        conn
+        |> put_status(:unauthorized)
+        |> text("Request not signed")
+        |> halt()
+      end
     else
       conn
     end
+  end
+
+  defp authorized_fetch_exception?(remote_ip) do
+    Config.get([:activitypub, :authorized_fetch_mode_exceptions], [])
+    |> Enum.map(&InetHelper.parse_cidr/1)
+    |> Enum.any?(&InetCidr.contains?(&1, remote_ip))
   end
 
   defp maybe_filter_requests(%{halted: true} = conn), do: conn
@@ -110,10 +122,12 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlug do
     |> MRF.subdomains_regex()
   end
 
-  defp uri_host(uri) when is_binary(uri) do
-    uri
-    |> URI.parse()
-    |> Map.get(:host)
+  defp uri_host(uri) do
+    if is_binary(uri) do
+      uri
+      |> URI.parse()
+      |> Map.get(:host)
+    end
   rescue
     URI.Error -> nil
   end

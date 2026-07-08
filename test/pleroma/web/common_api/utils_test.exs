@@ -326,11 +326,24 @@ defmodule Pleroma.Web.CommonAPI.UtilsTest do
     test "when date is a Unix timestamp" do
       date = DateTime.utc_now() |> DateTime.to_unix()
 
-      expected = ""
+      expected =
+        date
+        |> DateTime.from_unix!()
+        |> Calendar.Strftime.strftime!("%a %b %d %H:%M:%S %z %Y")
 
-      assert capture_log(fn ->
-               assert Utils.date_to_asctime(date) == expected
-             end) =~ "Date #{date} in wrong format, must be ISO 8601"
+      assert Utils.date_to_asctime(date) == expected
+    end
+
+    test "when date is a float Unix timestamp" do
+      date = 1_553_808_404.602961
+
+      expected =
+        date
+        |> trunc()
+        |> DateTime.from_unix!()
+        |> Calendar.Strftime.strftime!("%a %b %d %H:%M:%S %z %Y")
+
+      assert Utils.date_to_asctime(date) == expected
     end
 
     test "when date is nil" do
@@ -338,7 +351,7 @@ defmodule Pleroma.Web.CommonAPI.UtilsTest do
 
       assert capture_log(fn ->
                assert Utils.date_to_asctime(nil) == expected
-             end) =~ "Date  in wrong format, must be ISO 8601"
+             end) =~ "Date  in wrong format, must be ISO 8601 or Unix timestamp"
     end
 
     test "when date is a random string" do

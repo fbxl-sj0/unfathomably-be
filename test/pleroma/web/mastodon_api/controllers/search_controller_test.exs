@@ -338,9 +338,18 @@ defmodule Pleroma.Web.MastodonAPI.SearchControllerTest do
     end
 
     test "search fetches remote statuses and prefers them over other results", %{conn: conn} do
-      old_version = :persistent_term.get({Pleroma.Repo, :postgres_version})
-      :persistent_term.put({Pleroma.Repo, :postgres_version}, 10.0)
-      on_exit(fn -> :persistent_term.put({Pleroma.Repo, :postgres_version}, old_version) end)
+      postgres_version_key = {Pleroma.Repo, :postgres_version}
+      old_version = :persistent_term.get(postgres_version_key, nil)
+
+      :persistent_term.put(postgres_version_key, 10.0)
+
+      on_exit(fn ->
+        if is_nil(old_version) do
+          :persistent_term.erase(postgres_version_key)
+        else
+          :persistent_term.put(postgres_version_key, old_version)
+        end
+      end)
 
       capture_log(fn ->
         {:ok, %{id: activity_id}} =

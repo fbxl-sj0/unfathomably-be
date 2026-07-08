@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.DirectoryController do
@@ -15,7 +15,7 @@ defmodule Pleroma.Web.MastodonAPI.DirectoryController do
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate)
 
-  plug(:skip_auth when action == "index")
+  plug(:skip_auth when action == :index)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.DirectoryOperation
 

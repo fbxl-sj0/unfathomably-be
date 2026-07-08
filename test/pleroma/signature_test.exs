@@ -10,9 +10,9 @@ defmodule Pleroma.SignatureTest do
   import Tesla.Mock
   import Mock
 
+  alias Pleroma.Keys
   alias Pleroma.Signature
   alias Pleroma.StubbedHTTPSignaturesMock, as: HTTPSignaturesMock
-  alias Pleroma.Keys
   alias Pleroma.User
 
   setup do

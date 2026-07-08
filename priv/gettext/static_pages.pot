@@ -370,7 +370,7 @@ msgstr ""
 #: lib/pleroma/web/templates/email/digest.html.eex:544
 #, elixir-autogen, elixir-format
 msgctxt "digest email receiver address"
-msgid "The email address you are subscribed as is <a href='mailto:%{@user.email}' style='color: %{color};text-decoration: none;'>%{email}</a>. "
+msgid "The email address you are subscribed as is <a href='mailto:%{email}' style='color: %{color};text-decoration: none;'>%{email}</a>. "
 msgstr ""
 
 #: lib/pleroma/web/templates/email/digest.html.eex:538

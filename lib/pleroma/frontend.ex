@@ -109,7 +109,7 @@ defmodule Pleroma.Frontend do
         path = to_string(filename)
         new_file_path = Path.join(dest, path)
 
-        if String.ends_with?(path, "/") do
+        if String.ends_with?(path, "/") or File.dir?(new_file_path) do
           File.mkdir_p!(new_file_path)
         else
           new_file_path

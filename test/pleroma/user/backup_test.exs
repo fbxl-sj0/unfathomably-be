@@ -164,6 +164,11 @@ defmodule Pleroma.User.BackupTest do
         featured_address: "http://cofe.io/users/cofe/collections/featured"
       })
 
+    follower = insert(:user, %{ap_id: "http://friend.example/users/friend"})
+    other_ap_id = follower.ap_id
+
+    assert {:ok, _, _} = Pleroma.FollowingRelationship.follow(follower, user)
+
     {:ok, %{object: %{data: %{"id" => id1}}} = status1} =
       CommonAPI.post(user, %{status: "status1"})
 
@@ -191,13 +196,13 @@ defmodule Pleroma.User.BackupTest do
                %{"@language" => "und"}
              ],
              "bookmarks" => "bookmarks.json",
-             "followers" => "http://cofe.io/users/cofe/followers",
-             "following" => "http://cofe.io/users/cofe/following",
+             "followers" => "followers.json",
+             "following" => "following.json",
              "id" => "http://cofe.io/users/cofe",
              "inbox" => "http://cofe.io/users/cofe/inbox",
              "likes" => "likes.json",
              "name" => "Cofe",
-             "outbox" => "http://cofe.io/users/cofe/outbox",
+             "outbox" => "outbox.json",
              "preferredUsername" => "cofe",
              "publicKey" => %{
                "id" => "http://cofe.io/users/cofe#main-key",
@@ -257,6 +262,28 @@ defmodule Pleroma.User.BackupTest do
              "totalItems" => 2,
              "type" => "OrderedCollection"
            } = Jason.decode!(json)
+
+    assert {:ok, {~c"followers.json", json}} = :zip.zip_get(~c"followers.json", zipfile)
+
+    assert %{
+             "@context" => "https://www.w3.org/ns/activitystreams",
+             "id" => "followers.json",
+             "orderedItems" => followers,
+             "type" => "OrderedCollection"
+           } = Jason.decode!(json)
+
+    assert other_ap_id in followers
+
+    assert {:ok, {~c"following.json", json}} = :zip.zip_get(~c"following.json", zipfile)
+
+    assert %{
+             "@context" => "https://www.w3.org/ns/activitystreams",
+             "id" => "following.json",
+             "orderedItems" => following,
+             "type" => "OrderedCollection"
+           } = Jason.decode!(json)
+
+    assert is_list(following)
 
     :zip.zip_close(zipfile)
     File.rm!(path)
@@ -361,14 +388,13 @@ defmodule Pleroma.User.BackupTest do
       clear_config([Pleroma.Upload, :uploader], Pleroma.Uploaders.S3)
       clear_config([Pleroma.Uploaders.S3, :streaming_enabled], false)
 
-      with_mock ExAws,
-        request: fn
-          %{http_method: :put} -> {:ok, :ok}
-          %{http_method: :delete} -> {:ok, %{status_code: 204}}
-        end do
-        assert {:ok, %Pleroma.Upload{}} = Backup.upload(backup, path)
-        assert {:ok, _backup} = Backup.delete(backup)
-      end
+      Mox.expect(Pleroma.Uploaders.S3.ExAwsMock, :request, 2, fn
+        %{http_method: :put} -> {:ok, :ok}
+        %{http_method: :delete} -> {:ok, %{status_code: 204}}
+      end)
+
+      assert {:ok, %Pleroma.Upload{}} = Backup.upload(backup, path)
+      assert {:ok, _backup} = Backup.delete(backup)
     end
 
     test "Local", %{path: path, backup: backup} do

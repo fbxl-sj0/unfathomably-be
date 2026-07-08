@@ -24,13 +24,13 @@ defmodule Pleroma.Web.Federator.Publisher do
   Relays an activity to a specified peer, determined by the parameters.  The
   parameters used are controlled by the federation module.
   """
-  @callback publish_one(Map.t()) ::
-              {:ok, Map.t()} | {:error, any()} | {:discard, any()} | {:snooze, non_neg_integer()}
+  @callback publish_one(map()) ::
+              {:ok, map()} | {:error, any()} | {:cancel, any()} | {:snooze, non_neg_integer()}
 
   @doc """
   Enqueue publishing a single activity.
   """
-  @spec enqueue_one(module(), Map.t(), keyword()) :: :ok
+  @spec enqueue_one(module(), map(), keyword()) :: :ok
   def enqueue_one(module, %{} = params, worker_args \\ []) do
     PublisherWorker.enqueue(
       "publish_one",

@@ -5,7 +5,6 @@
 defmodule Pleroma.Web.ApiSpec.PleromaNotificationOperation do
   alias OpenApiSpex.Operation
   alias OpenApiSpex.Schema
-  alias Pleroma.Web.ApiSpec.NotificationOperation
   alias Pleroma.Web.ApiSpec.Schemas.ApiError
 
   import Pleroma.Web.ApiSpec.Helpers
@@ -33,14 +32,9 @@ defmodule Pleroma.Web.ApiSpec.PleromaNotificationOperation do
       responses: %{
         200 =>
           Operation.response(
-            "A Notification or array of Notifications",
+            "OK",
             "application/json",
-            %Schema{
-              anyOf: [
-                %Schema{type: :array, items: NotificationOperation.notification()},
-                NotificationOperation.notification()
-              ]
-            }
+            %Schema{type: :string}
           ),
         400 => Operation.response("Bad Request", "application/json", ApiError)
       }

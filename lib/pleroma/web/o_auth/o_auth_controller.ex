@@ -139,9 +139,11 @@ defmodule Pleroma.Web.OAuth.OAuthController do
       url = UriHelper.modify_uri_params(redirect_uri, url_params)
       redirect(conn, external: url)
     else
+      redirect_uri = registered_redirect_uri(conn, app)
+
       conn
       |> put_flash(:error, dgettext("errors", "Unlisted redirect_uri."))
-      |> redirect(external: redirect_uri(conn, redirect_uri))
+      |> redirect(external: redirect_uri)
     end
   end
 
@@ -183,9 +185,11 @@ defmodule Pleroma.Web.OAuth.OAuthController do
       url = UriHelper.modify_uri_params(redirect_uri, url_params)
       redirect(conn, external: url)
     else
+      redirect_uri = registered_redirect_uri(conn, app)
+
       conn
       |> put_flash(:error, dgettext("errors", "Unlisted redirect_uri."))
-      |> redirect(external: redirect_uri(conn, redirect_uri))
+      |> redirect(external: redirect_uri)
     end
   end
 
@@ -612,6 +616,10 @@ defmodule Pleroma.Web.OAuth.OAuthController do
   end
 
   defp redirect_uri(%Plug.Conn{}, redirect_uri), do: redirect_uri
+
+  defp registered_redirect_uri(%Plug.Conn{} = conn, %App{} = app) do
+    redirect_uri(conn, default_redirect_uri(app))
+  end
 
   defp get_session_registration_id(%Plug.Conn{} = conn), do: get_session(conn, :registration_id)
 

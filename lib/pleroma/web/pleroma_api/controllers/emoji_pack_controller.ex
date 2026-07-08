@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.EmojiPackController do
@@ -110,8 +110,12 @@ defmodule Pleroma.Web.PleromaAPI.EmojiPackController do
     end
   end
 
+  def download(%{body_params: %{"url" => url, "name" => name} = params} = conn, _) do
+    download(%{conn | body_params: %{url: url, name: name, as: params["as"]}}, %{})
+  end
+
   def download(%{body_params: %{url: url, name: name} = params} = conn, _) do
-    with {:ok, _pack} <- Pack.download(name, url, params[:as]) do
+    with {:ok, _pack} <- Pack.download(name, url, Map.get(params, :as)) do
       json(conn, "ok")
     else
       {:error, :not_shareable} ->
@@ -196,6 +200,10 @@ defmodule Pleroma.Web.PleromaAPI.EmojiPackController do
         |> put_status(:internal_server_error)
         |> json(%{error: error_message})
     end
+  end
+
+  def update(%{body_params: %{"metadata" => metadata}} = conn, %{name: name}) do
+    update(%{conn | body_params: %{metadata: metadata}}, %{name: name})
   end
 
   def update(%{body_params: %{metadata: metadata}} = conn, %{name: name}) do

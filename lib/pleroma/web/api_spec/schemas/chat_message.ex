@@ -16,6 +16,10 @@ defmodule Pleroma.Web.ApiSpec.Schemas.ChatMessage do
     properties: %{
       id: %Schema{type: :string},
       account_id: %Schema{type: :string, description: "The Mastodon API id of the actor"},
+      actor_account_id: %Schema{
+        type: :string,
+        description: "Deprecated alias for account_id kept for older Pleroma chat clients"
+      },
       chat_id: %Schema{type: :string},
       content: %Schema{type: :string, nullable: true},
       created_at: %Schema{type: :string, format: :"date-time"},
@@ -57,6 +61,7 @@ defmodule Pleroma.Web.ApiSpec.Schemas.ChatMessage do
     },
     example: %{
       "account_id" => "someflakeid",
+      "actor_account_id" => "someflakeid",
       "chat_id" => "1",
       "content" => "hey you again",
       "created_at" => "2020-04-21T15:06:45.000Z",

@@ -20,8 +20,10 @@ defmodule Pleroma.Workers.PollWorker do
   @impl Oban.Worker
   def perform(%Job{args: %{"op" => "poll_end", "activity_id" => activity_id}})
       when valid_job_id(activity_id) do
-    with %Activity{} = activity <- find_poll_activity(activity_id) do
-      Notification.create_poll_notifications(activity)
+    with %Activity{} = activity <- find_poll_activity(activity_id),
+         {:ok, notifications} <- Notification.create_poll_notifications(activity) do
+      Notification.stream(notifications)
+      :ok
     else
       {:error, :poll_activity_not_found} -> {:cancel, :poll_activity_not_found}
     end

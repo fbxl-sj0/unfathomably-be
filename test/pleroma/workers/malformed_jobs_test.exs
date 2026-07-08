@@ -116,12 +116,12 @@ defmodule Pleroma.Workers.MalformedJobsTest do
   end
 
   test "rich media jobs discard malformed urls" do
-    assert :discard =
+    assert {:cancel, :bad_request} =
              RichMediaWorker.perform(%Oban.Job{
                args: %{"op" => "expire", "url" => nil}
              })
 
-    assert :discard =
+    assert {:cancel, :bad_request} =
              RichMediaWorker.perform(%Oban.Job{
                args: %{"op" => "backfill", "url" => nil}
              })

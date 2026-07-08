@@ -67,4 +67,23 @@ defmodule Pleroma.HTTPTest do
              }
     end
   end
+
+  describe "request safety" do
+    test "turns adapter exceptions into error tuples" do
+      mock(fn %{method: :get, url: "http://example.com/raises"} ->
+        raise RuntimeError, "adapter boom"
+      end)
+
+      assert {:error, %RuntimeError{message: "adapter boom"}} =
+               HTTP.get("http://example.com/raises")
+    end
+
+    test "turns adapter exits into error tuples" do
+      mock(fn %{method: :get, url: "http://example.com/exits"} ->
+        exit(:adapter_exit)
+      end)
+
+      assert {:error, {:exit, :adapter_exit}} = HTTP.get("http://example.com/exits")
+    end
+  end
 end

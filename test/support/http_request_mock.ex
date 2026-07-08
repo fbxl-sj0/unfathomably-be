@@ -1713,7 +1713,7 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def get("http://192.168.250.99:5000/languages", _, _, _) do
+  def get("http://opentranslate.example:5000/languages", _, _, _) do
     {:ok,
      %Tesla.Env{
        status: 200,
@@ -1788,7 +1788,7 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def post("http://192.168.250.99:5000/translate", _, _, _) do
+  def post("http://opentranslate.example:5000/translate", _, _, _) do
     {:ok,
      %Tesla.Env{
        status: 200,

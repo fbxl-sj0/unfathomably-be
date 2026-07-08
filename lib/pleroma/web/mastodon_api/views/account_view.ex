@@ -95,14 +95,13 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
         User.get_follow_state(reading_user, target)
       end
 
-    followed_by =
-      if following_relationships do
-        case FollowingRelationship.find(following_relationships, target, reading_user) do
-          %{state: :follow_accept} -> true
-          _ -> false
-        end
-      else
-        User.following?(target, reading_user)
+    followed_by = FollowingRelationship.following?(target, reading_user)
+    following = FollowingRelationship.following?(reading_user, target)
+
+    requested =
+      cond do
+        following -> false
+        true -> match?(:follow_pending, follow_state)
       end
 
     subscribing =
@@ -135,7 +134,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
     # NOTE: adjust UserRelationship.view_relationships_option/2 on new relation-related flags
     relationship = %{
       id: to_string(target.id),
-      following: follow_state == :follow_accept,
+      following: following,
       followed_by: followed_by,
       blocking: blocking,
       blocked_by:
@@ -159,7 +158,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
       mute_expires_at: nil,
       subscribing: subscribing,
       notifying: subscribing,
-      requested: follow_state == :follow_pending,
+      requested: requested,
       domain_blocking: User.blocks_domain?(reading_user, target),
       showing_reblogs:
         not UserRelationship.exists?(
@@ -226,6 +225,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
   end
 
   defp do_render("show.json", %{user: user} = opts) do
+    self = opts[:for] == user
+
     user = User.sanitize_html(user, User.html_filter_policy(opts[:for]))
     display_name = user.name || user.nickname
 
@@ -236,8 +237,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
     header_static = MediaProxy.preview_url(User.banner_url(user), static: true)
     header_description = User.image_description(user.banner)
 
-    following_count = rendered_following_count(user, opts[:for])
-    followers_count = rendered_follower_count(user, opts[:for])
+    following_count = rendered_following_count(user, self)
+    followers_count = rendered_follower_count(user, self)
 
     bot = user.actor_type == "Service"
 
@@ -310,7 +311,9 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
         background_image: MediaProxy.url(image_url(user.background)),
         accepts_chat_messages: user.accepts_chat_messages,
         favicon: favicon,
-        location: user.location
+        location: user.location,
+        avatar_description: avatar_description,
+        header_description: header_description
       }
     }
     |> maybe_put_role(user, opts[:for])
@@ -330,16 +333,16 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
     |> maybe_show_birthday(user, opts[:for])
   end
 
-  defp rendered_following_count(user, viewer) do
-    if !user.hide_follows_count or !user.hide_follows or viewer == user do
+  defp rendered_following_count(user, self) do
+    if !user.hide_follows_count or !user.hide_follows or self do
       visible_following_count(user)
     else
       0
     end
   end
 
-  defp rendered_follower_count(user, viewer) do
-    if !user.hide_followers_count or !user.hide_followers or viewer == user do
+  defp rendered_follower_count(user, self) do
+    if !user.hide_followers_count or !user.hide_followers or self do
       visible_follower_count(user)
     else
       0

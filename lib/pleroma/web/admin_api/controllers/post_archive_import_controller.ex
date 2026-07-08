@@ -6,8 +6,8 @@ defmodule Pleroma.Web.AdminAPI.PostArchiveImportController do
   use Pleroma.Web, :controller
 
   alias Pleroma.User.PostArchiveImport
-  alias Pleroma.Web.Plugs.OAuthScopesPlug
   alias Pleroma.Web.PleromaAPI.PostArchiveImportView
+  alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   plug(OAuthScopesPlug, %{scopes: ["admin:read"]} when action in [:index])
   plug(OAuthScopesPlug, %{scopes: ["admin:write"]} when action in [:approve, :reject])

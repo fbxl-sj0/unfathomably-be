@@ -1,12 +1,9 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.AdminAPI.AdminAPIController do
   use Pleroma.Web, :controller
-
-  import Pleroma.Web.ControllerHelper,
-    only: [json_response: 3, fetch_integer_param: 3]
 
   alias Pleroma.Config
   alias Pleroma.MFA
@@ -17,6 +14,7 @@ defmodule Pleroma.Web.AdminAPI.AdminAPIController do
   alias Pleroma.Web.AdminAPI
   alias Pleroma.Web.AdminAPI.AccountView
   alias Pleroma.Web.AdminAPI.ModerationLogView
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Endpoint
   alias Pleroma.Web.Plugs.OAuthScopesPlug
   alias Pleroma.Web.Router
@@ -271,6 +269,11 @@ defmodule Pleroma.Web.AdminAPI.AdminAPIController do
   defp permission_field("admin"), do: :is_admin
   defp permission_field("moderator"), do: :is_moderator
 
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
+
+  defp fetch_integer_param(params, name, default),
+    do: ControllerHelper.fetch_integer_param(params, name, default)
+
   @doc "Get a password reset token (base64 string) for given nickname"
   def get_password_reset(conn, %{"nickname" => nickname}) do
     (%User{local: true} = user) = User.get_cached_by_nickname(nickname)
@@ -335,15 +338,15 @@ defmodule Pleroma.Web.AdminAPI.AdminAPIController do
         action: "updated_users"
       })
 
-      if params["password"] do
+      if Map.get(params, "password") not in [nil, ""] do
         User.force_password_reset_async(user)
-      end
 
-      ModerationLog.insert_log(%{
-        actor: admin,
-        subject: [user],
-        action: "force_password_reset"
-      })
+        ModerationLog.insert_log(%{
+          actor: admin,
+          subject: [user],
+          action: "force_password_reset"
+        })
+      end
 
       json(conn, %{status: "success"})
     else

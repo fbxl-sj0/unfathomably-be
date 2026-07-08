@@ -81,6 +81,15 @@ server {
         proxy_pass http://phoenix;
     }
 
+    # To serve local uploads directly from nginx instead of proxying through
+    # Phoenix, uncomment this block and ensure the alias matches both
+    # Pleroma.Uploaders.Local :uploads and the configured Pleroma.Upload :base_url.
+    #
+    # location /media/ {
+    #     alias /var/lib/pleroma/uploads/;
+    #     allow all;
+    # }
+
     location ~ ^/(media|proxy) {
         proxy_cache        pleroma_media_cache;
         slice              1m;

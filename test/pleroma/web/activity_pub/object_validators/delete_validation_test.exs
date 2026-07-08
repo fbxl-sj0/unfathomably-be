@@ -12,6 +12,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidationTest do
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.CommonAPI
 
+  require Pleroma.Constants
+
   import Pleroma.Factory
 
   describe "deletes" do

@@ -56,6 +56,7 @@ PIEFED_PORT="${PIEFED_PORT:-4634}"
 PASSWORD="${SMOKE_USER_PASSWORD:-SmokeTest_01}"
 DB_PASSWORD="${SMOKE_DB_PASSWORD:-postgres}"
 KEEP_SMOKE="${KEEP_SMOKE:-0}"
+PIEFED_QUEUE_DRAIN_TIMEOUT="${PIEFED_QUEUE_DRAIN_TIMEOUT:-8}"
 
 WORK_DIR="${SMOKE_WORK_DIR:-}"
 if [ -z "$WORK_DIR" ]; then
@@ -684,11 +685,13 @@ start_piefed() {
 }
 
 drain_piefed_queue() {
-    docker exec "$PREFIX-piefed-web" sh -c 'export FLASK_APP=pyfedi.py; flask send-queue' >/dev/null 2>&1 || true
+    timeout "${PIEFED_QUEUE_DRAIN_TIMEOUT}s" \
+        docker exec "$PREFIX-piefed-web" \
+        sh -c 'export FLASK_APP=pyfedi.py; flask send-queue' >/dev/null 2>&1 || true
 }
 
 run_piefed_queue_until() {
-    local attempts="${1:-6}"
+    local attempts="${1:-1}"
 
     for _ in $(seq 1 "$attempts"); do
         drain_piefed_queue
@@ -713,7 +716,6 @@ SMOKE_A_PORT="$A_PORT" \
 SMOKE_B_PORT="$B_PORT" \
 SMOKE_IMAGE="$IMAGE" \
 SMOKE_USER_PASSWORD="$PASSWORD" \
-SMOKE_SKIP_SOURCE_CHECKS=1 \
 build_scripts/two-instance-federation-smoke.sh >/tmp/unfathomably-piefed-bootstrap.log 2>&1 || {
     cat /tmp/unfathomably-piefed-bootstrap.log >&2 || true
     fail "Unfathomably bootstrap smoke failed"

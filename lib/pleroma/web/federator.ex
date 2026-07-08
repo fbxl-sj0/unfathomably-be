@@ -62,8 +62,12 @@ defmodule Pleroma.Web.Federator do
     ReceiverWorker.enqueue(
       "incoming_ap_doc",
       %{"req_headers" => req_headers, "params" => params, "timeout" => :timer.seconds(20)},
-      priority: 5
+      priority: 2
     )
+  end
+
+  def incoming_ap_doc(%{"type" => "Delete"} = params) do
+    ReceiverWorker.enqueue("incoming_ap_doc", %{"params" => params}, priority: 3)
   end
 
   def incoming_ap_doc(params) do

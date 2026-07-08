@@ -8,12 +8,13 @@ defmodule Pleroma.Mixfile do
       app: :pleroma,
       name: "unfathomably-be",
       compat_name: "unfathomably-be",
-      version: version("2.6.51"),
+      version: version("3.3.0"),
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
       compilers: Mix.compilers(),
       elixirc_options: [
         warnings_as_errors: warnings_as_errors(),
+        prune_code_paths: false,
         no_warn_undefined: [:eldap, :ex_syslogger]
       ],
       start_permanent: Mix.env() == :prod,
@@ -21,10 +22,11 @@ defmodule Pleroma.Mixfile do
       deps: deps(),
       test_coverage: [tool: :covertool, summary: true],
       # Docs
-      homepage_url: "https://github.com/fbxl-sj0/unfathomably-be",
-      source_url: "https://github.com/fbxl-sj0/unfathomably-be",
+      homepage_url: "https://github.com/unfathomably/unfathomably-be",
+      source_url: "https://github.com/unfathomably/unfathomably-be",
       docs: [
-        source_url_pattern: "https://github.com/fbxl-sj0/unfathomably-be/blob/main/%{path}#L%{line}",
+        source_url_pattern:
+          "https://github.com/unfathomably/unfathomably-be/blob/main/%{path}#L%{line}",
         logo: "priv/static/images/logo.png",
         extras: ["README.md", "CHANGELOG.md"] ++ Path.wildcard("docs/**/*.md"),
         groups_for_extras: [
@@ -82,7 +84,8 @@ defmodule Pleroma.Mixfile do
         :comeonin,
         :fast_sanitize,
         :os_mon,
-        :ssl
+        :ssl,
+        :eldap
       ],
       included_applications: included_applications(Mix.env())
     ]
@@ -93,7 +96,7 @@ defmodule Pleroma.Mixfile do
 
   # Specifies which paths to compile per environment.
   defp elixirc_paths(:benchmark), do: ["lib", "benchmarks", "priv/scrubbers"]
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(:test), do: ["lib", "test/support", "test/fixtures/modules"]
   defp elixirc_paths(_), do: ["lib"]
 
   defp warnings_as_errors do
@@ -145,6 +148,7 @@ defmodule Pleroma.Mixfile do
       {:gettext, "~> 1.0", override: true},
       {:logger_backends, "~> 1.0"},
       {:bcrypt_elixir, "~> 3.3"},
+      {:argon2_elixir, "~> 4.0"},
       {:trailing_format_plug, "~> 0.0.7"},
       {:fast_sanitize, "~> 0.2.0"},
       {:html_entities, "~> 0.5", override: true},
@@ -155,12 +159,7 @@ defmodule Pleroma.Mixfile do
       {:csv, "~> 3.2"},
       {:tesla, "~> 1.20", override: true},
       {:castore, "~> 1.0"},
-      # Hex does not yet publish a cowlib release with the CVE-2026-43969
-      # cookie encoder fix, so pin the Erlang Ecosystem Foundation patch.
-      {:cowlib,
-       git: "https://github.com/erlef/cowlib.git",
-       ref: "177953dd51540da11090666c1f007214127a1144",
-       override: true},
+      {:cowlib, "~> 2.9", override: true},
       {:gun, "~> 2.4", override: true},
       {:finch, "~> 0.23"},
       {:jason, "~> 1.2"},
@@ -177,7 +176,10 @@ defmodule Pleroma.Mixfile do
       {:websock_adapter, "~> 0.6", override: true},
       {:swoosh, "~> 1.26"},
       {:phoenix_swoosh, "~> 1.1"},
+      {:multipart, "~> 0.6", optional: true},
       {:gen_smtp, "~> 1.3"},
+      {:mua, "~> 0.2.0"},
+      {:mail, "~> 0.5"},
       {:ex_syslogger, "~> 2.2", only: :prod},
       {:floki, "~> 0.38"},
       {:timex, "~> 3.7"},

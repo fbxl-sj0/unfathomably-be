@@ -43,14 +43,9 @@ defmodule Pleroma.Config.TransferTask do
     with {_, true} <- {:configurable, Config.get(:configurable_from_database)} do
       # We need to restart applications for loaded settings take effect
 
-      {logger, other} =
+      settings =
         (Repo.all(ConfigDB) ++ deleted_settings)
         |> Enum.map(&merge_with_default/1)
-        |> Enum.split_with(fn {group, _, _, _} -> group in [:logger] end)
-
-      logger
-      |> Enum.sort()
-      |> Enum.each(&configure/1)
 
       started_applications = Application.started_applications()
 
@@ -73,7 +68,7 @@ defmodule Pleroma.Config.TransferTask do
           [:pleroma | reject]
         end
 
-      other
+      settings
       |> Enum.map(&update/1)
       |> Enum.uniq()
       |> Enum.reject(&(&1 in reject))
@@ -110,49 +105,6 @@ defmodule Pleroma.Config.TransferTask do
 
     {group, key, value, merged}
   end
-
-  # change logger configuration in runtime, without restart
-  defp configure({_, :backends, _, merged}) do
-    # removing current backends
-    :logger
-    |> Application.get_env(:backends)
-    |> Kernel.||([])
-    |> Enum.each(&LoggerBackends.remove(logger_backend(&1)))
-
-    merged
-    |> Enum.reject(&default_logger_backend?/1)
-    |> Enum.each(&LoggerBackends.add(logger_backend(&1)))
-
-    :ok = update_env(:logger, :backends, merged)
-  end
-
-  defp configure({_, key, _, merged}) when key in [:console, :ex_syslogger] do
-    merged =
-      if key == :console do
-        put_in(merged[:format], merged[:format] <> "\n")
-      else
-        merged
-      end
-
-    backend =
-      if key == :ex_syslogger,
-        do: {ExSyslogger, :ex_syslogger},
-        else: LoggerBackends.Console
-
-    LoggerBackends.configure(backend, merged)
-    :ok = update_env(:logger, key, merged)
-  end
-
-  defp configure({_, key, _, merged}) do
-    Logger.configure([{key, merged}])
-    :ok = update_env(:logger, key, merged)
-  end
-
-  defp logger_backend(:console), do: LoggerBackends.Console
-  defp logger_backend(backend), do: backend
-
-  defp default_logger_backend?(:console), do: true
-  defp default_logger_backend?(_), do: false
 
   defp update({group, key, value, merged}) do
     try do

@@ -6,6 +6,7 @@ defmodule Pleroma.Web.PleromaAPI.FollowRequestController do
   use Pleroma.Web, :controller
 
   alias Pleroma.User
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate, replace_params: false)
@@ -17,10 +18,11 @@ defmodule Pleroma.Web.PleromaAPI.FollowRequestController do
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.PleromaFollowRequestOperation
 
   @doc "GET /api/v1/pleroma/outgoing_follow_requests"
-  def outgoing(%{assigns: %{user: follower}} = conn, _params) do
-    follow_requests = User.get_outgoing_follow_requests(follower)
+  def outgoing(%{assigns: %{user: follower}} = conn, params) do
+    follow_requests = User.get_outgoing_follow_requests(follower, params)
 
     conn
+    |> ControllerHelper.add_link_headers(follow_requests)
     |> put_view(Pleroma.Web.MastodonAPI.FollowRequestView)
     |> render("index.json", for: follower, users: follow_requests, as: :user)
   end

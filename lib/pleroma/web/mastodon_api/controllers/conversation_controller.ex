@@ -1,14 +1,13 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.ConversationController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper, only: [add_link_headers: 2]
-
   alias Pleroma.Conversation.Participation
   alias Pleroma.Repo
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   action_fallback(Pleroma.Web.MastodonAPI.FallbackController)
@@ -18,6 +17,7 @@ defmodule Pleroma.Web.MastodonAPI.ConversationController do
   plug(OAuthScopesPlug, %{scopes: ["write:conversations"]} when action != :index)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.ConversationOperation
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
 
   @doc "GET /api/v1/conversations"
   def index(%{assigns: %{user: user}} = conn, params) do

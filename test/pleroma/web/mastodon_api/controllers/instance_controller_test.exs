@@ -66,6 +66,46 @@ defmodule Pleroma.Web.MastodonAPI.InstanceControllerTest do
     assert favicon == from_config_favicon
   end
 
+  test "get instance information preserves absolute configured background URLs", %{conn: conn} do
+    background = "https://cdn.example.test/static/background.png"
+    clear_config([:instance, :background_image], background)
+
+    conn = get(conn, "/api/v1/instance")
+    assert %{"background_image" => ^background} = json_response_and_validate_schema(conn, 200)
+
+    conn = get(build_conn(), "/api/v2/instance")
+
+    assert %{
+             "pleroma" => %{
+               "metadata" => %{"background_image" => ^background}
+             }
+           } = json_response_and_validate_schema(conn, 200)
+  end
+
+  test "get instance information tolerates missing VAPID configuration", %{conn: conn} do
+    original_config = Application.get_env(:web_push_encryption, :vapid_details)
+
+    on_exit(fn ->
+      if is_nil(original_config) do
+        Application.delete_env(:web_push_encryption, :vapid_details)
+      else
+        Application.put_env(:web_push_encryption, :vapid_details, original_config)
+      end
+    end)
+
+    Application.delete_env(:web_push_encryption, :vapid_details)
+
+    conn = get(conn, "/api/v1/instance")
+    result = json_response(conn, 200)
+
+    assert is_nil(result["pleroma"]["vapid_public_key"])
+
+    conn = get(build_conn(), "/api/v2/instance")
+    result = json_response(conn, 200)
+
+    assert is_nil(result["configuration"]["vapid"]["public_key"])
+  end
+
   test "get instance stats", %{conn: conn} do
     user = insert(:user, %{local: true})
 

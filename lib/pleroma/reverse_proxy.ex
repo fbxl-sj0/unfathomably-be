@@ -101,9 +101,9 @@ defmodule Pleroma.ReverseProxy do
   import Plug.Conn
 
   @type option() ::
-          {:max_read_duration, :timer.time() | :infinity}
+          {:max_read_duration, non_neg_integer() | :infinity}
           | {:max_body_length, non_neg_integer() | :infinity}
-          | {:failed_request_ttl, :timer.time() | :infinity}
+          | {:failed_request_ttl, non_neg_integer() | :infinity}
           | {:http, []}
           | {:req_headers, [{String.t(), String.t()}]}
           | {:resp_headers, [{String.t(), String.t()}]}
@@ -137,7 +137,7 @@ defmodule Pleroma.ReverseProxy do
     else
       {:ok, true} ->
         conn
-        |> error_or_redirect(url, 502, "Request failed: cached upstream failure", opts)
+        |> error_or_redirect(url, 500, "Request failed", opts)
         |> halt()
 
       {:ok, code, headers} ->
@@ -148,13 +148,11 @@ defmodule Pleroma.ReverseProxy do
         log_http_response_error(url, code)
         track_failed_url(url, code, opts)
 
-        status = downstream_status_for_invalid_http_response(code)
-
         conn
         |> error_or_redirect(
           url,
-          status,
-          "Request failed: upstream returned HTTP status #{code}",
+          code,
+          "Request failed: " <> Plug.Conn.Status.reason_phrase(code),
           opts
         )
         |> halt()
@@ -163,10 +161,8 @@ defmodule Pleroma.ReverseProxy do
         log_request_error(url, error)
         track_failed_url(url, error, opts)
 
-        status = downstream_status_for_request_error(error)
-
         conn
-        |> error_or_redirect(url, status, "Request failed: #{status_reason_phrase(status)}", opts)
+        |> error_or_redirect(url, 500, "Request failed", opts)
         |> halt()
     end
   end
@@ -205,6 +201,7 @@ defmodule Pleroma.ReverseProxy do
     result =
       conn
       |> put_resp_headers(build_resp_headers(headers, opts))
+      |> streaming_compat()
       |> send_chunked(status)
       |> chunk_reply(client, opts)
 
@@ -290,34 +287,6 @@ defmodule Pleroma.ReverseProxy do
     |> put_resp_header("cache-control", "public, max-age=60")
     |> send_resp(200, @failed_image_placeholder)
     |> halt()
-  end
-
-  defp downstream_status_for_invalid_http_response(code) when code in 400..499 do
-    if known_status_code?(code), do: code, else: 502
-  end
-
-  defp downstream_status_for_invalid_http_response(_code), do: 502
-
-  defp downstream_status_for_request_error(error)
-       when error in [:timeout, :recv_response_timeout, :recv_chunk_timeout] do
-    504
-  end
-
-  defp downstream_status_for_request_error(:read_duration_exceeded), do: 504
-  defp downstream_status_for_request_error(:body_too_large), do: 413
-  defp downstream_status_for_request_error(_error), do: 502
-
-  defp known_status_code?(code) do
-    _ = Plug.Conn.Status.reason_phrase(code)
-    true
-  rescue
-    ArgumentError -> false
-  end
-
-  defp status_reason_phrase(code) do
-    Plug.Conn.Status.reason_phrase(code)
-  rescue
-    ArgumentError -> "Bad Gateway"
   end
 
   defp downcase_headers(headers) do
@@ -415,21 +384,10 @@ defmodule Pleroma.ReverseProxy do
 
     if attachment? do
       name =
-        try do
-          {{"content-disposition", content_disposition_string}, _} =
-            List.keytake(headers, "content-disposition", 0)
+        content_disposition_filename(headers) || Keyword.get(opts, :attachment_name) ||
+          "attachment"
 
-          [name | _] =
-            Regex.run(
-              ~r/filename="((?:[^"\\]|\\.)*)"/u,
-              content_disposition_string || "",
-              capture: :all_but_first
-            )
-
-          name
-        rescue
-          MatchError -> Keyword.get(opts, :attachment_name, "attachment")
-        end
+      name = escape_content_disposition_filename(name)
 
       disposition = "attachment; filename=\"#{name}\""
 
@@ -437,6 +395,48 @@ defmodule Pleroma.ReverseProxy do
     else
       headers
     end
+  end
+
+  defp content_disposition_filename(headers) do
+    with {_, content_disposition} <- List.keyfind(headers, "content-disposition", 0) do
+      parse_content_disposition_filename(content_disposition)
+    else
+      _ -> nil
+    end
+  end
+
+  defp parse_content_disposition_filename(content_disposition)
+       when is_binary(content_disposition) do
+    cond do
+      match =
+          Regex.run(~r/filename\*=UTF-8''([^;]+)/iu, content_disposition, capture: :all_but_first) ->
+        [filename] = match
+        URI.decode(filename)
+
+      match =
+          Regex.run(~r/filename="((?:[^"\\]|\\.)*)"/u, content_disposition,
+            capture: :all_but_first
+          ) ->
+        [filename] = match
+        Regex.replace(~r/\\(.)/u, filename, "\\1")
+
+      match = Regex.run(~r/filename=([^;]+)/u, content_disposition, capture: :all_but_first) ->
+        [filename] = match
+        String.trim(filename)
+
+      true ->
+        nil
+    end
+  end
+
+  defp parse_content_disposition_filename(_), do: nil
+
+  defp escape_content_disposition_filename(filename) do
+    filename
+    |> to_string()
+    |> String.replace(~r/[\x00-\x1F\x7F]/u, "_")
+    |> String.replace("\\", "\\\\")
+    |> String.replace("\"", "\\\"")
   end
 
   defp header_length_constraint(headers, limit) when is_integer(limit) and limit > 0 do
@@ -511,5 +511,16 @@ defmodule Pleroma.ReverseProxy do
       end
 
     @cachex.put(:failed_proxy_url_cache, url, true, expire: ttl)
+  end
+
+  # Cowboy streams HTTP/1.1 responses when content-length is present on a
+  # chunked response. Bandit cannot do that, so keep the header only for Cowboy
+  # and strip it for other adapters to avoid invalid chunked framing.
+  defp streaming_compat(conn) do
+    with Phoenix.Endpoint.Cowboy2Adapter <- Pleroma.Web.Endpoint.config(:adapter) do
+      conn
+    else
+      _ -> delete_resp_header(conn, "content-length")
+    end
   end
 end

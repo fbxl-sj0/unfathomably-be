@@ -126,7 +126,7 @@ defmodule Pleroma.Conversation.ParticipationTest do
     {:ok, updated_participation} = Participation.mark_as_read(participation)
 
     assert updated_participation.read
-    assert :gt = NaiveDateTime.compare(updated_participation.updated_at, participation.updated_at)
+    assert updated_participation.updated_at == participation.updated_at
   end
 
   test "it marks a participation as unread" do

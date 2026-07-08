@@ -1,16 +1,15 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.TwoFactorAuthenticationController do
   @moduledoc "The module represents actions to manage MFA"
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper, only: [json_response: 3]
-
   alias Pleroma.MFA
   alias Pleroma.MFA.TOTP
   alias Pleroma.Web.CommonAPI.Utils
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   plug(OAuthScopesPlug, %{scopes: ["read:security"]} when action in [:settings])
@@ -19,6 +18,8 @@ defmodule Pleroma.Web.PleromaAPI.TwoFactorAuthenticationController do
     OAuthScopesPlug,
     %{scopes: ["write:security"]} when action in [:setup, :confirm, :disable, :backup_codes]
   )
+
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
 
   @doc """
   Gets user multi factor authentication settings

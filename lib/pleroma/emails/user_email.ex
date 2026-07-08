@@ -8,6 +8,7 @@ defmodule Pleroma.Emails.UserEmail do
   require Pleroma.Web.Gettext
 
   alias Pleroma.Config
+  alias Pleroma.HTML
   alias Pleroma.User
   alias Pleroma.Web.Endpoint
   alias Pleroma.Web.Gettext
@@ -98,6 +99,7 @@ defmodule Pleroma.Emails.UserEmail do
         Gettext.dpgettext("static_pages", "password reset email subject", "Password reset")
       )
       |> html_body(html_body)
+      |> text_body(HTML.strip_tags(html_body))
     end
   end
 
@@ -141,6 +143,7 @@ defmodule Pleroma.Emails.UserEmail do
         )
       )
       |> html_body(html_body)
+      |> text_body(HTML.strip_tags(html_body))
     end
   end
 
@@ -179,6 +182,7 @@ defmodule Pleroma.Emails.UserEmail do
         )
       )
       |> html_body(html_body)
+      |> text_body(HTML.strip_tags(html_body))
     end
   end
 
@@ -206,6 +210,7 @@ defmodule Pleroma.Emails.UserEmail do
         )
       )
       |> html_body(html_body)
+      |> text_body(HTML.strip_tags(html_body))
     end
   end
 
@@ -236,6 +241,7 @@ defmodule Pleroma.Emails.UserEmail do
         )
       )
       |> html_body(html_body)
+      |> text_body(HTML.strip_tags(html_body))
     end
   end
 
@@ -388,6 +394,7 @@ defmodule Pleroma.Emails.UserEmail do
         )
       )
       |> html_body(html_body)
+      |> text_body(HTML.strip_tags(html_body))
     end
   end
 end

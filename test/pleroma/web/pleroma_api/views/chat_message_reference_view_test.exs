@@ -57,6 +57,7 @@ defmodule Pleroma.Web.PleromaAPI.ChatMessageReferenceViewTest do
     assert chat_message[:id] == cm_ref.id
     assert chat_message[:content] == "kippis :firefox:"
     assert chat_message[:account_id] == user.id
+    assert chat_message[:actor_account_id] == user.id
     assert chat_message[:chat_id]
     assert chat_message[:created_at]
     assert chat_message[:unread] == false
@@ -81,6 +82,7 @@ defmodule Pleroma.Web.PleromaAPI.ChatMessageReferenceViewTest do
     assert chat_message_two[:id] == cm_ref.id
     assert chat_message_two[:content] == object.data["content"]
     assert chat_message_two[:account_id] == recipient.id
+    assert chat_message_two[:actor_account_id] == recipient.id
     assert chat_message_two[:chat_id] == chat_message[:chat_id]
     assert chat_message_two[:attachment]
     assert chat_message_two[:unread] == true

@@ -118,11 +118,20 @@ defmodule Pleroma.Web.RichMedia.Helpers do
   end
 
   defp http_options do
-    [
+    base_options = [
       pool: :rich_media,
-      max_body: Config.get([:rich_media, :max_body], 5_000_000),
-      stream: true
+      max_body: Config.get([:rich_media, :max_body], 5_000_000)
     ]
+
+    if Pleroma.HTTP.AdapterHelper.can_stream?() do
+      Keyword.put(base_options, :stream, true)
+    else
+      timeout = Config.get([:rich_media, :timeout], 5_000)
+
+      Keyword.put(base_options, :tesla_middleware, [
+        {Tesla.Middleware.Timeout, timeout: timeout}
+      ])
+    end
   end
 
   defp req_headers do

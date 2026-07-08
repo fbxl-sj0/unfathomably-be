@@ -24,6 +24,8 @@ defmodule Pleroma.Web.PleromaAPI.Chat.MessageReferenceView do
           }
         }
       ) do
+    account_id = User.get_cached_by_ap_id(chat_message["actor"]).id
+
     card =
       case Card.get_by_object(object) do
         %Card{} = card_data -> StatusView.render("card.json", card_data)
@@ -34,7 +36,8 @@ defmodule Pleroma.Web.PleromaAPI.Chat.MessageReferenceView do
       id: id |> to_string(),
       content: chat_message["content"],
       chat_id: chat_id |> to_string(),
-      account_id: User.get_cached_by_ap_id(chat_message["actor"]).id,
+      account_id: account_id,
+      actor_account_id: account_id,
       created_at: Utils.to_masto_date(chat_message["published"]),
       emojis: StatusView.build_emojis(chat_message["emoji"]),
       attachment:

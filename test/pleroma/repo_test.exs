@@ -25,7 +25,7 @@ defmodule Pleroma.RepoTest do
     test "get assoc from preloaded data" do
       user = %User{name: "Agent Smith"}
       %Pleroma.Web.OAuth.Token{} = token = insert(:oauth_token)
-      token = %Pleroma.Web.OAuth.Token{token | user: user}
+      token = %{token | user: user}
       assert Repo.get_assoc(token, :user) == {:ok, user}
     end
 

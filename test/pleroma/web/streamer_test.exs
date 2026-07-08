@@ -1124,6 +1124,11 @@ defmodule Pleroma.Web.StreamerTest do
                Streamer.get_topic("source:#{source.ap_id}", nil, nil, %{})
     end
 
+    test "renders aggregate group and source stream names distinctly" do
+      assert StreamerView.render("stream.json", %{topic: "user:groups:42"}) == ["user:groups"]
+      assert StreamerView.render("stream.json", %{topic: "user:sources:42"}) == ["user:sources"]
+    end
+
     test "publishes public group and source creates to target streams" do
       group =
         insert(:user,

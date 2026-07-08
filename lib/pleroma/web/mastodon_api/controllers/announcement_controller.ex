@@ -1,16 +1,12 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.AnnouncementController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper,
-    only: [
-      json_response: 3
-    ]
-
   alias Pleroma.Announcement
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate)
@@ -33,6 +29,7 @@ defmodule Pleroma.Web.MastodonAPI.AnnouncementController do
   action_fallback(Pleroma.Web.MastodonAPI.FallbackController)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.AnnouncementOperation
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
 
   @doc "GET /api/v1/announcements"
   def index(%{assigns: %{user: user}} = conn, _params) do

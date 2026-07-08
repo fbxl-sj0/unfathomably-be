@@ -150,6 +150,31 @@ config :pleroma, :config_description, [
   },
   %{
     group: :pleroma,
+    key: Pleroma.Uploaders.IPFS,
+    type: :group,
+    description: "IPFS uploader-related settings",
+    children: [
+      %{
+        key: :get_gateway_url,
+        type: :string,
+        description: "GET Gateway URL",
+        suggestions: [
+          "https://ipfs.mydomain.com/ipfs/<%= cid %>",
+          "https://<%= cid %>.ipfs.mydomain.com/"
+        ]
+      },
+      %{
+        key: :post_gateway_url,
+        type: :string,
+        description: "POST Gateway URL",
+        suggestions: [
+          "http://localhost:5001/"
+        ]
+      }
+    ]
+  },
+  %{
+    group: :pleroma,
     key: Pleroma.Uploaders.S3,
     type: :group,
     description: "S3 uploader-related settings",
@@ -180,6 +205,12 @@ config :pleroma, :config_description, [
         type: :boolean,
         description:
           "Enable streaming uploads, when enabled the file will be sent to the server in chunks as it's being read. This may be unsupported by some providers, try disabling this if you have upload problems."
+      },
+      %{
+        key: :force_media_proxy,
+        type: :boolean,
+        description:
+          "Force S3 upload URLs through the media proxy. Useful when the public S3 endpoint should not be exposed directly to clients."
       }
     ]
   },
@@ -244,6 +275,7 @@ config :pleroma, :config_description, [
           Swoosh.Adapters.Mailgun,
           Swoosh.Adapters.Mailjet,
           Swoosh.Adapters.Mandrill,
+          Swoosh.Adapters.Mua,
           Swoosh.Adapters.Postmark,
           Swoosh.Adapters.SMTP,
           Swoosh.Adapters.Sendgrid,
@@ -597,6 +629,14 @@ config :pleroma, :config_description, [
         key: :limit,
         type: :integer,
         description: "Posts character limit (CW/Subject included in the counter)",
+        suggestions: [
+          5_000
+        ]
+      },
+      %{
+        key: :chat_limit,
+        type: :integer,
+        description: "Chat message character limit",
         suggestions: [
           5_000
         ]
@@ -1261,79 +1301,6 @@ config :pleroma, :config_description, [
     ]
   },
   %{
-    group: :logger,
-    type: :group,
-    description: "Logger-related settings",
-    children: [
-      %{
-        key: :backends,
-        type: [:atom, :tuple, :module],
-        description:
-          "Where logs will be sent, :console - send logs to stdout, { ExSyslogger, :ex_syslogger } - to syslog, Quack.Logger - to Slack.",
-        suggestions: [:console, {ExSyslogger, :ex_syslogger}, Quack.Logger]
-      }
-    ]
-  },
-  %{
-    group: :logger,
-    type: :group,
-    key: :ex_syslogger,
-    label: "ExSyslogger",
-    description: "ExSyslogger-related settings",
-    children: [
-      %{
-        key: :level,
-        type: {:dropdown, :atom},
-        description: "Log level",
-        suggestions: [:debug, :info, :warn, :error]
-      },
-      %{
-        key: :ident,
-        type: :string,
-        description:
-          "A string that's prepended to every message, and is typically set to the app name",
-        suggestions: ["unfathomably-be"]
-      },
-      %{
-        key: :format,
-        type: :string,
-        description: "Default: \"$date $time [$level] $levelpad$node $metadata $message\"",
-        suggestions: ["$metadata[$level] $message"]
-      },
-      %{
-        key: :metadata,
-        type: {:list, :atom},
-        suggestions: [:request_id]
-      }
-    ]
-  },
-  %{
-    group: :logger,
-    type: :group,
-    key: :console,
-    label: "Console Logger",
-    description: "Console logger settings",
-    children: [
-      %{
-        key: :level,
-        type: {:dropdown, :atom},
-        description: "Log level",
-        suggestions: [:debug, :info, :warn, :error]
-      },
-      %{
-        key: :format,
-        type: :string,
-        description: "Default: \"$date $time [$level] $levelpad$node $metadata $message\"",
-        suggestions: ["$metadata[$level] $message"]
-      },
-      %{
-        key: :metadata,
-        type: {:list, :atom},
-        suggestions: [:request_id]
-      }
-    ]
-  },
-  %{
     group: :pleroma,
     key: :frontend_configurations,
     type: :group,
@@ -1867,6 +1834,12 @@ config :pleroma, :config_description, [
         description: "Require HTTP signatures for AP fetches"
       },
       %{
+        key: :authorized_fetch_mode_exceptions,
+        type: {:list, :string},
+        description:
+          "List of IPs, CIDR format accepted, to exempt from HTTP signatures when authorized_fetch_mode is enabled. This is mainly useful for controlled internal debugging."
+      },
+      %{
         key: :fetch_actor_origin,
         type: :string,
         description:
@@ -2370,6 +2343,13 @@ config :pleroma, :config_description, [
         description:
           "Amount of milliseconds after request failure, during which the request will not be retried.",
         suggestions: [60_000]
+      },
+      %{
+        key: :timeout,
+        type: :integer,
+        description:
+          "Maximum time, in milliseconds, to spend fetching and parsing a rich media preview.",
+        suggestions: [5_000]
       }
     ]
   },
@@ -2515,21 +2495,15 @@ config :pleroma, :config_description, [
         key: :ssl,
         label: "SSL",
         type: :boolean,
-        description: "Enable to use SSL, usually implies the port 636"
+        description: "Enable to use implicit SSL/TLS, usually port 636"
       },
       %{
         key: :sslopts,
         label: "SSL options",
         type: :keyword,
         description: "Additional SSL options",
-        suggestions: [cacertfile: "path/to/file/with/PEM/cacerts", verify: :verify_peer],
+        suggestions: [verify: :verify_peer],
         children: [
-          %{
-            key: :cacertfile,
-            type: :string,
-            description: "Path to file with PEM encoded cacerts",
-            suggestions: ["path/to/file/with/PEM/cacerts"]
-          },
           %{
             key: :verify,
             type: :atom,
@@ -2542,21 +2516,15 @@ config :pleroma, :config_description, [
         key: :tls,
         label: "TLS",
         type: :boolean,
-        description: "Enable to use STARTTLS, usually implies the port 389"
+        description: "Enable to use explicit TLS (STARTTLS), usually port 389"
       },
       %{
         key: :tlsopts,
         label: "TLS options",
         type: :keyword,
         description: "Additional TLS options",
-        suggestions: [cacertfile: "path/to/file/with/PEM/cacerts", verify: :verify_peer],
+        suggestions: [verify: :verify_peer],
         children: [
-          %{
-            key: :cacertfile,
-            type: :string,
-            description: "Path to file with PEM encoded cacerts",
-            suggestions: ["path/to/file/with/PEM/cacerts"]
-          },
           %{
             key: :verify,
             type: :atom,
@@ -2586,6 +2554,14 @@ config :pleroma, :config_description, [
         description:
           "LDAP attribute name to use as the email address when automatically registering the user on first login",
         suggestions: ["mail"]
+      },
+      %{
+        key: :cacertfile,
+        label: "CA certificate file",
+        type: :string,
+        description:
+          "Path to an alternate PEM certificate bundle for verifying LDAP SSL or STARTTLS connections",
+        suggestions: ["/etc/ssl/certs/ca-certificates.crt"]
       }
     ]
   },
@@ -3588,8 +3564,7 @@ config :pleroma, :config_description, [
         suggestions: [
           Pleroma.Web.Preload.Providers.Instance,
           Pleroma.Web.Preload.Providers.User,
-          Pleroma.Web.Preload.Providers.Timelines,
-          Pleroma.Web.Preload.Providers.StatusNet
+          Pleroma.Web.Preload.Providers.Timelines
         ]
       }
     ]
@@ -3640,6 +3615,13 @@ config :pleroma, :config_description, [
         label: "Process Chunk Size",
         description: "The number of activities to fetch in the backup job for each chunk.",
         suggestions: [100]
+      },
+      %{
+        key: :timeout,
+        type: :integer,
+        label: "Timeout",
+        description: "The maximum time in milliseconds for a backup worker to run.",
+        suggestions: [:timer.minutes(30)]
       }
     ]
   },
@@ -3814,7 +3796,7 @@ config :pleroma, :config_description, [
         type: :string,
         suggestions: [
           "http://127.0.0.1:5000",
-          "http://192.168.250.99:5000",
+          "http://10.0.0.10:5000",
           "https://opentranslate.devol.it"
         ]
       },
@@ -3826,23 +3808,6 @@ config :pleroma, :config_description, [
           "Optional. Leave blank for an internal OpenTranslate service without API keys.",
         type: :string,
         suggestions: ["YOUR_API_KEY"]
-      },
-      %{
-        group: {:subgroup, Pleroma.Language.Translation.Opentranslate},
-        key: :request_timeout_ms,
-        label: "OpenTranslate request timeout",
-        description:
-          "Timeout, in milliseconds, for OpenTranslate translation requests. Slow internal translation hosts may need a longer timeout for full-length posts.",
-        type: :integer,
-        suggestions: [180_000]
-      },
-      %{
-        group: {:subgroup, Pleroma.Language.Translation.Opentranslate},
-        key: :language_timeout_ms,
-        label: "OpenTranslate language-list timeout",
-        description: "Timeout, in milliseconds, for OpenTranslate language-list requests.",
-        type: :integer,
-        suggestions: [15_000]
       }
     ]
   },
@@ -3986,6 +3951,21 @@ config :pleroma, :config_description, [
           "Amount of posts in a batch when running the initial indexing operation. Should probably not be more than 100000" <>
             " since there's a limit on maximum insert size",
         suggestion: [100_000]
+      }
+    ]
+  },
+  %{
+    group: :pleroma,
+    key: Pleroma.Web.Plugs.MetricsPredicate,
+    type: :group,
+    description: "Access control for the PromEx metrics endpoint at `/api/metrics`.",
+    children: [
+      %{
+        key: :auth_token,
+        type: :string,
+        description:
+          "Bearer token required to read `/api/metrics`. Leave unset or empty to disable browser and remote access. Set `:disabled` only in source config when metrics are protected by a private network or trusted reverse proxy.",
+        suggestions: [nil]
       }
     ]
   }

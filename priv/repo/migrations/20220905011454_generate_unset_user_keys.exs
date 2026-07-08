@@ -2,12 +2,21 @@
 # Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
+defmodule Pleroma.Repo.Migrations.GenerateUnsetUserKeys.User do
+  use Ecto.Schema
+
+  schema "users" do
+    field(:keys, :string)
+    field(:local, :boolean, default: true)
+  end
+end
+
 defmodule Pleroma.Repo.Migrations.GenerateUnsetUserKeys do
   use Ecto.Migration
   import Ecto.Query
   alias Pleroma.Keys
   alias Pleroma.Repo
-  alias Pleroma.User
+  alias Pleroma.Repo.Migrations.GenerateUnsetUserKeys.User
 
   def change do
     query =

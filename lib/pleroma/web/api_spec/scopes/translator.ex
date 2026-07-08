@@ -4,7 +4,6 @@
 
 defmodule Pleroma.Web.ApiSpec.Scopes.Translator do
   require Pleroma.Web.ApiSpec.Scopes.Compiler
-  require Pleroma.Web.Gettext
 
   @before_compile Pleroma.Web.ApiSpec.Scopes.Compiler
 end

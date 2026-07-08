@@ -17,8 +17,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator do
 
   import Ecto.Changeset
 
-  require Pleroma.Constants
-
   @primary_key false
 
   embedded_schema do
@@ -157,14 +155,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator do
   end
 
   def validate_addressing_match(cng, object) do
-    audience_recipients = audience_recipients(cng, object)
-
     [:to, :cc, :bcc, :bto, :audience]
     |> Enum.reduce(cng, fn field, cng ->
       object_data = object[to_string(field)]
 
       validate_change(cng, field, fn field, data ->
-        if addressing_matches?(field, data, object_data, audience_recipients) do
+        if data == object_data or threadiverse_addressing_compatible?(field, cng, object) do
           []
         else
           [{field, "field doesn't match with object (#{inspect(object_data)})"}]
@@ -173,50 +169,52 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator do
     end)
   end
 
-  defp audience_recipients(cng, object) do
-    (normalize_recipients(get_field(cng, :audience)) ++ normalize_recipients(object["audience"]))
-    |> Enum.uniq()
+  defp threadiverse_addressing_compatible?(field, cng, object) when field in [:to, :cc] do
+    object_recipients =
+      recipient_list(object["to"]) ++
+        recipient_list(object["cc"]) ++ recipient_list(object["audience"])
+
+    activity_recipients =
+      get_field(cng, :to) ++ get_field(cng, :cc) ++ get_field(cng, :audience)
+
+    object_set = object_recipients |> Enum.reject(&follower_collection?/1) |> MapSet.new()
+    activity_set = activity_recipients |> Enum.reject(&follower_collection?/1) |> MapSet.new()
+
+    threadiverse_root?(object) and MapSet.subset?(object_set, activity_set)
   end
 
-  defp addressing_matches?(field, data, object_data, audience_recipients)
-       when field in [:to, :cc] do
-    # Lemmy-compatible communities often use the object `audience` as the real
-    # group target, while repeating that same group address in either the outer
-    # Create activity or the embedded Page/Note object.
-    #
-    # We still require all non-audience recipients to match exactly. This keeps
-    # public, follower, direct, and hidden addressing strict while allowing the
-    # community address to move between `to` and `cc`.
-    strip_audience_recipient(data, audience_recipients) ==
-      strip_audience_recipient(object_data, audience_recipients)
+  defp threadiverse_addressing_compatible?(_field, _cng, _object), do: false
+
+  defp threadiverse_root?(%{"type" => type, "audience" => audience})
+       when type in ["Article", "Page"] do
+    audience
+    |> recipient_list()
+    |> Enum.any?(&group_actor?/1)
   end
 
-  defp addressing_matches?(_field, data, object_data, _audience_recipients) do
-    normalize_recipients(data) == normalize_recipients(object_data)
+  defp threadiverse_root?(_object), do: false
+
+  defp group_actor?(ap_id) when is_binary(ap_id) do
+    case User.get_cached_by_ap_id(ap_id) do
+      %User{actor_type: "Group"} -> true
+      _ -> false
+    end
   end
 
-  defp strip_audience_recipient(data, audience_recipients) do
-    data
-    |> normalize_recipients()
-    |> Enum.reject(&(&1 in audience_recipients))
+  defp group_actor?(_), do: false
+
+  defp recipient_list(values) when is_list(values) do
+    Enum.flat_map(values, &recipient_list/1)
   end
 
-  defp normalize_recipients(nil), do: []
+  defp recipient_list(value) when is_binary(value), do: [value]
+  defp recipient_list(_), do: []
 
-  defp normalize_recipients(values) when is_list(values) do
-    values
-    |> Enum.flat_map(&normalize_recipients/1)
-    |> Enum.uniq()
+  defp follower_collection?(recipient) when is_binary(recipient) do
+    String.ends_with?(recipient, "/followers")
   end
 
-  defp normalize_recipients(%{"id" => id}) when is_binary(id), do: normalize_recipients(id)
-  defp normalize_recipients(%{"href" => href}) when is_binary(href), do: normalize_recipients(href)
-  defp normalize_recipients(value) when is_binary(value), do: [normalize_public_recipient(value)]
-  defp normalize_recipients(_), do: []
-
-  defp normalize_public_recipient("Public"), do: Pleroma.Constants.as_public()
-  defp normalize_public_recipient("as:Public"), do: Pleroma.Constants.as_public()
-  defp normalize_public_recipient(value), do: value
+  defp follower_collection?(_recipient), do: false
 
   defp uri_host(uri) when is_binary(uri) do
     uri

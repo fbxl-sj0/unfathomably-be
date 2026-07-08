@@ -41,8 +41,13 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonValidationsTest do
 
   describe "same_domain?/2" do
     test "requires every field to have a real host" do
-      refute CommonValidations.same_domain?(changeset(%{actor: nil, object: "https://example.com/o/1"}))
-      refute CommonValidations.same_domain?(changeset(%{actor: "not a uri", object: "https://example.com/o/1"}))
+      refute CommonValidations.same_domain?(
+               changeset(%{actor: nil, object: "https://example.com/o/1"})
+             )
+
+      refute CommonValidations.same_domain?(
+               changeset(%{actor: "not a uri", object: "https://example.com/o/1"})
+             )
     end
 
     test "compares embedded object ids by host" do

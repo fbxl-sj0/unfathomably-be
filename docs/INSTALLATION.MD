@@ -3,8 +3,8 @@
 This guide installs a complete Unfathomably instance from the public source
 repositories:
 
-- Backend: `https://github.com/fbxl-sj0/unfathomably-be`
-- Frontend: `https://github.com/fbxl-sj0/unfathomably-fe`
+- Backend: `https://github.com/unfathomably/unfathomably-be`
+- Frontend: `https://github.com/unfathomably/unfathomably-fe`
 
 The backend still uses the Pleroma OTP application name, configuration keys,
 database layout, and many inherited command names. That compatibility is
@@ -48,6 +48,7 @@ sudo apt install -y \
   libncurses-dev \
   libssl-dev \
   libssh-dev \
+  libvips-dev \
   libxml2-utils \
   m4 \
   nginx \
@@ -128,7 +129,7 @@ sudo chmod 0755 /usr/local/bin/pleroma-run
 ## 3. Clone the Backend
 
 ```sh
-sudo -Hu pleroma git clone https://github.com/fbxl-sj0/unfathomably-be /opt/pleroma
+sudo -Hu pleroma git clone https://github.com/unfathomably/unfathomably-be /opt/pleroma
 ```
 
 ## 4. Install Erlang and Elixir With asdf
@@ -344,7 +345,7 @@ repository and installed as the backend primary frontend. Do not use the old
 Install Node using the frontend `.tool-versions` file:
 
 ```sh
-sudo -Hu pleroma git clone https://github.com/fbxl-sj0/unfathomably-fe /opt/unfathomably-fe
+sudo -Hu pleroma git clone https://github.com/unfathomably/unfathomably-fe /opt/unfathomably-fe
 
 pleroma-run bash -lc 'asdf plugin add nodejs https://github.com/asdf-vm/asdf-nodejs.git || asdf plugin update nodejs'
 

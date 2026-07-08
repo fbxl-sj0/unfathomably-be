@@ -5,8 +5,8 @@
 defmodule Pleroma.User.QueryTest do
   use Pleroma.DataCase, async: false
 
-  alias Pleroma.Repo
   alias Pleroma.FollowingRelationship
+  alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.User.Query
   alias Pleroma.Web.ActivityPub.InternalFetchActor

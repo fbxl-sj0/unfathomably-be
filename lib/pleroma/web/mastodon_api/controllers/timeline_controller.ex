@@ -5,13 +5,11 @@
 defmodule Pleroma.Web.MastodonAPI.TimelineController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper,
-    only: [add_link_headers: 2, add_link_headers: 3]
-
   alias Pleroma.Config
   alias Pleroma.Pagination
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.MastodonAPI.InstanceView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
   alias Pleroma.Web.Plugs.RateLimiter
@@ -41,9 +39,22 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.TimelineOperation
 
+  defp add_link_headers(conn, entries) do
+    ControllerHelper.add_link_headers(conn, entries)
+  end
+
+  defp add_link_headers(conn, entries, extra_params) do
+    ControllerHelper.add_link_headers(conn, entries, extra_params)
+  end
+
   # GET /api/v1/timelines/home
   def home(%{assigns: %{user: user}} = conn, params) do
     excluded_list_members = Pleroma.List.get_exclusive_list_members(user)
+
+    followed_hashtags =
+      user
+      |> User.followed_hashtags()
+      |> Enum.map(& &1.id)
 
     params =
       params
@@ -54,6 +65,7 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
       |> Map.put(:announce_filtering_user, user)
       |> Map.put(:user, user)
       |> Map.put(:local_only, params[:local])
+      |> Map.put(:followed_hashtags, followed_hashtags)
       |> Map.delete(:local)
 
     activities =

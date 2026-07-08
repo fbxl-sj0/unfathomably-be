@@ -48,6 +48,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EventValidator do
     data
     |> CommonFixes.fix_actor()
     |> CommonFixes.fix_object_defaults()
+    |> CommonFixes.fix_likes()
     |> fix_location()
     |> Transmogrifier.fix_emoji()
   end

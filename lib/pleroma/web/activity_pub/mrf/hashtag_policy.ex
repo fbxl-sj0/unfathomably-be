@@ -107,6 +107,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.HashtagPolicy do
     end
   end
 
+  @impl true
   def filter(activity), do: {:ok, activity}
 
   defp object_hashtags(object) when is_map(object), do: Object.hashtags(%Object{data: object})

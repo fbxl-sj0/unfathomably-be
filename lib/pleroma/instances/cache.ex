@@ -49,6 +49,7 @@ defmodule Pleroma.Instances.Cache do
           |> Enum.filter(&is_binary/1)
           |> Enum.reduce(%{}, fn entry, acc ->
             host = normalize_host(entry)
+
             unreachable_since =
               unreachable_since_by_host
               |> Map.get(host)

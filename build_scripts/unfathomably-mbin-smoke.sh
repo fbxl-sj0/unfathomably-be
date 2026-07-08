@@ -1104,6 +1104,51 @@ function patch_file(string $path, array $replacements): void
     file_put_contents($path, $source);
 }
 
+patch_file('/app/src/Command/ApImportObject.php', [
+    [
+        <<<'SEARCH'
+use App\Message\ActivityPub\Inbox\ActivityMessage;
+use App\Service\ActivityPub\ApHttpClientInterface;
+SEARCH,
+        <<<'REPLACE'
+use App\Message\ActivityPub\Inbox\ActivityMessage;
+use App\Service\ActivityPub\ApHttpClientInterface;
+use App\Service\ActivityPubManager;
+REPLACE
+    ],
+    [
+        <<<'SEARCH'
+        private readonly MessageBusInterface $bus,
+        private readonly ApHttpClientInterface $client,
+SEARCH,
+        <<<'REPLACE'
+        private readonly MessageBusInterface $bus,
+        private readonly ApHttpClientInterface $client,
+        private readonly ActivityPubManager $activityPubManager,
+REPLACE
+    ],
+    [
+        <<<'SEARCH'
+        $body = $this->client->getActivityObject($input->getArgument('url'), false);
+
+        $this->bus->dispatch(new ActivityMessage($body));
+SEARCH,
+        <<<'REPLACE'
+        $url = $input->getArgument('url');
+        $body = $this->client->getActivityObject($url, false);
+        $decoded = json_decode((string) $body, true);
+
+        if (\is_array($decoded) && \in_array($decoded['type'] ?? null, ['Application', 'Group', 'Organization', 'Person', 'Service'], true)) {
+            $this->activityPubManager->findActorOrCreate($decoded['id'] ?? $url);
+
+            return Command::SUCCESS;
+        }
+
+        $this->bus->dispatch(new ActivityMessage($body));
+REPLACE
+    ],
+]);
+
 patch_file('/app/src/Controller/Api/Post/PostsBaseApi.php', [
     [
         <<<'SEARCH'
@@ -1621,17 +1666,6 @@ mbin_import_object() {
     run_mbin_queue_until 4
 }
 
-mbin_resolve_ap_actor() {
-    local uri="$1"
-
-    http_form GET \
-        "$MBIN_URL/api/search/v2?q=$(urlencode "$uri")&onlyAP=true" \
-        "$MBIN_TOKEN" \
-        200 >/dev/null
-
-    run_mbin_queue_until 4
-}
-
 docker rm -f \
     "$PREFIX-mbin-php" \
     "$PREFIX-mbin-messenger" \
@@ -1649,7 +1683,6 @@ SMOKE_A_PORT="$A_PORT" \
 SMOKE_B_PORT="$B_PORT" \
 SMOKE_IMAGE="$IMAGE" \
 SMOKE_USER_PASSWORD="$PASSWORD" \
-SMOKE_SKIP_SOURCE_CHECKS=1 \
 bash build_scripts/two-instance-federation-smoke.sh >/tmp/unfathomably-mbin-bootstrap.log 2>&1 || {
     cat /tmp/unfathomably-mbin-bootstrap.log >&2 || true
     fail "Unfathomably bootstrap smoke failed"
@@ -1697,7 +1730,7 @@ poll_mbin_magazine_subscription \
     "$ALICE_AP_ID" \
     "MBin did not record Unfathomably's follow of the MBin magazine"
 
-mbin_resolve_ap_actor "$BE_GROUP_AP_ID"
+mbin_import_object "$BE_GROUP_AP_ID"
 MBIN_REMOTE_BE_MAGAZINE_INFO="$(
     poll_mbin_magazine_by_ap_profile "$BE_GROUP_AP_ID" "MBin resolves the Unfathomably group"
 )"

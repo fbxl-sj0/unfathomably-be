@@ -82,6 +82,20 @@ defmodule Pleroma.Web.FallbackTest do
            |> json_response(404) == %{"error" => "Not implemented"}
   end
 
+  test "GET scanner probe paths returns not found instead of the frontend shell", %{conn: conn} do
+    assert conn
+           |> get("/private/mailgun_config.env")
+           |> response(404) == "Not found"
+
+    assert conn
+           |> get("/config/secrets%2eyml")
+           |> response(404) == "Not found"
+
+    assert conn
+           |> get("/%c0")
+           |> response(404) == "Not found"
+  end
+
   test "GET /pleroma/admin -> /pleroma/admin/", %{conn: conn} do
     assert redirected_to(get(conn, "/pleroma/admin")) =~ "/pleroma/admin/"
   end

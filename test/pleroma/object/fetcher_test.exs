@@ -16,6 +16,7 @@ defmodule Pleroma.Object.FetcherTest do
 
   require Pleroma.Constants
 
+  import ExUnit.CaptureLog
   import Mock
   import Pleroma.Factory
   import Tesla.Mock
@@ -159,6 +160,39 @@ defmodule Pleroma.Object.FetcherTest do
                )
     end
 
+    test "records transient object fetch failures for instance health" do
+      id = "https://fetch-health.example/objects/1"
+
+      mock(fn
+        %{method: :get, url: ^id} -> {:error, :econnrefused}
+        env -> apply(HttpRequestMock, :request, [env])
+      end)
+
+      with_mock Instances, [:passthrough],
+        record_failure: fn ^id, :econnrefused, [source: "object_fetch"] -> {:ok, :recorded} end do
+        assert {:error, :econnrefused} = Fetcher.fetch_and_contain_remote_object_from_id(id)
+        assert called(Instances.record_failure(id, :econnrefused, source: "object_fetch"))
+      end
+    end
+
+    test "logs transient object fetch failures below warning level" do
+      id = "https://fetch-health.example/objects/2"
+
+      mock(fn
+        %{method: :get, url: ^id} -> {:error, :recv_response_timeout}
+        env -> apply(HttpRequestMock, :request, [env])
+      end)
+
+      log =
+        capture_log([level: :debug], fn ->
+          assert {:error, :recv_response_timeout} = Fetcher.fetch_object_from_id(id)
+        end)
+
+      assert log =~ "Transient error while fetching #{id}: :recv_response_timeout"
+      refute log =~ "[warning]"
+      refute log =~ "Error while fetching #{id}"
+    end
+
     test "it fetches remote activity URLs without wrapping them in Create" do
       user = insert(:user)
       actor = insert(:user, ap_id: "https://lemmy.example/u/admin", local: false)
@@ -292,14 +326,14 @@ defmodule Pleroma.Object.FetcherTest do
     end
 
     test "handle HTTP 410 Gone response" do
-      assert {:error, "Object has been deleted"} ==
+      assert {:error, :not_found} ==
                Fetcher.fetch_and_contain_remote_object_from_id(
                  "https://mastodon.example.org/users/userisgone"
                )
     end
 
     test "handle HTTP 404 response" do
-      assert {:error, "Object has been deleted"} ==
+      assert {:error, :not_found} ==
                Fetcher.fetch_and_contain_remote_object_from_id(
                  "https://mastodon.example.org/users/userisgone404"
                )

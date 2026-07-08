@@ -8,6 +8,8 @@ defmodule Pleroma.Web.ApiSpec.FollowRequestOperation do
   alias Pleroma.Web.ApiSpec.Schemas.Account
   alias Pleroma.Web.ApiSpec.Schemas.AccountRelationship
 
+  import Pleroma.Web.ApiSpec.Helpers
+
   def open_api_operation(action) do
     operation = String.to_atom("#{action}_operation")
     apply(__MODULE__, operation, [])
@@ -19,6 +21,7 @@ defmodule Pleroma.Web.ApiSpec.FollowRequestOperation do
       summary: "Retrieve follow requests",
       security: [%{"oAuth" => ["read:follows", "follow"]}],
       operationId: "FollowRequestController.index",
+      parameters: pagination_params(),
       responses: %{
         200 =>
           Operation.response("Array of Account", "application/json", %Schema{

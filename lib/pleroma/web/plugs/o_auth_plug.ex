@@ -52,9 +52,9 @@ defmodule Pleroma.Web.Plugs.OAuthPlug do
         where: t.token == ^token
       )
 
-    with %Token{user_id: user_id} = token_record <- Repo.one(token_query) |> Repo.preload(:user),
+    with %Token{user_id: user_id} = token_record <- Repo.one(token_query),
          false <- is_nil(user_id),
-         %User{} = user <- User.get_cached_by_id(user_id) do
+         %User{is_active: true} = user <- User.get_cached_by_id(user_id) do
       {:ok, user, token_record}
     else
       _ -> nil
@@ -64,7 +64,11 @@ defmodule Pleroma.Web.Plugs.OAuthPlug do
   @spec fetch_app_and_token(String.t()) :: {:ok, App.t(), Token.t()} | nil
   defp fetch_app_and_token(token) do
     query =
-      from(t in Token, where: t.token == ^token, join: app in assoc(t, :app), preload: [app: app])
+      from(t in Token,
+        where: t.token == ^token and is_nil(t.user_id),
+        join: app in assoc(t, :app),
+        preload: [app: app]
+      )
 
     with %Token{app: app} = token_record <- Repo.one(query) do
       {:ok, app, token_record}

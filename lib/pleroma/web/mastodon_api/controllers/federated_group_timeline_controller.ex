@@ -1,11 +1,9 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   use Pleroma.Web, :controller
-
-  import Pleroma.Web.ControllerHelper, only: [add_link_headers: 2]
 
   alias Pleroma.Activity
   alias Pleroma.Object.Fetcher
@@ -13,6 +11,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.StatusView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
@@ -26,6 +25,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   @remote_group_backfill_cache :remote_group_backfill_cache
 
   plug(OAuthScopesPlug, %{scopes: ["read:statuses"], fallback: :proceed_unauthenticated})
+
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
 
   @doc "GET /api/v1/timelines/groups"
   def index(%{assigns: %{user: %User{} = user}} = conn, params) do
@@ -42,7 +43,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
     activities =
       user
       |> FederatedTarget.followed_group_ap_ids()
-      |> fetch_followed_group_activities(activity_params)
+      |> ActivityPub.fetch_activities_query(activity_params)
+      |> Pagination.fetch_paginated(activity_params)
       |> unique_group_activities()
 
     conn
@@ -57,14 +59,6 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   end
 
   def index(conn, _params), do: render_error(conn, :unauthorized, "authorization required")
-
-  defp fetch_followed_group_activities([], _activity_params), do: []
-
-  defp fetch_followed_group_activities(group_ap_ids, activity_params) do
-    group_ap_ids
-    |> ActivityPub.fetch_activities_query(activity_params)
-    |> Pagination.fetch_paginated(activity_params)
-  end
 
   @doc """
   GET /api/v1/timelines/group/:id

@@ -86,13 +86,14 @@ defmodule Pleroma.Web.TwitterAPI.TwitterAPITest do
       :bio => "",
       :password => "bear",
       :confirm => "bear",
-      :reason => "I love anime"
+      :reason => "I <b>love</b> anime"
     }
 
     {:ok, user} = TwitterAPI.register_user(data)
     ObanHelpers.perform_all()
 
     refute user.is_approved
+    assert user.registration_reason == "I love anime"
 
     user_email = Pleroma.Emails.UserEmail.approval_pending_email(user)
     admin_email = Pleroma.Emails.AdminEmail.new_unapproved_registration(admin, user)

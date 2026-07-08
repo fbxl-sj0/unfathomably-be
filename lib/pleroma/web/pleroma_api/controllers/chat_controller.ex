@@ -1,10 +1,8 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Ã‚Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 defmodule Pleroma.Web.PleromaAPI.ChatController do
   use Pleroma.Web, :controller
-
-  import Pleroma.Web.ControllerHelper, only: [add_link_headers: 2]
 
   alias Pleroma.Activity
   alias Pleroma.Chat
@@ -14,6 +12,7 @@ defmodule Pleroma.Web.PleromaAPI.ChatController do
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.CommonAPI
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.PleromaAPI.Chat.MessageReferenceView
   alias Pleroma.Web.PleromaAPI.ChatView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
@@ -43,6 +42,7 @@ defmodule Pleroma.Web.PleromaAPI.ChatController do
   plug(Pleroma.Web.ApiSpec.CastAndValidate)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.ChatOperation
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
 
   def delete(%{assigns: %{user: user}} = conn, %{id: chat_id}) do
     with {:ok, chat} <- Chat.get_by_user_and_id(user, chat_id),
@@ -90,7 +90,7 @@ defmodule Pleroma.Web.PleromaAPI.ChatController do
         %{id: id}
       ) do
     with {:ok, chat} <- Chat.get_by_user_and_id(user, id),
-         %User{} = recipient <- User.get_cached_by_ap_id(chat.recipient),
+         {_, %User{} = recipient} <- {:user, User.get_cached_by_ap_id(chat.recipient)},
          {:ok, activity} <-
            CommonAPI.post_chat_message(user, recipient, params[:content],
              media_id: params[:media_id],
@@ -111,13 +111,22 @@ defmodule Pleroma.Web.PleromaAPI.ChatController do
         conn
         |> put_status(:bad_request)
         |> json(%{error: message})
+
+      {:user, nil} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "Recipient does not exist"})
     end
   end
 
   def mark_message_as_read(
         %{assigns: %{user: %{id: user_id}}} = conn,
-        %{id: chat_id, message_id: message_id}
+        params
       ) do
+    params = request_params(conn, params)
+    chat_id = params |> get_param("id") |> to_string()
+    message_id = get_param(params, "message_id")
+
     with %MessageReference{} = cm_ref <- MessageReference.get_by_id(message_id),
          ^chat_id <- to_string(cm_ref.chat_id),
          %Chat{user_id: ^user_id} <- Chat.get_by_id(chat_id),
@@ -128,13 +137,17 @@ defmodule Pleroma.Web.PleromaAPI.ChatController do
     end
   end
 
-  def mark_as_read(
-        %{body_params: %{last_read_id: last_read_id}, assigns: %{user: user}} = conn,
-        %{id: id}
-      ) do
+  def mark_as_read(%{assigns: %{user: user}} = conn, params) do
+    params = request_params(conn, params)
+    id = get_param(params, "id")
+    last_read_id = get_param(params, "last_read_id")
+
     with {:ok, chat} <- Chat.get_by_user_and_id(user, id),
+         false <- is_nil(last_read_id),
          {_n, _} <- MessageReference.set_all_seen_for_chat(chat, last_read_id) do
       render(conn, "show.json", chat: chat)
+    else
+      _ -> {:error, :could_not_update}
     end
   end
 
@@ -178,6 +191,7 @@ defmodule Pleroma.Web.PleromaAPI.ChatController do
     user_id
     |> Chat.for_user_query()
     |> where([c], c.recipient not in ^exclude_users)
+    |> join(:inner, [c], u in User, on: u.ap_id == c.recipient)
   end
 
   def create(%{assigns: %{user: user}} = conn, %{id: id}) do
@@ -199,4 +213,13 @@ defmodule Pleroma.Web.PleromaAPI.ChatController do
       _ -> nil
     end
   end
+
+  defp request_params(%{body_params: body_params, params: conn_params}, params) do
+    %{}
+    |> Map.merge(conn_params || %{})
+    |> Map.merge(body_params || %{})
+    |> Map.merge(params || %{})
+  end
+
+  defp get_param(params, key), do: Map.get(params, key) || Map.get(params, String.to_atom(key))
 end

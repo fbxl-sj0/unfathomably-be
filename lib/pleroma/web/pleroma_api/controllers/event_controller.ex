@@ -1,13 +1,11 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.EventController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper,
-    only: [add_link_headers: 2, json_response: 3, try_render: 3]
-
+  alias Pleroma.Web.ControllerHelper
   require Ecto.Query
 
   alias Pleroma.Activity
@@ -84,6 +82,11 @@ defmodule Pleroma.Web.PleromaAPI.EventController do
   action_fallback(Pleroma.Web.MastodonAPI.FallbackController)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.PleromaEventOperation
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
+
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
+
+  defp try_render(conn, target, params), do: ControllerHelper.try_render(conn, target, params)
 
   def create(%{assigns: %{user: user}, body_params: params} = conn, _) do
     params =

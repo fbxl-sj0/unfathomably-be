@@ -67,45 +67,160 @@ defmodule Mix.Tasks.Pleroma.Database do
       OptionParser.parse(
         args,
         strict: [
-          vacuum: :boolean
+          vacuum: :boolean,
+          keep_threads: :boolean,
+          keep_non_public: :boolean,
+          prune_orphaned_activities: :boolean
         ]
       )
 
     start_pleroma()
 
     deadline = Pleroma.Config.get([:instance, :remote_post_retention_days])
+    time_deadline = NaiveDateTime.utc_now() |> NaiveDateTime.add(-(deadline * 86_400))
 
-    Logger.info("Pruning objects older than #{deadline} days")
+    log_message = "Pruning objects older than #{deadline} days"
 
-    time_deadline =
-      NaiveDateTime.utc_now()
-      |> NaiveDateTime.add(-(deadline * 86_400))
+    log_message =
+      if option_enabled?(options, :keep_non_public) do
+        log_message <> ", keeping non-public posts"
+      else
+        log_message
+      end
 
-    from(o in Object,
-      where:
-        fragment(
-          "?->'to' \\? ? OR ?->'cc' \\? ?",
-          o.data,
-          ^Pleroma.Constants.as_public(),
-          o.data,
-          ^Pleroma.Constants.as_public()
-        ),
-      where: o.inserted_at < ^time_deadline,
-      where:
+    log_message =
+      if option_enabled?(options, :keep_threads) do
+        log_message <> ", keeping locally-interacted threads intact"
+      else
+        log_message
+      end
+
+    log_message =
+      if option_enabled?(options, :prune_orphaned_activities) do
+        log_message <> ", pruning orphaned activities"
+      else
+        log_message
+      end
+
+    log_message =
+      if option_enabled?(options, :vacuum) do
+        log_message <> ", running VACUUM FULL"
+      else
+        log_message
+      end
+
+    Logger.info(log_message)
+
+    if option_enabled?(options, :keep_threads) do
+      deletable_context =
+        if option_enabled?(options, :keep_non_public) do
+          Pleroma.Activity
+          |> join(:left, [a], b in Pleroma.Bookmark, on: a.id == b.activity_id)
+          |> group_by([a], fragment("? ->> 'context'::text", a.data))
+          |> having(
+            [a],
+            not fragment(
+              "bool_or((not(?->'to' \\? ? OR ?->'cc' \\? ?)) and ? ->> 'type' = 'Create')",
+              a.data,
+              ^Pleroma.Constants.as_public(),
+              a.data,
+              ^Pleroma.Constants.as_public(),
+              a.data
+            )
+          )
+        else
+          Pleroma.Activity
+          |> join(:left, [a], b in Pleroma.Bookmark, on: a.id == b.activity_id)
+          |> group_by([a], fragment("? ->> 'context'::text", a.data))
+        end
+        |> having([a], max(a.updated_at) < ^time_deadline)
+        |> having([a], not fragment("bool_or(?)", a.local))
+        |> having([_, b], fragment("max(?::text) is null", b.id))
+        |> select([a], fragment("? ->> 'context'::text", a.data))
+
+      Object
+      |> where([o], fragment("? ->> 'context'::text", o.data) in subquery(deletable_context))
+    else
+      if option_enabled?(options, :keep_non_public) do
+        Object
+        |> where(
+          [o],
+          fragment(
+            "?->'to' \\? ? OR ?->'cc' \\? ?",
+            o.data,
+            ^Pleroma.Constants.as_public(),
+            o.data,
+            ^Pleroma.Constants.as_public()
+          )
+        )
+      else
+        Object
+      end
+      |> where([o], o.inserted_at < ^time_deadline)
+      |> where(
+        [o],
         fragment("split_part(?->>'actor', '/', 3) != ?", o.data, ^Pleroma.Web.Endpoint.host())
-    )
+      )
+    end
     |> Repo.delete_all(timeout: :infinity)
 
-    prune_hashtags_query = """
+    if not option_enabled?(options, :keep_threads) do
+      """
+      DELETE FROM public.bookmarks
+      WHERE id IN (
+        SELECT b.id FROM public.bookmarks b
+        LEFT JOIN public.activities a ON b.activity_id = a.id
+        LEFT JOIN public.objects o ON a.data ->> 'object' = o.data ->> 'id'
+        WHERE o.id IS NULL
+      )
+      """
+      |> Repo.query([], timeout: :infinity)
+    end
+
+    if option_enabled?(options, :prune_orphaned_activities) do
+      """
+      DELETE FROM public.activities
+      WHERE id IN (
+        SELECT a.id FROM public.activities a
+        LEFT JOIN public.objects o ON a.data ->> 'object' = o.data ->> 'id'
+        LEFT JOIN public.activities a2 ON a.data ->> 'object' = a2.data ->> 'id'
+        LEFT JOIN public.users u ON a.data ->> 'object' = u.ap_id
+        WHERE NOT a.local
+        AND jsonb_typeof(a.data -> 'object') = 'string'
+        AND o.id IS NULL
+        AND a2.id IS NULL
+        AND u.id IS NULL
+      )
+      """
+      |> Repo.query([], timeout: :infinity)
+
+      """
+      DELETE FROM public.activities
+      WHERE id IN (
+        SELECT a.id FROM public.activities a
+        JOIN json_array_elements_text((a.data -> 'object')::json) AS j
+          ON jsonb_typeof(a.data -> 'object') = 'array'
+        LEFT JOIN public.objects o ON j.value = o.data ->> 'id'
+        LEFT JOIN public.activities a2 ON j.value = a2.data ->> 'id'
+        LEFT JOIN public.users u ON j.value = u.ap_id
+        GROUP BY a.id
+        HAVING max(o.data ->> 'id') IS NULL
+        AND max(a2.data ->> 'id') IS NULL
+        AND max(u.ap_id) IS NULL
+      )
+      """
+      |> Repo.query([], timeout: :infinity)
+    end
+
+    """
     DELETE FROM hashtags AS ht
     WHERE NOT EXISTS (
       SELECT 1 FROM hashtags_objects hto
       WHERE ht.id = hto.hashtag_id)
     """
+    |> Repo.query()
 
-    Repo.query(prune_hashtags_query)
-
-    if Keyword.get(options, :vacuum) do
+    if option_enabled?(options, :vacuum) do
       Maintenance.vacuum("full")
     end
   end
@@ -264,4 +379,8 @@ defmodule Mix.Tasks.Pleroma.Database do
       shell_info(inspect(result))
     end
   end
+
+  defp option_enabled?(options, key) when is_list(options), do: Keyword.get(options, key, false)
+  defp option_enabled?(options, key) when is_map(options), do: Map.get(options, key, false)
+  defp option_enabled?(_, _), do: false
 end

@@ -132,6 +132,7 @@ defmodule Pleroma.Web.RichMedia.Card do
   def get_by_activity(%Activity{id: "pleroma:fakeid"} = activity, _opts) do
     with {_, true} <- {:config, @config_impl.get([:rich_media, :enabled])},
          %Object{} = object <- Object.normalize(activity, fetch: false),
+         false <- sensitive?(object),
          url when not is_nil(url) <- HTML.extract_first_external_url_from_object(object) do
       case get_by_url(url) do
         # Cache hit
@@ -155,9 +156,13 @@ defmodule Pleroma.Web.RichMedia.Card do
 
   def get_by_activity(activity, opts) do
     with %Object{} = object <- Object.normalize(activity, fetch: false),
+         false <- sensitive?(object),
          {_, nil} <- {:cached, get_cached_url(object, activity.id)} do
       nil
     else
+      true ->
+        nil
+
       {:cached, url} ->
         get_or_backfill_by_url(url, activity_id: activity.id, opts: opts)
 
@@ -181,4 +186,21 @@ defmodule Pleroma.Web.RichMedia.Card do
       {:commit, url}
     end)
   end
+
+  defp sensitive?(%Object{data: data}) when is_map(data) do
+    data["sensitive"] == true || nsfw_tag?(data["tag"])
+  end
+
+  defp nsfw_tag?(tags) when is_list(tags), do: Enum.any?(tags, &nsfw_tag?/1)
+
+  defp nsfw_tag?(%{"name" => name}) when is_binary(name) do
+    name
+    |> String.trim_leading("#")
+    |> String.downcase()
+    |> Kernel.==("nsfw")
+  end
+
+  defp nsfw_tag?({_tag_text, tag}) when is_binary(tag), do: String.downcase(tag) == "nsfw"
+  defp nsfw_tag?(tag) when is_binary(tag), do: String.downcase(tag) == "nsfw"
+  defp nsfw_tag?(_), do: false
 end

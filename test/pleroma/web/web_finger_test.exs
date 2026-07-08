@@ -72,8 +72,7 @@ defmodule Pleroma.Web.WebFingerTest do
           {:ok, %Tesla.Env{status: 404, body: ""}}
 
         %{
-          url:
-            "https://nolinks.example/.well-known/webfinger?resource=acct:alice@nolinks.example"
+          url: "https://nolinks.example/.well-known/webfinger?resource=acct:alice@nolinks.example"
         } ->
           {:ok,
            %Tesla.Env{

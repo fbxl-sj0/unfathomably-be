@@ -1,12 +1,11 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.AdminAPI.OAuthAppController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper, only: [json_response: 3]
-
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.OAuth.App
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
@@ -23,6 +22,7 @@ defmodule Pleroma.Web.AdminAPI.OAuthAppController do
   action_fallback(Pleroma.Web.AdminAPI.FallbackController)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.Admin.OAuthAppOperation
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
 
   def index(conn, params) do
     search_params =

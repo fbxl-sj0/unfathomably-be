@@ -94,6 +94,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         hide_follows: false,
         hide_followers_count: false,
         hide_follows_count: false,
+        avatar_description: "",
+        header_description: "",
         relationship: %{},
         skip_thread_containment: false,
         accepts_chat_messages: nil,
@@ -304,6 +306,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         hide_follows: false,
         hide_followers_count: false,
         hide_follows_count: false,
+        avatar_description: "",
+        header_description: "",
         relationship: %{},
         skip_thread_containment: false,
         accepts_chat_messages: nil,
@@ -816,6 +820,27 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
 
     assert DateTime.diff(
              mute_expires_at,
+             DateTime.utc_now() |> DateTime.add(24 * 60 * 60)
+           ) in -3..3
+  end
+
+  test "renders block expiration date" do
+    user = insert(:user)
+    other_user = insert(:user)
+
+    {:ok, _user_relationships} =
+      User.block(user, other_user, %{duration: 24 * 60 * 60})
+
+    %{
+      pleroma: %{
+        relationship: %{
+          block_expires_at: block_expires_at
+        }
+      }
+    } = AccountView.render("show.json", %{user: other_user, for: user, embed_relationships: true})
+
+    assert DateTime.diff(
+             block_expires_at,
              DateTime.utc_now() |> DateTime.add(24 * 60 * 60)
            ) in -3..3
   end

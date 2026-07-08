@@ -29,6 +29,36 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
     :ok
   end
 
+  test "renders named objects with non-string url values and nil content" do
+    object = %Object{
+      data: %{
+        "type" => "Page",
+        "name" => "Remote page",
+        "id" => "https://remote.example/objects/page",
+        "url" => %{"href" => "https://remote.example/pages/page"},
+        "content" => nil
+      }
+    }
+
+    assert StatusView.render_content(object) ==
+             "<p><a href=\"https://remote.example/pages/page\">Remote page</a></p>"
+  end
+
+  test "falls back to object id when rendering named objects with malformed urls" do
+    object = %Object{
+      data: %{
+        "type" => "Article",
+        "name" => "Remote article",
+        "id" => "https://remote.example/objects/article",
+        "url" => [%{"href" => nil}, 1],
+        "content" => "body"
+      }
+    }
+
+    assert StatusView.render_content(object) ==
+             "<p><a href=\"https://remote.example/objects/article\">Remote article</a></p>body"
+  end
+
   test "has an emoji reaction list" do
     user = insert(:user)
     other_user = insert(:user)
@@ -861,7 +891,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       object_tags = [
         "fediverse",
         "mastodon",
-        "nextcloud",
+        "opensource",
         %{
           "href" => "https://kawen.space/users/lain",
           "name" => "@lain@kawen.space",
@@ -872,7 +902,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       assert StatusView.build_tags(object_tags) == [
                %{name: "fediverse", url: "http://localhost:4001/tag/fediverse"},
                %{name: "mastodon", url: "http://localhost:4001/tag/mastodon"},
-               %{name: "nextcloud", url: "http://localhost:4001/tag/nextcloud"}
+               %{name: "opensource", url: "http://localhost:4001/tag/opensource"}
              ]
     end
   end

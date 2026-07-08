@@ -12,11 +12,12 @@ defmodule Pleroma.Workers.PurgeExpiredActivityTest do
 
   test "enqueue job" do
     activity = insert(:note_activity)
+    expires_at = DateTime.add(DateTime.utc_now(), 3601)
 
     assert {:ok, _} =
              PurgeExpiredActivity.enqueue(%{
                activity_id: activity.id,
-               expires_at: DateTime.add(DateTime.utc_now(), 3601)
+               expires_at: expires_at
              })
 
     assert_enqueued(
@@ -28,6 +29,20 @@ defmodule Pleroma.Workers.PurgeExpiredActivityTest do
              perform_job(Pleroma.Workers.PurgeExpiredActivity, %{activity_id: activity.id})
 
     assert %Oban.Job{} = Pleroma.Workers.PurgeExpiredActivity.get_expiration(activity.id)
+  end
+
+  test "enqueue job with explicit Oban worker args" do
+    activity = insert(:note_activity)
+    expires_at = DateTime.add(DateTime.utc_now(), 3601)
+
+    assert {:ok, _} =
+             PurgeExpiredActivity.enqueue(%{activity_id: activity.id}, scheduled_at: expires_at)
+
+    assert_enqueued(
+      worker: Pleroma.Workers.PurgeExpiredActivity,
+      args: %{activity_id: activity.id},
+      scheduled_at: expires_at
+    )
   end
 
   test "cancels if user was not found" do

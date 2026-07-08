@@ -136,10 +136,12 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
     _, _ -> false
   end
 
-  defp uri_host(uri) when is_binary(uri) do
-    uri
-    |> URI.parse()
-    |> Map.get(:host)
+  defp uri_host(uri) do
+    if is_binary(uri) do
+      uri
+      |> URI.parse()
+      |> Map.get(:host)
+    end
   rescue
     URI.Error -> nil
   end

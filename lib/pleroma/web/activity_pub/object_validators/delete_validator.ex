@@ -12,11 +12,10 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
-  alias Pleroma.Web.ActivityPub.Addressing
+  alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   import Ecto.Changeset
   import Ecto.Query
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
 
@@ -35,7 +34,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
 
   def cast_data(data) do
     %__MODULE__{}
-    |> cast(data, __schema__(:fields))
+    |> cast(data, __schema__(:fields), empty_values: [])
   end
 
   def add_deleted_activity_id(cng) do
@@ -66,13 +65,13 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     |> validate_required([:id, :type, :actor, :to, :cc, :object])
     |> validate_inclusion(:type, ["Delete"])
     |> validate_delete_actor(:actor)
-    |> validate_delete_modification_rights()
+    |> validate_delete_rights()
     |> validate_delete_target()
     |> add_deleted_activity_id()
   end
 
   def do_not_federate?(cng) do
-    !same_domain?(cng)
+    !CommonValidations.same_domain?(cng)
   end
 
   def cast_and_validate(data) do
@@ -84,6 +83,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   def classify_target(target, options \\ [])
 
   def classify_target(%{"object" => object_id}, options), do: classify_target(object_id, options)
+
   def classify_target(%{"type" => "Tombstone", "id" => object_id}, options),
     do: classify_tombstone_target(object_id, options)
 
@@ -192,6 +192,35 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     end
   end
 
+  defp validate_delete_rights(cng) do
+    actor = User.get_cached_by_ap_id(get_field(cng, :actor))
+
+    if group_manager_delete?(actor, cng) do
+      cng
+    else
+      CommonValidations.validate_modification_rights(cng, :messages_delete)
+    end
+  end
+
+  defp group_manager_delete?(%User{} = actor, cng) do
+    cng
+    |> addressed_group_ap_ids()
+    |> Enum.any?(fn group_ap_id ->
+      case User.get_cached_by_ap_id(group_ap_id) do
+        %User{actor_type: "Group", local: true} = group -> GroupMembership.manager?(actor, group)
+        _ -> false
+      end
+    end)
+  end
+
+  defp group_manager_delete?(_actor, _cng), do: false
+
+  defp addressed_group_ap_ids(cng) do
+    [:audience, :to, :cc]
+    |> Enum.flat_map(fn field -> ap_id_list(get_field(cng, field)) end)
+    |> Enum.uniq()
+  end
+
   defp validate_delete_actor(cng, field_name) do
     validate_change(cng, field_name, fn field_name, actor ->
       case User.get_cached_by_ap_id(actor) do
@@ -201,44 +230,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     end)
   end
 
-  defp validate_delete_modification_rights(cng) do
-    actor = User.get_cached_by_ap_id(get_field(cng, :actor))
-
-    cond do
-      User.privileged?(actor, :messages_delete) ->
-        cng
-
-      same_domain?(cng) ->
-        cng
-
-      group_moderation_delete?(actor, cng) ->
-        cng
-
-      true ->
-        add_error(cng, :actor, "is not allowed to modify object")
-    end
-  end
-
-  defp group_moderation_delete?(%User{} = actor, cng) do
-    is_binary(get_field(cng, :summary)) && managed_local_group_target?(actor, get_field(cng, :object))
-  end
-
-  defp group_moderation_delete?(_actor, _cng), do: false
-
-  defp managed_local_group_target?(%User{} = actor, object_id) when is_binary(object_id) do
-    case Object.get_cached_by_ap_id(object_id) do
-      %Object{data: data} ->
-        data
-        |> Addressing.addressed_group_ap_ids()
-        |> User.get_all_by_ap_id()
-        |> Enum.any?(fn group ->
-          GroupMembership.local_group?(group) && GroupMembership.manager?(actor, group)
-        end)
-
-      _ ->
-        false
-    end
-  end
-
-  defp managed_local_group_target?(_actor, _object_id), do: false
+  defp ap_id_list(values) when is_list(values), do: Enum.filter(values, &is_binary/1)
+  defp ap_id_list(value) when is_binary(value), do: [value]
+  defp ap_id_list(_), do: []
 end

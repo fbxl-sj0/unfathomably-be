@@ -358,11 +358,11 @@ defmodule Pleroma.Web.ApiSpec.NotificationOperation do
         "pleroma:report",
         "move",
         "follow_request",
-        "group_follow",
-        "group_follow_request",
         "poll",
         "status",
         "update",
+        "admin.sign_up",
+        "admin.report",
         "pleroma:participation_accepted",
         "pleroma:participation_request",
         "pleroma:event_reminder",
@@ -372,8 +372,6 @@ defmodule Pleroma.Web.ApiSpec.NotificationOperation do
       The type of event that resulted in the notification.
 
       - `follow` - Someone followed you
-      - `group_follow` - Someone followed a group you moderate
-      - `group_follow_request` - Someone requested to follow a group you moderate
       - `mention` - Someone mentioned you in their status
       - `reblog` - Someone boosted one of your statuses
       - `favourite` - Someone favourited one of your statuses
@@ -384,6 +382,8 @@ defmodule Pleroma.Web.ApiSpec.NotificationOperation do
       - `pleroma:report` - Someone was reported
       - `status` - Someone you are subscribed to created a status
       - `update` - A status you boosted has been edited
+      - `admin.sign_up` - Someone signed up (optionally sent to admins)
+      - `admin.report` - A new report has been filed
       - `pleroma:event_reminder` - An event you are participating in or created is taking place soon
       - `pleroma:event_update` - An event you are participating in was edited
       - `pleroma:participation_request` - Someone wants to participate in your event

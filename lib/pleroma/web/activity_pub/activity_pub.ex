@@ -34,7 +34,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   import Ecto.Query
   import Pleroma.Web.ActivityPub.Utils
   import Pleroma.Web.ActivityPub.Visibility
-  import Pleroma.Webhook.Notify, only: [trigger_webhooks: 2]
+  alias Pleroma.Webhook.Notify
 
   require Logger
   require Pleroma.Constants
@@ -64,6 +64,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     bcc = recipient_values(data, "bcc")
     audience = recipient_values(data, "audience")
     nested_recipients = nested_object_recipient_values(data)
+
     recipients =
       [to, cc, bcc, audience, nested_recipients]
       |> Enum.concat()
@@ -517,7 +518,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
          {:ok, stripped_activity} <- strip_report_status_data(activity),
          stripped_activity <- maybe_anonymize_reporter(stripped_activity),
          _ <- notify_and_stream(activity),
-         _ <- trigger_webhooks(activity, :"report.created"),
+         _ <- Notify.trigger_webhooks(activity, :"report.created"),
          :ok <-
            maybe_federate(stripped_activity) do
       User.all_users_with_privilege(:reports_manage_reports)
@@ -625,7 +626,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   @spec fetch_latest_direct_activity_id_for_context(String.t(), keyword() | map()) ::
-          FlakeId.Ecto.CompatType.t() | nil
+          Ecto.UUID.t() | nil
   def fetch_latest_direct_activity_id_for_context(context, opts \\ %{}) do
     context
     |> fetch_activities_for_context_query(Map.merge(%{skip_preload: true}, opts))
@@ -1049,6 +1050,28 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     )
   end
 
+  defp restrict_recipients_or_hashtags(query, recipients, user, nil) do
+    restrict_recipients(query, recipients, user)
+  end
+
+  defp restrict_recipients_or_hashtags(query, recipients, user, []) do
+    restrict_recipients(query, recipients, user)
+  end
+
+  defp restrict_recipients_or_hashtags(query, recipients, %User{} = user, hashtag_ids) do
+    from([activity, object] in query)
+    |> join(:left, [activity, object], hto in "hashtags_objects",
+      on: hto.object_id == object.id,
+      as: :hto
+    )
+    |> where(
+      [activity, object, hto: hto],
+      (hto.hashtag_id in ^hashtag_ids and ^Constants.as_public() in activity.recipients) or
+        fragment("? && ?", ^recipients, activity.recipients) or
+        activity.actor == ^user.ap_id
+    )
+  end
+
   defp restrict_local(query, %{local_only: true}) do
     from(activity in query, where: activity.local == true)
   end
@@ -1060,10 +1083,6 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   defp restrict_remote(query, _), do: query
-
-  defp restrict_actor(query, %{actor_id: actor_ids}) when is_list(actor_ids) do
-    from(activity in query, where: activity.actor in ^actor_ids)
-  end
 
   defp restrict_actor(query, %{actor_id: actor_id}) do
     from(activity in query, where: activity.actor == ^actor_id)
@@ -1655,7 +1674,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       |> maybe_preload_report_notes(opts)
       |> maybe_set_thread_muted_field(opts)
       |> maybe_order(opts)
-      |> restrict_recipients(recipients, opts[:user])
+      |> restrict_recipients_or_hashtags(recipients, opts[:user], opts[:followed_hashtags])
       |> restrict_replies(opts)
       |> restrict_discussion_roots(opts)
       |> restrict_since(opts)
@@ -2207,6 +2226,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         Logger.debug("Could not decode user at fetch #{ap_id}, #{inspect(e)}")
         {:error, e}
 
+      {:error, :not_found} = e ->
+        Logger.debug("Could not decode user at fetch #{ap_id}, :not_found")
+        e
+
       {:error, {:reject, reason} = e} ->
         Logger.info("Rejected user #{ap_id}: #{inspect(reason)}")
         {:error, e}
@@ -2230,6 +2253,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp log_remote_fetch_error(message, ap_id, "Object has been deleted") do
     Logger.debug("#{message} at fetch #{ap_id}, \"Object has been deleted\"")
+  end
+
+  defp log_remote_fetch_error(message, ap_id, :not_found) do
+    Logger.debug("#{message} at fetch #{ap_id}, :not_found")
   end
 
   defp log_remote_fetch_error(message, ap_id, {:http, code}) do

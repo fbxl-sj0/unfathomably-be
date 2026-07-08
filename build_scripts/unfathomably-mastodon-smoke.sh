@@ -66,10 +66,10 @@ MASTODON_IMAGE="${MASTODON_IMAGE:-ghcr.io/mastodon/mastodon:latest}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROJECT_ROOT="$(cd "$BE_ROOT/../.." && pwd)"
+PROJECT_ROOT="$(cd "$BE_ROOT/.." && pwd)"
 
-DEFAULT_FE_ROOT="$PROJECT_ROOT/soapbox-fbxl/.work/soapbox-modernize"
-DEFAULT_FE_STATIC_ROOT="$PROJECT_ROOT/soapbox-fbxl"
+DEFAULT_FE_ROOT="$PROJECT_ROOT/unfathomably-fe"
+DEFAULT_FE_STATIC_ROOT="$PROJECT_ROOT/unfathomably-fe"
 FE_ROOT="${FE_ROOT:-$DEFAULT_FE_ROOT}"
 FE_STATIC_ROOT="${FE_STATIC_ROOT:-$DEFAULT_FE_STATIC_ROOT}"
 
@@ -82,6 +82,9 @@ BE_NGINX_CONF="$WORK_DIR/be-nginx/default.conf"
 BE_CERT_DIR="$WORK_DIR/be-certs"
 MASTODON_NGINX_CONF="$WORK_DIR/mastodon-nginx/default.conf"
 MASTODON_CERT_DIR="$WORK_DIR/mastodon-certs"
+SMOKE_CA_DIR="$WORK_DIR/smoke-ca"
+SMOKE_CA_KEY="$SMOKE_CA_DIR/smoke-ca.key"
+SMOKE_CA_CERT="$SMOKE_CA_DIR/smoke-ca.crt"
 
 cleanup() {
     if [ "${KEEP_SMOKE:-0}" = "1" ]; then
@@ -592,8 +595,8 @@ start_be() {
         -e HEX_HOME=/tmp/hex \
         -v "$BE_ROOT:/work" \
         -v "$BE_SECRET:/work/config/dev.secret.exs:ro" \
-        -v "$MASTODON_CERT_DIR/mastodon.crt:/usr/local/share/ca-certificates/mastodon-smoke.crt:ro" \
-        -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+        -v "$SMOKE_CA_CERT:/usr/local/share/ca-certificates/unfathomably-smoke-ca.crt:ro" \
+        -e SSL_CERT_FILE=/usr/local/share/ca-certificates/unfathomably-smoke-ca.crt \
         "$IMAGE" \
         bash -lc 'set -euo pipefail; if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null; fi; cd /work; git config --global --add safe.directory /work >/dev/null 2>&1 || true; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; exec mix phx.server' \
         >/dev/null
@@ -618,8 +621,8 @@ start_mastodon() {
         --network "$NETWORK" \
         --network-alias "$MASTODON_APP_HOST" \
         --env-file "$MASTODON_ENV" \
-        -v "$BE_CERT_DIR/be.crt:/usr/local/share/ca-certificates/unfathomably-be-smoke.crt:ro" \
-        -e SSL_CERT_FILE=/usr/local/share/ca-certificates/unfathomably-be-smoke.crt \
+        -v "$SMOKE_CA_CERT:/usr/local/share/ca-certificates/unfathomably-smoke-ca.crt:ro" \
+        -e SSL_CERT_FILE=/usr/local/share/ca-certificates/unfathomably-smoke-ca.crt \
         "$MASTODON_IMAGE" \
         bash -lc 'set -euo pipefail; if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null; fi; exec bundle exec puma -C config/puma.rb' \
         >/dev/null
@@ -639,8 +642,8 @@ start_mastodon() {
         --hostname mastodon-sidekiq \
         --network "$NETWORK" \
         --env-file "$MASTODON_ENV" \
-        -v "$BE_CERT_DIR/be.crt:/usr/local/share/ca-certificates/unfathomably-be-smoke.crt:ro" \
-        -e SSL_CERT_FILE=/usr/local/share/ca-certificates/unfathomably-be-smoke.crt \
+        -v "$SMOKE_CA_CERT:/usr/local/share/ca-certificates/unfathomably-smoke-ca.crt:ro" \
+        -e SSL_CERT_FILE=/usr/local/share/ca-certificates/unfathomably-smoke-ca.crt \
         "$MASTODON_IMAGE" \
         bash -lc 'set -euo pipefail; if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates >/dev/null; fi; exec bundle exec sidekiq' \
         >/dev/null
@@ -777,23 +780,81 @@ server {
 EOF
 }
 
-write_be_proxy_config() {
-    mkdir -p "$(dirname "$BE_NGINX_CONF")" "$BE_CERT_DIR"
+ensure_smoke_ca() {
+    mkdir -p "$SMOKE_CA_DIR"
+
+    if [ -f "$SMOKE_CA_KEY" ] && [ -f "$SMOKE_CA_CERT" ]; then
+        return 0
+    fi
 
     if ! command -v openssl >/dev/null 2>&1; then
-        fail "openssl is required to create the unfathomably-be smoke TLS certificate"
+        fail "openssl is required to create the smoke TLS CA"
     fi
 
     openssl req \
         -x509 \
         -nodes \
         -newkey rsa:2048 \
-        -keyout "$BE_CERT_DIR/be.key" \
-        -out "$BE_CERT_DIR/be.crt" \
+        -sha256 \
+        -keyout "$SMOKE_CA_KEY" \
+        -out "$SMOKE_CA_CERT" \
         -days 2 \
-        -subj "/CN=$BE_HOST" \
-        -addext "subjectAltName=DNS:$BE_HOST" \
+        -subj "/CN=Unfathomably federation smoke CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
         >/dev/null 2>&1
+}
+
+write_smoke_server_certificate() {
+    local cert_dir="$1"
+    local key_path="$2"
+    local cert_path="$3"
+    local common_name="$4"
+    local subject_alt_name="$5"
+    local csr_path="$cert_dir/server.csr"
+    local ext_path="$cert_dir/server.ext"
+
+    mkdir -p "$cert_dir"
+    ensure_smoke_ca
+
+    cat >"$ext_path" <<EOF
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=$subject_alt_name
+EOF
+
+    openssl req \
+        -nodes \
+        -newkey rsa:2048 \
+        -sha256 \
+        -keyout "$key_path" \
+        -out "$csr_path" \
+        -subj "/CN=$common_name" \
+        >/dev/null 2>&1
+
+    openssl x509 \
+        -req \
+        -in "$csr_path" \
+        -CA "$SMOKE_CA_CERT" \
+        -CAkey "$SMOKE_CA_KEY" \
+        -CAcreateserial \
+        -out "$cert_path" \
+        -days 2 \
+        -sha256 \
+        -extfile "$ext_path" \
+        >/dev/null 2>&1
+}
+
+write_be_proxy_config() {
+    mkdir -p "$(dirname "$BE_NGINX_CONF")" "$BE_CERT_DIR"
+
+    write_smoke_server_certificate \
+        "$BE_CERT_DIR" \
+        "$BE_CERT_DIR/be.key" \
+        "$BE_CERT_DIR/be.crt" \
+        "$BE_HOST" \
+        "DNS:$BE_HOST,DNS:$BE_APP_HOST"
 
     cat >"$BE_NGINX_CONF" <<EOF
 server {
@@ -830,20 +891,12 @@ EOF
 write_mastodon_proxy_config() {
     mkdir -p "$(dirname "$MASTODON_NGINX_CONF")" "$MASTODON_CERT_DIR"
 
-    if ! command -v openssl >/dev/null 2>&1; then
-        fail "openssl is required to create the Mastodon smoke TLS certificate"
-    fi
-
-    openssl req \
-        -x509 \
-        -nodes \
-        -newkey rsa:2048 \
-        -keyout "$MASTODON_CERT_DIR/mastodon.key" \
-        -out "$MASTODON_CERT_DIR/mastodon.crt" \
-        -days 2 \
-        -subj "/CN=$MASTODON_HOST" \
-        -addext "subjectAltName=DNS:$MASTODON_HOST" \
-        >/dev/null 2>&1
+    write_smoke_server_certificate \
+        "$MASTODON_CERT_DIR" \
+        "$MASTODON_CERT_DIR/mastodon.key" \
+        "$MASTODON_CERT_DIR/mastodon.crt" \
+        "$MASTODON_HOST" \
+        "DNS:$MASTODON_HOST,DNS:$MASTODON_APP_HOST"
 
     cat >"$MASTODON_NGINX_CONF" <<EOF
 server {
@@ -923,6 +976,82 @@ PY
     done
 
     fail "Timed out waiting for $message"
+}
+
+poll_http_status() {
+    local method="$1"
+    local url="$2"
+    local token="$3"
+    local host_header="$4"
+    local expected="$5"
+    local message="$6"
+    local attempts="${7:-60}"
+    local delay="${8:-2}"
+    local tmp
+    local code
+    local last_code
+
+    last_code=""
+
+    for _ in $(seq 1 "$attempts"); do
+        tmp="$(mktemp)"
+
+        local args=(-sS -X "$method" -o "$tmp" -w "%{http_code}")
+
+        if [ -n "$token" ]; then
+            args+=(-H "Authorization: Bearer $token")
+        fi
+
+        if [ "$host_header" = "mastodon" ]; then
+            args+=(-H "Host: $MASTODON_HOST" -H "X-Forwarded-Proto: https" -H "X-Forwarded-Ssl: on")
+        fi
+
+        code="$(curl "${args[@]}" "$url" || true)"
+        rm -f "$tmp"
+        last_code="$code"
+
+        if [ "$code" = "$expected" ]; then
+            return 0
+        fi
+
+        sleep "$delay"
+    done
+
+    fail "Timed out waiting for $message (wanted HTTP $expected, last HTTP $last_code)"
+}
+
+resolve_remote_status_id() {
+    local base="$1"
+    local token="$2"
+    local host_header="$3"
+    local uri="$4"
+    local message="$5"
+    local search_result
+
+    search_result="$(poll_json_assert \
+        "$base/api/v2/search?resolve=true&type=statuses&q=$(urlencode "$uri")" \
+        "$token" \
+        "$host_header" \
+        'len(data.get("statuses", [])) >= 1' \
+        "$message")"
+
+    json_get "$search_result" statuses.0.id
+}
+
+poll_timeline_contains_text() {
+    local base="$1"
+    local token="$2"
+    local host_header="$3"
+    local path="$4"
+    local needle="$5"
+    local message="$6"
+
+    poll_json_assert \
+        "$base$path" \
+        "$token" \
+        "$host_header" \
+        "'$needle' in str(data)" \
+        "$message" >/dev/null
 }
 
 step "Cleaning any previous Mastodon smoke containers"
@@ -1145,9 +1274,149 @@ REMOTE_MASTODON_STATUS="$(poll_json_assert \
     "unfathomably-be to resolve Mastodon status")"
 json_assert "$REMOTE_MASTODON_STATUS" 'len(data.get("statuses", [])) >= 1' "unfathomably-be resolves Mastodon status"
 
-step "Checking Mastodon handles unfathomably group actors safely"
-GROUP_SEARCH="$(mastodon_json GET "$MASTODON_BASE/api/v2/search?resolve=true&type=accounts&q=$(urlencode "$OPEN_GROUP_AP_ID")" "$PAT_TOKEN" 200)"
-json_assert "$GROUP_SEARCH" 'len(data.get("accounts", [])) == 0 or all(account.get("acct", "") != "mastodon-smoke-open-group@'$BE_HOST'" for account in data.get("accounts", []))' "Mastodon does not import group actor as a normal account"
+step "Testing Mastodon account-style interaction with an unfathomably group"
+
+GROUP_SEARCH="$(poll_json_assert \
+    "$MASTODON_BASE/api/v2/search?resolve=true&type=accounts&q=$(urlencode "$OPEN_GROUP_AP_ID")" \
+    "$PAT_TOKEN" \
+    "mastodon" \
+    'len(data.get("accounts", [])) >= 1 and data["accounts"][0]["id"] != ""' \
+    "Mastodon to resolve unfathomably group actor as a followable account")"
+MASTODON_GROUP_ACCOUNT_ID="$(json_get "$GROUP_SEARCH" accounts.0.id)"
+json_assert "$GROUP_SEARCH" 'data["accounts"][0].get("acct") != ""' "Mastodon exposes the group actor through ordinary account search"
+OPEN_GROUP_ACCT="$(json_get "$GROUP_SEARCH" accounts.0.acct)"
+
+PAT_FOLLOWS_GROUP="$(mastodon_json POST "$MASTODON_BASE/api/v1/accounts/$MASTODON_GROUP_ACCOUNT_ID/follow" "$PAT_TOKEN" 200)"
+json_assert "$PAT_FOLLOWS_GROUP" 'data["following"] is True or data["requested"] is True' "Mastodon can follow an unfathomably group actor"
+
+GROUP_POST_TEXT="Mastodon account-style group receive proof $PREFIX"
+GROUP_POST="$(http_json POST "$BE_BASE/api/v1/statuses" "$ALICE_TOKEN" 200 \
+    "status=$GROUP_POST_TEXT" \
+    "group_id=$OPEN_GROUP_ID")"
+GROUP_POST_ID="$(json_get "$GROUP_POST" id)"
+GROUP_POST_URI="$(json_get "$GROUP_POST" uri)"
+
+poll_timeline_contains_text \
+    "$MASTODON_BASE" \
+    "$PAT_TOKEN" \
+    "mastodon" \
+    "/api/v1/timelines/home?limit=40" \
+    "$GROUP_POST_TEXT" \
+    "Mastodon receives new posts from the followed unfathomably group"
+
+MASTODON_GROUP_POST_ID="$(resolve_remote_status_id \
+    "$MASTODON_BASE" \
+    "$PAT_TOKEN" \
+    "mastodon" \
+    "$GROUP_POST_URI" \
+    "Mastodon can resolve the followed group post")"
+
+PAT_LIKES_GROUP_POST="$(mastodon_json POST "$MASTODON_BASE/api/v1/statuses/$MASTODON_GROUP_POST_ID/favourite" "$PAT_TOKEN" 200)"
+json_assert "$PAT_LIKES_GROUP_POST" 'data.get("favourited") is True' "Mastodon can like a followed group post"
+
+poll_json_assert \
+    "$BE_BASE/api/v1/statuses/$GROUP_POST_ID" \
+    "$ALICE_TOKEN" \
+    "be" \
+    'data.get("favourites_count", 0) >= 1' \
+    "unfathomably-be sees Mastodon like on a group post" >/dev/null
+
+PAT_UNLIKES_GROUP_POST="$(mastodon_json POST "$MASTODON_BASE/api/v1/statuses/$MASTODON_GROUP_POST_ID/unfavourite" "$PAT_TOKEN" 200)"
+json_assert "$PAT_UNLIKES_GROUP_POST" 'data.get("favourited") is False' "Mastodon can undo a like on a followed group post"
+
+poll_json_assert \
+    "$BE_BASE/api/v1/statuses/$GROUP_POST_ID" \
+    "$ALICE_TOKEN" \
+    "be" \
+    'data.get("favourites_count", 0) == 0' \
+    "unfathomably-be sees Mastodon unlike on a group post" >/dev/null
+
+MASTODON_REPLY_TEXT="Mastodon account-style group reply proof $PREFIX"
+MASTODON_GROUP_REPLY="$(mastodon_json POST "$MASTODON_BASE/api/v1/statuses" "$PAT_TOKEN" 200 \
+    "status=$MASTODON_REPLY_TEXT" \
+    "visibility=public" \
+    "in_reply_to_id=$MASTODON_GROUP_POST_ID")"
+MASTODON_GROUP_REPLY_ID="$(json_get "$MASTODON_GROUP_REPLY" id)"
+MASTODON_GROUP_REPLY_URI="$(json_get_optional "$MASTODON_GROUP_REPLY" uri)"
+if [ -z "$MASTODON_GROUP_REPLY_URI" ]; then
+    MASTODON_GROUP_REPLY_URI="$(json_get "$MASTODON_GROUP_REPLY" url)"
+fi
+
+BE_VIEW_OF_MASTODON_REPLY_ID="$(resolve_remote_status_id \
+    "$BE_BASE" \
+    "$ALICE_TOKEN" \
+    "be" \
+    "$MASTODON_GROUP_REPLY_URI" \
+    "unfathomably-be can resolve Mastodon reply to a group post")"
+
+poll_timeline_contains_text \
+    "$BE_BASE" \
+    "$ALICE_TOKEN" \
+    "be" \
+    "/api/v1/timelines/group/$OPEN_GROUP_ID?with_replies=true&limit=40" \
+    "$MASTODON_REPLY_TEXT" \
+    "Mastodon reply appears in the unfathomably group timeline"
+
+mastodon_json DELETE "$MASTODON_BASE/api/v1/statuses/$MASTODON_GROUP_REPLY_ID" "$PAT_TOKEN" 200 >/dev/null
+poll_http_status \
+    GET \
+    "$BE_BASE/api/v1/statuses/$BE_VIEW_OF_MASTODON_REPLY_ID" \
+    "$ALICE_TOKEN" \
+    "be" \
+    404 \
+    "unfathomably-be sees Mastodon deleted group reply" \
+    90 \
+    2
+
+http_json DELETE "$BE_BASE/api/v1/statuses/$GROUP_POST_ID" "$ALICE_TOKEN" 200 >/dev/null
+poll_http_status \
+    GET \
+    "$MASTODON_BASE/api/v1/statuses/$MASTODON_GROUP_POST_ID" \
+    "$PAT_TOKEN" \
+    "mastodon" \
+    404 \
+    "Mastodon sees deleted unfathomably group post" \
+    90 \
+    2
+
+MASTODON_TO_GROUP_TEXT="Mastodon account-style top-level group post proof $PREFIX"
+MASTODON_TO_GROUP_POST="$(mastodon_json POST "$MASTODON_BASE/api/v1/statuses" "$PAT_TOKEN" 200 \
+    "status=@$OPEN_GROUP_ACCT $MASTODON_TO_GROUP_TEXT" \
+    "visibility=public")"
+MASTODON_TO_GROUP_POST_ID="$(json_get "$MASTODON_TO_GROUP_POST" id)"
+MASTODON_TO_GROUP_POST_URI="$(json_get_optional "$MASTODON_TO_GROUP_POST" uri)"
+if [ -z "$MASTODON_TO_GROUP_POST_URI" ]; then
+    MASTODON_TO_GROUP_POST_URI="$(json_get "$MASTODON_TO_GROUP_POST" url)"
+fi
+
+BE_VIEW_OF_MASTODON_GROUP_POST_ID="$(resolve_remote_status_id \
+    "$BE_BASE" \
+    "$ALICE_TOKEN" \
+    "be" \
+    "$MASTODON_TO_GROUP_POST_URI" \
+    "unfathomably-be can resolve Mastodon top-level group mention post")"
+
+poll_timeline_contains_text \
+    "$BE_BASE" \
+    "$ALICE_TOKEN" \
+    "be" \
+    "/api/v1/timelines/group/$OPEN_GROUP_ID?with_replies=true&limit=40" \
+    "$MASTODON_TO_GROUP_TEXT" \
+    "Mastodon top-level mention post appears in the unfathomably group timeline"
+
+mastodon_json DELETE "$MASTODON_BASE/api/v1/statuses/$MASTODON_TO_GROUP_POST_ID" "$PAT_TOKEN" 200 >/dev/null
+poll_http_status \
+    GET \
+    "$BE_BASE/api/v1/statuses/$BE_VIEW_OF_MASTODON_GROUP_POST_ID" \
+    "$ALICE_TOKEN" \
+    "be" \
+    404 \
+    "unfathomably-be sees Mastodon deleted top-level group post" \
+    90 \
+    2
+
+PAT_UNFOLLOWS_GROUP="$(mastodon_json POST "$MASTODON_BASE/api/v1/accounts/$MASTODON_GROUP_ACCOUNT_ID/unfollow" "$PAT_TOKEN" 200)"
+json_assert "$PAT_UNFOLLOWS_GROUP" 'data["following"] is False and data["requested"] is False' "Mastodon can unfollow an unfathomably group actor"
 
 step "Checking no obvious server crashes were logged"
 for container in "$BE_CONTAINER" "$MASTODON_WEB_CONTAINER" "$MASTODON_SIDEKIQ_CONTAINER" "$FE_CONTAINER"; do
@@ -1172,7 +1441,7 @@ Covered:
   * unfathomably-be account lookup and follow of a Mastodon account
   * Mastodon status resolution of an unfathomably-be status
   * unfathomably-be status resolution of Mastodon statuses and replies
-  * safe Mastodon handling of an unfathomably Group actor
+  * Mastodon account-style follow, receive, like, unlike, reply, delete, post, and unfollow against an unfathomably group actor
   * basic log scan for 500/crash output
 
 Run with KEEP_SMOKE=1 to leave the stack available for browser/API work.

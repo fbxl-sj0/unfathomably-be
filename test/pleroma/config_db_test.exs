@@ -550,7 +550,7 @@ defmodule Pleroma.ConfigDBTest do
                                  %{
                                    "tuple" => [
                                      ":_",
-                                     "Phoenix.Endpoint.Cowboy2Handler",
+                                     "Plug.Cowboy.Handler",
                                      %{"tuple" => ["Pleroma.Web.Endpoint", []]}
                                    ]
                                  }
@@ -572,7 +572,7 @@ defmodule Pleroma.ConfigDBTest do
                       {"/websocket", Phoenix.Endpoint.CowboyWebSocket,
                        {Phoenix.Transports.WebSocket,
                         {Pleroma.Web.Endpoint, Pleroma.Web.UserSocket, []}}},
-                      {:_, Phoenix.Endpoint.Cowboy2Handler, {Pleroma.Web.Endpoint, []}}
+                      {:_, Plug.Cowboy.Handler, {Pleroma.Web.Endpoint, []}}
                     ]}
                  ]
                ]

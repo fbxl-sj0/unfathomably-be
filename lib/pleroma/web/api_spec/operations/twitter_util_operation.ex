@@ -65,6 +65,33 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
     }
   end
 
+  def config_operation do
+    %Operation{
+      tags: ["Others"],
+      summary: "Deprecated statusnet compatibility config",
+      description:
+        "Returns the minimal legacy `/api/statusnet/config(.json)` data used by older Pleroma-style clients.",
+      operationId: "UtilController.config",
+      parameters: [],
+      responses: %{
+        200 =>
+          Operation.response("Statusnet config", "application/json", %Schema{
+            type: :object,
+            properties: %{
+              site: %Schema{
+                type: :object,
+                properties: %{
+                  textlimit: %Schema{type: :string},
+                  vapidPublicKey: %Schema{type: :string, nullable: true},
+                  safeDMMentionsEnabled: %Schema{type: :string, enum: ["0", "1"]}
+                }
+              }
+            }
+          })
+      }
+    }
+  end
+
   def change_password_operation do
     %Operation{
       tags: ["Account credentials"],

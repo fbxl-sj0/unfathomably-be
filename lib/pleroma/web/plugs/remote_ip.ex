@@ -8,6 +8,7 @@ defmodule Pleroma.Web.Plugs.RemoteIp do
   """
 
   alias Pleroma.Config
+  alias Pleroma.Helpers.InetHelper
   import Plug.Conn
 
   @behaviour Plug
@@ -44,11 +45,11 @@ defmodule Pleroma.Web.Plugs.RemoteIp do
     proxies =
       Config.get([__MODULE__, :proxies], [])
       |> Enum.concat(reserved)
-      |> Enum.map(&maybe_add_cidr/1)
+      |> Enum.map(&InetHelper.parse_cidr/1)
 
     clients =
       Config.get([__MODULE__, :clients], [])
-      |> Enum.map(&maybe_add_cidr/1)
+      |> Enum.map(&InetHelper.parse_cidr/1)
 
     [
       headers: Config.get([__MODULE__, :headers], []),
@@ -67,16 +68,5 @@ defmodule Pleroma.Web.Plugs.RemoteIp do
 
   defp proxy_ip?(ip, proxies) do
     Enum.any?(proxies, &InetCidr.contains?(&1, ip))
-  end
-
-  defp maybe_add_cidr(proxy) when is_binary(proxy) do
-    proxy =
-      cond do
-        "/" in String.codepoints(proxy) -> proxy
-        InetCidr.v4?(InetCidr.parse_address!(proxy)) -> proxy <> "/32"
-        InetCidr.v6?(InetCidr.parse_address!(proxy)) -> proxy <> "/128"
-      end
-
-    InetCidr.parse_cidr!(proxy, true)
   end
 end

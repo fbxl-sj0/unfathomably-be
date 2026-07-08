@@ -88,6 +88,48 @@ defmodule Pleroma.Web.PleromaAPI.ChatControllerTest do
 
       assert cm_ref.unread == false
     end
+
+    test "accepts raw browser JSON body and string-key route params", %{
+      conn: conn,
+      user: user
+    } do
+      other_user = insert(:user)
+
+      {:ok, create} = CommonAPI.post_chat_message(other_user, user, "sup")
+      {:ok, chat} = Chat.get_or_create(user.id, other_user.ap_id)
+      object = Object.normalize(create, fetch: false)
+      cm_ref = MessageReference.for_chat_and_object(chat, object)
+
+      result =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/api/v1/pleroma/chats/#{chat.id}/read",
+          Jason.encode!(%{"last_read_id" => cm_ref.id})
+        )
+        |> json_response_and_validate_schema(200)
+
+      assert result["unread"] == 0
+
+      cm_ref = MessageReference.for_chat_and_object(chat, object)
+
+      assert cm_ref.unread == false
+    end
+
+    test "returns a client error instead of raising when last_read_id is missing", %{
+      conn: conn,
+      user: user
+    } do
+      other_user = insert(:user)
+      {:ok, chat} = Chat.get_or_create(user.id, other_user.ap_id)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/api/v1/pleroma/chats/#{chat.id}/read", Jason.encode!(%{}))
+
+      assert conn.status in 400..499
+    end
   end
 
   describe "POST /api/v1/pleroma/chats/:id/messages" do

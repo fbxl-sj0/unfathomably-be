@@ -6,6 +6,7 @@ defmodule Pleroma.Web.RichMedia.CardTest do
   use Oban.Testing, repo: Pleroma.Repo
   use Pleroma.DataCase, async: false
 
+  alias Pleroma.Object
   alias Pleroma.Tests.ObanHelpers
   alias Pleroma.UnstubbedConfigMock, as: ConfigMock
   alias Pleroma.Web.CommonAPI
@@ -105,6 +106,46 @@ defmodule Pleroma.Web.RichMedia.CardTest do
         status: "[test](#{url})",
         content_type: "text/markdown"
       })
+
+    refute_enqueued(
+      worker: RichMediaWorker,
+      args: %{"op" => "backfill", "url" => url, "activity_id" => activity.id}
+    )
+  end
+
+  test "refuses to crawl URL in sensitive activity" do
+    user = insert(:user)
+
+    url = "https://example.com/ogp"
+
+    {:ok, activity} =
+      CommonAPI.post(user, %{
+        status: "[test](#{url})",
+        content_type: "text/markdown",
+        sensitive: true
+      })
+
+    assert %Object{data: %{"sensitive" => true}} = Object.normalize(activity, fetch: false)
+    assert is_nil(Card.get_by_activity(activity))
+
+    refute_enqueued(
+      worker: RichMediaWorker,
+      args: %{"op" => "backfill", "url" => url, "activity_id" => activity.id}
+    )
+  end
+
+  test "marks nsfw tagged activity sensitive and refuses to crawl its URL" do
+    user = insert(:user)
+
+    url = "https://example.com/ogp"
+
+    {:ok, activity} =
+      CommonAPI.post(user, %{
+        status: "#{url} #nsfw"
+      })
+
+    assert %Object{data: %{"sensitive" => true}} = Object.normalize(activity, fetch: false)
+    assert is_nil(Card.get_by_activity(activity))
 
     refute_enqueued(
       worker: RichMediaWorker,

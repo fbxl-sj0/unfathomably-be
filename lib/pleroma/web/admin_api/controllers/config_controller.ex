@@ -9,7 +9,7 @@ defmodule Pleroma.Web.AdminAPI.ConfigController do
   alias Pleroma.ConfigDB
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
-  plug(Pleroma.Web.ApiSpec.CastAndValidate)
+  plug(Pleroma.Web.ApiSpec.CastAndValidate, replace_params: false)
   plug(OAuthScopesPlug, %{scopes: ["admin:write"]} when action == :update)
 
   plug(
@@ -76,7 +76,7 @@ defmodule Pleroma.Web.AdminAPI.ConfigController do
     json(conn, translate_descriptions(descriptions))
   end
 
-  def show(conn, %{only_db: true}) do
+  def show(%{private: %{open_api_spex: %{params: %{only_db: true}}}} = conn, _) do
     with :ok <- configurable_from_database() do
       configs = Pleroma.Repo.all(ConfigDB)
 
@@ -128,7 +128,7 @@ defmodule Pleroma.Web.AdminAPI.ConfigController do
     end
   end
 
-  def update(%{body_params: %{configs: configs}} = conn, _) do
+  def update(%{private: %{open_api_spex: %{body_params: %{configs: configs}}}} = conn, _) do
     with :ok <- configurable_from_database() do
       results =
         configs
@@ -173,6 +173,8 @@ defmodule Pleroma.Web.AdminAPI.ConfigController do
       {:error, "You must enable configurable_from_database in your config file."}
     end
   end
+
+  defp whitelisted_config?(":pleroma", ":database_config_whitelist"), do: false
 
   defp whitelisted_config?(group, key) do
     if whitelisted_configs = Config.get(:database_config_whitelist) do

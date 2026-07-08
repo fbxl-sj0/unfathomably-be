@@ -12,8 +12,8 @@ defmodule Pleroma.Web.TwitterAPI.UtilController do
   alias Pleroma.Emoji
   alias Pleroma.Healthcheck
   alias Pleroma.User
-  alias Pleroma.Utils.URIEncoding
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.Auth.WrapperAuthenticator, as: Authenticator
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.Plugs.OAuthScopesPlug
   alias Pleroma.Web.WebFinger
@@ -173,25 +173,26 @@ defmodule Pleroma.Web.TwitterAPI.UtilController do
     render(conn, "frontend_configurations.json")
   end
 
+  def config(conn, _params) do
+    instance = Config.get(:instance)
+    vapid_public_key = Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key)
+
+    json(conn, %{
+      site: %{
+        textlimit: to_string(Keyword.get(instance, :limit)),
+        vapidPublicKey: vapid_public_key,
+        safeDMMentionsEnabled: if(Config.get([:instance, :safe_dm_mentions]), do: "1", else: "0")
+      }
+    })
+  end
+
   def emoji(conn, _params) do
     emoji =
       Enum.reduce(Emoji.get_all(), %{}, fn {code, %Emoji{file: file, tags: tags}}, acc ->
-        file = encode_emoji_url(file)
         Map.put(acc, code, %{image_url: file, tags: tags})
       end)
 
     json(conn, emoji)
-  end
-
-  defp encode_emoji_url(nil), do: nil
-  defp encode_emoji_url("http" <> _ = url), do: URIEncoding.encode_url(url)
-
-  defp encode_emoji_url("/" <> _ = path) do
-    URIEncoding.encode_url(path, bypass_parse: true, bypass_decode: true)
-  end
-
-  defp encode_emoji_url(path) when is_binary(path) do
-    URIEncoding.encode_url(path, bypass_parse: true, bypass_decode: true)
   end
 
   def update_notificaton_settings(%{assigns: %{user: user}} = conn, params) do
@@ -201,22 +202,21 @@ defmodule Pleroma.Web.TwitterAPI.UtilController do
   end
 
   def change_password(%{assigns: %{user: user}, body_params: body_params} = conn, %{}) do
-    case CommonAPI.Utils.confirm_current_password(user, body_params.password) do
-      {:ok, user} ->
-        with {:ok, _user} <-
-               User.reset_password(user, %{
-                 password: body_params.new_password,
-                 password_confirmation: body_params.new_password_confirmation
-               }) do
-          json(conn, %{status: "success"})
-        else
-          {:error, changeset} ->
-            {_, {error, _}} = Enum.at(changeset.errors, 0)
-            json(conn, %{error: "New password #{error}."})
+    with {:ok, %User{}} <-
+           Authenticator.change_password(
+             user,
+             body_params.password,
+             body_params.new_password,
+             body_params.new_password_confirmation
+           ) do
+      json(conn, %{status: "success"})
+    else
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {_, {error, _}} = Enum.at(changeset.errors, 0)
+        json(conn, %{error: "New password #{error}."})
 
-          _ ->
-            json(conn, %{error: "Unable to change password."})
-        end
+      {:error, :password_confirmation} ->
+        json(conn, %{error: "New password does not match confirmation."})
 
       {:error, msg} ->
         json(conn, %{error: msg})

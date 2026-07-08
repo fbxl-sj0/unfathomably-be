@@ -1,4 +1,4 @@
-# Transfering the config to/from the database
+# Transferring the config to/from the database
 
 {! backend/administration/CLI_tasks/general_cli_task_info.include !}
 
@@ -154,4 +154,22 @@ This forcibly removes all saved values in the database.
 
     ```sh
     mix pleroma.config [--force] reset
+    ```
+## Repair stored MRF policy modules
+
+If old database-backed configuration still names MRF policy modules that no
+longer exist, startup can fail while loading the stored `:pleroma, :mrf` value.
+This command removes only policy entries that no longer compile and leaves every
+valid policy in place.
+
+=== "OTP"
+
+    ```sh
+    ./bin/pleroma_ctl config fix_mrf_policies
+    ```
+
+=== "From Source"
+
+    ```sh
+    mix pleroma.config fix_mrf_policies
     ```

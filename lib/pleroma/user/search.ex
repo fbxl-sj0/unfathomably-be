@@ -12,6 +12,7 @@ defmodule Pleroma.User.Search do
   import Ecto.Query
 
   @limit 20
+  @domain_disallowed_chars ~r/[!"#$%&'()*+,\/:;<=>?@\[\]\\^_`{|}~\s]+/u
 
   def search(query_string, opts \\ []) do
     resolve = Keyword.get(opts, :resolve, false)
@@ -88,7 +89,7 @@ defmodule Pleroma.User.Search do
   defp strip_identifier_controls(_query_string), do: ""
 
   defp encode_domain(domain) do
-    domain = String.replace(domain, ~r/[!-\-|@|[-`|{-~|\/|:|\s]+/, "")
+    domain = String.replace(domain, @domain_disallowed_chars, "")
 
     try do
       {:ok, domain |> String.to_charlist() |> :idna.encode() |> to_string()}

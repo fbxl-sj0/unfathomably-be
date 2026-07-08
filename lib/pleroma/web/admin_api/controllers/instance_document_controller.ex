@@ -6,7 +6,6 @@ defmodule Pleroma.Web.AdminAPI.InstanceDocumentController do
   use Pleroma.Web, :controller
 
   alias Pleroma.Web.InstanceDocument
-  alias Pleroma.Web.Plugs.InstanceStatic
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate)
@@ -20,11 +19,25 @@ defmodule Pleroma.Web.AdminAPI.InstanceDocumentController do
 
   def show(conn, %{name: document_name}) do
     with {:ok, url} <- InstanceDocument.get(document_name),
-         {:ok, content} <- File.read(InstanceStatic.file_path(url)) do
+         {:ok, content} <- read_instance_document(url) do
       conn
       |> put_resp_content_type("text/html")
       |> send_resp(200, content)
     end
+  end
+
+  defp read_instance_document(url) do
+    path = String.trim_leading(url, "/")
+
+    [
+      Path.join(Pleroma.Config.get!([:instance, :static_dir]), path),
+      Path.join(Application.app_dir(:pleroma, "priv/static"), path)
+    ]
+    |> Enum.find_value({:error, :enoent}, fn candidate ->
+      if File.exists?(candidate) do
+        File.read(candidate)
+      end
+    end)
   end
 
   def update(%{body_params: %{file: file}} = conn, %{name: document_name}) do

@@ -4,7 +4,11 @@
 
 defmodule Pleroma.Maps do
   def filter_empty_values(map) when is_map(map) do
-    Map.reject(map, fn {_key, value} -> value in [nil, ""] end)
+    Map.reject(map, fn
+      {_key, value} when value in [nil, "", []] -> true
+      {_key, %{} = value} -> map_size(value) == 0
+      {_key, _value} -> false
+    end)
   end
 
   def put_if_present(map, key, value, value_function \\ &{:ok, &1}) when is_map(map) do

@@ -14,6 +14,8 @@ defmodule Pleroma.Web.Plugs.InstanceStatic do
   @behaviour Plug
 
   def file_path(path, frontend_type \\ :primary) do
+    path = String.trim_leading(path, "/")
+
     instance_path =
       Path.join(Pleroma.Config.get([:instance, :static_dir], "instance/static/"), path)
 

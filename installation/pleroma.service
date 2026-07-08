@@ -28,6 +28,8 @@ PrivateTmp=true
 ProtectHome=true
 ; Mount /usr, /boot, and /etc as read-only for processes invoked by this service.
 ProtectSystem=full
+; Prevent the service and its child processes from gaining additional privileges.
+NoNewPrivileges=true
 ; Sets up a new /dev mount for the process and only adds API pseudo devices like /dev/null, /dev/zero or /dev/random but not physical devices. Disabled by default because it may not work on devices like the Raspberry Pi.
 PrivateDevices=false
 ; Drops the sysadmin capability from the daemon.

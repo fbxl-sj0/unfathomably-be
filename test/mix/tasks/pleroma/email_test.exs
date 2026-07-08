@@ -9,6 +9,7 @@ defmodule Mix.Tasks.Pleroma.EmailTest do
 
   alias Pleroma.Config
   alias Pleroma.Tests.ObanHelpers
+  alias Swoosh.Email.Recipient
 
   import Pleroma.Factory
 
@@ -81,8 +82,21 @@ defmodule Mix.Tasks.Pleroma.EmailTest do
 
       ObanHelpers.perform_all()
 
-      assert_email_sent(to: {local_user1.name, local_user1.email})
-      assert_email_sent(to: {local_user2.name, local_user2.email})
+      expected_recipients =
+        MapSet.new([
+          Recipient.format({local_user1.name, local_user1.email}),
+          Recipient.format({local_user2.name, local_user2.email})
+        ])
+
+      delivered_recipients =
+        1..2
+        |> Enum.flat_map(fn _ ->
+          assert_received {:email, email}
+          email.to
+        end)
+        |> MapSet.new()
+
+      assert delivered_recipients == expected_recipients
     end
 
     test "Does not send confirmation email to inappropriate users" do

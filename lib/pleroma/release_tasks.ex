@@ -18,20 +18,26 @@ defmodule Pleroma.ReleaseTasks do
 
   defp mix_task(task, args) do
     Application.load(:pleroma)
-    {:ok, modules} = :application.get_key(:pleroma, :modules)
-
-    module =
-      Enum.find(modules, fn module ->
-        module = Module.split(module)
-
-        match?(["Mix", "Tasks", "Pleroma" | _], module) and
-          String.downcase(List.last(module)) == task
-      end)
+    module = find_module(task)
 
     if module do
       module.run(args)
     else
       IO.puts("The task #{task} does not exist")
+    end
+  end
+
+  def find_module(task) do
+    module_name =
+      task
+      |> String.split(".")
+      |> Enum.map(&String.capitalize/1)
+      |> then(fn parts -> [Mix, Tasks, Pleroma] ++ parts end)
+      |> Module.concat()
+
+    case Code.ensure_loaded(module_name) do
+      {:module, _} -> module_name
+      _ -> nil
     end
   end
 

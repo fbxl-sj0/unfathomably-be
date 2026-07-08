@@ -388,9 +388,9 @@ msgstr "Salut %{nickname}, voici ce que tu as manqué·e !"
 #: lib/pleroma/web/templates/email/digest.html.eex:544
 #, elixir-autogen, elixir-format
 msgctxt "digest email receiver address"
-msgid "The email address you are subscribed as is <a href='mailto:%{@user.email}' style='color: %{color};text-decoration: none;'>%{email}</a>. "
+msgid "The email address you are subscribed as is <a href='mailto:%{email}' style='color: %{color};text-decoration: none;'>%{email}</a>. "
 msgstr ""
-"L'adresse que vous avez enregistré est <a href='mailto:%{@user.email}' "
+"L'adresse que vous avez enregistré est <a href='mailto:%{email}' "
 "style='color : %{color} ;text-decoration : none ;'>%{email}</a>. "
 
 #: lib/pleroma/web/templates/email/digest.html.eex:538

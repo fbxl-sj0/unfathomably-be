@@ -32,7 +32,7 @@ defmodule Pleroma.Web.PleromaAPI.NotificationControllerTest do
         |> post("/api/v1/pleroma/notifications/read", %{id: notification1.id})
         |> json_response_and_validate_schema(:ok)
 
-      assert %{"pleroma" => %{"is_seen" => true}} = response
+      assert response == "ok"
       assert Repo.get(Notification, notification1.id).seen
       refute Repo.get(Notification, notification2.id).seen
     end
@@ -46,14 +46,13 @@ defmodule Pleroma.Web.PleromaAPI.NotificationControllerTest do
 
       [notification3, notification2, notification1] = Notification.for_user(user1, %{limit: 3})
 
-      [response1, response2] =
+      response =
         conn
         |> put_req_header("content-type", "application/json")
         |> post("/api/v1/pleroma/notifications/read", %{max_id: notification2.id})
         |> json_response_and_validate_schema(:ok)
 
-      assert %{"pleroma" => %{"is_seen" => true}} = response1
-      assert %{"pleroma" => %{"is_seen" => true}} = response2
+      assert response == "ok"
       assert Repo.get(Notification, notification1.id).seen
       assert Repo.get(Notification, notification2.id).seen
       refute Repo.get(Notification, notification3.id).seen
@@ -69,6 +68,19 @@ defmodule Pleroma.Web.PleromaAPI.NotificationControllerTest do
         |> json_response_and_validate_schema(:bad_request)
 
       assert response == %{"error" => "Cannot get notification"}
+    end
+
+    test "it rejects grouped notification keys as client errors instead of raising", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post(
+          "/api/v1/pleroma/notifications/read",
+          Jason.encode!(%{"max_id" => "follow-1-100"})
+        )
+
+      assert conn.status in 400..499
+      assert %{"error" => _} = json_response(conn, conn.status)
     end
   end
 end

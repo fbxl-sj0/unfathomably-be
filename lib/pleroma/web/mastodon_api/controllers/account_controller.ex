@@ -1,17 +1,9 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Ã‚Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.AccountController do
   use Pleroma.Web, :controller
-
-  import Pleroma.Web.ControllerHelper,
-    only: [
-      add_link_headers: 2,
-      assign_account_by_id: 2,
-      embed_relationships?: 1,
-      json_response: 3
-    ]
 
   alias Pleroma.Maps
   alias Pleroma.User
@@ -20,6 +12,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.CommonAPI
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.ListView
   alias Pleroma.Web.MastodonAPI.MastodonAPI
@@ -33,14 +26,14 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate)
 
-  plug(:skip_auth when action in [:create])
+  plug(:skip_auth when action in [:create, :lookup])
 
   plug(:skip_public_check when action in [:show, :statuses])
 
   plug(
     OAuthScopesPlug,
     %{fallback: :proceed_unauthenticated, scopes: ["read:accounts"]}
-    when action in [:show, :followers, :following, :lookup, :endorsements]
+    when action in [:show, :followers, :following, :endorsements]
   )
 
   plug(
@@ -106,6 +99,13 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   action_fallback(Pleroma.Web.MastodonAPI.FallbackController)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.AccountOperation
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
+
+  defp assign_account_by_id(conn, opts), do: ControllerHelper.assign_account_by_id(conn, opts)
+
+  defp embed_relationships?(params), do: ControllerHelper.embed_relationships?(params)
+
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
 
   @doc "POST /api/v1/accounts"
   def create(%{assigns: %{app: app}, body_params: params} = conn, _params) do
@@ -481,6 +481,17 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
         %{assigns: %{user: noter, account: target}, body_params: %{comment: comment}} = conn,
         _params
       ) do
+    create_note(conn, noter, target, comment)
+  end
+
+  def note(
+        %{assigns: %{user: noter, account: target}, body_params: %{"comment" => comment}} = conn,
+        _params
+      ) do
+    create_note(conn, noter, target, comment)
+  end
+
+  defp create_note(conn, noter, target, comment) do
     with {:ok, _user_note} <- UserNote.create(noter, target, comment) do
       render(conn, "relationship.json", user: noter, target: target)
     end
@@ -536,6 +547,14 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
 
   @doc "POST /api/v1/follows"
   def follow_by_uri(%{body_params: %{uri: uri}} = conn, _) do
+    follow_by_uri_target(conn, uri)
+  end
+
+  def follow_by_uri(%{body_params: %{"uri" => uri}} = conn, _) do
+    follow_by_uri_target(conn, uri)
+  end
+
+  defp follow_by_uri_target(conn, uri) do
     case User.get_cached_by_nickname(uri) do
       %User{} = user ->
         conn
@@ -583,9 +602,11 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   end
 
   @doc "GET /api/v1/accounts/lookup"
-  def lookup(%{assigns: %{user: for_user}} = conn, %{acct: nickname} = _params) do
+  def lookup(conn, %{acct: nickname} = _params) do
+    reading_user = Map.get(conn.assigns, :user)
+
     with %User{} = user <- lookup_user(nickname),
-         :visible <- User.visible_for(user, for_user) do
+         :visible <- User.visible_for(user, reading_user) do
       render(conn, "show.json",
         user: user,
         skip_visibility_check: true

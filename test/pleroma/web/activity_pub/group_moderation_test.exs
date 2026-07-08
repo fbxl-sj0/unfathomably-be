@@ -31,6 +31,7 @@ defmodule Pleroma.Web.ActivityPub.GroupModerationTest do
       assert group.ap_id in activity.data["cc"]
       assert moderator.ap_id in activity.data["bcc"]
 
+      assert_group_update(group)
       assert_group_announce(group, activity)
     end
 
@@ -50,6 +51,7 @@ defmodule Pleroma.Web.ActivityPub.GroupModerationTest do
       assert group.ap_id in activity.data["cc"]
       assert moderator.ap_id in activity.data["bcc"]
 
+      assert_group_update(group)
       assert_group_announce(group, activity)
     end
   end
@@ -77,6 +79,7 @@ defmodule Pleroma.Web.ActivityPub.GroupModerationTest do
       assert group.ap_id in activity.data["cc"]
       assert account.ap_id in activity.data["bcc"]
 
+      assert_group_update(group)
       assert_group_announce(group, activity)
     end
 
@@ -86,7 +89,9 @@ defmodule Pleroma.Web.ActivityPub.GroupModerationTest do
       account = insert(:user)
 
       assert {:ok, activity} =
-               GroupModeration.publish_group_unban(owner, group, account, reason: "appeal accepted")
+               GroupModeration.publish_group_unban(owner, group, account,
+                 reason: "appeal accepted"
+               )
 
       assert activity.data["type"] == "Undo"
       assert activity.data["actor"] == owner.ap_id
@@ -102,6 +107,7 @@ defmodule Pleroma.Web.ActivityPub.GroupModerationTest do
       assert activity.data["object"]["audience"] == group.ap_id
       assert activity.data["object"]["summary"] == "appeal accepted"
 
+      assert_group_update(group)
       assert_group_announce(group, activity)
     end
   end
@@ -129,10 +135,29 @@ defmodule Pleroma.Web.ActivityPub.GroupModerationTest do
     assert %Activity{} = announce = announced_activity(activity)
     assert announce.data["type"] == "Announce"
     assert announce.data["actor"] == group.ap_id
-    assert announce.data["object"] == activity.data["id"]
+    assert announce.data["object"]["id"] == activity.data["id"]
+    assert announce.data["object"]["type"] == activity.data["type"]
     assert announce.data["audience"] == group.ap_id
     assert announce.data["to"] == [Pleroma.Constants.as_public()]
     assert group.follower_address in announce.data["cc"]
+  end
+
+  defp assert_group_update(group) do
+    assert %Activity{} =
+             update =
+             Repo.one(
+               from(a in Activity,
+                 where:
+                   fragment("?->>'type' = 'Update'", a.data) and
+                     fragment("?->>'actor' = ?", a.data, ^group.ap_id) and
+                     fragment("?->'object'->>'id' = ?", a.data, ^group.ap_id)
+               )
+             )
+
+    assert update.data["object"]["attributedTo"] ==
+             (group.attributed_to_address || "#{group.ap_id}/collections/moderators")
+
+    assert group.follower_address in update.data["cc"]
   end
 
   defp announced_activity(activity) do
@@ -140,7 +165,7 @@ defmodule Pleroma.Web.ActivityPub.GroupModerationTest do
       from(a in Activity,
         where:
           fragment("?->>'type' = 'Announce'", a.data) and
-            fragment("?->>'object' = ?", a.data, ^activity.data["id"])
+            fragment("?->'object'->>'id' = ?", a.data, ^activity.data["id"])
       )
     )
   end

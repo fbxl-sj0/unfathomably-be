@@ -64,7 +64,7 @@ defmodule Pleroma.Notification do
     |> Repo.aggregate(:count, :id)
   end
 
-  @groupable_notification_types ~w{favourite follow group_follow reblog}
+  @groupable_notification_types ~w{favourite follow reblog}
   @group_bucket_seconds 12 * 60 * 60
 
   def groupable_notification_types, do: @groupable_notification_types
@@ -144,7 +144,7 @@ defmodule Pleroma.Notification do
     end
   end
 
-  defp group_target_id(type, %{data: %{"object" => ap_id}}) when type in ["follow", "group_follow"] do
+  defp group_target_id("follow", %{data: %{"object" => ap_id}}) do
     case User.get_cached_by_ap_id(ap_id) do
       %User{id: id} -> to_string(id)
       _ -> nil
@@ -161,8 +161,6 @@ defmodule Pleroma.Notification do
     favourite
     follow
     follow_request
-    group_follow
-    group_follow_request
     mention
     move
     pleroma:chat_mention
@@ -239,7 +237,7 @@ defmodule Pleroma.Notification do
     blocked_ap_ids = opts[:blocked_users_ap_ids] || User.blocked_users_ap_ids(user)
 
     query
-    |> where([n, a], a.actor not in ^blocked_ap_ids)
+    |> where([user_actor: user_actor], user_actor.ap_id not in ^blocked_ap_ids)
     |> FollowingRelationship.keep_following_or_not_domain_blocked(user)
   end
 
@@ -250,7 +248,7 @@ defmodule Pleroma.Notification do
       blocker_ap_ids = User.incoming_relationships_ungrouped_ap_ids(user, [:block])
 
       query
-      |> where([n, a], a.actor not in ^blocker_ap_ids)
+      |> where([user_actor: user_actor], user_actor.ap_id not in ^blocker_ap_ids)
     end
   end
 
@@ -263,7 +261,7 @@ defmodule Pleroma.Notification do
       opts[:notification_muted_users_ap_ids] || User.notification_muted_users_ap_ids(user)
 
     query
-    |> where([n, a], a.actor not in ^notification_muted_ap_ids)
+    |> where([user_actor: user_actor], user_actor.ap_id not in ^notification_muted_ap_ids)
     |> join(:left, [n, a], tm in ThreadMute,
       on: tm.user_id == ^user.id and tm.context == fragment("?->>'context'", a.data),
       as: :thread_mute
@@ -382,21 +380,22 @@ defmodule Pleroma.Notification do
         select: n.id
       )
 
-    {:ok, %{ids: {_, notification_ids}, marker: marker}} =
+    result =
       Multi.new()
       |> Multi.update_all(:ids, query, set: [seen: true, updated_at: NaiveDateTime.utc_now()])
       |> Marker.multi_set_last_read_id(user, "notifications")
       |> Repo.transaction()
 
-    Streamer.stream(["user", "user:notification"], marker)
+    case result do
+      {:ok, %{marker: marker}} -> Streamer.stream(["user", "user:notification"], marker)
+      _ -> :ok
+    end
 
-    for_user_query(user)
-    |> where([n], n.id in ^notification_ids)
-    |> Repo.all()
+    result
   end
 
   @spec read_one(User.t(), String.t()) ::
-          {:ok, Notification.t()} | {:error, Ecto.Changeset.t()} | nil
+          {:ok, map()} | {:error, Ecto.Changeset.t()} | nil
   def read_one(%User{} = user, notification_id) do
     with {:ok, %Notification{} = notification} <- get(user, notification_id) do
       Multi.new()
@@ -404,7 +403,7 @@ defmodule Pleroma.Notification do
       |> Marker.multi_set_last_read_id(user, "notifications")
       |> Repo.transaction()
       |> case do
-        {:ok, %{update: notification}} -> {:ok, notification}
+        {:ok, result} -> {:ok, result}
         {:error, :update, changeset, _} -> {:error, changeset}
       end
     end
@@ -534,7 +533,11 @@ defmodule Pleroma.Notification do
   defp type_from_activity(%{data: %{"type" => type}} = activity) do
     case type do
       "Follow" ->
-        follow_notification_type(activity)
+        if Activity.follow_accepted?(activity) do
+          "follow"
+        else
+          "follow_request"
+        end
 
       "Announce" ->
         "reblog"
@@ -566,27 +569,28 @@ defmodule Pleroma.Notification do
         "pleroma:participation_accepted"
 
       "Join" ->
-        "pleroma:participation_request"
+        group_join_notification_type(activity)
 
       t ->
         raise "No notification type for activity type #{t}"
     end
   end
 
-  defp follow_notification_type(%Activity{data: %{"object" => object_id}} = activity) do
-    group_follow? =
-      case User.get_cached_by_ap_id(object_id) do
-        %User{actor_type: "Group", local: true} -> true
-        _ -> false
-      end
-
-    case {group_follow?, Activity.follow_accepted?(activity)} do
-      {true, true} -> "group_follow"
-      {true, false} -> "group_follow_request"
-      {false, true} -> "follow"
-      {false, false} -> "follow_request"
+  defp group_join_notification_type(%{data: %{"object" => object_id, "state" => "pending"}}) do
+    case User.get_cached_by_ap_id(object_id) do
+      %User{actor_type: "Group", local: true} -> "group_follow_request"
+      _ -> "pleroma:participation_request"
     end
   end
+
+  defp group_join_notification_type(%{data: %{"object" => object_id}}) do
+    case User.get_cached_by_ap_id(object_id) do
+      %User{actor_type: "Group", local: true} -> "group_follow"
+      _ -> "pleroma:participation_request"
+    end
+  end
+
+  defp group_join_notification_type(_), do: "pleroma:participation_request"
 
   defp type_from_activity_object(%{data: %{"type" => "Create", "object" => %{}}}), do: "mention"
 
@@ -618,14 +622,25 @@ defmodule Pleroma.Notification do
         |> Marker.multi_set_last_read_id(user, "notifications")
         |> Repo.transaction()
 
-      if do_send do
-        Streamer.stream(["user", "user:notification"], notification)
-        Push.send(notification)
-      end
+      if do_send, do: stream(notification)
 
       notification
     end
   end
+
+  def stream(%Notification{} = notification) do
+    Streamer.stream(["user", "user:notification"], notification)
+    Push.send(notification)
+
+    notification
+  end
+
+  def stream(notifications) when is_list(notifications) do
+    Enum.each(notifications, &stream/1)
+    notifications
+  end
+
+  def stream(_), do: nil
 
   def create_poll_notifications(%Activity{} = activity) do
     with %Object{data: %{"type" => "Question", "actor" => actor} = data} <-
@@ -639,7 +654,7 @@ defmodule Pleroma.Notification do
       notifications =
         Enum.reduce([actor | voters], [], fn ap_id, acc ->
           with %User{local: true} = user <- User.get_by_ap_id(ap_id) do
-            [create_notification(activity, user, type: "poll") | acc]
+            [create_notification(activity, user, type: "poll", do_send: false) | acc]
           else
             _ -> acc
           end
@@ -784,9 +799,6 @@ defmodule Pleroma.Notification do
 
   def get_potential_receiver_ap_ids(%{data: %{"type" => "Join", "object" => object_id}}) do
     case User.get_cached_by_ap_id(object_id) do
-      %User{actor_type: "Group", local: true, group_join_notifications: false} ->
-        []
-
       %User{actor_type: "Group", local: true} = group ->
         GroupMembership.local_group_moderator_ap_ids(group)
 
@@ -797,9 +809,6 @@ defmodule Pleroma.Notification do
 
   def get_potential_receiver_ap_ids(%{data: %{"type" => "Follow", "object" => object_id}}) do
     case User.get_cached_by_ap_id(object_id) do
-      %User{actor_type: "Group", local: true, group_join_notifications: false} ->
-        []
-
       %User{actor_type: "Group", local: true} = group ->
         GroupMembership.local_group_moderator_ap_ids(group)
 
@@ -963,11 +972,10 @@ defmodule Pleroma.Notification do
         _opts
       ) do
     actor = activity.data["actor"]
-    object = activity.data["object"]
 
     Notification.for_user(user)
     |> Enum.any?(fn
-      %{activity: %{data: %{"type" => "Follow", "actor" => ^actor, "object" => ^object}}} -> true
+      %{activity: %{data: %{"type" => "Follow", "actor" => ^actor}}} -> true
       _ -> false
     end)
   end

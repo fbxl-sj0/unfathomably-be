@@ -234,14 +234,14 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       end)
 
       assert capture_log(fn ->
-               assert {:discard, :bad_request} =
+               assert {:cancel, :bad_request} =
                         Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 1})
              end) =~ "400"
 
       refute called(Instances.set_unreachable(inbox))
     end
 
-    test "discards terminal delivery responses instead of retrying them" do
+    test "cancels terminal delivery responses instead of retrying them" do
       actor = insert(:user)
 
       terminal_responses = [
@@ -262,15 +262,15 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
             {:ok, %Tesla.Env{status: status, body: "terminal"}}
         end)
 
-        assert {:discard, ^reason} =
+        assert {:cancel, ^reason} =
                  Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: status})
       end)
     end
 
-    test "discards malformed inboxes instead of retrying them" do
+    test "cancels malformed inboxes instead of retrying them" do
       actor = insert(:user)
 
-      assert {:discard, :bad_request} =
+      assert {:cancel, :bad_request} =
                Publisher.publish_one(%{
                  inbox: "https://%",
                  json: "{}",
@@ -279,10 +279,10 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                })
     end
 
-    test "discards malformed delivery params instead of retrying them" do
+    test "cancels malformed delivery params instead of retrying them" do
       actor = insert(:user)
 
-      assert {:discard, :bad_request} =
+      assert {:cancel, :bad_request} =
                Publisher.publish_one(%{
                  inbox: "https://remote.example/inbox",
                  json: %{"not" => "encoded"},
@@ -290,7 +290,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                  id: "https://local.example/activities/malformed-json"
                })
 
-      assert {:discard, :bad_request} =
+      assert {:cancel, :bad_request} =
                Publisher.publish_one(%{
                  inbox: "https://remote.example/inbox",
                  json: "{}",
@@ -298,7 +298,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                  id: "https://local.example/activities/missing-actor"
                })
 
-      assert {:discard, :bad_request} =
+      assert {:cancel, :bad_request} =
                Publisher.publish_one(%{
                  inbox: "https://remote.example/inbox",
                  json: "{}"
@@ -363,7 +363,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       refute called(Instances.set_unreachable(inbox))
     end
 
-    test_with_mock "discards request errors for already unreachable target instances",
+    test_with_mock "cancels request errors for already unreachable target instances",
                    Instances,
                    [:passthrough],
                    [] do
@@ -371,7 +371,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       inbox = "http://connrefused.site/users/nick1/inbox"
 
       assert capture_log(fn ->
-               assert {:discard, :unreachable_host} =
+               assert {:cancel, :unreachable_host} =
                         Publisher.publish_one(%{
                           inbox: inbox,
                           json: "{}",
@@ -504,7 +504,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
              )
     end
 
-    test_with_mock "publishes group announces back to origin-host followers as community approval",
+    test_with_mock "does not publish group announces back to the announced object's origin host",
                    Pleroma.Web.Federator.Publisher,
                    [:passthrough],
                    [] do
@@ -573,7 +573,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                )
              )
 
-      assert called(
+      refute called(
                Pleroma.Web.Federator.Publisher.enqueue_one(
                  Publisher,
                  %{

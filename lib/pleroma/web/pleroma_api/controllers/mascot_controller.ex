@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.MascotController do
@@ -22,9 +22,13 @@ defmodule Pleroma.Web.PleromaAPI.MascotController do
   end
 
   @doc "PUT /api/v1/pleroma/mascot"
+  def update(%{assigns: %{user: _user}, body_params: %{"file" => file}} = conn, _) do
+    update(%{conn | body_params: %{file: file}}, %{})
+  end
+
   def update(%{assigns: %{user: user}, body_params: %{file: file}} = conn, _) do
-    with {:content_type, "image" <> _} <- {:content_type, file.content_type},
-         {:ok, object} <- ActivityPub.upload(file, actor: User.ap_id(user)) do
+    with {_, "image" <> _} <- {:content_type, file.content_type},
+         {_, {:ok, object}} <- {:upload, ActivityPub.upload(file, actor: User.ap_id(user))} do
       attachment = render_attachment(object)
       {:ok, _user} = User.mascot_update(user, attachment)
 
@@ -32,6 +36,9 @@ defmodule Pleroma.Web.PleromaAPI.MascotController do
     else
       {:content_type, _} ->
         render_error(conn, :unsupported_media_type, "mascots can only be images")
+
+      {:upload, {:error, _}} ->
+        render_error(conn, :error, "error uploading file")
     end
   end
 

@@ -7,7 +7,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
 
   import Ecto.Changeset
   import Ecto.Query
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   require Pleroma.Constants
 
@@ -73,9 +73,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
     changeset
     |> validate_required([:id, :target, :object, :actor, :type, :to, :cc])
     |> validate_inclusion(:type, ~w(Add Remove))
-    |> validate_actor_presence()
+    |> CommonValidations.validate_actor_presence()
     |> validate_collection_belongs_to_actor(actor)
-    |> validate_object_or_user_presence()
+    |> CommonValidations.validate_object_or_user_presence()
   end
 
   defp validate_collection_belongs_to_actor(changeset, %User{} = actor) do

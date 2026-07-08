@@ -89,7 +89,7 @@ defmodule Pleroma.ReverseProxyTest do
       capture_log([level: :debug], fn ->
         conn = ReverseProxy.call(conn, url)
 
-        assert conn.status == 502
+        assert conn.status == 500
         assert conn.halted
       end)
 
@@ -185,38 +185,10 @@ defmodule Pleroma.ReverseProxyTest do
       assert capture_log(fn -> ReverseProxy.call(conn, url) end) =~
                "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/500\" failed with HTTP status 500"
 
-      conn = ReverseProxy.call(conn, url)
-      assert conn.status == 502
       assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
 
       {:ok, ttl} = Cachex.ttl(:failed_proxy_url_cache, url)
       assert ttl <= 60_000
-    end
-
-    test "non-standard upstream status", %{conn: conn} do
-      error_mock(523)
-      url = "/status/523"
-
-      conn = ReverseProxy.call(conn, url)
-
-      assert conn.status == 502
-      assert conn.resp_body == "Request failed: upstream returned HTTP status 523"
-      assert conn.halted
-      assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
-    end
-
-    test "upstream response timeout", %{conn: conn} do
-      url = "/timeout"
-
-      ClientMock
-      |> expect(:request, fn :get, ^url, _, _, _ -> {:error, :recv_response_timeout} end)
-
-      conn = ReverseProxy.call(conn, url)
-
-      assert conn.status == 504
-      assert conn.resp_body == "Request failed: Gateway Timeout"
-      assert conn.halted
-      assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
     end
 
     test "400", %{conn: conn} do
@@ -254,8 +226,7 @@ defmodule Pleroma.ReverseProxyTest do
 
       assert capture_log(fn ->
                conn = ReverseProxy.call(conn, url)
-               assert conn.status == 502
-               assert conn.resp_body == "Request failed: upstream returned HTTP status 204"
+               assert conn.resp_body == "Request failed: No Content"
                assert conn.halted
              end) =~
                "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/204\" failed with HTTP status 204"
@@ -384,6 +355,50 @@ defmodule Pleroma.ReverseProxyTest do
       conn = ReverseProxy.call(conn, "/disposition")
 
       assert {"content-disposition", "attachment; filename=\"filename.jpg\""} in conn.resp_headers
+    end
+
+    test "with unquoted content-disposition filename", %{conn: conn} do
+      disposition_headers_mock([
+        {"content-disposition", "attachment; filename=filename.jpg"},
+        {"content-length", "0"}
+      ])
+
+      conn = ReverseProxy.call(conn, "/disposition")
+
+      assert {"content-disposition", "attachment; filename=\"filename.jpg\""} in conn.resp_headers
+    end
+
+    test "with escaped quotation marks in content-disposition filename", %{conn: conn} do
+      disposition_headers_mock([
+        {"content-disposition", "attachment; filename=\"quote\\\"name.jpg\""},
+        {"content-length", "0"}
+      ])
+
+      conn = ReverseProxy.call(conn, "/disposition")
+
+      assert {"content-disposition", "attachment; filename=\"quote\\\"name.jpg\""} in conn.resp_headers
+    end
+
+    test "with encoded content-disposition filename", %{conn: conn} do
+      disposition_headers_mock([
+        {"content-disposition", "attachment; filename*=UTF-8''file%20name.jpg"},
+        {"content-length", "0"}
+      ])
+
+      conn = ReverseProxy.call(conn, "/disposition")
+
+      assert {"content-disposition", "attachment; filename=\"file name.jpg\""} in conn.resp_headers
+    end
+
+    test "with unsafe content-disposition filename characters", %{conn: conn} do
+      disposition_headers_mock([
+        {"content-disposition", "attachment; filename=\"line\nname.jpg\""},
+        {"content-length", "0"}
+      ])
+
+      conn = ReverseProxy.call(conn, "/disposition")
+
+      assert {"content-disposition", "attachment; filename=\"line_name.jpg\""} in conn.resp_headers
     end
   end
 end

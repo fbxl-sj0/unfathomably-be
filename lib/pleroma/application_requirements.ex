@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.ApplicationRequirements do
@@ -25,6 +25,7 @@ defmodule Pleroma.ApplicationRequirements do
     |> check_welcome_message_config!()
     |> check_rum!()
     |> check_repo_pool_size!()
+    |> check_mrfs()
     |> handle_result()
   end
 
@@ -168,8 +169,6 @@ defmodule Pleroma.ApplicationRequirements do
       check_filter(Pleroma.Upload.Filter.Exiftool.ReadDescription, "exiftool"),
       check_filter(Pleroma.Upload.Filter.Mogrify, "mogrify"),
       check_filter(Pleroma.Upload.Filter.Mogrifun, "mogrify"),
-      check_filter(Pleroma.Upload.Filter.AnalyzeMetadata, "mogrify"),
-      check_filter(Pleroma.Upload.Filter.AnalyzeMetadata, "convert"),
       check_filter(Pleroma.Upload.Filter.AnalyzeMetadata, "ffprobe")
     ]
 
@@ -267,4 +266,23 @@ defmodule Pleroma.ApplicationRequirements do
       true
     end
   end
+
+  defp check_mrfs(:ok) do
+    missing_mrfs =
+      Config.get([:mrf, :policies], [])
+      |> Enum.filter(fn policy ->
+        case Code.ensure_compiled(policy) do
+          {:module, _module} -> false
+          {:error, _reason} -> true
+        end
+      end)
+
+    if Enum.empty?(missing_mrfs) do
+      :ok
+    else
+      {:error, "The following MRF modules are configured but missing: #{inspect(missing_mrfs)}"}
+    end
+  end
+
+  defp check_mrfs(result), do: result
 end

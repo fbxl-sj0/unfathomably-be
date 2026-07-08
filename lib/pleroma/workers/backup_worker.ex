@@ -60,7 +60,7 @@ defmodule Pleroma.Workers.BackupWorker do
   def perform(%Job{}), do: :discard
 
   @impl Oban.Worker
-  def timeout(_job), do: :infinity
+  def timeout(_job), do: Pleroma.Config.get([Backup, :timeout], :timer.minutes(30))
 
   defp get_backup(backup_id) do
     Backup.get(backup_id)

@@ -7,17 +7,18 @@ defmodule Pleroma.Uploaders.S3 do
   require Logger
 
   alias Pleroma.Config
+  alias Pleroma.Web.MediaProxy
 
   # The file name is re-encoded with S3's constraints here to comply with previous
   # links with less strict filenames
   @impl true
   def get_file(file) do
-    {:ok,
-     {:url,
-      Path.join([
-        Pleroma.Upload.base_url(),
-        strict_encode(URI.decode(file))
-      ])}}
+    url =
+      [Pleroma.Upload.base_url(), strict_encode(URI.decode(file))]
+      |> Path.join()
+      |> maybe_proxy_url()
+
+    {:ok, {:url, url}}
   end
 
   @impl true
@@ -56,9 +57,9 @@ defmodule Pleroma.Uploaders.S3 do
         ])
       end
 
-    case ExAws.request(op) do
+    case ex_aws().request(op) do
       {:ok, _} ->
-        {:ok, {:file, s3_name}}
+        {:ok, file_spec(s3_name)}
 
       error ->
         Logger.error("#{__MODULE__}: #{inspect(error)}")
@@ -68,14 +69,40 @@ defmodule Pleroma.Uploaders.S3 do
 
   @impl true
   def delete_file(file) do
-    [__MODULE__, :bucket]
-    |> Config.get()
-    |> ExAws.S3.delete_object(file)
-    |> ExAws.request()
-    |> case do
+    op =
+      [__MODULE__, :bucket]
+      |> Config.get()
+      |> ExAws.S3.delete_object(file)
+
+    case ex_aws().request(op) do
       {:ok, %{status_code: 204}} -> :ok
       error -> {:error, inspect(error)}
     end
+  end
+
+  defp ex_aws do
+    Config.get([__MODULE__, :ex_aws_impl]) || ExAws
+  end
+
+  defp file_spec(s3_name) do
+    if force_media_proxy?() do
+      url =
+        [Pleroma.Upload.base_url(), s3_name]
+        |> Path.join()
+        |> MediaProxy.url()
+
+      {:url, url}
+    else
+      {:file, s3_name}
+    end
+  end
+
+  defp maybe_proxy_url(url) do
+    if force_media_proxy?(), do: MediaProxy.url(url), else: url
+  end
+
+  defp force_media_proxy? do
+    Config.get([__MODULE__, :force_media_proxy], false)
   end
 
   @regex Regex.compile!("[^0-9a-zA-Z!.*/'()_-]")

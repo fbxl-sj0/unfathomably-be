@@ -1,188 +1,184 @@
 # Unfathomably group federation
 # ----------------------------
 #
-# This module publishes ActivityPub moderation activities for local groups.
-# It intentionally does not decide whether an actor is allowed to moderate a
-# group. HTTP controllers and membership code make that decision before
-# calling into this module.
+# File: group_moderation.ex
+#
+# Purpose:
+#
+#   Publish community-scoped moderation activities for local groups in the
+#   ActivityPub shapes expected by Threadiverse receivers.
+#
+# Responsibilities:
+#
+#   * create Add and Remove activities for group moderator collection changes
+#   * create group-scoped Block and Undo Block activities for bans
+#   * announce local moderation actions from the group actor
+#
+# This file intentionally does NOT contain:
+#
+#   * local database permission checks for admin UI actions
+#   * site-wide moderation behavior
+#   * remote group moderation state imports
+#
 
 defmodule Pleroma.Web.ActivityPub.GroupModeration do
-  @moduledoc """
-  Publish group moderation decisions in the Threadiverse-compatible shape.
-
-  Lemmy, MBin, PieFed, and similar group-oriented servers learn about
-  moderators and bans from normal ActivityPub activities addressed to the
-  community. The bare activity records the moderation action, while an
-  Announce from the group actor broadcasts that action to community followers.
-
-  This module only handles outbound local-group federation. Inbound handling
-  for remote moderator collection changes lives in `Pleroma.Web.ActivityPub.SideEffects`.
-  """
-
-  alias Pleroma.FollowingRelationship
   alias Pleroma.Activity
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.UserView
   alias Pleroma.Web.ActivityPub.Utils
-  alias Pleroma.Web.Federator
+  alias Pleroma.Workers.PublisherWorker
 
   require Pleroma.Constants
 
-  @public Pleroma.Constants.as_public()
+  @moderation_announce_delay_seconds 12
 
-  @type publish_result :: {:ok, Activity.t()} | {:error, term()} | :ok
+  def publish_moderator_add(moderator, group, account) do
+    publish_collection_change("Add", moderator, group, account)
+  end
 
-  @doc """
-  Publish that `account` is now a moderator of `group`.
-  """
-  @spec publish_moderator_add(User.t(), User.t(), User.t()) :: publish_result()
-  def publish_moderator_add(actor, group, account) do
-    bcc = direct_recipients(group, account)
+  def publish_moderator_remove(moderator, group, account) do
+    publish_collection_change("Remove", moderator, group, account)
+  end
 
+  def publish_group_ban(moderator, group, account, opts \\ []) do
     with :ok <- ensure_local_group(group),
+         :ok <- publish_group_profile_update(group),
          {:ok, activity} <-
-           insert_and_publish(%{
-             "type" => "Add",
-             "id" => Utils.generate_activity_id(),
-             "actor" => actor.ap_id,
-             "to" => [@public],
-             "cc" => [group.ap_id],
-             "bcc" => bcc,
-             "object" => account.ap_id,
-             "target" => moderators_collection(group),
-             "audience" => group.ap_id
-           }),
-         {:ok, _announce} <- announce_group_activity(group, activity) do
+           ActivityPub.insert(
+             %{
+               "id" => Utils.generate_activity_id(),
+               "type" => "Block",
+               "actor" => moderator.ap_id,
+               "object" => account.ap_id,
+               "target" => group.ap_id,
+               "audience" => group.ap_id,
+               "summary" => Keyword.get(opts, :reason),
+               "removeData" => Keyword.get(opts, :remove_data, false),
+               "to" => [Pleroma.Constants.as_public()],
+               "cc" => [group.ap_id],
+               "bcc" => [account.ap_id]
+             },
+             true
+           ),
+         :ok <- announce_from_group(group, activity, delay: @moderation_announce_delay_seconds) do
       {:ok, activity}
     end
   end
 
-  @doc """
-  Publish that `account` is no longer a moderator of `group`.
-  """
-  @spec publish_moderator_remove(User.t(), User.t(), User.t()) :: publish_result()
-  def publish_moderator_remove(actor, group, account) do
-    bcc = direct_recipients(group, account)
-
+  def publish_group_unban(moderator, group, account, opts \\ []) do
     with :ok <- ensure_local_group(group),
+         :ok <- publish_group_profile_update(group),
+         block <- group_block_object(moderator, group, account, opts),
          {:ok, activity} <-
-           insert_and_publish(%{
-             "type" => "Remove",
-             "id" => Utils.generate_activity_id(),
-             "actor" => actor.ap_id,
-             "to" => [@public],
-             "cc" => [group.ap_id],
-             "bcc" => bcc,
-             "object" => account.ap_id,
-             "target" => moderators_collection(group),
-             "audience" => group.ap_id
-           }),
-         {:ok, _announce} <- announce_group_activity(group, activity) do
+           ActivityPub.insert(
+             %{
+               "id" => Utils.generate_activity_id(),
+               "type" => "Undo",
+               "actor" => moderator.ap_id,
+               "object" => block,
+               "audience" => group.ap_id,
+               "to" => [Pleroma.Constants.as_public()],
+               "cc" => [group.ap_id],
+               "bcc" => [account.ap_id]
+             },
+             true
+           ),
+         :ok <- announce_from_group(group, activity, delay: @moderation_announce_delay_seconds) do
       {:ok, activity}
     end
   end
 
-  @doc """
-  Publish that `account` is banned from `group`.
-  """
-  @spec publish_group_ban(User.t(), User.t(), User.t(), keyword()) :: publish_result()
-  def publish_group_ban(actor, group, account, opts \\ []) do
+  defp publish_collection_change(type, moderator, group, account) do
     with :ok <- ensure_local_group(group),
-         data <- block_data(actor, group, account, opts),
-         {:ok, activity} <- insert_and_publish(data),
-         {:ok, _announce} <- announce_group_activity(group, activity) do
-      {:ok, activity}
-    end
-  end
-
-  @doc """
-  Publish that a previous group ban for `account` has been undone.
-  """
-  @spec publish_group_unban(User.t(), User.t(), User.t(), keyword()) :: publish_result()
-  def publish_group_unban(actor, group, account, opts \\ []) do
-    with :ok <- ensure_local_group(group),
-         block <- block_data(actor, group, account, opts),
+         :ok <- publish_group_profile_update(group),
          {:ok, activity} <-
-           insert_and_publish(%{
-             "type" => "Undo",
-             "id" => Utils.generate_activity_id(),
-             "actor" => actor.ap_id,
-             "to" => [@public],
-             "cc" => [group.ap_id],
-             "bcc" => direct_recipients(group, account),
-             "object" => block,
-             "audience" => group.ap_id
-           }),
-         {:ok, _announce} <- announce_group_activity(group, activity) do
+           ActivityPub.insert(
+             %{
+               "id" => Utils.generate_activity_id(),
+               "type" => type,
+               "actor" => moderator.ap_id,
+               "object" => account.ap_id,
+               "target" => moderators_collection(group),
+               "audience" => group.ap_id,
+               "to" => [Pleroma.Constants.as_public()],
+               "cc" => [group.ap_id],
+               "bcc" => [account.ap_id]
+             },
+             true
+           ),
+         :ok <- announce_from_group(group, activity, delay: @moderation_announce_delay_seconds) do
       {:ok, activity}
     end
   end
 
-  defp block_data(actor, group, account, opts) do
-    data = %{
-      "type" => "Block",
+  defp group_block_object(moderator, group, account, opts) do
+    %{
       "id" => Utils.generate_activity_id(),
-      "actor" => actor.ap_id,
-      "to" => [@public],
-      "cc" => [group.ap_id],
-      "bcc" => direct_recipients(group, account),
+      "type" => "Block",
+      "actor" => moderator.ap_id,
       "object" => account.ap_id,
       "target" => group.ap_id,
       "audience" => group.ap_id,
-      "removeData" => Keyword.get(opts, :remove_data, false)
+      "summary" => Keyword.get(opts, :reason)
     }
-
-    data
-    |> maybe_put("summary", Keyword.get(opts, :reason))
-    |> maybe_put("endTime", Keyword.get(opts, :end_time))
   end
 
-  defp announce_group_activity(group, activity) do
-    insert_and_publish(%{
-      "type" => "Announce",
-      "id" => Utils.generate_activity_id(),
-      "actor" => group.ap_id,
-      "to" => [@public],
-      "cc" => [group_followers(group)],
-      "bcc" => group_follower_ap_ids(group),
-      "object" => activity.data["id"],
-      "audience" => group.ap_id
-    })
-  end
-
-  defp insert_and_publish(data) do
-    with {:ok, activity} <- ActivityPub.insert(data, true) do
-      Federator.publish(activity)
-      {:ok, activity}
+  def announce_from_group(%User{} = group, %Activity{} = activity, opts \\ []) do
+    with {:ok, announce} <-
+           ActivityPub.insert(
+             %{
+               "id" => Utils.generate_activity_id(),
+               "type" => "Announce",
+               "actor" => group.ap_id,
+               "object" => activity.data,
+               "audience" => group.ap_id,
+               "to" => [Pleroma.Constants.as_public()],
+               "cc" => [group.follower_address]
+             },
+             true
+           ),
+         :ok <- publish_announce(announce, Keyword.get(opts, :delay, 0)) do
+      :ok
     end
   end
 
-  defp ensure_local_group(%User{local: true, actor_type: "Group"}), do: :ok
-  defp ensure_local_group(%User{actor_type: "Group"}), do: {:error, :remote_group}
-  defp ensure_local_group(%User{}), do: {:error, :not_a_group}
-  defp ensure_local_group(_), do: {:error, :invalid_group}
-
-  defp moderators_collection(group) do
-    group.attributed_to_address || "#{group.ap_id}/collections/moderators"
+  defp publish_announce(%Activity{} = announce, delay) when is_integer(delay) and delay > 0 do
+    case PublisherWorker.enqueue("publish", %{"activity_id" => announce.id}, schedule_in: delay) do
+      {:ok, _job} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp group_followers(group) do
-    group.follower_address || "#{group.ap_id}/followers"
+  defp publish_announce(%Activity{} = announce, _delay), do: Utils.maybe_federate(announce)
+
+  defp publish_group_profile_update(%User{} = group) do
+    with {:ok, update} <-
+           ActivityPub.insert(
+             %{
+               "id" => Utils.generate_activity_id(),
+               "type" => "Update",
+               "actor" => group.ap_id,
+               "object" => UserView.render("user.json", %{user: group}),
+               "audience" => group.ap_id,
+               "to" => [Pleroma.Constants.as_public()],
+               "cc" => [group.follower_address]
+             },
+             true
+           ),
+         :ok <- Utils.maybe_federate(update) do
+      :ok
+    end
   end
 
-  defp direct_recipients(group, account) do
-    [account.ap_id | group_follower_ap_ids(group)]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
+  defp moderators_collection(%User{attributed_to_address: address}) when is_binary(address) do
+    address
   end
 
-  defp group_follower_ap_ids(group) do
-    FollowingRelationship.followers_ap_ids(group)
-  end
+  defp moderators_collection(%User{ap_id: ap_id}), do: "#{ap_id}/collections/moderators"
 
-  defp maybe_put(data, _key, nil), do: data
-  defp maybe_put(data, _key, ""), do: data
-  defp maybe_put(data, key, value), do: Map.put(data, key, value)
+  defp ensure_local_group(%User{actor_type: "Group", local: true}), do: :ok
+  defp ensure_local_group(_group), do: {:error, :remote_group}
 end
 
 # end of group_moderation.ex

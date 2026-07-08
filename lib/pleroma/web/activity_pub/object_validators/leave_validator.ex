@@ -8,7 +8,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LeaveValidator do
   alias Pleroma.Web.ActivityPub.Utils
 
   import Ecto.Changeset
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
 
@@ -31,8 +31,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LeaveValidator do
     data_cng
     |> validate_inclusion(:type, ["Leave"])
     |> validate_required([:id, :type, :actor, :to, :cc, :object])
-    |> validate_actor_presence()
-    |> validate_object_presence(allowed_types: ["Event"])
+    |> CommonValidations.validate_actor_presence()
+    |> CommonValidations.validate_object_presence(allowed_types: ["Event"])
     |> validate_existing_join()
   end
 

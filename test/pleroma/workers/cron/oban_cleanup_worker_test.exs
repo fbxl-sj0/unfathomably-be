@@ -170,6 +170,27 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
     assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, unknown_error.id)
   end
 
+  test "deletes duplicate pending remote fetch jobs while keeping one copy" do
+    now = DateTime.utc_now()
+    duplicate_args = %{"op" => "fetch_remote", "id" => "https://remote.example/o/dupe"}
+    other_args = %{"op" => "fetch_remote", "id" => "https://remote.example/o/other"}
+
+    [first_id, second_id, other_id] =
+      insert_remote_fetch_rows!(now, [duplicate_args, duplicate_args, other_args])
+
+    assert 1 = ObanCleanupWorker.delete_duplicate_remote_fetch_jobs()
+
+    remaining_ids =
+      Oban.Job
+      |> where([job], job.worker == "Pleroma.Workers.RemoteFetcherWorker")
+      |> select([job], job.id)
+      |> Repo.all()
+
+    assert first_id in remaining_ids
+    refute second_id in remaining_ids
+    assert other_id in remaining_ids
+  end
+
   test "discards terminal publisher retries" do
     now = DateTime.utc_now()
 
@@ -226,19 +247,29 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
     now = DateTime.utc_now()
 
     exhausted_job =
-      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
+      SignatureRetryWorker.new(%{
+        "op" => "incoming_failed_signature_ap_doc",
+        "id" => "exhausted-transaction"
+      })
       |> insert_job(now,
         state: "retryable",
-        attempt: 10,
-        errors: [%{"error" => "ERROR 25P02 (in_failed_sql_transaction) current transaction is aborted"}]
+        attempt: :last_retryable,
+        errors: [
+          %{"error" => "ERROR 25P02 (in_failed_sql_transaction) current transaction is aborted"}
+        ]
       )
 
     recent_job =
-      ReceiverWorker.new(%{"op" => "incoming_ap_doc"})
+      SignatureRetryWorker.new(%{
+        "op" => "incoming_failed_signature_ap_doc",
+        "id" => "recent-transaction"
+      })
       |> insert_job(now,
         state: "retryable",
         attempt: 2,
-        errors: [%{"error" => "ERROR 25P02 (in_failed_sql_transaction) current transaction is aborted"}]
+        errors: [
+          %{"error" => "ERROR 25P02 (in_failed_sql_transaction) current transaction is aborted"}
+        ]
       )
 
     assert 1 = ObanCleanupWorker.discard_exhausted_incoming_transaction_retries()
@@ -303,9 +334,87 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
       |> Ecto.Changeset.put_change(:inserted_at, scheduled_at)
       |> Ecto.Changeset.put_change(:state, state)
       |> Ecto.Changeset.put_change(:errors, errors)
-      |> Ecto.Changeset.put_change(:attempt, attempt)
       |> Oban.insert()
 
-    job
+    attempt =
+      case attempt do
+        :max -> job.max_attempts
+        :last_retryable -> max(job.max_attempts - 1, 1)
+        attempt -> attempt
+      end
+
+    if attempt > 0 do
+      job
+      |> Ecto.Changeset.change(attempt: attempt)
+      |> Repo.update!()
+    else
+      job
+    end
+  end
+
+  defp insert_remote_fetch_rows!(scheduled_at, args_list) do
+    values =
+      Enum.map(args_list, fn args ->
+        [
+          "available",
+          "remote_fetcher",
+          "Pleroma.Workers.RemoteFetcherWorker",
+          Jason.encode!(args),
+          scheduled_at,
+          scheduled_at
+        ]
+      end)
+
+    %{rows: rows} =
+      Repo.query!(
+        """
+        INSERT INTO oban_jobs (
+          state,
+          queue,
+          worker,
+          args,
+          meta,
+          tags,
+          errors,
+          attempt,
+          max_attempts,
+          priority,
+          scheduled_at,
+          inserted_at
+        )
+        SELECT
+          row_data.state::oban_job_state,
+          row_data.queue,
+          row_data.worker,
+          row_data.args::jsonb,
+          '{}'::jsonb,
+          ARRAY[]::varchar[],
+          ARRAY[]::jsonb[],
+          0,
+          1,
+          0,
+          row_data.scheduled_at,
+          row_data.inserted_at
+        FROM unnest(
+          $1::varchar[],
+          $2::varchar[],
+          $3::varchar[],
+          $4::varchar[],
+          $5::timestamp[],
+          $6::timestamp[]
+        ) AS row_data(
+          state,
+          queue,
+          worker,
+          args,
+          scheduled_at,
+          inserted_at
+        )
+        RETURNING id
+        """,
+        Enum.zip_with(values, & &1)
+      )
+
+    Enum.map(rows, fn [id] -> id end)
   end
 end

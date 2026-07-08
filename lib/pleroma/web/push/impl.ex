@@ -16,14 +16,15 @@ defmodule Pleroma.Web.Push.Impl do
   require Logger
   import Ecto.Query
 
-  @types ["Create", "Follow", "Announce", "Like", "Move", "EmojiReact", "Update"]
+  @types ["Create", "Follow", "Announce", "Like", "Move", "EmojiReact", "Update", "Join"]
+  @body_character_limit 80
 
   @doc "Performs sending notifications for user subscriptions"
   @spec perform(Notification.t()) :: list(any) | :error | {:error, :unknown_type}
   def perform(
         %{
           activity: %{data: %{"type" => activity_type}} = activity,
-          user: %User{id: user_id}
+          user_id: user_id
         } = notification
       )
       when activity_type in @types do
@@ -34,6 +35,7 @@ defmodule Pleroma.Web.Push.Impl do
     avatar_url = User.avatar_url(actor)
     object = Object.normalize(activity, fetch: false)
     user = User.get_cached_by_id(user_id)
+    notification = Map.put(notification, :user, user)
     direct_conversation_id = Activity.direct_conversation_id(activity, user)
 
     for subscription <- fetch_subscriptions(user_id),
@@ -63,19 +65,25 @@ defmodule Pleroma.Web.Push.Impl do
 
   @doc "Push message to web"
   def push_message(body, sub, api_key, subscription) do
-    case WebPushEncryption.send_web_push(body, sub, api_key) do
-      {:ok, %{status: code}} when code in 400..499 ->
-        Logger.debug("Removing subscription record")
-        Repo.delete!(subscription)
-        :ok
+    try do
+      case WebPushEncryption.send_web_push(body, sub, api_key) do
+        {:ok, %{status: code}} when code in 400..499 ->
+          Logger.debug("Removing subscription record")
+          Repo.delete!(subscription)
+          :ok
 
-      {:ok, %{status: code}} when code in 200..299 ->
-        :ok
+        {:ok, %{status: code}} when code in 200..299 ->
+          :ok
 
-      {:ok, %{status: code}} ->
-        Logger.error("Web Push Notification failed with code: #{code}")
-        :error
+        {:ok, %{status: code}} ->
+          Logger.error("Web Push Notification failed with code: #{code}")
+          :error
 
+        error ->
+          Logger.error("Web Push Notification failed with #{inspect(error)}")
+          :error
+      end
+    rescue
       error ->
         Logger.error("Web Push Notification failed with #{inspect(error)}")
         :error
@@ -126,9 +134,31 @@ defmodule Pleroma.Web.Push.Impl do
 
   def format_body(_activity, actor, %{data: %{"type" => "ChatMessage"} = data}, _) do
     case data["content"] do
-      nil -> "@#{actor.nickname}: (Attachment)"
-      content -> "@#{actor.nickname}: #{Utils.scrub_html_and_truncate(content, 80)}"
+      nil ->
+        "@#{actor.nickname}: (Attachment)"
+
+      content ->
+        "@#{actor.nickname}: #{Utils.scrub_html_and_truncate(content, @body_character_limit)}"
     end
+  end
+
+  def format_body(
+        %{type: "poll"},
+        _actor,
+        %{data: %{"type" => "Question"} = data},
+        _mastodon_type
+      ) do
+    question = poll_question(data)
+    options = poll_option_summary(data)
+
+    body =
+      if options == "" do
+        "Poll ended: #{question}"
+      else
+        "Poll ended: #{question} (#{options})"
+      end
+
+    Utils.scrub_html_and_truncate(body, @body_character_limit)
   end
 
   def format_body(
@@ -137,7 +167,7 @@ defmodule Pleroma.Web.Push.Impl do
         %{data: %{"content" => content}},
         _mastodon_type
       ) do
-    "@#{actor.nickname}: #{Utils.scrub_html_and_truncate(content, 80)}"
+    "@#{actor.nickname}: #{Utils.scrub_html_and_truncate(content, @body_character_limit)}"
   end
 
   def format_body(
@@ -146,7 +176,22 @@ defmodule Pleroma.Web.Push.Impl do
         %{data: %{"content" => content}},
         _mastodon_type
       ) do
-    "@#{actor.nickname} repeated: #{Utils.scrub_html_and_truncate(content, 80)}"
+    "@#{actor.nickname} repeated: #{Utils.scrub_html_and_truncate(content, @body_character_limit)}"
+  end
+
+  def format_body(
+        %{activity: %{data: %{"type" => "Join", "object" => group_ap_id}}} = notification,
+        actor,
+        _object,
+        mastodon_type
+      ) do
+    mastodon_type = mastodon_type || notification.type
+    group_name = group_name(group_ap_id)
+
+    case mastodon_type do
+      "group_follow_request" -> "@#{actor.nickname} has requested to follow #{group_name}"
+      _ -> "@#{actor.nickname} has followed #{group_name}"
+    end
   end
 
   def format_body(
@@ -197,10 +242,54 @@ defmodule Pleroma.Web.Push.Impl do
       "follow_request" -> "New Follow Request"
       "reblog" -> "New Repeat"
       "favourite" -> "New Favorite"
+      "poll" -> "Poll Results"
       "update" -> "New Update"
+      "group_follow" -> "New Group Follower"
+      "group_follow_request" -> "New Group Follow Request"
       "pleroma:chat_mention" -> "New Chat Message"
       "pleroma:emoji_reaction" -> "New Reaction"
       type -> "New #{String.capitalize(type || "event")}"
     end
   end
+
+  defp poll_question(%{"content" => content})
+       when is_binary(content) and byte_size(content) > 0 do
+    Utils.scrub_html_and_truncate(content, @body_character_limit)
+  end
+
+  defp poll_question(%{"name" => name}) when is_binary(name) and byte_size(name) > 0 do
+    Utils.scrub_html_and_truncate(name, @body_character_limit)
+  end
+
+  defp poll_question(_), do: "a poll"
+
+  defp poll_option_summary(%{"oneOf" => options}), do: poll_option_summary(options)
+  defp poll_option_summary(%{"anyOf" => options}), do: poll_option_summary(options)
+
+  defp poll_option_summary(options) when is_list(options) do
+    options
+    |> Enum.map(&poll_option_line/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("; ")
+  end
+
+  defp poll_option_summary(_), do: ""
+
+  defp poll_option_line(%{"name" => name, "replies" => %{"totalItems" => count}})
+       when is_binary(name) do
+    "#{name}: #{count}"
+  end
+
+  defp poll_option_line(%{"name" => name}) when is_binary(name), do: name
+  defp poll_option_line(_), do: nil
+
+  defp group_name(ap_id) when is_binary(ap_id) do
+    case User.get_cached_by_ap_id(ap_id) do
+      %User{name: name} when is_binary(name) and name != "" -> name
+      %User{nickname: nickname} -> nickname
+      _ -> "the group"
+    end
+  end
+
+  defp group_name(_), do: "the group"
 end

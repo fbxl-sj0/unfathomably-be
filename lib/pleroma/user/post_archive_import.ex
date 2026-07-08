@@ -349,7 +349,7 @@ defmodule Pleroma.User.PostArchiveImport do
          {:ok, activity_data} <- imported_create(activity, object, user, original_actor),
          {:ok, inserted} <- ActivityPub.insert(activity_data, false, false, true) do
       maybe_count_import(user, inserted)
-      maybe_follow_imported_thread(activity, object)
+      maybe_fetch_imported_thread(activity_data["object"])
       {:ok, :imported}
     else
       true -> {:ok, :skipped}
@@ -468,50 +468,6 @@ defmodule Pleroma.User.PostArchiveImport do
 
   defp replace_recipient(recipient, _user, _original_actor), do: recipient
 
-  defp maybe_follow_imported_thread(activity, object) do
-    [object["inReplyTo"], activity["inReplyTo"]]
-    |> Enum.flat_map(&object_id_values/1)
-    |> Enum.uniq()
-    |> Enum.each(&enqueue_imported_thread_fetch/1)
-
-    :ok
-  end
-
-  defp object_id_values(nil), do: []
-
-  defp object_id_values(value) do
-    value
-    |> recipient_value()
-    |> Enum.filter(&remote_object_id?/1)
-  end
-
-  defp remote_object_id?(id) when is_binary(id) do
-    case URI.parse(id) do
-      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
-        true
-
-      _ ->
-        false
-    end
-  end
-
-  defp remote_object_id?(_), do: false
-
-  defp enqueue_imported_thread_fetch(parent_id) do
-    %{"op" => "fetch_remote", "id" => parent_id, "depth" => 1, "thread" => true}
-    |> RemoteFetcherWorker.new()
-    |> Oban.insert()
-    |> case do
-      {:ok, _job} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.debug(
-          "Could not queue post archive thread fetch for #{parent_id}: #{inspect(reason)}"
-        )
-    end
-  end
-
   defp public?(activity, object) do
     public = Pleroma.Constants.as_public()
 
@@ -550,4 +506,14 @@ defmodule Pleroma.User.PostArchiveImport do
       {:ok, user}
     end
   end
+
+  defp maybe_fetch_imported_thread(%{"inReplyTo" => parent_id}) when is_binary(parent_id) do
+    %{"op" => "fetch_remote", "id" => parent_id, "depth" => 1, "thread" => true}
+    |> RemoteFetcherWorker.new()
+    |> Oban.insert()
+
+    :ok
+  end
+
+  defp maybe_fetch_imported_thread(_), do: :ok
 end

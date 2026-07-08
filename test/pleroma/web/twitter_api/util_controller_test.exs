@@ -80,6 +80,34 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
     end
   end
 
+  describe "GET /api/statusnet/config" do
+    test "returns legacy statusnet compatibility config", %{conn: conn} do
+      clear_config([:instance, :limit], 4321)
+      clear_config([:instance, :safe_dm_mentions], true)
+
+      response =
+        conn
+        |> get("/api/statusnet/config.json")
+        |> json_response(:ok)
+
+      assert response["site"]["textlimit"] == "4321"
+
+      assert response["site"]["vapidPublicKey"] ==
+               Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key)
+
+      assert response["site"]["safeDMMentionsEnabled"] == "1"
+
+      clear_config([:instance, :safe_dm_mentions], false)
+
+      response =
+        conn
+        |> get("/api/statusnet/config.json")
+        |> json_response(:ok)
+
+      assert response["site"]["safeDMMentionsEnabled"] == "0"
+    end
+  end
+
   describe "/api/pleroma/emoji" do
     test "returns json with custom emoji with tags", %{conn: conn} do
       emoji =

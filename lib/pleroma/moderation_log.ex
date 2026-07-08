@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.ModerationLog do
@@ -618,6 +618,13 @@ defmodule Pleroma.ModerationLog do
         }
       }) do
     "@#{actor_nickname} requested account backup for @#{user_nickname}"
+  end
+
+  def get_log_entry_message(%ModerationLog{data: data}) do
+    actor = get_in(data, ["actor", "nickname"]) || "unknown moderator"
+    action = Map.get(data, "action", "unknown action")
+
+    "@#{actor} performed unknown moderation action #{inspect(action)}"
   end
 
   defp nicknames_to_string(nicknames) do

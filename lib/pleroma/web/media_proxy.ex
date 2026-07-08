@@ -109,14 +109,16 @@ defmodule Pleroma.Web.MediaProxy do
 
     mediaproxy_whitelist_domains =
       [:media_proxy, :whitelist]
-      |> Config.get()
+      |> Config.get([])
       |> Kernel.++(["#{Upload.base_url()}"])
       |> Enum.map(&maybe_get_domain_from_url/1)
 
     is_binary(domain) and domain in mediaproxy_whitelist_domains
   end
 
-  defp maybe_get_domain_from_url(domain) when is_binary(domain), do: Pleroma.Instances.host(domain)
+  defp maybe_get_domain_from_url(domain) when is_binary(domain),
+    do: Pleroma.Instances.host(domain)
+
   defp maybe_get_domain_from_url(_), do: nil
 
   defp base64_sig64(url) do

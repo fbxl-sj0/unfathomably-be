@@ -90,6 +90,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 IMAGE="${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
 PREFIX="${SMOKE_PREFIX:-unfathomably-pair-smoke}"
 NETWORK="${SMOKE_NETWORK:-$PREFIX-net}"
+NETWORK_SUBNET="${SMOKE_NETWORK_SUBNET:-}"
 DB_CONTAINER="${PREFIX}-db"
 A_CONTAINER="${PREFIX}-a"
 B_CONTAINER="${PREFIX}-b"
@@ -100,7 +101,6 @@ B_PORT="${SMOKE_B_PORT:-4612}"
 DB_PASSWORD="${SMOKE_DB_PASSWORD:-postgres}"
 PASSWORD="${SMOKE_USER_PASSWORD:-SmokeTest_01}"
 KEEP_SMOKE="${KEEP_SMOKE:-0}"
-SMOKE_SKIP_SOURCE_CHECKS="${SMOKE_SKIP_SOURCE_CHECKS:-0}"
 WORK_DIR="${SMOKE_WORK_DIR:-}"
 SMOKE_BUILD_HOST_PATH=""
 
@@ -424,48 +424,6 @@ end)
 EOF
 }
 
-write_mark_source_actor_script() {
-    cat >"$WORK_DIR/mark_source_actor.exs" <<'EOF'
-import Ecto.Query
-
-alias Pleroma.Repo
-alias Pleroma.User
-
-nickname = System.fetch_env!("SMOKE_SOURCE_NICKNAME")
-actor_type = System.get_env("SMOKE_SOURCE_ACTOR_TYPE", "Service")
-
-case Repo.update_all(from(u in User, where: u.nickname == ^nickname), set: [actor_type: actor_type]) do
-  {1, _} ->
-    :ok
-
-  {count, _} ->
-    raise "expected to mark exactly one smoke source actor for #{nickname}, updated #{count}"
-end
-EOF
-}
-
-mark_source_actor() {
-    local label="$1"
-    local secret="$2"
-    local nickname="$3"
-    local actor_type="${4:-Service}"
-
-    docker run --rm \
-        --name "${PREFIX}-source-actor-$label" \
-        --network "$NETWORK" \
-        -e MIX_ENV=dev \
-        -e MIX_HOME=/tmp/mix \
-        -e HEX_HOME=/tmp/hex \
-        -e MIX_BUILD_PATH="$MIX_BUILD_PATH" \
-        -e SMOKE_SOURCE_NICKNAME="$nickname" \
-        -e SMOKE_SOURCE_ACTOR_TYPE="$actor_type" \
-        -v "$REPO_ROOT:/work" \
-        -v "$secret:/work/config/dev.secret.exs:ro" \
-        -v "$WORK_DIR/mark_source_actor.exs:/tmp/mark_source_actor.exs:ro" \
-        "$IMAGE" \
-        bash -lc 'set -euo pipefail; cd /work; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; mix compile --force >/dev/null; mix run /tmp/mark_source_actor.exs >/dev/null'
-}
-
 write_secret() {
     local file="$1"
     local instance_name="$2"
@@ -566,6 +524,14 @@ start_instance() {
     local alias="$2"
     local port="$3"
     local secret="$4"
+    local ca_args=()
+
+    if [ -n "${SMOKE_EXTRA_CA_CERT:-}" ]; then
+        ca_args=(
+            -e SSL_CERT_FILE=/tmp/smoke-extra-ca.pem
+            -v "$SMOKE_EXTRA_CA_CERT:/tmp/smoke-extra-ca.pem:ro"
+        )
+    fi
 
     docker run -d \
         --name "$container" \
@@ -577,6 +543,7 @@ start_instance() {
         -e MIX_HOME=/tmp/mix \
         -e HEX_HOME=/tmp/hex \
         -e MIX_BUILD_PATH="$MIX_BUILD_PATH" \
+        "${ca_args[@]}" \
         -v "$REPO_ROOT:/work" \
         -v "$secret:/work/config/dev.secret.exs:ro" \
         "$IMAGE" \
@@ -650,7 +617,11 @@ docker network rm "$NETWORK" >/dev/null 2>&1 || true
 mkdir -p "$WORK_DIR/a/uploads" "$WORK_DIR/a/static" "$WORK_DIR/b/uploads" "$WORK_DIR/b/static"
 
 step "Creating Docker network and database"
-docker network create "$NETWORK" >/dev/null
+if [ -n "$NETWORK_SUBNET" ]; then
+    docker network create --subnet "$NETWORK_SUBNET" "$NETWORK" >/dev/null
+else
+    docker network create "$NETWORK" >/dev/null
+fi
 docker run -d \
     --name "$DB_CONTAINER" \
     --network "$NETWORK" \
@@ -696,16 +667,13 @@ prepare_database "pleroma_smoke_b" "$B_SECRET"
 
 step "Creating smoke users"
 write_create_user_script
-write_mark_source_actor_script
 create_users "a" "$A_SECRET" \
     "alice" "alice@$A_HOST" \
-    "sourcea" "sourcea@$A_HOST" \
     "moda" "moda@$A_HOST" \
     "thirda" "thirda@$A_HOST"
 create_users "b" "$B_SECRET" \
     "bob" "bob@$B_HOST" \
     "carol" "carol@$B_HOST"
-mark_source_actor "a" "$A_SECRET" "sourcea" "Service"
 
 A_BASE="http://127.0.0.1:$A_PORT"
 B_BASE="http://127.0.0.1:$B_PORT"
@@ -851,22 +819,10 @@ json_assert "$REMOTE_PREVIEW" '"items" in data' "remote group preview returns an
 REMOTE_LEAVE="$(http_json POST "$B_BASE/api/v1/groups/$REMOTE_GROUP_ID/leave" "$BOB_TOKEN" 200)"
 json_assert "$REMOTE_LEAVE" 'data["requested"] is False or data["member"] is False' "remote group leave clears relationship state"
 
-if [ "$SMOKE_SKIP_SOURCE_CHECKS" = "1" ]; then
-    step "Skipping source lookup precheck"
-else
-    step "Testing source lookup, follow, and unfollow across the pair"
-    SOURCE_ACTOR_URL="http://$A_HOST:4000/users/sourcea"
-    SOURCE_LOOKUP_URI="$(urlencode "$SOURCE_ACTOR_URL")"
-    REMOTE_SOURCE="$(http_json GET "$B_BASE/api/v1/sources/lookup?name=$SOURCE_LOOKUP_URI" "$BOB_TOKEN" 200)"
-    REMOTE_SOURCE_ID="$(json_get "$REMOTE_SOURCE" id)"
-    json_assert "$REMOTE_SOURCE" 'data["actor_type"] != "Group"' "remote source lookup resolves a non-group actor"
-
-    SOURCE_FOLLOW="$(http_json POST "$B_BASE/api/v1/sources/$REMOTE_SOURCE_ID/follow" "$BOB_TOKEN" 200)"
-    json_assert "$SOURCE_FOLLOW" 'data["requested"] is True or data["following"] is True' "remote source follow creates a follow state"
-
-    SOURCE_UNFOLLOW="$(http_json POST "$B_BASE/api/v1/sources/$REMOTE_SOURCE_ID/unfollow" "$BOB_TOKEN" 200)"
-    json_assert "$SOURCE_UNFOLLOW" 'data["requested"] is False or data["following"] is False' "remote source unfollow clears relationship state"
-fi
+step "Testing ordinary profiles stay out of source lookup"
+ALICE_ACTOR_URL="$(json_get "$ALICE_ACCOUNT" url)"
+ALICE_SOURCE_LOOKUP_URI="$(urlencode "$ALICE_ACTOR_URL")"
+http_json GET "$B_BASE/api/v1/sources/lookup?name=$ALICE_SOURCE_LOOKUP_URI" "$BOB_TOKEN" 404 >/dev/null
 
 step "Testing bidirectional group federation proof matrix"
 PROOF_ID="$(basename "$WORK_DIR")"

@@ -280,8 +280,8 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
 
       response = get(conn, url)
 
-      assert response.status == 302
-      assert redirected_to(response) == media_proxy_url
+      assert response.status == 301
+      assert redirected_to(response, 301) == media_proxy_url
     end
 
     test "with `static` param and non-GIF image preview requested, " <>
@@ -322,8 +322,36 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
 
       response = get(conn, url)
 
-      assert response.status == 302
-      assert redirected_to(response) == media_proxy_url
+      assert response.status == 301
+      assert redirected_to(response, 301) == media_proxy_url
+    end
+
+    test "redirects to media proxy URI with 301 when image is too small for preview", %{
+      conn: conn,
+      url: url,
+      media_proxy_url: media_proxy_url
+    } do
+      clear_config([:media_preview_proxy],
+        enabled: true,
+        min_content_length: 1000,
+        image_quality: 85,
+        thumbnail_max_width: 100,
+        thumbnail_max_height: 100
+      )
+
+      Tesla.Mock.mock(fn
+        %{method: "HEAD", url: ^media_proxy_url} ->
+          %Tesla.Env{
+            status: 200,
+            body: "",
+            headers: [{"content-type", "image/png"}, {"content-length", "500"}]
+          }
+      end)
+
+      response = get(conn, url)
+
+      assert response.status == 301
+      assert redirected_to(response, 301) == media_proxy_url
     end
 
     test "thumbnails PNG images into PNG", %{

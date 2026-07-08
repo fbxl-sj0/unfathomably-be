@@ -47,6 +47,14 @@ defmodule Pleroma.CaptchaTest do
 
       assert Kocaptcha.validate(token, "7oEy8c", answer) == :ok
     end
+
+    test "invalid answer data returns invalid instead of raising" do
+      token = "afa1815e14e29355e6c8f6b143a39fa2"
+      answer = "63615261b77f5354fb8c4e4986477555"
+
+      assert {:error, :invalid} == Kocaptcha.validate(token, "7oEy8c", nil)
+      assert {:error, :invalid} == Kocaptcha.validate(token, nil, answer)
+    end
   end
 
   describe "Native" do

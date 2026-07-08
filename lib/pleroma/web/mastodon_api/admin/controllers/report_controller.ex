@@ -1,15 +1,9 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.Admin.ReportController do
   use Pleroma.Web, :controller
-
-  import Pleroma.Web.ControllerHelper,
-    only: [
-      add_link_headers: 2,
-      json_response: 3
-    ]
 
   alias Pleroma.Activity
   alias Pleroma.ModerationLog
@@ -18,6 +12,7 @@ defmodule Pleroma.Web.MastodonAPI.Admin.ReportController do
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.AdminAPI.Report
   alias Pleroma.Web.CommonAPI
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate)
@@ -31,6 +26,9 @@ defmodule Pleroma.Web.MastodonAPI.Admin.ReportController do
   )
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.MastodonAdmin.ReportOperation
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
+
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
 
   def index(conn, params) do
     opts =

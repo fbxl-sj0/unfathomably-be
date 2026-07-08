@@ -30,9 +30,16 @@ defmodule Pleroma.Web.MastodonAPI.MarkerController do
   def upsert(%{assigns: %{user: user}, body_params: params} = conn, _) do
     params = Map.new(params, fn {key, value} -> {to_string(key), value} end)
 
-    with {:ok, result} <- Pleroma.Marker.upsert(user, params),
+    with {:ok, _} <- mark_notifications_read(user, params),
+         {:ok, result} <- Pleroma.Marker.upsert(user, params),
          markers <- Map.values(result) do
       render(conn, "markers.json", %{markers: markers})
     end
   end
+
+  defp mark_notifications_read(user, %{"notifications" => %{last_read_id: last_read_id}}) do
+    Pleroma.Notification.set_read_up_to(user, last_read_id)
+  end
+
+  defp mark_notifications_read(_, _), do: {:ok, :noop}
 end

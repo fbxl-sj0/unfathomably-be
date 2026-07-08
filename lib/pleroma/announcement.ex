@@ -23,28 +23,38 @@ defmodule Pleroma.Announcement do
     timestamps(type: :utc_datetime)
   end
 
-  def change(struct, params \\ %{}) do
-    struct
-    |> cast(validate_params(struct, params), [:data, :starts_at, :ends_at, :rendered])
+  @doc "Generates changeset for %Pleroma.Announcement{}"
+  @spec changeset(t(), map()) :: Ecto.Changeset.t()
+  def changeset(announcement \\ %__MODULE__{}, params \\ %{}) do
+    announcement
+    |> cast(validate_params(announcement, params), [:data, :starts_at, :ends_at, :rendered])
     |> validate_required([:data])
   end
 
-  defp validate_params(struct, params) do
+  def change(announcement \\ %__MODULE__{}, params \\ %{}) do
+    changeset(announcement, params)
+  end
+
+  defp validate_params(announcement, params) do
     base_data =
       %{
         "content" => "",
         "all_day" => false
       }
-      |> Map.merge((struct && struct.data) || %{})
+      |> Map.merge((announcement && announcement.data) || %{})
 
     merged_data =
-      Map.merge(base_data, Map.get(params, :data, %{}))
+      Map.merge(base_data, params_data(params))
       |> Map.take(["content", "all_day"])
 
     params
     |> Map.merge(%{data: merged_data})
     |> add_rendered_properties()
   end
+
+  defp params_data(%{data: data}) when is_map(data), do: data
+  defp params_data(%{"data" => data}) when is_map(data), do: data
+  defp params_data(_params), do: %{}
 
   def add_rendered_properties(params) do
     {content_html, _, _} =
@@ -61,13 +71,13 @@ defmodule Pleroma.Announcement do
   end
 
   def add(params) do
-    changeset = change(%__MODULE__{}, params)
+    changeset = changeset(%__MODULE__{}, params)
 
     Repo.insert(changeset)
   end
 
   def update(announcement, params) do
-    changeset = change(announcement, params)
+    changeset = changeset(announcement, params)
 
     Repo.update(changeset)
   end

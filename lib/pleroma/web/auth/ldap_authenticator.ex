@@ -31,51 +31,76 @@ defmodule Pleroma.Web.Auth.LDAPAuthenticator do
         @base.get_user(conn)
 
       error ->
-        error
+        Logger.error("Could not authenticate LDAP user: #{inspect(error)}")
+        {:error, {:ldap_bind_error, error}}
     end
   end
 
+  def change_password(user, password, new_password, new_password) do
+    case ldap_change_password(user.nickname, password, new_password) do
+      :ok -> {:ok, user}
+      error -> error
+    end
+  end
+
+  def change_password(_, _, _, _), do: {:error, :password_confirmation}
+
   defp ldap_user(name, password) do
     ldap = Pleroma.Config.get(:ldap, [])
+
+    with_ldap_connection(ldap, fn connection ->
+      bind_user(connection, ldap, name, password)
+    end)
+  end
+
+  defp ldap_change_password(name, password, new_password) do
+    ldap = Pleroma.Config.get(:ldap, [])
+
+    with_ldap_connection(ldap, fn connection ->
+      dn = make_dn(ldap, name)
+
+      with :ok <- :eldap.simple_bind(connection, dn, password) do
+        :eldap.modify_password(connection, dn, to_charlist(new_password), to_charlist(password))
+      end
+    end)
+  end
+
+  defp with_ldap_connection(ldap, fun) do
     host = Keyword.get(ldap, :host, "localhost")
     port = Keyword.get(ldap, :port, 389)
     ssl = Keyword.get(ldap, :ssl, false)
-    sslopts = Keyword.get(ldap, :sslopts, [])
-    tlsopts = Keyword.get(ldap, :tlsopts, [])
+    tls = Keyword.get(ldap, :tls, false)
+    cacertfile = Keyword.get(ldap, :cacertfile) || CAStore.file_path()
 
-    options =
-      [{:port, port}, {:ssl, ssl}, {:timeout, @connection_timeout}] ++
-        if sslopts != [], do: [{:sslopts, sslopts}], else: []
+    if ssl or tls do
+      :application.ensure_all_started(:ssl)
+    end
+
+    default_secure_opts = [
+      verify: :verify_peer,
+      cacerts: decode_certfile(cacertfile),
+      customize_hostname_check: [
+        fqdn_fun: fn _ -> to_charlist(host) end
+      ]
+    ]
+
+    sslopts = Keyword.merge(default_secure_opts, Keyword.get(ldap, :sslopts, []))
+    tlsopts = Keyword.merge(default_secure_opts, Keyword.get(ldap, :tlsopts, []))
+
+    options = [{:port, port}, {:ssl, ssl}, {:timeout, @connection_timeout}]
+    options = if ssl, do: [{:sslopts, sslopts} | options], else: options
 
     case :eldap.open([to_charlist(host)], options) do
       {:ok, connection} ->
         try do
-          if Keyword.get(ldap, :tls, false) do
-            :application.ensure_all_started(:ssl)
+          case maybe_start_tls(connection, tls, tlsopts) do
+            :ok ->
+              fun.(connection)
 
-            case :eldap.start_tls(
-                   connection,
-                   Keyword.merge(
-                     [
-                       verify: :verify_peer,
-                       cacerts: :certifi.cacerts(),
-                       customize_hostname_check: [
-                         fqdn_fun: fn _ -> to_charlist(host) end
-                       ]
-                     ],
-                     tlsopts
-                   ),
-                   @connection_timeout
-                 ) do
-              :ok ->
-                :ok
-
-              error ->
-                Logger.error("Could not start TLS: #{inspect(error)}")
-            end
+            error ->
+              Logger.error("Could not start TLS: #{inspect(error)}")
+              error
           end
-
-          bind_user(connection, ldap, name, password)
         after
           :eldap.close(connection)
         end
@@ -86,17 +111,23 @@ defmodule Pleroma.Web.Auth.LDAPAuthenticator do
     end
   end
 
-  defp bind_user(connection, ldap, name, password) do
-    uid = Keyword.get(ldap, :uid, "cn")
-    base = Keyword.get(ldap, :base)
+  defp maybe_start_tls(_connection, false, _tlsopts), do: :ok
 
-    case :eldap.simple_bind(connection, "#{uid}=#{name},#{base}", password) do
+  defp maybe_start_tls(connection, true, tlsopts) do
+    :eldap.start_tls(connection, tlsopts, @connection_timeout)
+  end
+
+  defp bind_user(connection, ldap, name, password) do
+    case :eldap.simple_bind(connection, make_dn(ldap, name), password) do
       :ok ->
         case fetch_user(name) do
           %User{} = user ->
             user
 
           _ ->
+            uid = Keyword.get(ldap, :uid, "cn")
+            base = Keyword.get(ldap, :base)
+
             register_user(connection, base, uid, name)
         end
 
@@ -115,28 +146,57 @@ defmodule Pleroma.Web.Auth.LDAPAuthenticator do
            {:scope, :eldap.wholeSubtree()},
            {:timeout, @search_timeout}
          ]) do
+      # OTP 24.3 added a controls field to the :eldap_search_result record.
+      # Accept both shapes so automatic LDAP account registration keeps working
+      # across Erlang/OTP release trains.
       {:ok, {:eldap_search_result, [{:eldap_entry, _, attributes}], _}} ->
-        params = %{
-          name: name,
-          nickname: name,
-          password: nil
-        }
+        try_register(name, attributes, mail_attribute)
 
-        params =
-          case List.keyfind(attributes, to_charlist(mail_attribute), 0) do
-            {_, [mail]} -> Map.put_new(params, :email, :erlang.list_to_binary(mail))
-            _ -> params
-          end
-
-        changeset = User.register_changeset_ldap(%User{}, params)
-
-        case User.register(changeset) do
-          {:ok, user} -> user
-          error -> error
-        end
+      {:ok, {:eldap_search_result, [{:eldap_entry, _, attributes}], _, _}} ->
+        try_register(name, attributes, mail_attribute)
 
       error ->
-        error
+        Logger.error("Could not register LDAP user #{name}: #{inspect(error)}")
+        {:error, {:ldap_search_error, error}}
     end
+  end
+
+  defp try_register(name, attributes, mail_attribute) do
+    params = %{
+      name: name,
+      nickname: name,
+      password: nil
+    }
+
+    params =
+      case List.keyfind(attributes, to_charlist(mail_attribute), 0) do
+        {_, [mail]} -> Map.put_new(params, :email, :erlang.list_to_binary(mail))
+        _ -> params
+      end
+
+    changeset = User.register_changeset_ldap(%User{}, params)
+
+    case User.register(changeset) do
+      {:ok, user} -> user
+      error -> error
+    end
+  end
+
+  defp decode_certfile(file) do
+    with {:ok, data} <- File.read(file) do
+      data
+      |> :public_key.pem_decode()
+      |> Enum.map(fn {_, cert, _} -> cert end)
+    else
+      _ ->
+        Logger.error("Unable to read LDAP certfile: #{file}")
+        []
+    end
+  end
+
+  defp make_dn(ldap, name) do
+    uid = Keyword.get(ldap, :uid, "cn")
+    base = Keyword.get(ldap, :base)
+    "#{uid}=#{name},#{base}"
   end
 end

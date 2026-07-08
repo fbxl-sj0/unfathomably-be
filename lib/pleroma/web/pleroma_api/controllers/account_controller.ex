@@ -1,18 +1,11 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.AccountController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper,
-    only: [
-      json_response: 3,
-      add_link_headers: 2,
-      embed_relationships?: 1,
-      assign_account_by_id: 2
-    ]
-
+  alias Pleroma.Web.ControllerHelper
   import Ecto.Query, only: [order_by: 2]
 
   alias Pleroma.User
@@ -66,6 +59,13 @@ defmodule Pleroma.Web.PleromaAPI.AccountController do
   )
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.PleromaAccountOperation
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
+
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
+
+  defp embed_relationships?(params), do: ControllerHelper.embed_relationships?(params)
+
+  defp assign_account_by_id(conn, opts), do: ControllerHelper.assign_account_by_id(conn, opts)
 
   @doc "POST /api/v1/pleroma/accounts/confirmation_resend"
   def confirmation_resend(conn, params) do

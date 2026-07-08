@@ -36,6 +36,13 @@ defmodule Pleroma.Factory do
     }
   end
 
+  def hashtag_factory(attrs \\ %{}) do
+    %Pleroma.Hashtag{
+      name: sequence(:hashtag, &"hashtag#{&1}")
+    }
+    |> merge_attributes(attrs)
+  end
+
   def user_factory(attrs \\ %{}) do
     pem = Enum.random(@rsa_keys)
 
@@ -287,6 +294,29 @@ defmodule Pleroma.Factory do
       actor: data["actor"],
       recipients: data["to"]
     }
+  end
+
+  def activity_factory(attrs \\ %{}) do
+    user = attrs[:user] || insert(:user)
+
+    data =
+      %{
+        "id" => Pleroma.Web.ActivityPub.Utils.generate_activity_id(),
+        "type" => "Create",
+        "actor" => user.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "published" => DateTime.utc_now() |> DateTime.to_iso8601()
+      }
+      |> Map.merge(Map.get(attrs, :data, %{}))
+
+    attrs = Map.drop(attrs, [:user, :data])
+
+    %Pleroma.Activity{
+      data: data,
+      actor: Map.get(attrs, :actor, data["actor"]),
+      recipients: Map.get(attrs, :recipients, data["to"])
+    }
+    |> Map.merge(attrs)
   end
 
   def add_activity_factory(attrs \\ %{}) do

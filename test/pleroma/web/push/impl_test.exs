@@ -9,8 +9,10 @@ defmodule Pleroma.Web.Push.ImplTest do
 
   alias Pleroma.Notification
   alias Pleroma.Object
+  alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.Push.Impl
   alias Pleroma.Web.Push.Subscription
@@ -146,6 +148,67 @@ defmodule Pleroma.Web.Push.ImplTest do
 
     assert Impl.format_title(%{activity: activity, type: "follow"}) ==
              "New Follower"
+  end
+
+  test "renders title and body for group join activity" do
+    actor = insert(:user, nickname: "Bob")
+    group = insert(:user, actor_type: "Group", name: "Coffee Club")
+
+    activity =
+      insert(:activity,
+        actor: actor.ap_id,
+        recipients: [group.ap_id],
+        data: %{
+          "id" => Utils.generate_activity_id(),
+          "type" => "Join",
+          "actor" => actor.ap_id,
+          "object" => group.ap_id,
+          "state" => "accept"
+        }
+      )
+
+    assert Impl.format_body(%{activity: activity, type: "group_follow"}, actor, nil) ==
+             "@Bob has followed Coffee Club"
+
+    assert Impl.format_title(%{activity: activity, type: "group_follow"}) ==
+             "New Group Follower"
+
+    assert Impl.format_body(%{activity: activity, type: "group_follow_request"}, actor, nil) ==
+             "@Bob has requested to follow Coffee Club"
+
+    assert Impl.format_title(%{activity: activity, type: "group_follow_request"}) ==
+             "New Group Follow Request"
+  end
+
+  test "performs sending group follow push notifications" do
+    actor = insert(:user)
+    owner = insert(:user)
+    group = insert(:user, actor_type: "Group", name: "Coffee Club")
+
+    insert(:push_subscription, user: owner, data: %{alerts: %{"group_follow" => true}})
+
+    activity =
+      insert(:activity,
+        actor: actor.ap_id,
+        recipients: [owner.ap_id],
+        data: %{
+          "id" => Utils.generate_activity_id(),
+          "type" => "Join",
+          "actor" => actor.ap_id,
+          "object" => group.ap_id,
+          "state" => "accept"
+        }
+      )
+
+    notification =
+      insert(:notification,
+        user: owner,
+        activity: activity,
+        type: "group_follow"
+      )
+      |> Repo.preload([:activity, :user])
+
+    assert Impl.perform(notification) == {:ok, [:ok]}
   end
 
   test "renders title and body for announce activity" do

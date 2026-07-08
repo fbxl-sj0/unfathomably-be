@@ -294,6 +294,22 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     {:ok, object, meta}
   end
 
+  defp ensure_announce_counters(%Object{data: data} = object) do
+    announcements =
+      case data["announcements"] do
+        announcements when is_list(announcements) -> announcements
+        _ -> []
+      end
+
+    count = length(announcements)
+
+    if data["announcement_count"] == count do
+      {:ok, object}
+    else
+      Utils.update_element_in_object("announcement", announcements, object, count)
+    end
+  end
+
   @impl true
   def handle(%{data: %{"type" => "Undo", "object" => undone_object}} = object, meta) do
     with undone_object_id when is_binary(undone_object_id) <- object_ap_id(undone_object),
@@ -341,9 +357,9 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     result =
       case deleted_object do
         %Object{} ->
-          with {:ok, deleted_object, _activity} <- Object.delete(deleted_object),
+          with {_, {:ok, deleted_object, _activity}} <- {:object, Object.delete(deleted_object)},
                {_, actor} when is_binary(actor) <- {:actor, deleted_object.data["actor"]},
-               %User{} = user <- User.get_cached_by_ap_id(actor) do
+               {_, %User{} = user} <- {:user, User.get_cached_by_ap_id(actor)} do
             User.remove_pinned_object_id(user, deleted_object.data["id"])
 
             {:ok, user} = ActivityPub.decrease_note_count_if_public(user, deleted_object)
@@ -366,6 +382,17 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
             {:actor, _} ->
               @logger.error("The object doesn't have an actor: #{inspect(deleted_object)}")
               :no_object_actor
+
+            {:user, _} ->
+              @logger.error(
+                "The object's actor could not be resolved to a user: #{inspect(deleted_object)}"
+              )
+
+              :no_object_user
+
+            {:object, _} ->
+              @logger.error("The object could not be deleted: #{inspect(deleted_object)}")
+              {:error, object}
           end
 
         %User{} ->
@@ -386,6 +413,21 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       {:ok, object, meta}
     else
       {:error, result}
+    end
+  end
+
+  defp handle_missing_delete_target(meta) do
+    case Keyword.get(meta, :delete_target) do
+      %{state: :remote_tombstone} ->
+        :ok
+
+      %{state: :pruned_object_with_create, create_activity: %Activity{} = create_activity} ->
+        with {:ok, _activity} <- Repo.delete(create_activity) do
+          :ok
+        end
+
+      _ ->
+        :missing_delete_target
     end
   end
 
@@ -502,37 +544,6 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   @impl true
   def handle(object, meta) do
     {:ok, object, meta}
-  end
-
-  defp ensure_announce_counters(%Object{data: data} = object) do
-    announcements =
-      case data["announcements"] do
-        announcements when is_list(announcements) -> announcements
-        _ -> []
-      end
-
-    count = length(announcements)
-
-    if data["announcement_count"] == count do
-      {:ok, object}
-    else
-      Utils.update_element_in_object("announcement", announcements, object, count)
-    end
-  end
-
-  defp handle_missing_delete_target(meta) do
-    case Keyword.get(meta, :delete_target) do
-      %{state: :remote_tombstone} ->
-        :ok
-
-      %{state: :pruned_object_with_create, create_activity: %Activity{} = create_activity} ->
-        with {:ok, _activity} <- Repo.delete(create_activity) do
-          :ok
-        end
-
-      _ ->
-        :missing_delete_target
-    end
   end
 
   defp add_collection_object(data) do
@@ -824,6 +835,38 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     end
   end
 
+  defp chat_message_streamables(object, meta) do
+    with %User{} = actor <- User.get_cached_by_ap_id(object.data["actor"]),
+         %User{} = recipient <-
+           object.data["to"] |> chat_message_recipient_id() |> User.get_cached_by_ap_id() do
+      [[actor, recipient], [recipient, actor]]
+      |> Enum.uniq()
+      |> Enum.map(fn [user, other_user] ->
+        if user.local do
+          {:ok, chat} = Chat.bump_or_create(user.id, other_user.ap_id)
+          {:ok, cm_ref} = MessageReference.create(chat, object, user.ap_id != actor.ap_id)
+
+          @cachex.put(
+            :chat_message_id_idempotency_key_cache,
+            cm_ref.id,
+            meta[:idempotency_key]
+          )
+
+          {
+            ["user", "user:pleroma_chat"],
+            {user, %{cm_ref | chat: chat, object: object}}
+          }
+        end
+      end)
+      |> Enum.filter(& &1)
+    else
+      _ -> []
+    end
+  end
+
+  defp chat_message_recipient_id([recipient | _]) when is_binary(recipient), do: recipient
+  defp chat_message_recipient_id(_), do: nil
+
   def handle_object_creation(%{"type" => "Question"} = object, activity, meta) do
     with {:ok, object, meta} <- Pipeline.common_pipeline(object, meta) do
       PollWorker.schedule_poll_end(activity)
@@ -863,38 +906,6 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   def handle_object_creation(object, _activity, meta) do
     {:ok, object, meta}
   end
-
-  defp chat_message_streamables(object, meta) do
-    with %User{} = actor <- User.get_cached_by_ap_id(object.data["actor"]),
-         %User{} = recipient <-
-           object.data["to"] |> chat_message_recipient_id() |> User.get_cached_by_ap_id() do
-      [[actor, recipient], [recipient, actor]]
-      |> Enum.uniq()
-      |> Enum.map(fn [user, other_user] ->
-        if user.local do
-          {:ok, chat} = Chat.bump_or_create(user.id, other_user.ap_id)
-          {:ok, cm_ref} = MessageReference.create(chat, object, user.ap_id != actor.ap_id)
-
-          @cachex.put(
-            :chat_message_id_idempotency_key_cache,
-            cm_ref.id,
-            meta[:idempotency_key]
-          )
-
-          {
-            ["user", "user:pleroma_chat"],
-            {user, %{cm_ref | chat: chat, object: object}}
-          }
-        end
-      end)
-      |> Enum.filter(& &1)
-    else
-      _ -> []
-    end
-  end
-
-  defp chat_message_recipient_id([recipient | _]) when is_binary(recipient), do: recipient
-  defp chat_message_recipient_id(_), do: nil
 
   defp undo_like(nil, object), do: delete_object(object)
 

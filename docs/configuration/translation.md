@@ -14,7 +14,7 @@ The Rebased OpenTranslate provider advertises English as the only target
 language. Source languages come from the languages loaded by the translation
 service.
 
-For example, if the translation service is running on `192.168.250.99` and
+For example, if the translation service is running on `10.0.0.10` and
 listening on port `5000`, configure Rebased like this:
 
 ```elixir
@@ -22,7 +22,7 @@ config :pleroma, Pleroma.Language.Translation,
   provider: Pleroma.Language.Translation.Opentranslate
 
 config :pleroma, Pleroma.Language.Translation.Opentranslate,
-  base_url: "http://192.168.250.99:5000",
+  base_url: "http://10.0.0.10:5000",
   api_key: nil
 ```
 

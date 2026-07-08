@@ -21,15 +21,6 @@ defmodule Pleroma.Workers.BackgroundWorker do
     end
   end
 
-  def perform(%Job{args: %{"op" => "delete_user", "user_id" => user_id}})
-      when valid_job_id(user_id) do
-    with %User{} = user <- get_cached_user(user_id) do
-      User.perform(:delete, user)
-    else
-      nil -> {:cancel, :user_not_found}
-    end
-  end
-
   def perform(%Job{args: %{"op" => "force_password_reset", "user_id" => user_id}})
       when valid_job_id(user_id) do
     with %User{} = user <- get_cached_user(user_id) do
@@ -43,7 +34,17 @@ defmodule Pleroma.Workers.BackgroundWorker do
       when op in ["blocks_import", "follow_import", "mutes_import"] and valid_job_id(user_id) and
              is_list(identifiers) do
     with %User{} = user <- get_cached_user(user_id) do
-      {:ok, User.Import.perform(String.to_atom(op), user, identifiers)}
+      User.Import.perform(String.to_existing_atom(op), user, identifiers)
+    else
+      nil -> {:cancel, :user_not_found}
+    end
+  end
+
+  def perform(%Job{args: %{"op" => op, "user_id" => user_id, "actor" => actor}})
+      when op in ["block_import", "follow_import", "mute_import"] and valid_job_id(user_id) and
+             is_binary(actor) do
+    with %User{} = user <- get_cached_user(user_id) do
+      User.Import.perform(String.to_existing_atom(op), user, actor)
     else
       nil -> {:cancel, :user_not_found}
     end
@@ -77,14 +78,15 @@ defmodule Pleroma.Workers.BackgroundWorker do
     end
   end
 
-  def perform(%Job{args: %{"op" => "delete_instance", "host" => host}}) when is_binary(host) do
+  def perform(%Job{args: %{"op" => "delete_instance", "host" => host}})
+      when is_binary(host) and byte_size(host) > 0 do
     Instance.perform(:delete_instance, host)
   end
 
-  def perform(%Job{}), do: :discard
+  def perform(%Job{}), do: {:cancel, :bad_request}
 
   @impl Oban.Worker
-  def timeout(_job), do: :timer.seconds(900)
+  def timeout(_job), do: :timer.seconds(15)
 
   defp get_cached_user(user_id) do
     User.get_cached_by_id(user_id)

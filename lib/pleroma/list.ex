@@ -9,6 +9,7 @@ defmodule Pleroma.List do
   import Ecto.Changeset
 
   alias Pleroma.Activity
+  alias Pleroma.Emoji
   alias Pleroma.Repo
   alias Pleroma.User
 
@@ -18,6 +19,7 @@ defmodule Pleroma.List do
     field(:following, {:array, :string}, default: [])
     field(:ap_id, :string)
     field(:exclusive, :boolean, default: false)
+    field(:emoji, :string)
 
     timestamps()
   end
@@ -28,8 +30,10 @@ defmodule Pleroma.List do
 
   def update_changeset(list, attrs \\ %{}) do
     list
-    |> cast(attrs, [:title, :exclusive])
+    |> cast(attrs, [:title, :exclusive, :emoji])
+    |> fix_emoji()
     |> validate_required([:title])
+    |> validate_emoji()
   end
 
   def follow_changeset(list, attrs \\ %{}) do
@@ -162,6 +166,41 @@ defmodule Pleroma.List do
     list
     |> follow_changeset(attrs)
     |> Repo.update()
+  end
+
+  defp fix_emoji(changeset) do
+    with emoji when is_binary(emoji) <- get_field(changeset, :emoji) do
+      emoji =
+        emoji
+        |> Emoji.fully_qualify_emoji()
+        |> Emoji.maybe_quote()
+
+      put_change(changeset, :emoji, emoji)
+    else
+      _ -> changeset
+    end
+  end
+
+  defp validate_emoji(changeset) do
+    validate_change(changeset, :emoji, fn
+      :emoji, nil ->
+        []
+
+      :emoji, emoji ->
+        if Emoji.is_unicode_emoji?(emoji) or valid_local_custom_emoji?(emoji) do
+          []
+        else
+          [emoji: "Invalid emoji"]
+        end
+    end)
+  end
+
+  defp valid_local_custom_emoji?(emoji) do
+    with %{file: _path} <- Emoji.get(emoji) do
+      true
+    else
+      _ -> false
+    end
   end
 
   def memberships(%User{follower_address: follower_address}) do

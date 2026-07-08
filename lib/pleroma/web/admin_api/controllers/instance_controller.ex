@@ -1,15 +1,14 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.AdminAPI.InstanceController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper, only: [fetch_integer_param: 3]
-
   alias Pleroma.Instances.Instance
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.AdminAPI
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   require Logger
@@ -29,6 +28,9 @@ defmodule Pleroma.Web.AdminAPI.InstanceController do
   )
 
   action_fallback(AdminAPI.FallbackController)
+
+  defp fetch_integer_param(params, name, default),
+    do: ControllerHelper.fetch_integer_param(params, name, default)
 
   def list_statuses(conn, %{"instance" => instance} = params) do
     with_reblogs = params["with_reblogs"] == "true" || params["with_reblogs"] == true

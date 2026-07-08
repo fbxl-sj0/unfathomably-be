@@ -8,7 +8,6 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   alias Pleroma.Activity
   alias Pleroma.Config
   alias Pleroma.EctoType.ActivityPub.ObjectValidators.ObjectID
-  alias Pleroma.FollowingRelationship
   alias Pleroma.GroupMembership
   alias Pleroma.Maps
   alias Pleroma.Notification
@@ -20,7 +19,6 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.AdminAPI.AccountView
   alias Pleroma.Web.Endpoint
-  alias Pleroma.Web.Federator
   alias Pleroma.Web.Router.Helpers
 
   import Ecto.Query
@@ -97,7 +95,8 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   def recipient_in_message(%User{ap_id: ap_id} = recipient, %User{} = actor, params),
     do:
       label_in_message?(ap_id, params) || unaddressed_message?(params) ||
-        User.following?(recipient, actor) || response_to_recipient_request?(ap_id, params)
+        User.following?(recipient, actor) || response_to_recipient_request?(ap_id, params) ||
+        reply_to_recipient_object?(ap_id, params)
 
   defp response_to_recipient_request?(recipient_ap_id, %{"type" => type, "object" => object})
        when type in ["Accept", "Reject"] do
@@ -106,6 +105,20 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   end
 
   defp response_to_recipient_request?(_, _), do: false
+
+  defp reply_to_recipient_object?(
+         recipient_ap_id,
+         %{"type" => "Create", "object" => %{"inReplyTo" => in_reply_to}}
+       )
+       when is_binary(recipient_ap_id) and is_binary(in_reply_to) do
+    with %Object{data: data} <- Object.normalize(in_reply_to, fetch: false) do
+      get_ap_id(data["actor"]) == recipient_ap_id || get_ap_id(data["attributedTo"]) == recipient_ap_id
+    else
+      _ -> false
+    end
+  end
+
+  defp reply_to_recipient_object?(_, _), do: false
 
   defp embedded_request_actor_matches?(recipient_ap_id, %{"type" => type, "actor" => actor})
        when type in ["Follow", "Join"] do
@@ -1136,63 +1149,35 @@ defmodule Pleroma.Web.ActivityPub.Utils do
         group_mention_allowed?(user, poster)
       end)
       |> Enum.each(fn group ->
-        repeat_and_publish_group_post(activity, group)
+        Pleroma.Web.CommonAPI.repeat(activity.id, group)
       end)
     end
 
     :ok
   end
 
-  def maybe_handle_group_deletes(%Activity{data: %{"type" => "Delete"}} = activity) do
-    if Visibility.is_public?(activity) do
-      activity.data
-      |> Addressing.addressed_group_ap_ids()
-      |> Enum.reject(&(&1 == activity.actor))
-      |> User.get_all_by_ap_id()
-      |> Enum.filter(&local_group?/1)
-      |> Enum.each(fn group ->
-        announce_and_publish_group_activity(activity, group)
-      end)
-    end
+  def maybe_handle_group_deletes(%Activity{data: %{"type" => "Delete", "object" => object_id}})
+      when is_binary(object_id) do
+    "Announce"
+    |> Activity.Queries.by_type()
+    |> Activity.Queries.by_object_id(object_id)
+    |> Repo.all()
+    |> Enum.each(&undo_local_group_announce/1)
 
     :ok
   end
 
-  def maybe_handle_group_deletes(_activity), do: :ok
+  def maybe_handle_group_deletes(%Activity{}), do: :ok
 
-  defp repeat_and_publish_group_post(%Activity{} = activity, %User{} = group) do
-    case Pleroma.Web.CommonAPI.repeat(activity.id, group) do
-      {:ok, %Activity{} = announce} ->
-        Federator.publish(announce)
-
-      _ ->
-        :ok
+  defp undo_local_group_announce(%Activity{actor: actor} = announce) do
+    with %User{actor_type: "Group", local: true} = group <- User.get_cached_by_ap_id(actor),
+         {:ok, undo, _} <- Pleroma.Web.ActivityPub.Builder.undo(group, announce),
+         {:ok, _, _} <- Pleroma.Web.ActivityPub.Pipeline.common_pipeline(undo, local: true) do
+      :ok
+    else
+      _ -> :ok
     end
   end
-
-  defp announce_and_publish_group_activity(%Activity{} = activity, %User{} = group) do
-    with {:ok, announce} <-
-           ActivityPub.insert(
-             %{
-               "type" => "Announce",
-               "id" => generate_activity_id(),
-               "actor" => group.ap_id,
-               "to" => [Pleroma.Constants.as_public()],
-               "cc" => [group.follower_address],
-               "bcc" => FollowingRelationship.followers_ap_ids(group),
-               "object" => activity.data["id"],
-               "audience" => group.ap_id
-             },
-             true
-           ) do
-      Federator.publish(announce)
-    end
-
-    :ok
-  end
-
-  defp local_group?(%User{actor_type: "Group", local: true}), do: true
-  defp local_group?(_), do: false
 
   defp group_mention_allowed?(
          %User{actor_type: "Group", local: true, is_locked: is_locked} = group,

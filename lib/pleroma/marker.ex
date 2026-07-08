@@ -8,11 +8,11 @@ defmodule Pleroma.Marker do
   import Ecto.Changeset
   import Ecto.Query
 
+  alias __MODULE__
   alias Ecto.Multi
   alias Pleroma.Notification
   alias Pleroma.Repo
   alias Pleroma.User
-  alias __MODULE__
 
   @timelines ["notifications"]
   @type t :: %__MODULE__{}

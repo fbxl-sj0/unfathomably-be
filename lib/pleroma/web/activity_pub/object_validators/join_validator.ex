@@ -5,10 +5,11 @@
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.JoinValidator do
   use Ecto.Schema
 
+  alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Utils
 
   import Ecto.Changeset
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
 
@@ -36,10 +37,22 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.JoinValidator do
     |> validate_inclusion(:type, ["Join"])
     |> validate_inclusion(:state, ~w{pending reject accept})
     |> validate_required([:id, :type, :actor, :to, :cc, :object])
-    |> validate_actor_presence()
-    |> validate_object_presence(allowed_types: ["Event"])
+    |> CommonValidations.validate_actor_presence()
+    |> validate_join_target()
     |> validate_existing_join()
   end
+
+  defp validate_join_target(%{changes: %{object: object}} = cng) when is_binary(object) do
+    case User.get_cached_by_ap_id(object) do
+      %User{local: true, actor_type: "Group"} ->
+        cng
+
+      _ ->
+        CommonValidations.validate_object_presence(cng, allowed_types: ["Event"])
+    end
+  end
+
+  defp validate_join_target(cng), do: cng
 
   def cast_and_validate(data) do
     data

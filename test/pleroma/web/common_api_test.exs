@@ -9,7 +9,6 @@ defmodule Pleroma.Web.CommonAPITest do
   alias Pleroma.Activity
   alias Pleroma.Chat
   alias Pleroma.Conversation.Participation
-  alias Pleroma.GroupMembership
   alias Pleroma.Notification
   alias Pleroma.Object
   alias Pleroma.Repo
@@ -21,10 +20,11 @@ defmodule Pleroma.Web.CommonAPITest do
   alias Pleroma.Web.AdminAPI.AccountView
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Workers.PollWorker
+  alias Pleroma.Workers.PublisherWorker
 
   import Pleroma.Factory
   import Mock
-  import Ecto.Query, only: [from: 2]
+  import Ecto.Query, only: [from: 2, where: 3]
 
   require Pleroma.Constants
 
@@ -32,6 +32,25 @@ defmodule Pleroma.Web.CommonAPITest do
     Pleroma.Activity.Queries.by_type("Announce")
     |> Pleroma.Activity.Queries.by_object_id(id)
     |> Pleroma.Repo.all()
+  end
+
+  defp enqueue_publish_one_job(ap_id) do
+    %{
+      "op" => "publish_one",
+      "module" => to_string(Pleroma.Web.ActivityPub.Publisher),
+      "params" => %{"id" => ap_id}
+    }
+    |> PublisherWorker.new()
+    |> Oban.insert!()
+  end
+
+  defp cancelled_publish_one_jobs(ap_id) do
+    Oban.Job
+    |> where([j], j.worker == "Pleroma.Workers.PublisherWorker")
+    |> where([j], j.state == "cancelled")
+    |> where([j], j.args["op"] == "publish_one")
+    |> where([j], j.args["params"]["id"] == ^ap_id)
+    |> Repo.all()
   end
 
   setup_all do
@@ -385,66 +404,6 @@ defmodule Pleroma.Web.CommonAPITest do
       refute Activity.get_by_id(post.id)
     end
 
-    test "it lets local group managers remove remote posts from their group" do
-      group = insert(:user, local: true, actor_type: "Group")
-      moderator = insert(:user)
-
-      {:ok, _membership} = GroupMembership.ensure_owner(group, moderator)
-
-      remote_author =
-        insert(:user,
-          local: false,
-          ap_id: "https://remote-group-delete.example/users/alice",
-          follower_address: "https://remote-group-delete.example/users/alice/followers"
-        )
-
-      object =
-        insert(:note,
-          user: remote_author,
-          data: %{
-            "id" => "https://remote-group-delete.example/objects/post",
-            "actor" => remote_author.ap_id,
-            "type" => "Note",
-            "to" => [Pleroma.Constants.as_public(), group.ap_id],
-            "cc" => [],
-            "audience" => group.ap_id
-          }
-        )
-
-      activity =
-        insert(:note_activity,
-          user: remote_author,
-          note: object,
-          local: false,
-          data_attrs: %{
-            "id" => "https://remote-group-delete.example/activities/create-post",
-            "actor" => remote_author.ap_id,
-            "object" => object.data["id"],
-            "type" => "Create",
-            "to" => [Pleroma.Constants.as_public(), group.ap_id],
-            "cc" => [],
-            "audience" => group.ap_id
-          }
-        )
-
-      with_mock Pleroma.Web.Federator, publish: fn _ -> nil end do
-        assert {:ok, delete} = CommonAPI.delete(activity.id, moderator)
-
-        assert delete.data["type"] == "Delete"
-        assert delete.data["summary"] == ""
-        assert delete.data["audience"] == group.ap_id
-
-        assert %Activity{} = announce = group_delete_announce(delete)
-        assert announce.data["actor"] == group.ap_id
-        assert announce.data["object"] == delete.data["id"]
-
-        refute called(Pleroma.Web.Federator.publish(delete))
-        assert called(Pleroma.Web.Federator.publish(announce))
-      end
-
-      refute Activity.get_by_id(activity.id)
-    end
-
     test "it doesn't allow unprivileged mods or admins to delete other user's posts" do
       clear_config([:instance, :admin_privileges], [])
       clear_config([:instance, :moderator_privileges], [])
@@ -500,14 +459,75 @@ defmodule Pleroma.Web.CommonAPITest do
     end
   end
 
-  defp group_delete_announce(activity) do
-    Repo.one(
-      from(a in Activity,
-        where:
-          fragment("?->>'type' = 'Announce'", a.data) and
-            fragment("?->>'object' = ?", a.data, ^activity.data["id"])
-      )
-    )
+  describe "queued publish job cancellation" do
+    test "deleting a post cancels queued publish_one jobs for the deleted activity" do
+      user = insert(:user)
+
+      {:ok, activity} = CommonAPI.post(user, %{status: "this delivery will be cancelled"})
+      ap_id = activity.data["id"]
+
+      enqueue_publish_one_job(ap_id)
+      enqueue_publish_one_job(ap_id)
+
+      assert {:ok, _delete} = CommonAPI.delete(activity.id, user)
+      assert length(cancelled_publish_one_jobs(ap_id)) == 2
+    end
+
+    test "unauthorized delete attempts do not cancel queued publish_one jobs" do
+      user = insert(:user)
+      other_user = insert(:user)
+
+      {:ok, activity} = CommonAPI.post(user, %{status: "this delivery must stay queued"})
+      ap_id = activity.data["id"]
+
+      enqueue_publish_one_job(ap_id)
+
+      assert {:error, "Could not delete"} = CommonAPI.delete(activity.id, other_user)
+      assert cancelled_publish_one_jobs(ap_id) == []
+    end
+
+    test "unfavoriting a post cancels queued publish_one jobs for the like" do
+      user = insert(:user)
+      poster = insert(:user)
+
+      {:ok, activity} = CommonAPI.post(poster, %{status: "like then unlike"})
+      {:ok, like} = CommonAPI.favorite(user, activity.id)
+      ap_id = like.data["id"]
+
+      enqueue_publish_one_job(ap_id)
+
+      assert {:ok, _undo} = CommonAPI.unfavorite(activity.id, user)
+      assert length(cancelled_publish_one_jobs(ap_id)) == 1
+    end
+
+    test "unrepeating a post cancels queued publish_one jobs for the announce" do
+      user = insert(:user)
+      poster = insert(:user)
+
+      {:ok, activity} = CommonAPI.post(poster, %{status: "boost then unboost"})
+      {:ok, announce} = CommonAPI.repeat(activity.id, user)
+      ap_id = announce.data["id"]
+
+      enqueue_publish_one_job(ap_id)
+
+      assert {:ok, _undo} = CommonAPI.unrepeat(activity.id, user)
+      assert length(cancelled_publish_one_jobs(ap_id)) == 1
+    end
+
+    test "unreacting to a post cancels queued publish_one jobs for the reaction" do
+      user = insert(:user)
+      poster = insert(:user)
+      reaction_emoji = "\u{1F44D}"
+
+      {:ok, activity} = CommonAPI.post(poster, %{status: "react then unreact"})
+      {:ok, reaction} = CommonAPI.react_with_emoji(activity.id, user, reaction_emoji)
+      ap_id = reaction.data["id"]
+
+      enqueue_publish_one_job(ap_id)
+
+      assert {:ok, _undo} = CommonAPI.unreact_with_emoji(activity.id, user, reaction_emoji)
+      assert length(cancelled_publish_one_jobs(ap_id)) == 1
+    end
   end
 
   test "favoriting race condition" do
@@ -2066,6 +2086,23 @@ defmodule Pleroma.Web.CommonAPITest do
       assert group.ap_id in object.data["to"]
       refute Pleroma.Constants.as_public() in object.data["to"]
       assert Pleroma.Constants.as_public() in object.data["cc"]
+    end
+
+    test "group-targeted root posts derive a Page name from status text", %{
+      poster: poster,
+      group: group
+    } do
+      {:ok, post} =
+        CommonAPI.post(poster, %{
+          status: "Plain group root for MBin",
+          group_id: group.ap_id
+        })
+
+      object = Object.normalize(post, fetch: false)
+
+      assert object.data["type"] == "Page"
+      assert object.data["name"] == "Plain group root for MBin"
+      assert object.data["summary"] == "Plain group root for MBin"
     end
 
     test "group-targeted posts can opt into public timeline visibility", %{

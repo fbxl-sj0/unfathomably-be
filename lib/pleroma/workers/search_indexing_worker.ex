@@ -34,6 +34,9 @@ defmodule Pleroma.Workers.SearchIndexingWorker do
 
   def perform(%Job{}), do: :discard
 
+  @impl Oban.Worker
+  def timeout(_job), do: :timer.seconds(5)
+
   defp get_activity(activity_id) do
     Pleroma.Activity.get_by_id_with_object(activity_id)
   rescue

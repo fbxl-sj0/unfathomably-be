@@ -24,6 +24,7 @@ defmodule Pleroma.Workers.Cron.ScheduleReachabilityWorkerTest do
     Instances.set_unreachable("dead.example", Instances.dormant_datetime_threshold())
 
     dormant_job = insert_delivery_job("https://dead.example/inbox", state: "retryable")
+
     legacy_dormant_job =
       insert_legacy_delivery_job("https://dead.example/legacy-inbox", state: "retryable")
 

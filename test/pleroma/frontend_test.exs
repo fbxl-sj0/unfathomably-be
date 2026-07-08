@@ -73,6 +73,23 @@ defmodule Pleroma.FrontendTest do
     assert File.exists?(Path.join([@dir, "frontends", "unknown", "baka", "test.txt"]))
   end
 
+  test "unzip/2 skips archive entries that resolve to existing directories" do
+    dest = Path.join(@dir, "directory_entry_frontend")
+
+    {:ok, {_filename, zip}} =
+      :zip.create(
+        ~c"directory_entry_frontend.zip",
+        [
+          {~c"dist/test.txt", "ok"},
+          {~c"dist", <<>>}
+        ],
+        [:memory]
+      )
+
+    assert :ok = Frontend.unzip(zip, dest)
+    assert File.read!(Path.join([dest, "dist", "test.txt"])) == "ok"
+  end
+
   test "merge/2 only overrides nil values" do
     fe1 = %Frontend{name: "pleroma"}
     fe2 = %Frontend{name: "soapbox", ref: "fantasy"}

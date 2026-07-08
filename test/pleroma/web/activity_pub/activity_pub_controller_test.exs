@@ -1193,6 +1193,69 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       refute Activity.get_by_ap_id(data["id"])
     end
 
+    test "it returns 404 for signed delivery to missing or deactivated inbox users", %{
+      conn: conn,
+      data: data
+    } do
+      user = insert(:user, is_active: false)
+      actor = insert(:user, local: false, ap_id: data["actor"])
+
+      data =
+        data
+        |> Map.put("bcc", [user.ap_id])
+        |> Kernel.put_in(["object", "bcc"], [user.ap_id])
+
+      conn =
+        conn
+        |> assign_valid_signature()
+        |> put_req_header("content-type", "application/activity+json")
+        |> post("/users/#{user.nickname}/inbox", data)
+
+      assert "User deactivated" == json_response(conn, 404)
+      refute Activity.get_by_ap_id(data["id"])
+
+      data = Map.put(data, "actor", actor.ap_id <> "/missing")
+
+      conn =
+        build_conn()
+        |> assign_valid_signature()
+        |> put_req_header("content-type", "application/activity+json")
+        |> post("/users/not-real/inbox", data)
+
+      assert "User does not exist" == json_response(conn, 404)
+    end
+
+    test "it returns 404 for signed delivery from a deactivated sender", %{
+      conn: conn,
+      data: data
+    } do
+      user = insert(:user)
+
+      actor =
+        insert(:user,
+          local: false,
+          is_active: false,
+          ap_id: "https://sender.example/users/inactive",
+          inbox: "https://sender.example/users/inactive/inbox"
+        )
+
+      data =
+        data
+        |> Map.put("actor", actor.ap_id)
+        |> Map.put("bcc", [user.ap_id])
+        |> Kernel.put_in(["object", "attributedTo"], actor.ap_id)
+        |> Kernel.put_in(["object", "bcc"], [user.ap_id])
+
+      conn =
+        conn
+        |> assign_valid_signature()
+        |> put_req_header("content-type", "application/activity+json")
+        |> post("/users/#{user.nickname}/inbox", data)
+
+      assert "Sender deactivated" == json_response(conn, 404)
+      refute Activity.get_by_ap_id(data["id"])
+    end
+
     test "it rejects reads from other users", %{conn: conn} do
       user = insert(:user)
       other_user = insert(:user)
@@ -1736,6 +1799,28 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> post("/users/#{user.nickname}/outbox", data)
 
       assert json_response(conn, 403)
+    end
+
+    test "it rejects update activity of object from other actor", %{conn: conn} do
+      note_activity = insert(:note_activity)
+      note_object = Object.normalize(note_activity, fetch: false)
+      user = insert(:user)
+
+      data = %{
+        type: "Update",
+        object: %{
+          id: note_object.data["id"]
+        }
+      }
+
+      conn =
+        conn
+        |> assign(:user, user)
+        |> put_req_header("content-type", "application/activity+json")
+        |> post("/users/#{user.nickname}/outbox", data)
+
+      assert json_response(conn, 400)
+      assert note_object == Object.normalize(note_activity, fetch: false)
     end
 
     test "it rejects like activity to object invisible to actor", %{conn: conn} do

@@ -23,19 +23,12 @@ defmodule Pleroma.Search.DatabaseSearch do
     offset = Keyword.get(options, :offset, 0)
     author = Keyword.get(options, :author)
 
-    search_function =
-      if :persistent_term.get({Pleroma.Repo, :postgres_version}) >= 11 do
-        :websearch
-      else
-        :plain
-      end
-
     try do
       Activity
       |> Activity.with_preloaded_object()
       |> Activity.restrict_deactivated_users()
       |> restrict_public(user)
-      |> query_with(index_type, search_query, search_function)
+      |> query_with(index_type, search_query)
       |> maybe_restrict_local(user)
       |> maybe_restrict_author(author)
       |> maybe_restrict_blocked(user)
@@ -54,6 +47,9 @@ defmodule Pleroma.Search.DatabaseSearch do
 
   @impl true
   def remove_from_index(_object), do: :ok
+
+  @impl true
+  def healthcheck_endpoints, do: nil
 
   def maybe_restrict_author(query, %User{} = author) do
     Activity.Queries.by_author(query, author)
@@ -86,38 +82,21 @@ defmodule Pleroma.Search.DatabaseSearch do
     )
   end
 
-  defp query_with(q, :gin, search_query, :plain) do
+  defp query_with(q, :gin, search_query) do
     %{rows: [[tsc]]} =
       Ecto.Adapters.SQL.query!(
         Pleroma.Repo,
         "select current_setting('default_text_search_config')::regconfig::oid;"
       )
 
-    from([a, o] in q,
-      where:
-        fragment(
-          """
-          to_tsvector(
-            ?::oid::regconfig,
-            COALESCE(?->>'summary', '') || ' ' || (?->>'content')
-          ) @@ plainto_tsquery(?)
-          """,
-          ^tsc,
-          o.data,
-          o.data,
-          ^search_query
-        ),
-      order_by: [desc: :inserted_at]
-    )
+    query_with_gin(q, search_query, tsc, search_function())
   end
 
-  defp query_with(q, :gin, search_query, :websearch) do
-    %{rows: [[tsc]]} =
-      Ecto.Adapters.SQL.query!(
-        Pleroma.Repo,
-        "select current_setting('default_text_search_config')::regconfig::oid;"
-      )
+  defp query_with(q, :rum, search_query) do
+    query_with_rum(q, search_query, search_function())
+  end
 
+  defp query_with_gin(q, search_query, tsc, :websearch) do
     from([a, o] in q,
       where:
         fragment(
@@ -136,7 +115,38 @@ defmodule Pleroma.Search.DatabaseSearch do
     )
   end
 
-  defp query_with(q, :rum, search_query, :plain) do
+  defp query_with_gin(q, search_query, tsc, :plain) do
+    from([a, o] in q,
+      where:
+        fragment(
+          """
+          to_tsvector(
+            ?::oid::regconfig,
+            COALESCE(?->>'summary', '') || ' ' || (?->>'content')
+          ) @@ plainto_tsquery(?)
+          """,
+          ^tsc,
+          o.data,
+          o.data,
+          ^search_query
+        ),
+      order_by: [desc: :inserted_at]
+    )
+  end
+
+  defp query_with_rum(q, search_query, :websearch) do
+    from([a, o] in q,
+      where:
+        fragment(
+          "? @@ websearch_to_tsquery(?)",
+          o.fts_content,
+          ^search_query
+        ),
+      order_by: [fragment("? <=> now()::date", o.inserted_at)]
+    )
+  end
+
+  defp query_with_rum(q, search_query, :plain) do
     from([a, o] in q,
       where:
         fragment(
@@ -148,16 +158,12 @@ defmodule Pleroma.Search.DatabaseSearch do
     )
   end
 
-  defp query_with(q, :rum, search_query, :websearch) do
-    from([a, o] in q,
-      where:
-        fragment(
-          "? @@ websearch_to_tsquery(?)",
-          o.fts_content,
-          ^search_query
-        ),
-      order_by: [fragment("? <=> now()::date", o.inserted_at)]
-    )
+  defp search_function do
+    case :persistent_term.get({Pleroma.Repo, :postgres_version}, nil) do
+      version when is_integer(version) and version < 110_000 -> :plain
+      version when is_float(version) and version < 11.0 -> :plain
+      _ -> :websearch
+    end
   end
 
   def maybe_restrict_local(q, user) do

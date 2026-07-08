@@ -32,11 +32,16 @@ defmodule Pleroma.Instances.InstanceTest do
       refute instance.unreachable_since
     end
 
-    test "does NOT create an Instance record in case of no existing matching record" do
+    test "creates a reachable Instance record in case of no existing matching record" do
       host = "domain.org"
-      assert nil == Instance.set_reachable(host)
+      assert {:ok, instance} = Instance.set_reachable(host)
 
-      assert [] = Repo.all(Ecto.Query.from(i in Instance))
+      assert instance.host == host
+      refute instance.unreachable_since
+
+      assert [%Instance{host: ^host, unreachable_since: nil}] =
+               Repo.all(Ecto.Query.from(i in Instance))
+
       assert Instance.reachable?(host)
     end
   end
@@ -315,6 +320,11 @@ defmodule Pleroma.Instances.InstanceTest do
     {:ok, post1} = CommonAPI.post(mario, %{status: "letsa go!"})
     {:ok, post2} = CommonAPI.post(luigi, %{status: "itsa me... luigi"})
     {:ok, post3} = CommonAPI.post(wario, %{status: "WHA-HA-HA!"})
+    Instances.set_consistently_unreachable("mushroom.kingdom")
+
+    {:ok, reachability_job} =
+      Pleroma.Workers.ReachabilityWorker.new(%{"domain" => "mushroom.kingdom"})
+      |> Oban.insert()
 
     {:ok, job} = Instance.delete_users_and_activities("mushroom.kingdom")
     :ok = ObanHelpers.perform(job)
@@ -330,5 +340,7 @@ defmodule Pleroma.Instances.InstanceTest do
     assert wario.name == "Wario"
 
     assert [nil, nil, %{}] = Repo.reload([post1, post2, post3])
+    refute Repo.get_by(Instance, host: "mushroom.kingdom")
+    refute Repo.get(Oban.Job, reachability_job.id)
   end
 end

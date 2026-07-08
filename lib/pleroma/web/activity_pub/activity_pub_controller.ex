@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.ActivityPubController do
@@ -35,13 +35,13 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
   plug(FederatingPlug when action in @federating_only_actions)
 
   plug(
-    EnsureAuthenticatedPlug,
+    :ensure_authenticated,
     [unless_func: &FederatingPlug.federating?/1] when action not in @federating_only_actions
   )
 
   # Note: :following and :followers must be served even without authentication (as via :api)
   plug(
-    EnsureAuthenticatedPlug
+    :ensure_authenticated
     when action in [:read_inbox, :update_outbox, :whoami, :upload_media]
   )
 
@@ -53,8 +53,13 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
     when action in [:activity, :object]
   )
 
+  plug(:log_inbox_metadata when action in [:inbox])
   plug(:set_requester_reachable when action in [:inbox])
   plug(:relay_active? when action in [:relay])
+
+  defp ensure_authenticated(conn, opts) do
+    EnsureAuthenticatedPlug.call(conn, EnsureAuthenticatedPlug.init(opts))
+  end
 
   defp relay_active?(conn, _) do
     if Pleroma.Config.get([:instance, :allow_relay]) do
@@ -91,8 +96,24 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
       |> put_view(ObjectView)
       |> render("object.json", object: object)
     else
-      {:visible?, false} -> {:error, :not_found}
-      nil -> {:error, :not_found}
+      {:visible?, false} ->
+        maybe_render_tombstone_object(conn, Endpoint.url() <> conn.request_path)
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
+  defp maybe_render_tombstone_object(conn, ap_id) do
+    with %Object{data: %{"type" => "Tombstone"}} = object <- Object.get_cached_by_ap_id(ap_id) do
+      conn
+      |> set_cache_ttl_for(object)
+      |> put_status(:gone)
+      |> put_resp_content_type("application/activity+json")
+      |> put_view(ObjectView)
+      |> render("object.json", object: object)
+    else
+      _ -> {:error, :not_found}
     end
   end
 
@@ -318,8 +339,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
       ) do
     params = Utils.normalize_params(params)
 
-    with %User{} = recipient <- User.get_cached_by_nickname(nickname),
-         {:ok, %User{} = actor} <- User.get_or_fetch_by_ap_id(params["actor"]),
+    with %User{is_active: true} = recipient <- User.get_cached_by_nickname(nickname),
+         {:ok, %User{is_active: true} = actor} <- User.get_or_fetch_by_ap_id(params["actor"]),
          true <- Utils.recipient_in_message(recipient, actor, params),
          params <- Utils.maybe_splice_recipient(recipient.ap_id, params) do
       Federator.incoming_ap_doc(params)
@@ -337,6 +358,11 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
         conn
         |> put_status(:bad_request)
         |> json("error, recipient not in message")
+
+      _ ->
+        conn
+        |> put_status(:bad_request)
+        |> json("Invalid request.")
     end
   end
 
@@ -479,7 +505,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
 
     limit = Pleroma.Config.get([:instance, :limit])
 
-    if length < limit do
+    if length <= limit do
       object =
         object
         |> Transmogrifier.strip_internal_fields()
@@ -579,10 +605,31 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
         |> put_status(:forbidden)
         |> json(message)
 
-      {:error, message} ->
+      {:error, %Ecto.Changeset{} = changeset} ->
+        Logger.debug(fn -> "AP C2S validation rejected activity: #{inspect(changeset.errors)}" end)
+
+        conn
+        |> put_status(:bad_request)
+        |> json("Bad Request")
+
+      {:error, {:error, %Ecto.Changeset{} = changeset}} ->
+        Logger.debug(fn -> "AP C2S validation rejected activity: #{inspect(changeset.errors)}" end)
+
+        conn
+        |> put_status(:bad_request)
+        |> json("Bad Request")
+
+      {:error, message} when is_binary(message) ->
         conn
         |> put_status(:bad_request)
         |> json(message)
+
+      {:error, message} ->
+        Logger.debug(fn -> "AP C2S validation rejected activity: #{inspect(message)}" end)
+
+        conn
+        |> put_status(:bad_request)
+        |> json("Bad Request")
 
       e ->
         Logger.warning(fn -> "AP C2S: #{inspect(e)}" end)
@@ -626,6 +673,12 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
     conn
   end
 
+  defp log_inbox_metadata(%{params: %{"actor" => actor, "type" => type}} = conn, _) do
+    Logger.metadata(actor: actor, type: type)
+    conn
+  end
+
+  defp log_inbox_metadata(conn, _), do: conn
   def upload_media(%{assigns: %{user: %User{} = user}} = conn, %{"file" => file} = data) do
     with {:ok, object} <-
            ActivityPub.upload(
@@ -644,7 +697,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
   def pinned(conn, %{"nickname" => nickname}) do
     with %User{} = user <- User.get_cached_by_nickname(nickname) do
       conn
-      |> put_resp_header("content-type", "application/activity+json")
+      |> put_resp_content_type("application/activity+json")
       |> json(UserView.render("featured.json", %{user: user}))
     end
   end
@@ -652,7 +705,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
   def moderators(conn, %{"nickname" => nickname}) do
     with %User{} = user <- User.get_cached_by_nickname(nickname) do
       conn
-      |> put_resp_header("content-type", "application/activity+json")
+      |> put_resp_content_type("application/activity+json")
       |> json(UserView.render("moderators.json", %{user: user}))
     end
   end

@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.MediaController do
@@ -21,11 +21,21 @@ defmodule Pleroma.Web.MastodonAPI.MediaController do
 
   @doc "POST /api/v1/media"
   def create(%{assigns: %{user: user}, body_params: %{file: file} = data} = conn, _) do
+    create(conn, user, file, Map.get(data, :description))
+  end
+
+  def create(%{assigns: %{user: user}, body_params: %{"file" => file} = data} = conn, _) do
+    create(conn, user, file, Map.get(data, "description"))
+  end
+
+  def create(_conn, _data), do: {:error, :bad_request}
+
+  defp create(conn, user, file, description) do
     with {:ok, object} <-
            ActivityPub.upload(
              file,
              actor: User.ap_id(user),
-             description: Map.get(data, :description)
+             description: description
            ) do
       attachment_data = Map.put(object.data, "id", object.id)
 
@@ -33,15 +43,23 @@ defmodule Pleroma.Web.MastodonAPI.MediaController do
     end
   end
 
-  def create(_conn, _data), do: {:error, :bad_request}
-
   @doc "POST /api/v2/media"
   def create2(%{assigns: %{user: user}, body_params: %{file: file} = data} = conn, _) do
+    create2(conn, user, file, Map.get(data, :description))
+  end
+
+  def create2(%{assigns: %{user: user}, body_params: %{"file" => file} = data} = conn, _) do
+    create2(conn, user, file, Map.get(data, "description"))
+  end
+
+  def create2(_conn, _data), do: {:error, :bad_request}
+
+  defp create2(conn, user, file, description) do
     with {:ok, object} <-
            ActivityPub.upload(
              file,
              actor: User.ap_id(user),
-             description: Map.get(data, :description)
+             description: description
            ) do
       attachment_data = Map.put(object.data, "id", object.id)
 
@@ -51,10 +69,20 @@ defmodule Pleroma.Web.MastodonAPI.MediaController do
     end
   end
 
-  def create2(_conn, _data), do: {:error, :bad_request}
-
   @doc "PUT /api/v1/media/:id"
   def update(%{assigns: %{user: user}, body_params: %{description: description}} = conn, %{id: id}) do
+    update_description(conn, user, id, description)
+  end
+
+  def update(%{assigns: %{user: user}, body_params: %{"description" => description}} = conn, %{
+        id: id
+      }) do
+    update_description(conn, user, id, description)
+  end
+
+  def update(conn, data), do: show(conn, data)
+
+  defp update_description(conn, user, id, description) do
     with %Object{} = object <- Object.get_by_id(id),
          :ok <- Object.authorize_access(object, user),
          {:ok, %Object{data: data}} <- Object.update_data(object, %{"name" => description}) do
@@ -63,8 +91,6 @@ defmodule Pleroma.Web.MastodonAPI.MediaController do
       render(conn, "attachment.json", %{attachment: attachment_data})
     end
   end
-
-  def update(conn, data), do: show(conn, data)
 
   @doc "GET /api/v1/media/:id"
   def show(%{assigns: %{user: user}} = conn, %{id: id}) do

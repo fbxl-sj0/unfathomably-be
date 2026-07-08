@@ -23,8 +23,14 @@ defmodule Pleroma.Workers.PurgeExpiredActivity do
     with true <- enabled?() do
       {scheduled_at, args} = Map.pop(args, :expires_at)
 
+      enqueue(args, scheduled_at: scheduled_at)
+    end
+  end
+
+  def enqueue(args, opts) when is_list(opts) do
+    with true <- enabled?() do
       args
-      |> new(scheduled_at: scheduled_at)
+      |> new(opts)
       |> Oban.insert()
     end
   end

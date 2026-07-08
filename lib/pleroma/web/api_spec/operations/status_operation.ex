@@ -32,10 +32,16 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
       security: [%{"oAuth" => ["read:statuses"]}],
       parameters: [
         Operation.parameter(
-          :ids,
+          :id,
           :query,
           %Schema{type: :array, items: FlakeID},
           "Array of status IDs"
+        ),
+        Operation.parameter(
+          :ids,
+          :query,
+          %Schema{type: :array, items: FlakeID},
+          "Deprecated, use `id` instead"
         ),
         Operation.parameter(
           :with_muted,
@@ -436,10 +442,16 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
           %Schema{
             type: :object,
             properties: %{
-              target_language: %Schema{
+              lang: %Schema{
                 type: :string,
                 nullable: true,
                 description: "Translation target language."
+              },
+              target_language: %Schema{
+                type: :string,
+                nullable: true,
+                description:
+                  "Deprecated translation target language parameter. Use `lang` instead."
               }
             }
           },

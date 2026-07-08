@@ -85,7 +85,7 @@ msgstr ""
 #: lib/pleroma/docs/translator.ex:5
 #, elixir-autogen, elixir-format
 msgctxt "config description at :pleroma-:assets"
-msgid "This section configures assets to be used with various frontends. Currently the only option relates to mascots on the mastodon frontend"
+msgid "This section configures assets to be used with compatible frontends. Currently the only option relates to mascot assets for frontends that display them."
 msgstr ""
 
 #: lib/pleroma/docs/translator.ex:5
@@ -181,7 +181,7 @@ msgstr ""
 #: lib/pleroma/docs/translator.ex:5
 #, elixir-autogen, elixir-format
 msgctxt "config description at :pleroma-:manifest"
-msgid "This section describe PWA manifest instance-specific values. Currently this option relate only for MastoFE."
+msgid "This section describes PWA manifest instance-specific values for compatible frontends."
 msgstr ""
 
 #: lib/pleroma/docs/translator.ex:5
@@ -1081,7 +1081,7 @@ msgstr ""
 #: lib/pleroma/docs/translator.ex:5
 #, elixir-autogen, elixir-format
 msgctxt "config description at :pleroma-:assets > :default_mascot"
-msgid "This will be used as the default mascot on MastoFE. Default: `:pleroma_fox_tan`"
+msgid "This will be used as the default mascot for compatible frontends. Default: `:pleroma_fox_tan`"
 msgstr ""
 
 #: lib/pleroma/docs/translator.ex:5

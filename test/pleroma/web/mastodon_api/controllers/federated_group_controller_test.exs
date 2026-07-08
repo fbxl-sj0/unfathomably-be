@@ -7,6 +7,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
 
   require Pleroma.Constants
 
+  import Ecto.Query
   alias Pleroma.GroupMembership
   alias Pleroma.Instances
   alias Pleroma.Notification
@@ -354,11 +355,11 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
       insert(:user, nickname: "race_group")
 
       with_mock User,
-        [:passthrough],
-        get_cached_by_nickname: fn
-          "race_group" -> nil
-          nickname -> passthrough([nickname])
-        end do
+                [:passthrough],
+                get_cached_by_nickname: fn
+                  "race_group" -> nil
+                  nickname -> passthrough([nickname])
+                end do
         assert {:error, :already_exists} =
                  FederatedTarget.create_local_group(owner, %{
                    "display_name" => "Race Group",
@@ -521,6 +522,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                |> json_response(200)
 
       assert moderator_id == to_string(moderator.id)
+      assert_moderator_change_activity("Add", owner, group, moderator)
 
       assert %{"role" => "moderator", "account" => %{"id" => third_id}} =
                moderator_conn
@@ -537,10 +539,18 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                |> post("/api/v1/groups/#{group_id}/demote", %{account_ids: [third.id]})
                |> json_response(200)
 
+      assert_moderator_change_activity("Remove", owner, group, third)
+
       assert %{} =
                moderator_conn
-               |> post("/api/v1/groups/#{group_id}/blocks", %{account_ids: [third.id]})
+               |> post("/api/v1/groups/#{group_id}/blocks", %{
+                 account_ids: [third.id],
+                 reason: "local smoke group ban",
+                 remove_data: "false"
+               })
                |> json_response(200)
+
+      assert_group_block_activity(moderator, group, third, "local smoke group ban")
 
       assert %GroupMembership{state: "banned"} = GroupMembership.get(group, third)
       assert %GroupMembership{role: "owner"} = GroupMembership.get(group, owner)
@@ -550,6 +560,16 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                third_conn
                |> post("/api/v1/groups/#{group_id}/join")
                |> json_response(403)
+
+      assert %{} =
+               moderator_conn
+               |> delete("/api/v1/groups/#{group_id}/blocks", %{
+                 account_ids: [third.id],
+                 reason: "local smoke group unban"
+               })
+               |> json_response(200)
+
+      assert_group_unblock_activity(moderator, group, third, "local smoke group unban")
     end
   end
 
@@ -1241,5 +1261,47 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
 
       assert alias_content =~ "Fresh channel video"
     end
+  end
+
+  defp assert_moderator_change_activity(type, actor, group, account) do
+    target = group.attributed_to_address || "#{group.ap_id}/collections/moderators"
+
+    assert Pleroma.Repo.exists?(
+             from(activity in Pleroma.Activity,
+               where:
+                 fragment("?->>'type' = ?", activity.data, ^type) and
+                   fragment("?->>'actor' = ?", activity.data, ^actor.ap_id) and
+                   fragment("?->>'object' = ?", activity.data, ^account.ap_id) and
+                   fragment("?->>'target' = ?", activity.data, ^target) and
+                   fragment("?->>'audience' = ?", activity.data, ^group.ap_id)
+             )
+           )
+  end
+
+  defp assert_group_block_activity(actor, group, account, reason) do
+    assert Pleroma.Repo.exists?(
+             from(activity in Pleroma.Activity,
+               where:
+                 fragment("?->>'type' = 'Block'", activity.data) and
+                   fragment("?->>'actor' = ?", activity.data, ^actor.ap_id) and
+                   fragment("?->>'object' = ?", activity.data, ^account.ap_id) and
+                   fragment("?->>'target' = ?", activity.data, ^group.ap_id) and
+                   fragment("?->>'summary' = ?", activity.data, ^reason)
+             )
+           )
+  end
+
+  defp assert_group_unblock_activity(actor, group, account, reason) do
+    assert Pleroma.Repo.exists?(
+             from(activity in Pleroma.Activity,
+               where:
+                 fragment("?->>'type' = 'Undo'", activity.data) and
+                   fragment("?->>'actor' = ?", activity.data, ^actor.ap_id) and
+                   fragment("?->'object'->>'type' = 'Block'", activity.data) and
+                   fragment("?->'object'->>'object' = ?", activity.data, ^account.ap_id) and
+                   fragment("?->'object'->>'target' = ?", activity.data, ^group.ap_id) and
+                   fragment("?->'object'->>'summary' = ?", activity.data, ^reason)
+             )
+           )
   end
 end

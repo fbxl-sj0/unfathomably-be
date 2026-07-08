@@ -54,6 +54,8 @@ defmodule Pleroma.Web.Nodeinfo.Nodeinfo do
           moderator: Config.get([:instance, :moderator_privileges])
         },
         federation: federation,
+        characterLimit: Config.get([:instance, :limit]),
+        vapidPublicKey: Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key),
         pollLimits: Config.get([:instance, :poll_limits]),
         postFormats: Config.get([:instance, :allowed_post_formats]),
         uploadLimits: %{

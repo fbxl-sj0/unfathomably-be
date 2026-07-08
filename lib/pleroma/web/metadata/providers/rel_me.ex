@@ -22,6 +22,8 @@ defmodule Pleroma.Web.Metadata.Providers.RelMe do
 
   defp append_fields_tag(bio, fields) do
     fields
-    |> Enum.reduce(bio, fn %{"value" => v}, res -> res <> v end)
+    |> Enum.reduce(bio, fn %{"value" => v}, res ->
+      res <> v
+    end)
   end
 end

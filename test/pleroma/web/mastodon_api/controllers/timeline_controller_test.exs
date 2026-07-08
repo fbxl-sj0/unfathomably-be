@@ -176,6 +176,25 @@ defmodule Pleroma.Web.MastodonAPI.TimelineControllerTest do
       assert [%{"id" => ^activity2_id}] = response
     end
 
+    test "home timeline includes public posts for followed hashtags", %{user: user, conn: conn} do
+      other_user = insert(:user)
+      hashtag = insert(:hashtag, name: "jubjub")
+      {:ok, _user} = User.follow_hashtag(user, hashtag)
+
+      {:ok, activity} =
+        CommonAPI.post(other_user, %{
+          status: "A public post for #jubjub",
+          visibility: "public"
+        })
+
+      response =
+        conn
+        |> get("/api/v1/timelines/home")
+        |> json_response_and_validate_schema(200)
+
+      assert Enum.any?(response, fn status -> status["id"] == to_string(activity.id) end)
+    end
+
     test "home timeline includes ingested followed RSS source entries", %{
       user: user,
       conn: conn

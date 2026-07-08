@@ -5,8 +5,8 @@
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.BlockValidator do
   use Ecto.Schema
 
-  alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Elixir.Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.EctoType.ActivityPub.ObjectValidators
 
   import Ecto.Changeset
 

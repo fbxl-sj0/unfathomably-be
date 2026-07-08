@@ -304,7 +304,7 @@ defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
                 "post_stream" => %{
                   "posts" => [
                     %{
-                      "id" => 30967,
+                      "id" => 30_967,
                       "activity_pub_object_id" => post_ap_id,
                       "activity_pub_object_type" => "Note",
                       "activity_pub_url" =>
@@ -322,13 +322,13 @@ defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
                  "https://socialhub.example/c/fediversity/fediverse-report/83.json?page=1",
                "items" => [
                  %{
-                    "id" => ^topic_url,
-                    "type" => "Article",
-                    "title" => "ai bots are overwhelming the signup application process",
-                    "summary" => "A real topic excerpt\u2026",
-                    "url" => ^topic_url,
-                    "thumbnail_url" => "https://socialhub.example/uploads/topic.png",
-                    "platform" => "discourse",
+                   "id" => ^topic_url,
+                   "type" => "Article",
+                   "title" => "ai bots are overwhelming the signup application process",
+                   "summary" => "A real topic excerpt\u2026",
+                   "url" => ^topic_url,
+                   "thumbnail_url" => "https://socialhub.example/uploads/topic.png",
+                   "platform" => "discourse",
                    "platform_family" => "longform",
                    "comments_count" => 4,
                    "published" => "2026-06-25T17:56:57.101Z",

@@ -118,10 +118,10 @@ defmodule Pleroma.Search.MeilisearchTest do
           }
           |> json()
 
-      %{method: :delete, url: "http://127.0.0.1:7700/indexes/objects/documents/" <> id} ->
-        send(self(), {:called_delete, id})
-        assert id != ""
-        json(%{})
+        %{method: :delete, url: "http://127.0.0.1:7700/indexes/objects/documents/" <> id} ->
+          send(self(), {:called_delete, id})
+          assert id != ""
+          json(%{})
       end)
 
       Config

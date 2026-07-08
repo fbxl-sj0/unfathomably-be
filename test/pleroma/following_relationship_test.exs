@@ -30,6 +30,34 @@ defmodule Pleroma.FollowingRelationshipTest do
 
       assert count == 1
       assert FollowingRelationship.following?(user, followed)
+      assert Repo.get(User, user.id).following_count == 1
+      assert Repo.get(User, followed.id).follower_count == 1
+    end
+
+    test "accepted follow counter updates happen only when the accepted state changes" do
+      user = insert(:user)
+      followed = insert(:user)
+
+      assert {:ok, _, _} = FollowingRelationship.follow(user, followed, :follow_pending)
+      assert Repo.get(User, user.id).following_count == 0
+      assert Repo.get(User, followed.id).follower_count == 0
+
+      assert {:ok, _, _} = FollowingRelationship.update(user, followed, :follow_accept)
+      assert Repo.get(User, user.id).following_count == 1
+      assert Repo.get(User, followed.id).follower_count == 1
+
+      assert {:ok, _, _} = FollowingRelationship.update(user, followed, :follow_accept)
+      assert Repo.get(User, user.id).following_count == 1
+      assert Repo.get(User, followed.id).follower_count == 1
+
+      assert {:ok, _, _} = FollowingRelationship.update(user, followed, :follow_pending)
+      assert Repo.get(User, user.id).following_count == 0
+      assert Repo.get(User, followed.id).follower_count == 0
+
+      assert {:ok, _, _} = FollowingRelationship.update(user, followed, :follow_accept)
+      assert {:ok, _, _} = FollowingRelationship.unfollow(user, followed)
+      assert Repo.get(User, user.id).following_count == 0
+      assert Repo.get(User, followed.id).follower_count == 0
     end
 
     test "returns following addresses without internal.fetch" do

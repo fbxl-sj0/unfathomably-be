@@ -34,6 +34,72 @@
 
 set -euo pipefail
 
+poll_http_status() {
+    local method="$1"
+    local url="$2"
+    local token="$3"
+    local expected="$4"
+    local message="$5"
+    local attempts="${6:-60}"
+    local delay="${7:-2}"
+    local tmp
+    local code
+    local last_code
+
+    last_code=""
+
+    for _ in $(seq 1 "$attempts"); do
+        tmp="$(mktemp)"
+
+        if [ -n "$token" ]; then
+            code="$(curl -sS -X "$method" -H "Authorization: Bearer $token" -o "$tmp" -w "%{http_code}" "$url" || true)"
+        else
+            code="$(curl -sS -X "$method" -o "$tmp" -w "%{http_code}" "$url" || true)"
+        fi
+
+        rm -f "$tmp"
+        last_code="$code"
+
+        if [ "$code" = "$expected" ]; then
+            return 0
+        fi
+
+        sleep "$delay"
+    done
+
+    fail "Timed out waiting for $message (wanted HTTP $expected, last HTTP $last_code)"
+}
+
+resolve_remote_status_id() {
+    local base="$1"
+    local token="$2"
+    local uri="$3"
+    local message="$4"
+    local search_result
+
+    search_result="$(poll_json_assert \
+        "$base/api/v2/search?resolve=true&type=statuses&q=$(urlencode "$uri")" \
+        "$token" \
+        'len(data.get("statuses", [])) >= 1' \
+        "$message")"
+
+    json_get "$search_result" statuses.0.id
+}
+
+poll_timeline_contains_text() {
+    local base="$1"
+    local token="$2"
+    local path="$3"
+    local needle="$4"
+    local message="$5"
+
+    poll_json_assert \
+        "$base$path" \
+        "$token" \
+        "'$needle' in str(data)" \
+        "$message" >/dev/null
+}
+
 PREFIX="${PREFIX:-unfathomably-stack-smoke}"
 NETWORK="${NETWORK:-${PREFIX}-net}"
 DB_CONTAINER="${DB_CONTAINER:-${PREFIX}-db}"
@@ -58,10 +124,10 @@ NODE_IMAGE="${NODE_IMAGE:-node:26-bookworm}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROJECT_ROOT="$(cd "$BE_ROOT/../.." && pwd)"
+PROJECT_ROOT="$(cd "$BE_ROOT/.." && pwd)"
 
-DEFAULT_FE_ROOT="$PROJECT_ROOT/soapbox-fbxl/.work/soapbox-modernize"
-DEFAULT_FE_STATIC_ROOT="$PROJECT_ROOT/soapbox-fbxl"
+DEFAULT_FE_ROOT="$PROJECT_ROOT/unfathomably-fe"
+DEFAULT_FE_STATIC_ROOT="$PROJECT_ROOT/unfathomably-fe"
 FE_ROOT="${FE_ROOT:-$DEFAULT_FE_ROOT}"
 FE_STATIC_ROOT="${FE_STATIC_ROOT:-$DEFAULT_FE_STATIC_ROOT}"
 
@@ -407,8 +473,11 @@ create_user() {
     local label="$4"
     local nickname="$5"
     local email="$6"
+    local cli_secret="$WORK_DIR/${label}-${nickname}.dev.secret.no-server.exs"
 
-    docker_run_mix "$image" "$root" "$secret" "${PREFIX}-user-$label-$nickname" \
+    sed 's/server: true/server: false/' "$secret" >"$cli_secret"
+
+    docker_run_mix "$image" "$root" "$cli_secret" "${PREFIX}-user-$label-$nickname" \
         "mix pleroma.user new '$nickname' '$email' --password '$PASSWORD' --assume-yes >/dev/null"
 }
 
@@ -574,6 +643,22 @@ for _ in $(seq 1 60); do
     sleep 1
 done
 
+#
+# The official postgres image briefly starts a private server while it runs
+# initdb, then shuts that server down and starts the real long-lived server.
+# A plain pg_isready loop can accidentally catch the private server and then
+# fail during the restart window. Give the entrypoint a moment to finish that
+# handoff, then require readiness from the final server.
+#
+sleep 3
+
+for _ in $(seq 1 60); do
+    if docker exec "$DB_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
 if ! docker exec "$DB_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; then
     fail "PostgreSQL did not become ready"
 fi
@@ -644,6 +729,7 @@ OPEN_GROUP="$(http_json POST "$BE_BASE/api/v1/groups" "$ALICE_TOKEN" 200 \
     "note=Open smoke group served through the BE/FE/Pleroma stack test." \
     "locked=false")"
 OPEN_GROUP_ID="$(json_get "$OPEN_GROUP" id)"
+OPEN_GROUP_AP_ID="$(json_get "$OPEN_GROUP" url)"
 json_assert "$OPEN_GROUP" 'data["actor_type"] == "Group" and data.get("id")' "local open group is created"
 
 THIRD_JOIN="$(http_json POST "$BE_BASE/api/v1/groups/$OPEN_GROUP_ID/join" "$THIRDA_TOKEN" 200)"
@@ -726,6 +812,132 @@ REMOTE_PAT_STATUS="$(poll_json_assert \
     "unfathomably-be to resolve a Pleroma status URL")"
 json_assert "$REMOTE_PAT_STATUS" 'len(data.get("statuses", [])) >= 1' "unfathomably-be can resolve a Pleroma status URL"
 
+step "Testing Pleroma account-style interaction with an unfathomably group"
+
+REMOTE_GROUP_ACCOUNT="$(poll_json_assert \
+    "$PLEROMA_BASE/api/v2/search?resolve=true&type=accounts&q=$(urlencode "$OPEN_GROUP_AP_ID")" \
+    "$PAT_TOKEN" \
+    'len(data.get("accounts", [])) >= 1 and data["accounts"][0]["id"] != ""' \
+    "Pleroma to resolve unfathomably group actor as a followable account")"
+REMOTE_GROUP_ACCOUNT_ID="$(json_get "$REMOTE_GROUP_ACCOUNT" accounts.0.id)"
+json_assert "$REMOTE_GROUP_ACCOUNT" 'data["accounts"][0].get("acct") != ""' "Pleroma exposes the group actor through ordinary account search"
+OPEN_GROUP_ACCT="$(json_get "$REMOTE_GROUP_ACCOUNT" accounts.0.acct)"
+
+PAT_FOLLOWS_GROUP="$(http_json POST "$PLEROMA_BASE/api/v1/accounts/$REMOTE_GROUP_ACCOUNT_ID/follow" "$PAT_TOKEN" 200)"
+json_assert "$PAT_FOLLOWS_GROUP" 'data["following"] is True or data["requested"] is True' "Pleroma can follow an unfathomably group actor"
+
+GROUP_POST_TEXT="Pleroma account-style group receive proof $PREFIX"
+GROUP_POST="$(http_json POST "$BE_BASE/api/v1/statuses" "$ALICE_TOKEN" 200 \
+    "status=$GROUP_POST_TEXT" \
+    "group_id=$OPEN_GROUP_ID")"
+GROUP_POST_ID="$(json_get "$GROUP_POST" id)"
+GROUP_POST_URI="$(json_get "$GROUP_POST" uri)"
+
+poll_timeline_contains_text \
+    "$PLEROMA_BASE" \
+    "$PAT_TOKEN" \
+    "/api/v1/timelines/home?limit=40" \
+    "$GROUP_POST_TEXT" \
+    "Pleroma receives new posts from the followed unfathomably group"
+
+PLEROMA_GROUP_POST_ID="$(resolve_remote_status_id \
+    "$PLEROMA_BASE" \
+    "$PAT_TOKEN" \
+    "$GROUP_POST_URI" \
+    "Pleroma can resolve the followed group post")"
+
+PAT_LIKES_GROUP_POST="$(http_json POST "$PLEROMA_BASE/api/v1/statuses/$PLEROMA_GROUP_POST_ID/favourite" "$PAT_TOKEN" 200)"
+json_assert "$PAT_LIKES_GROUP_POST" 'data.get("favourited") is True' "Pleroma can like a followed group post"
+
+poll_json_assert \
+    "$BE_BASE/api/v1/statuses/$GROUP_POST_ID" \
+    "$ALICE_TOKEN" \
+    'data.get("favourites_count", 0) >= 1' \
+    "unfathomably-be sees Pleroma like on a group post" >/dev/null
+
+PAT_UNLIKES_GROUP_POST="$(http_json POST "$PLEROMA_BASE/api/v1/statuses/$PLEROMA_GROUP_POST_ID/unfavourite" "$PAT_TOKEN" 200)"
+json_assert "$PAT_UNLIKES_GROUP_POST" 'data.get("favourited") is False' "Pleroma can undo a like on a followed group post"
+
+poll_json_assert \
+    "$BE_BASE/api/v1/statuses/$GROUP_POST_ID" \
+    "$ALICE_TOKEN" \
+    'data.get("favourites_count", 0) == 0' \
+    "unfathomably-be sees Pleroma unlike on a group post" >/dev/null
+
+PLEROMA_REPLY_TEXT="Pleroma account-style group reply proof $PREFIX"
+PLEROMA_REPLY="$(http_json POST "$PLEROMA_BASE/api/v1/statuses" "$PAT_TOKEN" 200 \
+    "status=$PLEROMA_REPLY_TEXT" \
+    "visibility=public" \
+    "in_reply_to_id=$PLEROMA_GROUP_POST_ID")"
+PLEROMA_REPLY_ID="$(json_get "$PLEROMA_REPLY" id)"
+PLEROMA_REPLY_URI="$(json_get "$PLEROMA_REPLY" uri)"
+
+BE_VIEW_OF_PLEROMA_REPLY_ID="$(resolve_remote_status_id \
+    "$BE_BASE" \
+    "$ALICE_TOKEN" \
+    "$PLEROMA_REPLY_URI" \
+    "unfathomably-be can resolve Pleroma reply to a group post")"
+
+poll_timeline_contains_text \
+    "$BE_BASE" \
+    "$ALICE_TOKEN" \
+    "/api/v1/timelines/group/$OPEN_GROUP_ID?with_replies=true&limit=40" \
+    "$PLEROMA_REPLY_TEXT" \
+    "Pleroma reply appears in the unfathomably group timeline"
+
+http_json DELETE "$PLEROMA_BASE/api/v1/statuses/$PLEROMA_REPLY_ID" "$PAT_TOKEN" 200 >/dev/null
+poll_http_status \
+    GET \
+    "$BE_BASE/api/v1/statuses/$BE_VIEW_OF_PLEROMA_REPLY_ID" \
+    "$ALICE_TOKEN" \
+    404 \
+    "unfathomably-be sees Pleroma deleted group reply" \
+    90 \
+    2
+
+http_json DELETE "$BE_BASE/api/v1/statuses/$GROUP_POST_ID" "$ALICE_TOKEN" 200 >/dev/null
+poll_http_status \
+    GET \
+    "$PLEROMA_BASE/api/v1/statuses/$PLEROMA_GROUP_POST_ID" \
+    "$PAT_TOKEN" \
+    404 \
+    "Pleroma sees deleted unfathomably group post" \
+    90 \
+    2
+
+PLEROMA_TO_GROUP_TEXT="Pleroma account-style top-level group post proof $PREFIX"
+PLEROMA_TO_GROUP_POST="$(http_json POST "$PLEROMA_BASE/api/v1/statuses" "$PAT_TOKEN" 200 \
+    "status=@$OPEN_GROUP_ACCT $PLEROMA_TO_GROUP_TEXT" \
+    "visibility=public")"
+PLEROMA_TO_GROUP_POST_ID="$(json_get "$PLEROMA_TO_GROUP_POST" id)"
+PLEROMA_TO_GROUP_POST_URI="$(json_get "$PLEROMA_TO_GROUP_POST" uri)"
+
+BE_VIEW_OF_PLEROMA_GROUP_POST_ID="$(resolve_remote_status_id \
+    "$BE_BASE" \
+    "$ALICE_TOKEN" \
+    "$PLEROMA_TO_GROUP_POST_URI" \
+    "unfathomably-be can resolve Pleroma top-level group mention post")"
+
+poll_timeline_contains_text \
+    "$BE_BASE" \
+    "$ALICE_TOKEN" \
+    "/api/v1/timelines/group/$OPEN_GROUP_ID?with_replies=true&limit=40" \
+    "$PLEROMA_TO_GROUP_TEXT" \
+    "Pleroma top-level mention post appears in the unfathomably group timeline"
+
+http_json DELETE "$PLEROMA_BASE/api/v1/statuses/$PLEROMA_TO_GROUP_POST_ID" "$PAT_TOKEN" 200 >/dev/null
+poll_http_status \
+    GET \
+    "$BE_BASE/api/v1/statuses/$BE_VIEW_OF_PLEROMA_GROUP_POST_ID" \
+    "$ALICE_TOKEN" \
+    404 \
+    "unfathomably-be sees Pleroma deleted top-level group post" \
+    90 \
+    2
+
+PAT_UNFOLLOWS_GROUP="$(http_json POST "$PLEROMA_BASE/api/v1/accounts/$REMOTE_GROUP_ACCOUNT_ID/unfollow" "$PAT_TOKEN" 200)"
+json_assert "$PAT_UNFOLLOWS_GROUP" 'data["following"] is False and data["requested"] is False' "Pleroma can unfollow an unfathomably group actor"
+
 step "Checking no obvious server crashes were logged"
 for container in "$BE_CONTAINER" "$PLEROMA_CONTAINER" "$FE_CONTAINER"; do
     if docker logs "$container" 2>&1 | grep -E "status=500|Internal Server Error|\\*\\* \\(|GenServer terminating|FunctionClauseError|UndefinedFunctionError|Protocol\\.UndefinedError" >/dev/null; then
@@ -748,6 +960,7 @@ Covered:
   * status create/context through the frontend gateway
   * account resolution/follow in both directions between unfathomably-be and Pleroma
   * Pleroma status URL resolution from unfathomably-be
+  * Pleroma account-style follow, receive, like, unlike, reply, delete, post, and unfollow against an unfathomably group actor
   * basic log scan for 500/crash output
 
 Run with KEEP_SMOKE=1 to leave the stack available for browser/API work.

@@ -45,6 +45,15 @@ defmodule Pleroma.Workers.ReachabilityWorker do
 
   def perform(%Oban.Job{}), do: :discard
 
+  def delete_jobs_for_host(host) when is_binary(host) do
+    Oban.Job
+    |> where([j], j.worker == "Pleroma.Workers.ReachabilityWorker")
+    |> where([j], j.args["domain"] == ^host)
+    |> Repo.delete_all()
+  end
+
+  def delete_jobs_for_host(_), do: {0, nil}
+
   defp normalize_domain(domain) do
     domain =
       domain

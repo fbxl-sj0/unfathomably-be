@@ -89,19 +89,40 @@ defmodule Pleroma.Web.Plugs.RateLimiter do
   defp handle(conn, nil), do: conn
 
   defp handle(conn, action_settings) do
-    action_settings
-    |> incorporate_conn_info(conn)
-    |> check_rate()
-    |> case do
-      {:ok, _count} ->
-        conn
+    if disabled?(conn) do
+      warn_disabled_once()
+      conn
+    else
+      action_settings
+      |> incorporate_conn_info(conn)
+      |> check_rate()
+      |> case do
+        {:ok, _count} ->
+          conn
 
-      {:error, _count} ->
-        render_throttled_error(conn)
+        {:error, _count} ->
+          render_throttled_error(conn)
+      end
     end
   end
 
-  def disabled?(_conn), do: false
+  def disabled?(conn) do
+    if Map.has_key?(conn.assigns, :remote_ip_found),
+      do: !conn.assigns.remote_ip_found,
+      else: false
+  end
+
+  @disabled_warned_key {__MODULE__, :disabled_warned}
+
+  defp warn_disabled_once do
+    if Config.get(:env) == :prod and not :persistent_term.get(@disabled_warned_key, false) do
+      :persistent_term.put(@disabled_warned_key, true)
+
+      Logger.warning(
+        "Rate limiter disabled due to forwarded IP not being found. Please ensure your reverse proxy is providing the X-Forwarded-For header or disable the RemoteIP plug/rate limiter."
+      )
+    end
+  end
 
   @inspect_bucket_not_found {:error, :not_found}
 

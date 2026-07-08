@@ -2,7 +2,8 @@
 
 For specific Pleroma functionality (which is disabled by default) some or all of the below packages are required:
 
-* `ImageMagic`
+* `ImageMagick`
+* `libvips`
 * `ffmpeg`
 * `exiftool`
   
@@ -17,7 +18,16 @@ Note: the packages are not required with the current default settings of Pleroma
 It is required for the following Pleroma features:
 
 * `Pleroma.Upload.Filters.Mogrify`, `Pleroma.Upload.Filters.Mogrifun` upload filters (related config: `Plaroma.Upload/filters` in `config/config.exs`)
+
+## `libvips`
+
+`libvips` is an image processing library used by the media preview proxy and by
+upload metadata extraction.
+
+It is required for the following Pleroma features:
+
 * Media preview proxy for still images (related config: `media_preview_proxy/enabled` in `config/config.exs`)
+* `Pleroma.Upload.Filter.AnalyzeMetadata` image dimensions and blurhash generation
   
 ## `ffmpeg`
 

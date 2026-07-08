@@ -25,7 +25,7 @@ defmodule Pleroma.Gun.Conn do
   defp maybe_add_tls_opts(opts, %URI{scheme: "https"}) do
     tls_opts = [
       verify: :verify_peer,
-      cacertfile: CAStore.file_path(),
+      cacertfile: ca_store_file_path(),
       depth: 20,
       reuse_sessions: false,
       log_level: :warning,
@@ -40,6 +40,13 @@ defmodule Pleroma.Gun.Conn do
       end
 
     Map.put(opts, :tls_opts, tls_opts)
+  end
+
+  defp ca_store_file_path do
+    case System.get_env("SSL_CERT_FILE") do
+      path when is_binary(path) and path != "" -> path
+      _ -> CAStore.file_path()
+    end
   end
 
   defp do_open(uri, %{proxy: {proxy_host, proxy_port}} = opts) do

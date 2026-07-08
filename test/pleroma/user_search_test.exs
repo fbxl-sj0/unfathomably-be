@@ -6,6 +6,7 @@ defmodule Pleroma.UserSearchTest do
   alias Pleroma.User
   use Pleroma.DataCase
 
+  import Mock
   import Pleroma.Factory
 
   setup_all do
@@ -373,6 +374,21 @@ defmodule Pleroma.UserSearchTest do
       [result] = User.search("@selfhosted@lemmy.world" <> pop_directional_isolate)
 
       assert user == result |> Map.put(:search_rank, nil) |> Map.put(:search_type, nil)
+    end
+
+    test "preserves hyphens while resolving remote domains" do
+      clear_config([:instance, :limit_to_local_content], false)
+      user = insert(:user)
+
+      with_mock User,
+                [:passthrough],
+                get_or_fetch: fn account ->
+                  send(self(), {:resolved_account, account})
+                  {:error, "not found " <> account}
+                end do
+        User.search("@pat@mastodon-ref.test", resolve: true, for_user: user)
+        assert_received {:resolved_account, "pat@mastodon-ref.test"}
+      end
     end
 
     test "does not crash on disallowed idna codepoints in remote handles" do

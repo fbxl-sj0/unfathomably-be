@@ -9,7 +9,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LockValidator do
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes
 
   import Ecto.Changeset
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
 
@@ -57,7 +57,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LockValidator do
     data_cng
     |> validate_inclusion(:type, ["Lock"])
     |> validate_required([:id, :type, :object, :actor, :to, :cc])
-    |> validate_actor_presence()
-    |> validate_object_presence()
+    |> CommonValidations.validate_actor_presence()
+    |> CommonValidations.validate_object_presence()
   end
 end

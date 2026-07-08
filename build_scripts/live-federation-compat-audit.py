@@ -92,8 +92,6 @@ GROUP_CANDIDATES: list[Candidate] = [
     Candidate("group", "hubzilla", "@adminsforum@hubzilla.org", "Hubzilla admins forum", allow_reply=True),
     Candidate("group", "friendica", "helpers@forum.friendi.ca", "Friendica helpers forum", allow_reply=True),
     Candidate("group", "mbin", "AskMbin@thebrainbin.org", "Mbin AskMbin magazine", allow_reply=True),
-    Candidate("group", "lotide", "general@lotide.fbxl.net", "Lotide general", allow_reply=True),
-    Candidate("group", "local", "federation_audit@social.fbxl.net", "Local federation audit group", allow_reply=True),
     Candidate("group", "gancio", "gancio@gancio.cisti.org", "Gancio events", allow_reply=True),
     Candidate("group", "mobilizon", "liberons_nos_ordis@mobilizon.fr", "Mobilizon public group", allow_reply=True),
     Candidate(
@@ -233,6 +231,16 @@ def ensure_following(client: ApiClient, candidate: Candidate, target: dict[str, 
     return client.post_form(f"{base}/{target_id}/follow")
 
 
+def remove_following(client: ApiClient, candidate: Candidate, target: dict[str, Any]) -> dict[str, Any]:
+    base = endpoint_base(candidate)
+    target_id = target["id"]
+
+    if candidate.lane == "group":
+        return client.post_form(f"{base}/{target_id}/leave")
+
+    return client.post_form(f"{base}/{target_id}/unfollow")
+
+
 def fetch_items(client: ApiClient, candidate: Candidate, target: dict[str, Any], limit: int) -> dict[str, Any]:
     base = endpoint_base(candidate)
     target_id = target["id"]
@@ -290,6 +298,7 @@ def perform_status_actions(
     status: dict[str, Any],
     enable_actions: bool,
     enable_replies: bool,
+    enable_public_replies: bool,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "favourite": "skipped",
@@ -322,7 +331,7 @@ def perform_status_actions(
     if not enable_replies or not candidate.allow_reply:
         return result
 
-    if not local_reply_target(candidate):
+    if not local_reply_target(candidate) and not enable_public_replies:
         result["reply"] = "skipped public target"
         result["delete_reply"] = "skipped public target"
         return result
@@ -363,6 +372,8 @@ def audit_candidate(
     limit: int,
     enable_actions: bool,
     enable_replies: bool,
+    enable_public_replies: bool,
+    cleanup_follow: bool,
 ) -> dict[str, Any]:
     started = time.monotonic()
     row: dict[str, Any] = {
@@ -439,7 +450,14 @@ def audit_candidate(
                 first_status,
                 enable_actions,
                 enable_replies,
+                enable_public_replies,
             )
+
+        if cleanup_follow:
+            try:
+                row["follow_cleanup"] = remove_following(client, candidate, target)
+            except Exception as exc:
+                row["follow_cleanup_error"] = str(exc)
 
         row["ok"] = row["resolved"] and row["followed"] and row["items_count"] > 0
     except Exception as exc:
@@ -490,7 +508,7 @@ def print_table(rows: list[dict[str, Any]]) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the live federation compatibility audit.")
-    parser.add_argument("--base-url", default=os.environ.get("FEDERATION_AUDIT_BASE_URL", "https://social.fbxl.net"))
+    parser.add_argument("--base-url", default=os.environ.get("FEDERATION_AUDIT_BASE_URL", "https://social.example.com"))
     parser.add_argument("--token", default=os.environ.get("FEDERATION_AUDIT_TOKEN", ""))
     parser.add_argument("--limit", type=int, default=int(os.environ.get("FEDERATION_AUDIT_LIMIT", "6")))
     parser.add_argument("--timeout", type=float, default=float(os.environ.get("FEDERATION_AUDIT_TIMEOUT", "45")))
@@ -502,6 +520,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", default=os.environ.get("FEDERATION_AUDIT_REPORT", "/tmp/unfathomably-live-federation-audit.json"))
     parser.add_argument("--actions", action="store_true", default=os.environ.get("FEDERATION_AUDIT_ACTIONS") == "1")
     parser.add_argument("--replies", action="store_true", default=os.environ.get("FEDERATION_AUDIT_REPLIES") == "1")
+    parser.add_argument("--public-replies", action="store_true", default=os.environ.get("FEDERATION_AUDIT_PUBLIC_REPLIES") == "1")
+    parser.add_argument("--cleanup-follow", action="store_true", default=os.environ.get("FEDERATION_AUDIT_CLEANUP_FOLLOW") == "1")
     parser.add_argument("--action-delay", type=float, default=float(os.environ.get("FEDERATION_AUDIT_ACTION_DELAY", "0")))
     return parser.parse_args()
 
@@ -551,6 +571,8 @@ def main() -> int:
                 args.limit,
                 args.actions,
                 args.replies,
+                args.public_replies,
+                args.cleanup_follow,
             )
         )
 

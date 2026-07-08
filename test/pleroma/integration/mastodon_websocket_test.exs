@@ -168,7 +168,13 @@ defmodule Pleroma.Integration.MastodonWebsocketTest do
     assert {:ok, _} = start_socket_path("/api/v1/streaming/public/local")
     assert {:ok, _} = start_socket_path("/api/v1/streaming/public/local", "?only_media=true")
     assert {:ok, _} = start_socket_path("/api/v1/streaming/public/remote", "?instance=lain.com")
-    assert {:ok, _} = start_socket_path("/api/v1/streaming/public/remote", "?instance=lain.com&only_media=true")
+
+    assert {:ok, _} =
+             start_socket_path(
+               "/api/v1/streaming/public/remote",
+               "?instance=lain.com&only_media=true"
+             )
+
     assert {:ok, _} = start_socket_path("/api/v1/streaming/hashtag", "?tag=lain")
   end
 
@@ -354,7 +360,10 @@ defmodule Pleroma.Integration.MastodonWebsocketTest do
                start_socket_path("/api/v1/streaming/user", "?access_token=#{token.token}")
 
       assert {:ok, _} =
-               start_socket_path("/api/v1/streaming/user/notification", "?access_token=#{token.token}")
+               start_socket_path(
+                 "/api/v1/streaming/user/notification",
+                 "?access_token=#{token.token}"
+               )
 
       assert {:ok, _} =
                start_socket_path("/api/v1/streaming/user/groups", "?access_token=#{token.token}")

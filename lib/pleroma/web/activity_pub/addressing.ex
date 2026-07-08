@@ -17,6 +17,8 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
   alias Pleroma.User
 
   @internal_group_key "addressed_groups"
+  @html_link_href_regex ~r/\bhref\s*=\s*["']([^"']+)["']/i
+  @webfinger_handle_regex ~r/(?:^|[^\p{L}\p{N}_@])@([A-Za-z0-9_][A-Za-z0-9_.-]{0,80})@([A-Za-z0-9][A-Za-z0-9.-]{0,250})/u
 
   def put_addressed_groups(object, group_ap_ids) do
     group_ap_ids = normalize_ap_ids(group_ap_ids)
@@ -39,6 +41,26 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
   end
 
   def put_attributed_groups(object), do: object
+
+  def put_mentioned_groups(object) when is_map(object) do
+    group_ap_ids = mention_group_ap_ids(object) ++ content_group_ap_ids(object)
+
+    put_addressed_groups(object, group_ap_ids)
+  end
+
+  def put_mentioned_groups(object), do: object
+
+  def put_replied_to_groups(%{"inReplyTo" => in_reply_to} = object) do
+    with reply_target when is_binary(reply_target) <- reply_target_id(in_reply_to),
+         %Object{data: replied_to_object} <- Object.normalize(reply_target, fetch: false),
+         [_ | _] = group_ap_ids <- addressed_group_ap_ids(replied_to_object) do
+      put_addressed_groups(object, group_ap_ids)
+    else
+      _ -> object
+    end
+  end
+
+  def put_replied_to_groups(object), do: object
 
   def filter_implicit_mention_ap_ids(ap_ids, object) when is_list(ap_ids) do
     Enum.reject(ap_ids, &suppress_implicit_mention_ap_id?(&1, object))
@@ -109,6 +131,8 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
     |> internal_group_ap_ids()
     |> Kernel.++(audience_ap_ids(object))
     |> Kernel.++(recipient_group_ap_ids(object))
+    |> Kernel.++(mention_group_ap_ids(object))
+    |> Kernel.++(content_group_ap_ids(object))
     |> Kernel.++(actor_group_ap_ids(object))
     |> Kernel.++(attributed_to_group_ap_ids(object))
     |> Kernel.++(nested_object_group_ap_ids(object))
@@ -133,6 +157,54 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
   end
 
   defp recipient_group_ap_ids(_), do: []
+
+  defp mention_group_ap_ids(%{"tag" => tags}) when is_list(tags) do
+    tags
+    |> Enum.flat_map(&mention_group_ap_ids/1)
+    |> Enum.uniq()
+  end
+
+  defp mention_group_ap_ids(%{"type" => "Mention"} = tag) do
+    tag
+    |> normalize_ap_ids()
+    |> Enum.filter(&group_actor_ap_id?/1)
+  end
+
+  defp mention_group_ap_ids(_), do: []
+
+  defp content_group_ap_ids(%{"content" => content}) when is_binary(content) do
+    (content_link_group_ap_ids(content) ++ content_handle_group_ap_ids(content))
+    |> Enum.uniq()
+  end
+
+  defp content_group_ap_ids(_), do: []
+
+  defp content_link_group_ap_ids(content) do
+    @html_link_href_regex
+    |> Regex.scan(content, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.filter(&group_actor_ap_id?/1)
+  end
+
+  defp content_handle_group_ap_ids(content) do
+    @webfinger_handle_regex
+    |> Regex.scan(content, capture: :all_but_first)
+    |> Enum.flat_map(fn [nickname, domain] -> group_ap_ids_by_handle(nickname, domain) end)
+    |> Enum.uniq()
+  end
+
+  defp group_ap_ids_by_handle(nickname, domain) do
+    ["#{nickname}@#{domain}", nickname]
+    |> Enum.flat_map(&group_ap_ids_by_nickname/1)
+    |> Enum.uniq()
+  end
+
+  defp group_ap_ids_by_nickname(nickname) do
+    case User.get_by_nickname(nickname) do
+      %User{actor_type: "Group", ap_id: ap_id} when is_binary(ap_id) -> [ap_id]
+      _ -> []
+    end
+  end
 
   defp actor_group_ap_ids(%{"actor" => actor}) do
     actor
@@ -213,4 +285,10 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
   defp normalize_ap_ids(%{"id" => id}) when is_binary(id), do: [id]
   defp normalize_ap_ids(%{"href" => href}) when is_binary(href), do: [href]
   defp normalize_ap_ids(_), do: []
+
+  defp reply_target_id(value) when is_binary(value), do: value
+  defp reply_target_id(%{"id" => id}) when is_binary(id), do: id
+  defp reply_target_id(%{"href" => href}) when is_binary(href), do: href
+  defp reply_target_id([value | _]), do: reply_target_id(value)
+  defp reply_target_id(_), do: nil
 end

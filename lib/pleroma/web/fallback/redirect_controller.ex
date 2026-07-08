@@ -21,6 +21,8 @@ defmodule Pleroma.Web.Fallback.RedirectController do
 
   @static_fallback_roots ~w(doc emoji finmoji images instance packs schemas sounds static static-fe)
   @static_fallback_files ~w(embed.css embed.js favicon.png manifest.json manifest.webmanifest robots.txt sw.js sw.mjs sw-pleroma.js)
+  @scanner_probe_roots ~w(.git .svn backup backups config private)
+  @scanner_probe_extensions ~w(.bak .backup .conf .env .ini .old .sql .tar .tgz .yml .yaml .zip)
 
   def api_not_implemented(conn, _params) do
     conn
@@ -29,20 +31,24 @@ defmodule Pleroma.Web.Fallback.RedirectController do
   end
 
   def redirector(conn, params, code \\ 200) do
-    redirector_with_ssr(conn, params, [:title, :favicon], code)
+    redirector_with_ssr(conn, params, [:title, :favicon, :manifest], code)
   end
 
   def redirector_with_meta(conn, %{"maybe_nickname_or_id" => maybe_nickname_or_id} = params) do
-    with %User{} = user <- User.get_cached_by_nickname_or_id(maybe_nickname_or_id) do
-      redirector_with_meta(conn, %{user: user})
+    if static_fallback_miss?(conn) do
+      static_not_found(conn)
     else
-      nil ->
-        redirector(conn, params)
+      with %User{} = user <- User.get_cached_by_nickname_or_id(maybe_nickname_or_id) do
+        redirector_with_meta(conn, %{user: user})
+      else
+        nil ->
+          redirector(conn, params)
+      end
     end
   end
 
   def redirector_with_meta(conn, params) do
-    redirector_with_ssr(conn, params, [:tags, :preload, :title, :favicon])
+    redirector_with_ssr(conn, params, [:tags, :preload, :title, :favicon, :manifest])
   end
 
   def redirector_with_preload(conn, %{"path" => ["pleroma", "admin"]}) do
@@ -50,7 +56,7 @@ defmodule Pleroma.Web.Fallback.RedirectController do
   end
 
   def redirector_with_preload(conn, params) do
-    redirector_with_ssr(conn, params, [:preload, :title, :favicon])
+    redirector_with_ssr(conn, params, [:preload, :title, :favicon, :manifest])
   end
 
   defp redirector_with_ssr(conn, params, keys, code \\ 200) do
@@ -86,10 +92,24 @@ defmodule Pleroma.Web.Fallback.RedirectController do
   end
 
   defp static_fallback_miss?(%{path_info: [root | _], request_path: "/" <> path}) do
-    root in @static_fallback_roots or path in @static_fallback_files
+    scanner_probe_path?(root, path) or root in @static_fallback_roots or
+      path in @static_fallback_files
   end
 
   defp static_fallback_miss?(_), do: false
+
+  defp scanner_probe_path?(root, path) do
+    if String.valid?(root) and String.valid?(path) do
+      lower_root = String.downcase(root)
+      lower_path = String.downcase(path)
+
+      lower_root in @scanner_probe_roots or String.contains?(lower_path, "%c0") or
+        String.contains?(lower_path, "%2e") or
+        Enum.any?(@scanner_probe_extensions, &String.ends_with?(lower_path, &1))
+    else
+      true
+    end
+  end
 
   defp static_not_found(conn) do
     if String.ends_with?(String.downcase(conn.request_path), [".json", ".webmanifest"]) do
@@ -157,5 +177,9 @@ defmodule Pleroma.Web.Fallback.RedirectController do
 
   defp build_meta(:favicon, _) do
     "<link rel=\"icon\" href=\"#{Pleroma.Config.get([:instance, :favicon])}\">"
+  end
+
+  defp build_meta(:manifest, _) do
+    "<link rel=\"manifest\" href=\"/manifest.json\">"
   end
 end

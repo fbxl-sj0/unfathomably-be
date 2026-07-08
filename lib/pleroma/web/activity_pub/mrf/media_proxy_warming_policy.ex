@@ -27,13 +27,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.MediaProxyWarmingPolicy do
 
       Logger.debug("Prefetching #{inspect(url)} as #{inspect(prefetch_url)}")
 
-      if Pleroma.Config.get(:env) == :test do
-        fetch(prefetch_url)
-      else
-        ConcurrentLimiter.limit(__MODULE__, fn ->
-          Task.start(fn -> fetch(prefetch_url) end)
-        end)
-      end
+      fetch(prefetch_url)
     end
   end
 
@@ -42,8 +36,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.MediaProxyWarmingPolicy do
     # Do not enable adapter-level redirects here: Hackney has known edge
     # cases around relative redirects and CONNECT proxies.
     http_client_opts =
-      @adapter_options
-      |> Keyword.merge(Pleroma.Config.get([:media_proxy, :proxy_opts, :http], []))
+      Pleroma.Config.get([:media_proxy, :proxy_opts, :http], @adapter_options)
       |> Keyword.drop([:follow_redirect, :force_redirect])
 
     HTTP.get(url, [], http_client_opts)

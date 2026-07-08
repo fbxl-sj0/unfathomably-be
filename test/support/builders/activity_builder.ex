@@ -47,6 +47,7 @@ defmodule Pleroma.Builders.ActivityBuilder do
     user = Pleroma.Factory.insert(:user)
 
     public = build(%{"id" => 1}, %{user: user})
+
     non_public =
       build(
         %{

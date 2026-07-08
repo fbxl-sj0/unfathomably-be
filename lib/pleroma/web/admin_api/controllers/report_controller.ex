@@ -1,11 +1,9 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Ã‚Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.AdminAPI.ReportController do
   use Pleroma.Web, :controller
-
-  import Pleroma.Web.ControllerHelper, only: [json_response: 3]
 
   alias Pleroma.Activity
   alias Pleroma.ModerationLog
@@ -15,6 +13,7 @@ defmodule Pleroma.Web.AdminAPI.ReportController do
   alias Pleroma.Web.AdminAPI
   alias Pleroma.Web.AdminAPI.Report
   alias Pleroma.Web.CommonAPI
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   require Logger
@@ -31,6 +30,7 @@ defmodule Pleroma.Web.AdminAPI.ReportController do
   action_fallback(AdminAPI.FallbackController)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.Admin.ReportOperation
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
 
   def index(conn, params) do
     reports = Utils.get_reports(params, params.page, params.page_size)
@@ -38,7 +38,9 @@ defmodule Pleroma.Web.AdminAPI.ReportController do
     render(conn, "index.json", reports: reports)
   end
 
-  def show(conn, %{id: id}) do
+  def show(conn, params) do
+    id = get_param(params, "id")
+
     with %Activity{} = report <- Activity.get_report(id) do
       render(conn, "show.json", Report.extract_report_info(report))
     else
@@ -46,7 +48,9 @@ defmodule Pleroma.Web.AdminAPI.ReportController do
     end
   end
 
-  def update(%{assigns: %{user: admin}, body_params: %{reports: reports}} = conn, _) do
+  def update(%{assigns: %{user: admin}} = conn, _) do
+    reports = conn |> request_body() |> get_param("reports", []) |> Enum.map(&normalize_report/1)
+
     result =
       Enum.map(reports, fn report ->
         case CommonAPI.update_report_state(report.id, report.state) do
@@ -74,7 +78,8 @@ defmodule Pleroma.Web.AdminAPI.ReportController do
     end
   end
 
-  def assign_account(%{assigns: %{user: admin}, body_params: %{reports: reports}} = conn, _) do
+  def assign_account(%{assigns: %{user: admin}} = conn, _) do
+    reports = conn |> request_body() |> get_param("reports", []) |> Enum.map(&normalize_report/1)
     result = Enum.map(reports, &do_assign_account(&1, admin))
 
     if Enum.any?(result, &Map.has_key?(&1, :error)) do
@@ -84,9 +89,10 @@ defmodule Pleroma.Web.AdminAPI.ReportController do
     end
   end
 
-  def notes_create(%{assigns: %{user: user}, body_params: %{content: content}} = conn, %{
-        id: report_id
-      }) do
+  def notes_create(%{assigns: %{user: user}} = conn, params) do
+    content = conn |> request_body() |> get_param("content")
+    report_id = get_param(params, "id")
+
     with {:ok, _} <- ReportNote.create(user.id, report_id, content),
          report <- Activity.get_by_id_with_user_actor(report_id) do
       ModerationLog.insert_log(%{
@@ -103,10 +109,10 @@ defmodule Pleroma.Web.AdminAPI.ReportController do
     end
   end
 
-  def notes_delete(%{assigns: %{user: user}} = conn, %{
-        id: note_id,
-        report_id: report_id
-      }) do
+  def notes_delete(%{assigns: %{user: user}} = conn, params) do
+    note_id = get_param(params, "id")
+    report_id = get_param(params, "report_id")
+
     with {:ok, note} <- ReportNote.destroy(note_id),
          report <- Activity.get_by_id_with_user_actor(report_id) do
       ModerationLog.insert_log(%{
@@ -158,4 +164,34 @@ defmodule Pleroma.Web.AdminAPI.ReportController do
         %{id: id, error: message}
     end
   end
+
+  defp request_body(%{
+         body_params: body,
+         private: %{open_api_spex: %{body_params: spec_body}}
+       })
+       when is_map(body) and map_size(body) == 0 and is_map(spec_body),
+       do: spec_body
+
+  defp request_body(%{body_params: body}) when is_map(body), do: body
+
+  defp request_body(%{private: %{open_api_spex: %{body_params: body}}}) when is_map(body),
+    do: body
+
+  defp request_body(_), do: %{}
+
+  defp normalize_report(report) when is_map(report) do
+    %{
+      id: get_param(report, "id"),
+      state: get_param(report, "state"),
+      assigned_account: get_param(report, "assigned_account")
+    }
+  end
+
+  defp get_param(map, key, default \\ nil)
+
+  defp get_param(map, key, default) when is_map(map) and is_binary(key) do
+    Map.get(map, key, Map.get(map, String.to_atom(key), default))
+  end
+
+  defp get_param(_map, _key, default), do: default
 end

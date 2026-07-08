@@ -61,8 +61,27 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.QuestionValidator do
 
   defp fix(data) do
     data
+    |> fix_interaction_counts()
     |> ArticleNotePageValidator.fix()
     |> fix_closed()
+  end
+
+  defp fix_interaction_counts(data) do
+    data
+    |> fix_interaction_count("likes", "like_count")
+    |> fix_interaction_count("shares", "announcement_count")
+  end
+
+  defp fix_interaction_count(data, field, count_field) do
+    case Map.get(data, field) do
+      %{"totalItems" => count} when is_integer(count) ->
+        data
+        |> Map.put(count_field, count)
+        |> Map.put(field, [])
+
+      _ ->
+        data
+    end
   end
 
   def changeset(struct, data) do

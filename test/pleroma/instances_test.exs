@@ -4,8 +4,11 @@
 
 defmodule Pleroma.InstancesTest do
   alias Pleroma.Instances
+  alias Pleroma.Repo
 
   use Pleroma.DataCase
+
+  import Ecto.Query
 
   setup_all do: clear_config([:instance, :federation_reachability_timeout_days], 1)
 
@@ -141,6 +144,37 @@ defmodule Pleroma.InstancesTest do
 
       Instances.set_consistently_unreachable(host)
       refute Instances.reachable?(host)
+    end
+  end
+
+  describe "check_all_unreachable/0" do
+    test "schedules reachability checks for consistently unreachable instances" do
+      Instances.set_consistently_unreachable("wake-up.example")
+
+      Instances.check_all_unreachable()
+
+      assert Repo.exists?(
+               from(job in Oban.Job,
+                 where: job.worker == "Pleroma.Workers.ReachabilityWorker",
+                 where: fragment("?->>'domain' = ?", job.args, "wake-up.example")
+               )
+             )
+    end
+  end
+
+  describe "delete_all_unreachable/0" do
+    test "schedules instance deletion for consistently unreachable instances" do
+      Instances.set_consistently_unreachable("delete-me.example")
+
+      Instances.delete_all_unreachable()
+
+      assert Repo.exists?(
+               from(job in Oban.Job,
+                 where: job.worker == "Pleroma.Workers.BackgroundWorker",
+                 where: fragment("?->>'op' = ?", job.args, "delete_instance"),
+                 where: fragment("?->>'host' = ?", job.args, "delete-me.example")
+               )
+             )
     end
   end
 end

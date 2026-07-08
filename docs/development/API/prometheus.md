@@ -1,44 +1,55 @@
 # Prometheus Metrics
 
-Pleroma includes support for exporting metrics via the [prometheus_ex](https://github.com/deadtrickster/prometheus.ex) library.
+Unfathomably exposes Prometheus-compatible runtime metrics through PromEx at
+`/api/metrics`.
 
-Config example:
+Metrics often include enough operational detail to help an attacker profile a
+server. For that reason the endpoint fails closed by default: if no bearer token
+is configured, requests to `/api/metrics` are not served.
 
+## Configuration
+
+Add a long random token to your runtime configuration:
+
+```elixir
+config :pleroma, Pleroma.Web.Plugs.MetricsPredicate,
+  auth_token: "replace-this-with-a-long-random-token"
 ```
-config :prometheus, Pleroma.Web.Endpoint.MetricsExporter,
-  enabled: true,
-  auth: {:basic, "myusername", "mypassword"},
-  ip_whitelist: ["127.0.0.1"],
-  path: "/api/pleroma/app_metrics",
-  format: :text
+
+Then configure Prometheus or another scraper to send the token:
+
+```bash
+curl \
+  -H "Authorization: Bearer replace-this-with-a-long-random-token" \
+  https://example.com/api/metrics
 ```
 
-* `enabled` (Pleroma extension) enables the endpoint
-* `ip_whitelist` (Pleroma extension) could be used to restrict access only to specified IPs
-* `auth` sets the authentication (`false` for no auth; configurable to HTTP Basic Auth, see [prometheus-plugs](https://github.com/deadtrickster/prometheus-plugs#exporting) documentation)
-* `format` sets the output format (`:text` or `:protobuf`)
-* `path` sets the path to app metrics page 
+If you intentionally expose metrics only on a private network or behind a
+trusted reverse proxy, source installs may set `auth_token: :disabled` to allow
+unauthenticated scraping. Do not use that setting on a public endpoint.
 
+Unset, `nil`, and empty token values all disable the endpoint.
 
-## `/api/pleroma/app_metrics`
+## `/api/metrics`
 
 ### Exports Prometheus application metrics
 
 * Method: `GET`
-* Authentication: not required by default (see configuration options above)
+* Authentication: bearer token required unless explicitly disabled in source
+  configuration
 * Params: none
-* Response: text
+* Response: Prometheus text exposition format
 
-## Grafana
+## Grafana and Prometheus
 
-### Config example
+Example Prometheus scrape configuration:
 
-The following is a config example to use with [Grafana](https://grafana.com)
-
-```
-  - job_name: 'beam'
-    metrics_path: /api/pleroma/app_metrics
-    scheme: https
-    static_configs:
-    - targets: ['pleroma.soykaf.com']
+```yaml
+- job_name: "unfathomably"
+  metrics_path: /api/metrics
+  scheme: https
+  bearer_token: replace-this-with-a-long-random-token
+  static_configs:
+    - targets:
+        - example.com
 ```

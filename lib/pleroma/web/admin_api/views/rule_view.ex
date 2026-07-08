@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.AdminAPI.RuleView do
@@ -11,9 +11,10 @@ defmodule Pleroma.Web.AdminAPI.RuleView do
 
   def render("show.json", %{rule: rule} = _opts) do
     %{
-      id: rule.id,
+      id: to_string(rule.id),
       priority: rule.priority,
-      text: rule.text
+      text: rule.text,
+      hint: rule.hint
     }
   end
 end

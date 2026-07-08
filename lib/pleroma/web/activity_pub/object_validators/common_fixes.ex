@@ -72,6 +72,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     data
     |> Map.put("context", context)
     |> fix_object_recipients(User.get_cached_by_ap_id(data["attributedTo"]))
+    |> Addressing.put_mentioned_groups()
+    |> Addressing.put_replied_to_groups()
   end
 
   defp fix_object_recipients(data, %User{follower_address: follower_collection}) do
@@ -178,8 +180,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
   defp do_fix_object_action_recipients(
          %{"actor" => actor} = data,
          %Object{data: %{"actor" => actor}}
-       )
-       when is_binary(actor) do
+       ) do
     to =
       data
       |> Map.get("to", [])
@@ -190,8 +191,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     Map.put(data, "to", to)
   end
 
-  defp do_fix_object_action_recipients(data, %Object{data: %{"actor" => actor}})
-       when is_binary(actor) do
+  defp do_fix_object_action_recipients(data, %Object{data: %{"actor" => actor}}) do
     to =
       data
       |> Map.get("to", [])
@@ -203,7 +203,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
   end
 
   defp do_fix_object_action_recipients(data, %Object{}), do: data
-  defp do_fix_object_action_recipients(data, _object), do: data
 
   defp group_actor?(actor) when is_binary(actor) do
     case User.get_by_ap_id(actor) do
@@ -250,6 +249,13 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
   end
 
   def fix_quote_url(data), do: data
+
+  # Mastodon can send "likes" as an ActivityStreams Collection with totals
+  # on edited objects. Locally this field is an internal list/count pair, so
+  # wire-level collections must be dropped before validation.
+  def fix_likes(%{"likes" => likes} = data) when is_map(likes), do: Map.delete(data, "likes")
+
+  def fix_likes(data), do: data
 
   # https://codeberg.org/fediverse/fep/src/branch/main/fep/e232/fep-e232.md
   def is_object_link_tag(%{

@@ -802,6 +802,15 @@ defmodule Pleroma.UserTest do
       assert user.registration_reason == "I'm a cool guy :)"
     end
 
+    test "it strips HTML from registration reason" do
+      params = Map.put(@full_user_data, :registration_reason, "I'm <b>a cool</b> guy :)")
+
+      changeset = User.register_changeset(%User{}, params)
+
+      assert changeset.valid?
+      assert Ecto.Changeset.get_change(changeset, :registration_reason) == "I'm a cool guy :)"
+    end
+
     test "it restricts length of registration reason" do
       reason_limit = Pleroma.Config.get([:instance, :registration_reason_length])
 

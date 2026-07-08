@@ -74,4 +74,23 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.RejectValidationTest do
     assert {:error, cng} = ObjectValidator.validate(reject_data, [])
     assert {:actor, {"can't accept or reject the given activity", []}} in cng.errors
   end
+
+  test "for a rejected group join, the group actor can reject the join" do
+    joiner = insert(:user)
+    group = insert(:user, local: true, actor_type: "Group")
+
+    join_data = %{
+      "id" => "https://local.test/activities/join/group-reject",
+      "type" => "Join",
+      "actor" => joiner.ap_id,
+      "object" => group.ap_id,
+      "to" => [group.ap_id],
+      "cc" => []
+    }
+
+    {:ok, join_activity, _meta} = ActivityPub.persist(join_data, local: true)
+    {:ok, reject_data, _} = Builder.reject(group, join_activity)
+
+    assert {:ok, _, _} = ObjectValidator.validate(reject_data, [])
+  end
 end

@@ -11,7 +11,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
   alias Pleroma.Web.ActivityPub.ObjectValidators.TagValidator
 
   import Ecto.Changeset
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
 
@@ -130,8 +130,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
     data_cng
     |> validate_inclusion(:type, ["EmojiReact"])
     |> validate_required([:id, :type, :object, :actor, :context, :to, :cc, :content])
-    |> validate_actor_presence()
-    |> validate_object_presence()
+    |> CommonValidations.validate_actor_presence()
+    |> CommonValidations.validate_object_presence()
     |> validate_emoji()
     |> maybe_validate_tag_presence()
   end

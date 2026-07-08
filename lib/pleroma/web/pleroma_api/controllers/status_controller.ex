@@ -1,12 +1,11 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.StatusController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper, only: [add_link_headers: 2]
-
+  alias Pleroma.Web.ControllerHelper
   require Pleroma.Constants
 
   alias Pleroma.Activity
@@ -26,6 +25,7 @@ defmodule Pleroma.Web.PleromaAPI.StatusController do
   )
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.PleromaStatusOperation
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
 
   @doc "GET /api/v1/pleroma/statuses/:id/quotes"
   def quotes(%{assigns: %{user: user}} = conn, %{id: id} = params) do

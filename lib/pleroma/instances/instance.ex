@@ -5,14 +5,14 @@
 defmodule Pleroma.Instances.Instance do
   @moduledoc "Instance."
 
+  alias Pleroma.Config
   alias Pleroma.Instances
   alias Pleroma.Instances.Cache, as: InstanceCache
   alias Pleroma.Instances.Instance
   alias Pleroma.Maps
-  alias Pleroma.Config
   alias Pleroma.Repo
   alias Pleroma.User
-  alias Pleroma.Workers.BackgroundWorker
+  alias Pleroma.Workers.DeleteWorker
 
   use Ecto.Schema
 
@@ -171,12 +171,13 @@ defmodule Pleroma.Instances.Instance do
   end
 
   def set_reachable(url_or_host) when is_binary(url_or_host) do
-    with host <- host(url_or_host),
-         %Instance{} = existing_record <- Repo.get_by(Instance, %{host: host}),
-         {:ok, instance} <-
-           existing_record
+    host = host(url_or_host)
+
+    with {:ok, instance} <-
+           %Instance{host: host}
            |> changeset(%{unreachable_since: nil})
-           |> Repo.update() do
+           |> Repo.insert(on_conflict: {:replace, [:unreachable_since]}, conflict_target: :host) do
+      Pleroma.Workers.ReachabilityWorker.delete_jobs_for_host(host)
       InstanceCache.sync(instance)
       {:ok, instance}
     end
@@ -708,7 +709,7 @@ defmodule Pleroma.Instances.Instance do
   all of those users' activities and notifications.
   """
   def delete_users_and_activities(host) when is_binary(host) do
-    BackgroundWorker.enqueue("delete_instance", %{"host" => host})
+    DeleteWorker.enqueue("delete_instance", %{"host" => host})
   end
 
   def perform(:delete_instance, host) when is_binary(host) do
@@ -723,5 +724,9 @@ defmodule Pleroma.Instances.Instance do
       end)
     end)
     |> Stream.run()
+
+    Repo.delete_all(from(i in Instance, where: i.host == ^host))
+    Pleroma.Workers.ReachabilityWorker.delete_jobs_for_host(host)
+    InstanceCache.sync(host, nil)
   end
 end

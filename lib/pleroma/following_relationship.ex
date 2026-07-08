@@ -13,6 +13,7 @@ defmodule Pleroma.FollowingRelationship do
   alias Pleroma.FollowingRelationship.State
   alias Pleroma.Instances
   alias Pleroma.Instances.Instance
+  alias Pleroma.Pagination
   alias Pleroma.Repo
   alias Pleroma.User
 
@@ -66,7 +67,7 @@ defmodule Pleroma.FollowingRelationship do
       following_relationship ->
         with {:ok, _following_relationship} <-
                following_relationship
-               |> cast(%{state: state}, [:state])
+               |> change(state: state)
                |> validate_required([:state])
                |> Repo.update() do
           after_update(state, follower, following)
@@ -111,6 +112,8 @@ defmodule Pleroma.FollowingRelationship do
     end
   end
 
+  def follower_count(%User{id: nil}), do: 0
+
   def follower_count(%User{} = user) do
     %{followers: user, deactivated: false}
     |> User.Query.build()
@@ -153,26 +156,26 @@ defmodule Pleroma.FollowingRelationship do
     |> Repo.aggregate(:count, :id)
   end
 
-  def get_follow_requests(%User{id: id}) do
+  def get_follow_requests(%User{id: id}, params \\ %{}) do
     __MODULE__
-    |> join(:inner, [r], f in assoc(r, :follower))
+    |> join(:inner, [r], f in assoc(r, :follower), as: :follow_request_user)
     |> where([r], r.state == ^:follow_pending)
     |> where([r], r.following_id == ^id)
     |> where([r, f], f.is_active == true)
     |> without_dormant_remote_user()
     |> select([r, f], f)
-    |> Repo.all()
+    |> Pagination.fetch_paginated(params, :keyset, :follow_request_user)
   end
 
-  def get_outgoing_follow_requests(%User{id: id}) do
+  def get_outgoing_follow_requests(%User{id: id}, params \\ %{}) do
     __MODULE__
-    |> join(:inner, [r], f in assoc(r, :following))
+    |> join(:inner, [r], f in assoc(r, :following), as: :follow_request_user)
     |> where([r], r.state == ^:follow_pending)
     |> where([r], r.follower_id == ^id)
     |> where([r, f], f.is_active == true)
     |> without_dormant_remote_user()
     |> select([r, f], f)
-    |> Repo.all()
+    |> Pagination.fetch_paginated(params, :keyset, :follow_request_user)
   end
 
   def following?(%User{id: follower_id}, %User{id: followed_id}) do
@@ -262,8 +265,8 @@ defmodule Pleroma.FollowingRelationship do
   end
 
   @doc """
-  For a query with joined activity,
-  keeps rows where activity's actor is followed by user -or- is NOT domain-blocked by user.
+  For a query with joined activity's actor,
+  keeps rows where actor is followed by user -or- is NOT domain-blocked by user.
   """
   def keep_following_or_not_domain_blocked(query, user) do
     domain_blocks =
@@ -273,7 +276,7 @@ defmodule Pleroma.FollowingRelationship do
 
     where(
       query,
-      [_, activity],
+      [_, user_actor: user_actor],
       fragment(
         # "(actor's domain NOT in domain_blocks) OR (actor IS in followed AP IDs)"
         """
@@ -281,9 +284,9 @@ defmodule Pleroma.FollowingRelationship do
           ? = ANY(SELECT ap_id FROM users AS u INNER JOIN following_relationships AS fr
             ON u.id = fr.following_id WHERE fr.follower_id = ? AND fr.state = ?)
         """,
-        activity.actor,
+        user_actor.ap_id,
         ^domain_blocks,
-        activity.actor,
+        user_actor.ap_id,
         ^User.binary_id(user.id),
         ^accept_state_code()
       )

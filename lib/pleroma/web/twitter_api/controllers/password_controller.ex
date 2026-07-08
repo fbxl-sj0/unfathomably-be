@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.TwitterAPI.PasswordController do
@@ -9,16 +9,17 @@ defmodule Pleroma.Web.TwitterAPI.PasswordController do
 
   use Pleroma.Web, :controller
 
+  alias Pleroma.Web.ControllerHelper
+
   require Logger
-
-  import Pleroma.Web.ControllerHelper, only: [json_response: 3]
-
   alias Pleroma.PasswordResetToken
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.TwitterAPI.TwitterAPI
 
   plug(Pleroma.Web.Plugs.RateLimiter, [name: :request] when action == :request)
+
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
 
   @doc "POST /auth/password"
   def request(conn, params) do

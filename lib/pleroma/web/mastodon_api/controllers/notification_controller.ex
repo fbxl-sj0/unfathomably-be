@@ -1,14 +1,13 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.NotificationController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper, only: [add_link_headers: 2, add_link_headers: 3]
-
   alias Pleroma.Notification
   alias Pleroma.User
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.MastodonAPI.AccountView
   alias Pleroma.Web.MastodonAPI.MastodonAPI
   alias Pleroma.Web.Plugs.OAuthScopesPlug
@@ -27,6 +26,10 @@ defmodule Pleroma.Web.MastodonAPI.NotificationController do
   plug(OAuthScopesPlug, %{scopes: ["write:notifications"]} when action not in @oauth_read_actions)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.NotificationOperation
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
+
+  defp add_link_headers(conn, entries, extra_params),
+    do: ControllerHelper.add_link_headers(conn, entries, extra_params)
 
   @default_notification_types ~w{
     mention

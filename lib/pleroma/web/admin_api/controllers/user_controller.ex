@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Ã‚Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 # credo:disable-for-this-file Credo.Check.Readability.PredicateFunctionNames
@@ -7,15 +7,13 @@
 defmodule Pleroma.Web.AdminAPI.UserController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper,
-    only: [fetch_integer_param: 3]
-
   alias Pleroma.ModerationLog
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.AdminAPI
   alias Pleroma.Web.AdminAPI.Search
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   @users_page_size 50
@@ -53,13 +51,17 @@ defmodule Pleroma.Web.AdminAPI.UserController do
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.Admin.UserOperation
 
+  defp fetch_integer_param(params, name, default),
+    do: ControllerHelper.fetch_integer_param(params, name, default)
+
   def delete(conn, %{nickname: nickname}) do
     conn
-    |> Map.put(:body_params, %{nicknames: [nickname]})
+    |> Map.put(:body_params, %{"nicknames" => [nickname]})
     |> delete(%{})
   end
 
-  def delete(%{assigns: %{user: admin}, body_params: %{nicknames: nicknames}} = conn, _) do
+  def delete(%{assigns: %{user: admin}} = conn, _) do
+    nicknames = body_param(conn, :nicknames) || []
     users = Enum.map(nicknames, &User.get_cached_by_nickname/1)
 
     if Enum.all?(users, &is_higher_role(admin, &1)) do
@@ -91,16 +93,10 @@ defmodule Pleroma.Web.AdminAPI.UserController do
   defp role_weight(%User{is_moderator: true}), do: 1
   defp role_weight(_), do: 0
 
-  def follow(
-        %{
-          assigns: %{user: admin},
-          body_params: %{
-            follower: follower_nick,
-            followed: followed_nick
-          }
-        } = conn,
-        _
-      ) do
+  def follow(%{assigns: %{user: admin}} = conn, _) do
+    follower_nick = body_param(conn, :follower)
+    followed_nick = body_param(conn, :followed)
+
     with %User{} = follower <- User.get_cached_by_nickname(follower_nick),
          %User{} = followed <- User.get_cached_by_nickname(followed_nick) do
       User.follow(follower, followed)
@@ -116,16 +112,10 @@ defmodule Pleroma.Web.AdminAPI.UserController do
     json(conn, "ok")
   end
 
-  def unfollow(
-        %{
-          assigns: %{user: admin},
-          body_params: %{
-            follower: follower_nick,
-            followed: followed_nick
-          }
-        } = conn,
-        _
-      ) do
+  def unfollow(%{assigns: %{user: admin}} = conn, _) do
+    follower_nick = body_param(conn, :follower)
+    followed_nick = body_param(conn, :followed)
+
     with %User{} = follower <- User.get_cached_by_nickname(follower_nick),
          %User{} = followed <- User.get_cached_by_nickname(followed_nick) do
       User.unfollow(follower, followed)
@@ -141,10 +131,16 @@ defmodule Pleroma.Web.AdminAPI.UserController do
     json(conn, "ok")
   end
 
-  def create(%{assigns: %{user: admin}, body_params: %{users: users}} = conn, _) do
+  def create(%{assigns: %{user: admin}} = conn, _) do
+    users = body_param(conn, :users) || []
+
     changesets =
       users
-      |> Enum.map(fn %{nickname: nickname, email: email, password: password} ->
+      |> Enum.map(fn user ->
+        nickname = map_param(user, :nickname)
+        email = map_param(user, :email)
+        password = map_param(user, :password)
+
         user_data = %{
           nickname: nickname,
           name: nickname,
@@ -219,7 +215,8 @@ defmodule Pleroma.Web.AdminAPI.UserController do
     render(conn, "show.json", user: updated_user)
   end
 
-  def activate(%{assigns: %{user: admin}, body_params: %{nicknames: nicknames}} = conn, _) do
+  def activate(%{assigns: %{user: admin}} = conn, _) do
+    nicknames = body_param(conn, :nicknames) || []
     users = Enum.map(nicknames, &User.get_cached_by_nickname/1)
     {:ok, updated_users} = User.set_activation(users, true)
 
@@ -229,10 +226,11 @@ defmodule Pleroma.Web.AdminAPI.UserController do
       action: "activate"
     })
 
-    render(conn, "index.json", users: Keyword.values(updated_users))
+    render(conn, "index.json", users: updated_users)
   end
 
-  def deactivate(%{assigns: %{user: admin}, body_params: %{nicknames: nicknames}} = conn, _) do
+  def deactivate(%{assigns: %{user: admin}} = conn, _) do
+    nicknames = body_param(conn, :nicknames) || []
     users = Enum.map(nicknames, &User.get_cached_by_nickname/1)
     {:ok, updated_users} = User.set_activation(users, false)
 
@@ -242,10 +240,11 @@ defmodule Pleroma.Web.AdminAPI.UserController do
       action: "deactivate"
     })
 
-    render(conn, "index.json", users: Keyword.values(updated_users))
+    render(conn, "index.json", users: updated_users)
   end
 
-  def approve(%{assigns: %{user: admin}, body_params: %{nicknames: nicknames}} = conn, _) do
+  def approve(%{assigns: %{user: admin}} = conn, _) do
+    nicknames = body_param(conn, :nicknames) || []
     users = Enum.map(nicknames, &User.get_cached_by_nickname/1)
     {:ok, updated_users} = User.approve(users)
 
@@ -258,7 +257,8 @@ defmodule Pleroma.Web.AdminAPI.UserController do
     render(conn, "index.json", users: updated_users)
   end
 
-  def suggest(%{assigns: %{user: admin}, body_params: %{nicknames: nicknames}} = conn, _) do
+  def suggest(%{assigns: %{user: admin}} = conn, _) do
+    nicknames = body_param(conn, :nicknames) || []
     users = Enum.map(nicknames, &User.get_cached_by_nickname/1)
     {:ok, updated_users} = User.set_suggestion(users, true)
 
@@ -271,7 +271,8 @@ defmodule Pleroma.Web.AdminAPI.UserController do
     render(conn, "index.json", users: updated_users)
   end
 
-  def unsuggest(%{assigns: %{user: admin}, body_params: %{nicknames: nicknames}} = conn, _) do
+  def unsuggest(%{assigns: %{user: admin}} = conn, _) do
+    nicknames = body_param(conn, :nicknames) || []
     users = Enum.map(nicknames, &User.get_cached_by_nickname/1)
     {:ok, updated_users} = User.set_suggestion(users, false)
 
@@ -322,5 +323,13 @@ defmodule Pleroma.Web.AdminAPI.UserController do
       fetch_integer_param(params, :page, 1),
       fetch_integer_param(params, :page_size, @users_page_size)
     }
+  end
+
+  defp body_param(%Plug.Conn{body_params: body_params}, key) do
+    Map.get(body_params, key) || Map.get(body_params, Atom.to_string(key))
+  end
+
+  defp map_param(map, key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
   end
 end

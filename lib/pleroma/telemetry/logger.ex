@@ -14,6 +14,7 @@ defmodule Pleroma.Telemetry.Logger do
     [:pleroma, :connection_pool, :client, :dead],
     [:pleroma, :connection_pool, :client, :add]
   ]
+
   def attach do
     :telemetry.attach_many("pleroma-logger", @events, &__MODULE__.handle_event/4, [])
   end
@@ -66,21 +67,25 @@ defmodule Pleroma.Telemetry.Logger do
 
   def handle_event(
         [:pleroma, :connection_pool, :client, :dead],
-        %{reason: reason} = measurements,
-        metadata,
-        config
+        %{client_pid: client_pid, reason: reason},
+        %{key: key},
+        _
       )
       when reason in [:normal, :shutdown] do
-    log_dead_pool_client(:debug, measurements, metadata, config)
+    Logger.debug(fn ->
+      "Pool worker for #{key}: Client #{inspect(client_pid)} exited before releasing the connection with #{inspect(reason)}"
+    end)
   end
 
   def handle_event(
         [:pleroma, :connection_pool, :client, :dead],
-        measurements,
-        metadata,
-        config
+        %{client_pid: client_pid, reason: reason},
+        %{key: key},
+        _
       ) do
-    log_dead_pool_client(:warning, measurements, metadata, config)
+    Logger.warning(fn ->
+      "Pool worker for #{key}: Client #{inspect(client_pid)} died before releasing the connection with #{inspect(reason)}"
+    end)
   end
 
   def handle_event(
@@ -95,15 +100,4 @@ defmodule Pleroma.Telemetry.Logger do
   end
 
   def handle_event([:pleroma, :connection_pool, :client, :add], _, _, _), do: :ok
-
-  defp log_dead_pool_client(
-         level,
-         %{client_pid: client_pid, reason: reason},
-         %{key: key},
-         _
-       ) do
-    Logger.log(level, fn ->
-      "Pool worker for #{key}: Client #{inspect(client_pid)} died before releasing the connection with #{inspect(reason)}"
-    end)
-  end
 end

@@ -5,20 +5,20 @@
 defmodule Pleroma.Web.MastodonAPI.FederatedSourceTimelineController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper, only: [add_link_headers: 2]
+  import Ecto.Query, only: [where: 3]
 
   alias Pleroma.Activity
-  alias Pleroma.Constants
   alias Pleroma.Pagination
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.StatusView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
-  require Pleroma.Constants
-
   plug(OAuthScopesPlug, %{scopes: ["read:statuses"], fallback: :proceed_unauthenticated})
+
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
 
   @doc "GET /api/v1/timelines/sources"
   def index(%{assigns: %{user: %User{} = user}} = conn, params) do
@@ -32,10 +32,13 @@ defmodule Pleroma.Web.MastodonAPI.FederatedSourceTimelineController do
       |> Map.put(:reply_filtering_user, user)
       |> Map.put(:announce_filtering_user, user)
 
+    source_ap_ids = FederatedTarget.followed_source_ap_ids(user)
+
     activities =
-      user
-      |> FederatedTarget.followed_source_ap_ids()
-      |> fetch_followed_source_activities(activity_params)
+      []
+      |> ActivityPub.fetch_activities_query(activity_params)
+      |> where([activity], activity.actor in ^source_ap_ids)
+      |> Pagination.fetch_paginated(activity_params)
       |> unique_source_activities()
 
     conn
@@ -50,18 +53,6 @@ defmodule Pleroma.Web.MastodonAPI.FederatedSourceTimelineController do
   end
 
   def index(conn, _params), do: render_error(conn, :unauthorized, "authorization required")
-
-  defp fetch_followed_source_activities([], _activity_params), do: []
-
-  defp fetch_followed_source_activities(source_ap_ids, activity_params) do
-    # Feed actors normally author their items rather than addressing the
-    # items to themselves.  Groups are recipient-oriented, but feeds are
-    # actor-oriented, so the followed feed timeline must restrict by actor
-    # while still using normal public-recipient visibility limits.
-    [Constants.as_public()]
-    |> ActivityPub.fetch_activities_query(Map.put(activity_params, :actor_id, source_ap_ids))
-    |> Pagination.fetch_paginated(activity_params)
-  end
 
   defp pagination_params(params) do
     [:limit, :max_id, :min_id, :since_id, :only_media, :with_muted, :with_replies]

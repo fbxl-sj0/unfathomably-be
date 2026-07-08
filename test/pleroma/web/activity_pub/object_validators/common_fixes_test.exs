@@ -150,5 +150,93 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixesTest do
       assert fixed["to"] == [Pleroma.Constants.as_public()]
       assert fixed["cc"] == ["https://unknown-actor.example/users/alice/followers"]
     end
+
+    test "inherits group context from the replied-to object" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: true,
+          ap_id: "https://local.example/users/group"
+        )
+
+      parent =
+        insert(:note,
+          data: %{
+            "id" => "https://local.example/objects/group-root",
+            "type" => "Page",
+            "actor" => "https://remote.example/users/alice",
+            "audience" => group.ap_id,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id],
+            "cc" => []
+          }
+        )
+
+      data = %{
+        "id" => "https://remote.example/objects/reply",
+        "type" => "Note",
+        "attributedTo" => "https://remote.example/users/pat",
+        "inReplyTo" => parent.data["id"],
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => ["https://remote.example/users/pat/followers"]
+      }
+
+      fixed = CommonFixes.fix_object_defaults(data)
+
+      assert fixed["audience"] == group.ap_id
+      assert fixed["pleroma_internal"]["addressed_groups"] == [group.ap_id]
+    end
+
+    test "treats a group mention tag as group addressing" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: true,
+          ap_id: "https://local.example/users/group"
+        )
+
+      data = %{
+        "id" => "https://remote.example/objects/group-mention",
+        "type" => "Note",
+        "attributedTo" => "https://remote.example/users/pat",
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => ["https://remote.example/users/pat/followers"],
+        "tag" => [
+          %{
+            "type" => "Mention",
+            "href" => group.ap_id,
+            "name" => "@group@local.example"
+          }
+        ]
+      }
+
+      fixed = CommonFixes.fix_object_defaults(data)
+
+      assert fixed["audience"] == group.ap_id
+      assert fixed["pleroma_internal"]["addressed_groups"] == [group.ap_id]
+    end
+
+    test "treats a bare group WebFinger mention as group addressing" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: true,
+          nickname: "group_text_addressing",
+          ap_id: "https://local.example/users/group_text_addressing"
+        )
+
+      data = %{
+        "id" => "https://remote.example/objects/group-content-mention",
+        "type" => "Note",
+        "attributedTo" => "https://remote.example/users/pat",
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => ["https://remote.example/users/pat/followers"],
+        "content" => "@group_text_addressing@#{Pleroma.Web.Endpoint.host()} hello group"
+      }
+
+      fixed = CommonFixes.fix_object_defaults(data)
+
+      assert fixed["audience"] == group.ap_id
+      assert fixed["pleroma_internal"]["addressed_groups"] == [group.ap_id]
+    end
   end
 end

@@ -11,7 +11,7 @@ defmodule Pleroma.EctoType.ActivityPub.ObjectValidators.LanguageCode do
     if good_locale_code?(language) do
       {:ok, language}
     else
-      :error
+      {:error, [validation: :invalid_language]}
     end
   end
 
@@ -21,7 +21,7 @@ defmodule Pleroma.EctoType.ActivityPub.ObjectValidators.LanguageCode do
 
   def load(data), do: {:ok, data}
 
-  def good_locale_code?(code) when is_binary(code), do: code =~ ~r/^[a-zA-Z0-9-]+$/
+  def good_locale_code?(code) when is_binary(code), do: code =~ ~r/^[a-zA-Z0-9-]+\z/
 
   def good_locale_code?(_code), do: false
 end

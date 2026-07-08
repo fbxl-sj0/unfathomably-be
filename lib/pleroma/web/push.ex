@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.Push do
+  alias Pleroma.Notification
   alias Pleroma.Workers.WebPusherWorker
 
   require Logger
@@ -20,17 +21,15 @@ defmodule Pleroma.Web.Push do
   end
 
   def vapid_config do
-    Application.get_env(:web_push_encryption, :vapid_details, [])
-  end
-
-  def enabled do
-    case vapid_config() do
-      [] -> false
-      list when is_list(list) -> true
-      _ -> false
+    case Application.get_env(:web_push_encryption, :vapid_details, []) do
+      config when is_list(config) -> config
+      _ -> []
     end
   end
 
+  def enabled, do: match?([subject: _, public_key: _, private_key: _], vapid_config())
+
+  @spec send(Notification.t()) :: {:ok, Oban.Job.t()} | {:error, Ecto.Changeset.t()}
   def send(notification) do
     WebPusherWorker.enqueue("web_push", %{"notification_id" => notification.id})
   end

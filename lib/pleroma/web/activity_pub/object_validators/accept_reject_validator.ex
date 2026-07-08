@@ -7,9 +7,10 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
 
   alias Pleroma.Activity
   alias Pleroma.Object
+  alias Pleroma.User
 
   import Ecto.Changeset
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
 
@@ -32,8 +33,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
     cng
     |> validate_required([:id, :type, :actor, :to, :object])
     |> validate_inclusion(:type, ["Accept", "Reject"])
-    |> validate_actor_presence()
-    |> validate_object_presence(allowed_types: ["Follow", "Join"])
+    |> CommonValidations.validate_actor_presence()
+    |> CommonValidations.validate_object_presence(allowed_types: ["Follow", "Join"])
     |> validate_accept_reject_rights()
   end
 
@@ -60,10 +61,19 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
   end
 
   defp validate_actor(%Activity{data: %{"type" => "Join", "object" => joined_event}}, actor) do
-    with %Object{data: %{"actor" => event_author}} <- Object.get_cached_by_ap_id(joined_event) do
-      event_author == actor
-    else
-      _ -> false
+    cond do
+      joined_event == actor ->
+        true
+
+      match?(%User{actor_type: "Group"}, User.get_cached_by_ap_id(joined_event)) ->
+        joined_event == actor
+
+      true ->
+        with %Object{data: %{"actor" => event_author}} <- Object.get_cached_by_ap_id(joined_event) do
+          event_author == actor
+        else
+          _ -> false
+        end
     end
   end
 

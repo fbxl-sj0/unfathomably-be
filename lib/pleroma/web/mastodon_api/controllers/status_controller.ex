@@ -1,13 +1,11 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.StatusController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper,
-    only: [try_render: 3, add_link_headers: 2]
-
+  alias Pleroma.Web.ControllerHelper
   require Ecto.Query
   require Pleroma.Constants
 
@@ -112,13 +110,17 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
   action_fallback(Pleroma.Web.MastodonAPI.FallbackController)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.StatusOperation
+  defp try_render(conn, target, params), do: ControllerHelper.try_render(conn, target, params)
+
+  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
 
   @doc """
   GET `/api/v1/statuses?ids[]=1&ids[]=2`
 
   `ids` query param is required
   """
-  def index(%{assigns: %{user: user}} = conn, %{ids: ids} = params) do
+  def index(%{assigns: %{user: user}} = conn, params) do
+    ids = Map.get(params, :id, Map.get(params, :ids))
     limit = 100
 
     activities =
@@ -555,7 +557,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
             Object.local?(object) ||
               Pleroma.Config.get([Pleroma.Language.Translation, :allow_remote])},
          {:language, language} when is_binary(language) <-
-           {:language, Map.get(params, :target_language) || user.language},
+           {:language,
+            Map.get(params, :lang) || Map.get(params, :target_language) || user.language},
          {:ok, result} <-
            Translation.translate(
              object.data["content"],

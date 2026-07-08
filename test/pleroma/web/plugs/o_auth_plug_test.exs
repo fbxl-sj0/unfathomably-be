@@ -64,6 +64,18 @@ defmodule Pleroma.Web.Plugs.OAuthPlugTest do
     assert conn.assigns[:user] == opts[:user]
   end
 
+  test "with valid token belonging to a deactivated user, it does not assign the user", opts do
+    {:ok, _user} = Pleroma.User.set_activation(opts[:user], false)
+
+    conn =
+      opts[:conn]
+      |> put_req_header("authorization", "bearer #{opts[:token].token}")
+      |> OAuthPlug.call(%{})
+
+    refute conn.assigns[:user]
+    refute conn.assigns[:token]
+  end
+
   test "with invalid token, it does not assign the user", %{conn: conn} do
     conn =
       conn

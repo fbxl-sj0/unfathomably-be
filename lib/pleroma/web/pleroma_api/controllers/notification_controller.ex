@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.NotificationController do
@@ -16,23 +16,40 @@ defmodule Pleroma.Web.PleromaAPI.NotificationController do
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.PleromaNotificationOperation
 
-  def mark_as_read(%{assigns: %{user: user}, body_params: %{id: notification_id}} = conn, _) do
-    with {:ok, notification} <- Notification.read_one(user, notification_id) do
-      render(conn, "show.json", notification: notification, for: user)
-    else
-      {:error, message} ->
+  def mark_as_read(%{assigns: %{user: user}} = conn, params) do
+    params = request_params(conn, params)
+
+    cond do
+      notification_id = get_param(params, "id") ->
+        with {:ok, _} <- Notification.read_one(user, notification_id) do
+          json(conn, "ok")
+        else
+          {:error, message} ->
+            conn
+            |> put_status(:bad_request)
+            |> json(%{"error" => message})
+        end
+
+      max_id = get_param(params, "max_id") ->
+        with {:ok, _} <- Notification.set_read_up_to(user, max_id) do
+          json(conn, "ok")
+        else
+          {:error, message} ->
+            conn
+            |> put_status(:bad_request)
+            |> json(%{"error" => message})
+        end
+
+      true ->
         conn
         |> put_status(:bad_request)
-        |> json(%{"error" => message})
+        |> json(%{"error" => "Notification id is required"})
     end
   end
 
-  def mark_as_read(%{assigns: %{user: user}, body_params: %{max_id: max_id}} = conn, _) do
-    notifications =
-      user
-      |> Notification.set_read_up_to(max_id)
-      |> Enum.take(80)
-
-    render(conn, "index.json", notifications: notifications, for: user)
+  defp request_params(%{body_params: body_params}, params) do
+    Map.merge(params || %{}, body_params || %{})
   end
+
+  defp get_param(params, key), do: Map.get(params, key) || Map.get(params, String.to_atom(key))
 end

@@ -554,13 +554,15 @@ defmodule Pleroma.Web.MastodonAPI.NotificationControllerTest do
     notification2_id = get_notification_id_by_activity(activity2)
     notification3_id = get_notification_id_by_activity(activity3)
     notification4_id = get_notification_id_by_activity(activity4)
+    user_notification_ids = Enum.sort([notification1_id, notification2_id], :desc)
+    other_user_notification_ids = Enum.sort([notification3_id, notification4_id], :desc)
 
     result =
       conn
       |> get("/api/v1/notifications")
       |> json_response_and_validate_schema(:ok)
 
-    assert [%{"id" => ^notification2_id}, %{"id" => ^notification1_id}] = result
+    assert Enum.map(result, & &1["id"]) == user_notification_ids
 
     conn2 =
       conn
@@ -572,7 +574,7 @@ defmodule Pleroma.Web.MastodonAPI.NotificationControllerTest do
       |> get("/api/v1/notifications")
       |> json_response_and_validate_schema(:ok)
 
-    assert [%{"id" => ^notification4_id}, %{"id" => ^notification3_id}] = result
+    assert Enum.map(result, & &1["id"]) == other_user_notification_ids
 
     query = params_to_query(%{ids: [notification1_id, notification2_id]})
     conn_destroy = delete(conn, "/api/v1/notifications/destroy_multiple?" <> query)
@@ -584,7 +586,7 @@ defmodule Pleroma.Web.MastodonAPI.NotificationControllerTest do
       |> get("/api/v1/notifications")
       |> json_response_and_validate_schema(:ok)
 
-    assert [%{"id" => ^notification4_id}, %{"id" => ^notification3_id}] = result
+    assert Enum.map(result, & &1["id"]) == other_user_notification_ids
   end
 
   test "doesn't see notifications after muting user with notifications" do

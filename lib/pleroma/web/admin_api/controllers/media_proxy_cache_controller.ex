@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.AdminAPI.MediaProxyCacheController do
@@ -64,6 +64,10 @@ defmodule Pleroma.Web.AdminAPI.MediaProxyCacheController do
     json(conn, %{})
   end
 
+  def delete(%{assigns: %{user: _}, body_params: %{"urls" => urls}} = conn, params) do
+    delete(%{conn | body_params: %{urls: urls}}, params)
+  end
+
   def purge(%{assigns: %{user: _}, body_params: %{urls: urls, ban: ban}} = conn, _) do
     MediaProxy.Invalidation.purge(urls)
 
@@ -72,5 +76,12 @@ defmodule Pleroma.Web.AdminAPI.MediaProxyCacheController do
     end
 
     json(conn, %{})
+  end
+
+  def purge(
+        %{assigns: %{user: _}, body_params: %{"urls" => urls, "ban" => ban}} = conn,
+        params
+      ) do
+    purge(%{conn | body_params: %{urls: urls, ban: ban}}, params)
   end
 end

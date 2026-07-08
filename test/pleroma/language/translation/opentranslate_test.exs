@@ -16,7 +16,7 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
 
     clear_config(
       [Pleroma.Language.Translation.Opentranslate, :base_url],
-      "http://192.168.250.99:5000"
+      "http://opentranslate.example:5000"
     )
 
     clear_config([Pleroma.Language.Translation.Opentranslate, :api_key], nil)
@@ -62,7 +62,7 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
     Tesla.Mock.mock_global(fn
       %Tesla.Env{
         method: :post,
-        url: "http://192.168.250.99:5000/translate",
+        url: "http://opentranslate.example:5000/translate",
         body: body
       } ->
         assert %{

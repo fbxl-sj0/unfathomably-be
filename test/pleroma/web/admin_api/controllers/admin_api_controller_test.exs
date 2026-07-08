@@ -868,6 +868,31 @@ defmodule Pleroma.Web.AdminAPI.AdminAPIControllerTest do
                "@#{admin.nickname} forced password reset for users: @#{user.nickname}"
     end
 
+    test "does not log a forced password reset for non-password updates", %{
+      conn: conn,
+      admin: admin,
+      user: user
+    } do
+      clear_config([:instance, :admin_privileges], [:users_manage_credentials])
+
+      conn =
+        patch(conn, "/api/pleroma/admin/users/#{user.nickname}/credentials", %{
+          "email" => "new_email@example.com",
+          "name" => "new_name"
+        })
+
+      assert json_response(conn, 200) == %{"status" => "success"}
+
+      log_messages =
+        ModerationLog
+        |> Repo.all()
+        |> Enum.map(&ModerationLog.get_log_entry_message/1)
+
+      assert "@#{admin.nickname} updated users: @#{user.nickname}" in log_messages
+
+      refute Enum.any?(log_messages, &String.contains?(&1, "forced password reset"))
+    end
+
     test "returns 403 if requested by a non-admin", %{user: user} do
       conn =
         build_conn()

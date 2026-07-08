@@ -1122,7 +1122,15 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
   describe "addressing normalization" do
     test "fix_addressing_public/2 tolerates malformed values" do
       assert Transmogrifier.fix_addressing_public(
-               %{"to" => ["Public", %{"id" => "ignored"}, nil, "as:Public", "https://remote/users/alice"]},
+               %{
+                 "to" => [
+                   "Public",
+                   %{"id" => "ignored"},
+                   nil,
+                   "as:Public",
+                   "https://remote/users/alice"
+                 ]
+               },
                "to"
              ) == %{
                "to" => [

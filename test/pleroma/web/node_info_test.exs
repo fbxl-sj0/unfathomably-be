@@ -135,6 +135,20 @@ defmodule Pleroma.Web.NodeInfoTest do
     assert response["metadata"]["fieldsLimits"]["valueLength"] == 2048
   end
 
+  test "returns legacy Pleroma metadata aliases", %{conn: conn} do
+    clear_config([:instance, :limit], 1234)
+
+    response =
+      conn
+      |> get("/nodeinfo/2.1.json")
+      |> json_response(:ok)
+
+    assert response["metadata"]["characterLimit"] == 1234
+
+    assert response["metadata"]["vapidPublicKey"] ==
+             Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key)
+  end
+
   test "it returns the safe_dm_mentions feature if enabled", %{conn: conn} do
     clear_config([:instance, :safe_dm_mentions], true)
 

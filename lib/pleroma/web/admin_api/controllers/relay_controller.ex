@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.AdminAPI.RelayController do
@@ -43,6 +43,10 @@ defmodule Pleroma.Web.AdminAPI.RelayController do
     end
   end
 
+  def follow(%{assigns: %{user: _}, body_params: %{"relay_url" => target}} = conn, params) do
+    follow(%{conn | body_params: %{relay_url: target}}, params)
+  end
+
   def unfollow(%{assigns: %{user: admin}, body_params: %{relay_url: target} = params} = conn, _) do
     with {:ok, _message} <- Relay.unfollow(target, %{force: params[:force]}) do
       ModerationLog.insert_log(%{action: "relay_unfollow", actor: admin, target: target})
@@ -53,5 +57,12 @@ defmodule Pleroma.Web.AdminAPI.RelayController do
         Logger.warning("Relay unfollow failed for #{target}: #{inspect(error)}")
         render_error(conn, :bad_gateway, "Could not unfollow relay")
     end
+  end
+
+  def unfollow(
+        %{assigns: %{user: _}, body_params: %{"relay_url" => target} = body_params} = conn,
+        params
+      ) do
+    unfollow(%{conn | body_params: %{relay_url: target, force: body_params["force"]}}, params)
   end
 end

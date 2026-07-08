@@ -58,7 +58,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations do
     cng
     |> validate_change(field_name, fn field_name, object_ref ->
       object_id = ap_id(object_ref)
-      object = object_id && (Object.get_cached_by_ap_id(object_id) || Activity.get_by_ap_id(object_id))
+
+      object =
+        object_id && (Object.get_cached_by_ap_id(object_id) || Activity.get_by_ap_id(object_id))
 
       cond do
         !object ->

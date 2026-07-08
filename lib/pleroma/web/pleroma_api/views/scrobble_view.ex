@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.ScrobbleView do
@@ -18,6 +18,8 @@ defmodule Pleroma.Web.PleromaAPI.ScrobbleView do
     user = CommonAPI.get_user(activity.data["actor"])
     created_at = Utils.to_masto_date(activity.data["published"])
 
+    external_link = object.data["externalLink"] || object.data["url"]
+
     %{
       id: activity.id,
       account: AccountView.render("show.json", %{user: user, for: opts[:for]}),
@@ -25,7 +27,8 @@ defmodule Pleroma.Web.PleromaAPI.ScrobbleView do
       title: object.data["title"] |> HTML.strip_tags(),
       artist: object.data["artist"] |> HTML.strip_tags(),
       album: object.data["album"] |> HTML.strip_tags(),
-      url: object.data["url"],
+      externalLink: external_link,
+      url: external_link,
       length: object.data["length"]
     }
   end

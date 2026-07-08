@@ -41,11 +41,14 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     "%Object.Containment.get_actor%",
     "%don't know how to handle\", nil%",
     "%emoji_react_validator.ex:66%",
-    "%do_fix_object_action_recipients%",
-    "%pinned_statuses_limit_reached%",
-    "%The object to create already exists%",
     "%utils.ex:476%",
-    "%web/federator.ex:103%"
+    "%web/federator.ex:103%",
+    "%do_fix_object_action_recipients%tombstoned%",
+    "%pinned_statuses_limit_reached%",
+    "%The object to create already exists%"
+  ]
+  @terminal_publisher_error_patterns [
+    "%www.minds.com/api/activitypub/inbox%status%500%"
   ]
   @fixed_remote_fetch_error_patterns [
     "%objects_unique_apid_index%",
@@ -78,10 +81,13 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     discarded_stale_federator_retries = discard_stale_federator_retries()
     discarded_terminal_publisher_retries = discard_terminal_publisher_retries()
     discarded_terminal_background_retries = discard_terminal_background_retries()
-    discarded_unreachable_publisher_jobs = discard_unreachable_publisher_jobs()
-    discarded_fixed_federation_exception_retries = discard_fixed_federation_exception_retries()
+
     discarded_exhausted_incoming_transaction_retries =
       discard_exhausted_incoming_transaction_retries()
+
+    discarded_unreachable_publisher_jobs = discard_unreachable_publisher_jobs()
+    discarded_fixed_federation_exception_retries = discard_fixed_federation_exception_retries()
+    deleted_duplicate_remote_fetch_jobs = delete_duplicate_remote_fetch_jobs()
 
     {:ok,
      %{
@@ -91,11 +97,11 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
        discarded_stale_federator_retries: discarded_stale_federator_retries,
        discarded_terminal_publisher_retries: discarded_terminal_publisher_retries,
        discarded_terminal_background_retries: discarded_terminal_background_retries,
-       discarded_unreachable_publisher_jobs: discarded_unreachable_publisher_jobs,
-       discarded_fixed_federation_exception_retries:
-         discarded_fixed_federation_exception_retries,
        discarded_exhausted_incoming_transaction_retries:
-         discarded_exhausted_incoming_transaction_retries
+         discarded_exhausted_incoming_transaction_retries,
+       discarded_unreachable_publisher_jobs: discarded_unreachable_publisher_jobs,
+       discarded_fixed_federation_exception_retries: discarded_fixed_federation_exception_retries,
+       deleted_duplicate_remote_fetch_jobs: deleted_duplicate_remote_fetch_jobs
      }}
   end
 
@@ -158,9 +164,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
       |> where(
         [job],
         fragment("?::text ~ ?", job.errors, ^@terminal_publisher_status_pattern) or
-          (fragment("?::text ILIKE ?", job.errors, ^"%https://www.minds.com/api/activitypub/inbox%") and
-             fragment("?::text ILIKE ?", job.errors, ^"%x-minds%") and
-             fragment("?::text ILIKE ?", job.errors, ^"%Something is wrong%"))
+          fragment("?::text ILIKE ANY(?)", job.errors, ^@terminal_publisher_error_patterns)
       )
     )
   end
@@ -178,19 +182,19 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     )
   end
 
-  def discard_fixed_federation_exception_retries do
-    discard_fixed_receiver_retries() + discard_fixed_remote_fetch_retries()
-  end
-
   def discard_exhausted_incoming_transaction_retries do
     discard_jobs(
       Oban.Job
       |> where([job], job.queue == "federator_incoming")
       |> where([job], job.worker in ^@incoming_workers)
       |> where([job], job.state == "retryable")
-      |> where([job], job.attempt >= 10)
-      |> where([job], fragment("?::text ILIKE ?", job.errors, ^"%in_failed_sql_transaction%"))
+      |> where([job], job.attempt >= 3)
+      |> where([job], fragment("?::text ILIKE ?", job.errors, "%in_failed_sql_transaction%"))
     )
+  end
+
+  def discard_fixed_federation_exception_retries do
+    discard_fixed_receiver_retries() + discard_fixed_remote_fetch_retries()
   end
 
   defp discard_fixed_receiver_retries do
@@ -239,6 +243,31 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
       |> where([job, _instance], job.args["op"] == "publish_one")
       |> where([_job, instance], not is_nil(instance.unreachable_since))
     )
+  end
+
+  def delete_duplicate_remote_fetch_jobs do
+    %{num_rows: count} =
+      Repo.query!("""
+      DELETE FROM oban_jobs
+      WHERE id IN (
+        SELECT id
+        FROM (
+          SELECT
+            id,
+            row_number() OVER (
+              PARTITION BY queue, worker, args
+              ORDER BY id
+            ) AS duplicate_index
+          FROM oban_jobs
+          WHERE queue = 'remote_fetcher'
+            AND worker = 'Pleroma.Workers.RemoteFetcherWorker'
+            AND state IN ('available', 'scheduled', 'retryable')
+        ) duplicate_remote_fetch_jobs
+        WHERE duplicate_index > 1
+      )
+      """)
+
+    count
   end
 
   defp discard_jobs(query) do

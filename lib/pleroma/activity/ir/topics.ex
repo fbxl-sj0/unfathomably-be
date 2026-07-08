@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Activity.Ir.Topics do
-  import Ecto.Query, only: [select: 3, where: 3]
+  import Ecto.Query
 
   alias Pleroma.FollowingRelationship
   alias Pleroma.Object
@@ -38,94 +38,81 @@ defmodule Pleroma.Activity.Ir.Topics do
 
   defp federated_target_tags(object, activity) do
     if Visibility.get_visibility(activity) in ["public", "local"] do
-      target_tags = source_tags(activity) ++ group_tags(object, activity)
+      sources = source_users(activity)
+      groups = group_users(object, activity)
 
-      target_tags ++ aggregate_federated_target_tags(target_tags, object)
+      source_tags(sources) ++
+        group_tags(groups) ++ aggregate_target_tags(object, activity, sources, groups)
     else
       []
     end
   end
 
-  defp source_tags(%{actor: actor}) when is_binary(actor) do
+  defp source_users(%{actor: actor}) when is_binary(actor) do
     case User.get_cached_by_ap_id(actor) do
-      %User{id: id} = user ->
-        if FederatedTarget.source?(user), do: ["source:" <> to_string(id)], else: []
+      %User{} = user ->
+        if FederatedTarget.source?(user), do: [user], else: []
 
       _ ->
         []
     end
   end
 
-  defp source_tags(_), do: []
+  defp source_users(_), do: []
 
-  defp aggregate_federated_target_tags(target_tags, object) do
-    if discussion_root?(object) do
-      do_aggregate_federated_target_tags(target_tags)
-    else
-      []
-    end
+  defp source_tags(sources) do
+    Enum.map(sources, fn %User{id: id} -> "source:" <> to_string(id) end)
   end
 
-  defp do_aggregate_federated_target_tags(target_tags) do
-    target_tags
-    |> Enum.flat_map(&aggregate_federated_target_tag/1)
-    |> Enum.uniq()
-  end
-
-  defp discussion_root?(%{data: %{} = data}) do
-    case Map.get(data, "inReplyTo") do
-      nil -> true
-      "" -> true
-      [] -> true
-      _ -> false
-    end
-  end
-
-  defp discussion_root?(_), do: false
-
-  defp aggregate_federated_target_tag("group:" <> id) do
-    aggregate_followed_target_tags(id, "user:groups")
-  end
-
-  defp aggregate_federated_target_tag("source:" <> id) do
-    aggregate_followed_target_tags(id, "user:sources")
-  end
-
-  defp aggregate_federated_target_tag(_topic), do: []
-
-  defp aggregate_followed_target_tags(id, stream_prefix) do
-    case User.get_cached_by_id(id) do
-      %User{} = target ->
-        target
-        |> local_follower_ids()
-        |> Enum.map(fn user_id -> "#{stream_prefix}:#{user_id}" end)
-
-      _ ->
-        []
-    end
-  end
-
-  defp local_follower_ids(%User{} = target) do
-    target
-    |> FollowingRelationship.followers_query()
-    |> where([_r, u], u.local == true and u.is_active == true)
-    |> select([_r, u], u.id)
-    |> Repo.all()
-  end
-
-  defp group_tags(object, activity) do
+  defp group_users(object, activity) do
     object
     |> federated_target_recipients(activity)
     |> Enum.uniq()
     |> Enum.flat_map(fn ap_id ->
       case User.get_cached_by_ap_id(ap_id) do
-        %User{id: id} = user ->
-          if FederatedTarget.group?(user), do: ["group:" <> to_string(id)], else: []
+        %User{} = user ->
+          if FederatedTarget.group?(user), do: [user], else: []
 
         _ ->
           []
       end
     end)
+  end
+
+  defp group_tags(groups) do
+    Enum.map(groups, fn %User{id: id} -> "group:" <> to_string(id) end)
+  end
+
+  defp aggregate_target_tags(object, %{data: %{"type" => "Create"}}, sources, groups) do
+    if root_object?(object) do
+      source_follower_tags(sources, "user:sources") ++
+        source_follower_tags(groups, "user:groups")
+    else
+      []
+    end
+  end
+
+  defp aggregate_target_tags(_object, _activity, _sources, _groups), do: []
+
+  defp root_object?(%{data: %{"inReplyTo" => in_reply_to}}) do
+    in_reply_to in [nil, ""]
+  end
+
+  defp root_object?(_object), do: true
+
+  defp source_follower_tags(targets, prefix) do
+    targets
+    |> Enum.flat_map(&local_follower_ids/1)
+    |> Enum.uniq()
+    |> Enum.map(fn id -> prefix <> ":" <> to_string(id) end)
+  end
+
+  defp local_follower_ids(%User{} = target) do
+    target
+    |> FollowingRelationship.followers_query()
+    |> where([_r, u], u.local == true)
+    |> select([_r, u], u.id)
+    |> Repo.all()
   end
 
   defp federated_target_recipients(object, activity) do
@@ -197,7 +184,7 @@ defmodule Pleroma.Activity.Ir.Topics do
 
   defp remote_topics(%{local: true}), do: []
 
-  defp remote_topics(%{actor: actor}) when is_binary(actor) do
+  defp remote_topics(%{actor: actor}) do
     case uri_host(actor) do
       host when is_binary(host) -> ["public:remote:" <> host]
       _ -> []
@@ -230,10 +217,12 @@ defmodule Pleroma.Activity.Ir.Topics do
 
   defp attachment_topics(_object, _act), do: ["public:media"]
 
-  defp uri_host(uri) when is_binary(uri) do
-    uri
-    |> URI.parse()
-    |> Map.get(:host)
+  defp uri_host(uri) do
+    if is_binary(uri) do
+      uri
+      |> URI.parse()
+      |> Map.get(:host)
+    end
   rescue
     URI.Error -> nil
   end

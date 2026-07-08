@@ -94,7 +94,7 @@ To add configuration to your config file, you can copy it from the base config. 
 * `moderator_privileges`: A list of privileges a moderator has (e.g. delete messages, manage reports...)
     * Possible values are the same as for `admin_privileges`
 
-## :database
+## :features
 * `improved_hashtag_timeline`: Setting to force toggle / force disable improved hashtags timeline. `:enabled` forces hashtags to be fetched from `hashtags` table for hashtags timeline. `:disabled` forces object-embedded hashtags to be used (slower). Keep it `:auto` for automatic behaviour (it is auto-set to `:enabled` [unless overridden] when HashtagsTableMigrator completes).
 
 ## Background migrations
@@ -282,6 +282,7 @@ Notes:
 * `deny_follow_blocked`: Whether to disallow following an account that has blocked the user in question
 * `sign_object_fetches`: Sign object fetches with HTTP signatures
 * `authorized_fetch_mode`: Require HTTP signatures for AP fetches
+* `authorized_fetch_mode_exceptions`: List of IPs, CIDR format accepted, to exempt from HTTP signatures when `authorized_fetch_mode` is enabled. This is mainly useful for controlled internal debugging.
 
 ## Pleroma.User
 
@@ -510,7 +511,7 @@ config :pleroma, :rate_limit,
 Means that:
 
 1. In 60 seconds, 15 authentication attempts can be performed from the same IP address.
-2. In 1 second, 10 search requests can be performed from the same IP adress by unauthenticated users, while authenticated users can perform 30 search requests per second.
+2. In 1 second, 10 search requests can be performed from the same IP address by unauthenticated users, while authenticated users can perform 30 search requests per second.
 
 Supported rate limiters:
 
@@ -1097,7 +1098,7 @@ config :pleroma, Pleroma.Formatter,
 
 ## :configurable_from_database
 
-Boolean, enables/disables in-database configuration. Read [Transfering the config to/from the database](../administration/CLI_tasks/config.md) for more information.
+Boolean, enables/disables in-database configuration. Read [Transferring the config to/from the database](../administration/CLI_tasks/config.md) for more information.
 
 ## :database_config_whitelist
 

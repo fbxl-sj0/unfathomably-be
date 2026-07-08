@@ -78,7 +78,8 @@ config :pleroma, Pleroma.Uploaders.S3,
   bucket: nil,
   bucket_namespace: nil,
   truncated_namespace: nil,
-  streaming_enabled: true
+  streaming_enabled: true,
+  force_media_proxy: false
 
 config :ex_aws, :s3,
   # host: "s3.wasabisys.com", # required if not Amazon AWS
@@ -136,13 +137,13 @@ config :pleroma, Pleroma.Web.Endpoint,
 config :logger, :console,
   level: :debug,
   format: "\n$time $metadata[$level] $message\n",
-  metadata: [:request_id]
+  metadata: [:actor, :path, :type, :user]
 
 config :logger, :ex_syslogger,
   level: :debug,
   ident: "unfathomably-be",
   format: "$metadata[$level] $message",
-  metadata: [:request_id]
+  metadata: [:actor, :path, :type, :user]
 
 config :mime, :types, %{
   "application/xml" => ["xml"],
@@ -454,6 +455,17 @@ config :pleroma, :mrf_follow_bot, follower_nickname: nil
 
 config :pleroma, :mrf_inline_quote, template: "<bdi>RT:</bdi> {url}"
 
+config :pleroma, :mrf_force_mention,
+  mention_parent: true,
+  mention_quoted: true
+
+config :pleroma, :mrf_antimentionspam, user_age_limit: 30_000
+
+config :pleroma, :mrf_dnsrbl,
+  nameserver: "127.0.0.1",
+  port: 53,
+  zone: "bl.pleroma.com"
+
 config :pleroma, :mrf_remote_report,
   reject_all: false,
   reject_anonymous: true,
@@ -473,6 +485,7 @@ config :pleroma, :rich_media,
   ],
   oembed_providers_enabled: true,
   failure_backoff: 60_000,
+  timeout: 5_000,
   ttl_setters: [
     Pleroma.Web.RichMedia.Parser.TTL.AwsSignedUrl,
     Pleroma.Web.RichMedia.Parser.TTL.Opengraph
@@ -514,6 +527,10 @@ config :pleroma, :media_preview_proxy,
   image_quality: 85,
   min_content_length: 100 * 1024
 
+config :pleroma, :shout,
+  enabled: false,
+  limit: 5_000
+
 config :phoenix, :format_encoders, json: Jason, "activity+json": Jason, ics: ICalendar
 
 config :phoenix, :json_library, Jason
@@ -542,7 +559,8 @@ config :pleroma, :http_security,
   sts: false,
   sts_max_age: 31_536_000,
   ct_max_age: 2_592_000,
-  referrer_policy: "same-origin"
+  referrer_policy: "same-origin",
+  allow_unsafe_eval: false
 
 config :cors_plug,
   max_age: 86_400,
@@ -609,7 +627,6 @@ config :pleroma, Oban,
     backup: 1,
     federator_incoming: 8,
     federator_outgoing: 8,
-    ingestion_queue: 8,
     web_push: 8,
     mailer: 5,
     transmogrifier: 5,
@@ -617,16 +634,18 @@ config :pleroma, Oban,
     poll_notifications: 2,
     event_reminders: 1,
     notifications: 8,
-    background: 3,
+    background: 20,
     reachability: 3,
     remote_fetcher: 2,
     attachments_cleanup: 1,
-    new_users_digest: 1,
     mute_expire: 2,
-    search_indexing: 4,
+    slow: 5,
+    search_indexing: [limit: 4, paused: true],
     rich_media_expiration: 1
   ],
-  plugins: [Oban.Plugins.Pruner, Oban.Plugins.Lifeline],
+  # The Pruner :max_age must be longer than Worker :unique
+  # value or it cannot enforce uniqueness.
+  plugins: [{Oban.Plugins.Pruner, max_age: 900}, Oban.Plugins.Lifeline],
   crontab: [
     {"0 0 * * 0", Pleroma.Workers.Cron.DigestEmailsWorker},
     {"0 0 * * *", Pleroma.Workers.Cron.NewUsersDigestWorker},
@@ -687,7 +706,8 @@ config :pleroma, :ldap,
   tlsopts: [],
   base: System.get_env("LDAP_BASE") || "dc=example,dc=com",
   uid: System.get_env("LDAP_UID") || "cn",
-  mail: System.get_env("LDAP_MAIL") || "mail"
+  mail: System.get_env("LDAP_MAIL") || "mail",
+  cacertfile: System.get_env("LDAP_CACERTFILE")
 
 oauth_consumer_strategies =
   System.get_env("OAUTH_CONSUMER_STRATEGIES")
@@ -785,7 +805,7 @@ config :pleroma, Pleroma.Workers.PurgeExpiredActivity, enabled: true, min_lifeti
 config :pleroma, Pleroma.Web.Plugs.RemoteIp,
   enabled: true,
   headers: ["x-forwarded-for"],
-  clients: ["192.168.250.0/24"],
+  clients: ["127.0.0.0/8", "::1/128"],
   proxies: [],
   reserved: [
     "127.0.0.0/8",
@@ -869,8 +889,10 @@ config :pleroma, :modules, runtime_dir: "instance/modules"
 
 config :pleroma, configurable_from_database: false
 
+config :pleroma, Pleroma.Web.Plugs.MetricsPredicate, auth_token: nil
+
 config :pleroma, Pleroma.Repo,
-  parameters: [gin_fuzzy_search_limit: "500"],
+  parameters: [gin_fuzzy_search_limit: "500", jit: "off"],
   prepare: :unnamed
 
 config :pleroma, :connections_pool,
@@ -884,12 +906,12 @@ config :pleroma, :connections_pool,
 
 config :pleroma, :pools,
   federation: [
-    size: 50,
-    max_waiting: 10,
+    size: 75,
+    max_waiting: 20,
     recv_timeout: 10_000
   ],
   media: [
-    size: 50,
+    size: 75,
     max_waiting: 20,
     recv_timeout: 15_000
   ],
@@ -900,11 +922,11 @@ config :pleroma, :pools,
   ],
   upload: [
     size: 25,
-    max_waiting: 5,
+    max_waiting: 20,
     recv_timeout: 15_000
   ],
   default: [
-    size: 10,
+    size: 50,
     max_waiting: 2,
     recv_timeout: 5_000
   ]
@@ -964,7 +986,8 @@ config :pleroma, Pleroma.User.Backup,
   limit_days: 7,
   dir: nil,
   process_wait_time: 30_000,
-  process_chunk_size: 100
+  process_chunk_size: 100,
+  timeout: :timer.minutes(30)
 
 config :pleroma, Pleroma.User.PostArchiveImport,
   policy: :disabled,
@@ -972,7 +995,6 @@ config :pleroma, Pleroma.User.PostArchiveImport,
   dir: nil
 
 config :pleroma, ConcurrentLimiter, [
-  {Pleroma.Web.ActivityPub.MRF.MediaProxyWarmingPolicy, [max_running: 5, max_waiting: 5]},
   {Pleroma.Search, [max_running: 30, max_waiting: 50]},
   {Pleroma.Webhook.Notify, [max_running: 5, max_waiting: 200]}
 ]
@@ -983,9 +1005,7 @@ config :pleroma, Pleroma.Language.Translation, allow_unauthenticated: false, all
 
 config :pleroma, Pleroma.Language.Translation.Opentranslate,
   base_url: nil,
-  api_key: nil,
-  request_timeout_ms: 180_000,
-  language_timeout_ms: 15_000
+  api_key: nil
 
 config :pleroma, Pleroma.Language.Translation.TranslateLocally,
   models: nil,
@@ -1015,6 +1035,16 @@ config :pleroma, Pleroma.Search.Meilisearch,
   url: "http://127.0.0.1:7700/",
   private_key: nil,
   initial_indexing_chunk_size: 100_000
+
+config :pleroma, Pleroma.Application,
+  background_migrators: true,
+  internal_fetch: true,
+  load_custom_modules: true,
+  max_restarts: 3,
+  streamer_registry: true,
+  test_http_pools: false
+
+config :pleroma, Pleroma.Uploaders.Uploader, timeout: 30_000
 
 config :pleroma, :database_config_whitelist, [
   {:pleroma},

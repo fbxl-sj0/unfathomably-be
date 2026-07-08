@@ -10,7 +10,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ChatMessageValidator do
   alias Pleroma.Web.ActivityPub.ObjectValidators.AttachmentValidator
 
   import Ecto.Changeset
-  import Pleroma.Web.ActivityPub.Transmogrifier, only: [fix_emoji: 1]
 
   @primary_key false
   @derive Jason.Encoder
@@ -62,6 +61,45 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ChatMessageValidator do
   end
 
   def fix_attachment(data), do: data
+
+  # Keep this small normalizer local to avoid a compile-time dependency on
+  # Transmogrifier.  The chat message validator participates in the same
+  # ActivityPub validation graph as Transmogrifier, so importing the larger
+  # module can create a compiler cycle during clean production compiles.
+  defp fix_emoji(%{"tag" => tags} = object) when is_list(tags) do
+    emoji =
+      tags
+      |> Enum.filter(&valid_emoji_tag?/1)
+      |> Enum.reduce(%{}, fn data, mapping ->
+        name = String.trim(data["name"], ":")
+
+        Map.put(mapping, name, data["icon"]["url"])
+      end)
+
+    Map.put(object, "emoji", emoji)
+  end
+
+  defp fix_emoji(%{"tag" => %{"type" => "Emoji", "name" => raw_name} = tag} = object)
+       when is_binary(raw_name) do
+    name = String.trim(raw_name, ":")
+
+    emoji =
+      if valid_emoji_tag?(tag) do
+        %{name => tag["icon"]["url"]}
+      else
+        %{}
+      end
+
+    Map.put(object, "emoji", emoji)
+  end
+
+  defp fix_emoji(object), do: object
+
+  defp valid_emoji_tag?(%{"type" => "Emoji", "name" => name, "icon" => %{"url" => url}})
+       when is_binary(name) and is_binary(url),
+       do: true
+
+  defp valid_emoji_tag?(_), do: false
 
   def changeset(struct, data) do
     data = fix(data)

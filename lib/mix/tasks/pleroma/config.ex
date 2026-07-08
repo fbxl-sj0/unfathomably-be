@@ -14,6 +14,41 @@ defmodule Mix.Tasks.Pleroma.Config do
   @shortdoc "Manages the location of the config"
   @moduledoc File.read!("docs/administration/CLI_tasks/config.md")
 
+  def run(["fix_mrf_policies"]) do
+    check_configdb(fn ->
+      start_pleroma()
+
+      group = :pleroma
+      key = :mrf
+
+      case ConfigDB.get_by_group_and_key(group, key) do
+        %{value: value} when is_list(value) ->
+          policies =
+            value
+            |> Keyword.get(:policies, [])
+            |> Enum.filter(&is_atom/1)
+            |> Enum.filter(fn policy ->
+              case Code.ensure_compiled(policy) do
+                {:module, _module} -> true
+                {:error, _reason} -> false
+              end
+            end)
+
+          {:ok, _config} =
+            ConfigDB.update_or_create(%{
+              group: group,
+              key: key,
+              value: Keyword.put(value, :policies, policies)
+            })
+
+          shell_info("MRF policy list repaired.")
+
+        _ ->
+          shell_error("No ConfigDB settings found for :pleroma, :mrf.")
+      end
+    end)
+  end
+
   def run(["migrate_to_db"]) do
     check_configdb(fn ->
       start_pleroma()

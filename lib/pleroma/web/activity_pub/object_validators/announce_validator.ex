@@ -13,7 +13,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidator do
   alias Pleroma.Web.ActivityPub.Visibility
 
   import Ecto.Changeset
-  import Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   require Pleroma.Constants
 
@@ -91,7 +91,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidator do
     |> validate_inclusion(:type, ["Announce"])
     |> validate_required([:id, :type, :object, :actor, :to, :cc])
     |> validate_non_empty_recipients()
-    |> validate_actor_presence()
+    |> CommonValidations.validate_actor_presence()
     |> maybe_validate_object_presence()
     |> validate_existing_announce()
     |> validate_announcable()
@@ -112,7 +112,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidator do
   defp maybe_validate_object_presence(cng) do
     case get_field(cng, :object) do
       %{"type" => type} when type in @relay_activity_object_types -> cng
-      _ -> validate_object_presence(cng)
+      _ -> CommonValidations.validate_object_presence(cng)
     end
   end
 

@@ -14,8 +14,6 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
   alias Pleroma.Web.MastodonAPI.FederatedTargetView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
-  require Logger
-
   plug(
     OAuthScopesPlug,
     %{scopes: ["read:accounts", "read:follows"]}
@@ -340,11 +338,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
     with {:ok, %User{} = group} <- FederatedTarget.resolve_group(id),
          {:ok, %User{} = account} <- account_from_params(params),
          {:ok, [membership | _]} <-
-           GroupMembership.promote(user, group, [account], Map.get(params, "role", "moderator")) do
-      publish_group_moderation(fn ->
-        GroupModeration.publish_moderator_add(user, group, account)
-      end)
-
+           GroupMembership.promote(user, group, [account], Map.get(params, "role", "moderator")),
+         {:ok, _activity} <- GroupModeration.publish_moderator_add(user, group, account) do
       conn
       |> put_view(FederatedTargetView)
       |> render("group_membership.json", membership: membership, for: user)
@@ -367,11 +362,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
   def demote(%{assigns: %{user: user}} = conn, %{"id" => id} = params) do
     with {:ok, %User{} = group} <- FederatedTarget.resolve_group(id),
          {:ok, %User{} = account} <- account_from_params(params),
-         {:ok, [membership | _]} <- GroupMembership.demote(user, group, [account], "user") do
-      publish_group_moderation(fn ->
-        GroupModeration.publish_moderator_remove(user, group, account)
-      end)
-
+         {:ok, [membership | _]} <- GroupMembership.demote(user, group, [account], "user"),
+         {:ok, _activity} <- GroupModeration.publish_moderator_remove(user, group, account) do
       conn
       |> put_view(FederatedTargetView)
       |> render("group_membership.json", membership: membership, for: user)
@@ -426,17 +418,12 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
   def block(%{assigns: %{user: user}} = conn, %{"id" => id} = params) do
     with {:ok, %User{} = group} <- FederatedTarget.resolve_group(id),
          {:ok, %User{} = account} <- account_from_params(params),
-         # Group bans are intentionally scoped to group membership. A moderator may
-         # also be a site administrator, but this endpoint must not deactivate the
-         # target account or call the global account-ban path.
-         {:ok, _memberships} <- GroupMembership.ban(user, group, [account]) do
-      publish_group_moderation(fn ->
-        GroupModeration.publish_group_ban(user, group, account,
-          reason: Map.get(params, "reason"),
-          remove_data: truthy?(Map.get(params, "remove_data", Map.get(params, "removeData")))
-        )
-      end)
-
+         {:ok, _memberships} <- GroupMembership.ban(user, group, [account]),
+         {:ok, _activity} <-
+           GroupModeration.publish_group_ban(user, group, account,
+             reason: Map.get(params, "reason"),
+             remove_data: truthy_param?(Map.get(params, "remove_data"))
+           ) do
       json(conn, %{})
     else
       error -> group_management_error(conn, error, :block)
@@ -447,11 +434,11 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
   def unblock(%{assigns: %{user: user}} = conn, %{"id" => id} = params) do
     with {:ok, %User{} = group} <- FederatedTarget.resolve_group(id),
          {:ok, %User{} = account} <- account_from_params(params),
-         :ok <- GroupMembership.unban(user, group, [account]) do
-      publish_group_moderation(fn ->
-        GroupModeration.publish_group_unban(user, group, account, reason: Map.get(params, "reason"))
-      end)
-
+         :ok <- GroupMembership.unban(user, group, [account]),
+         {:ok, _activity} <-
+           GroupModeration.publish_group_unban(user, group, account,
+             reason: Map.get(params, "reason")
+           ) do
       json(conn, %{})
     else
       error -> group_management_error(conn, error, :unblock)
@@ -476,6 +463,9 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
 
   defp leave_group(%User{} = user, %User{} = group), do: CommonAPI.unfollow(user, group)
 
+  defp truthy_param?(value) when value in [true, "true", "1", 1], do: true
+  defp truthy_param?(_), do: false
+
   defp account_from_params(params) do
     params
     |> Map.get("account_id", Map.get(params, :account_id))
@@ -494,27 +484,6 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
   end
 
   defp account_from_id(_), do: {:error, :not_found}
-
-  defp publish_group_moderation(fun) when is_function(fun, 0) do
-    case fun.() do
-      {:ok, _activity} ->
-        :ok
-
-      :ok ->
-        :ok
-
-      error ->
-        Logger.warning("Could not publish group moderation activity: #{inspect(error)}")
-        :ok
-    end
-  rescue
-    error ->
-      Logger.warning("Could not publish group moderation activity: #{Exception.message(error)}")
-      :ok
-  end
-
-  defp truthy?(value) when value in [true, "true", "1", 1, "yes", "on"], do: true
-  defp truthy?(_), do: false
 
   defp group_management_error(conn, error, action) do
     case {error, action} do

@@ -72,7 +72,11 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       |> String.split("@", parts: 2)
       |> List.first()
 
-    render("service.json", %{user: user}) |> Map.put("preferredUsername", nickname)
+    render("service.json", %{user: user})
+    |> Map.merge(%{
+      "preferredUsername" => nickname,
+      "webfinger" => "acct:#{User.full_nickname(user)}"
+    })
   end
 
   def render("user.json", %{user: user}) do
@@ -125,7 +129,9 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "capabilities" => capabilities,
       "alsoKnownAs" => user.also_known_as,
       "vcard:bday" => birthday,
-      "vcard:Address" => user.location
+      "vcard:Address" => user.location,
+      "webfinger" => "acct:#{User.full_nickname(user)}",
+      "published" => Pleroma.Web.CommonAPI.Utils.to_masto_date(user.inserted_at)
     }
     |> Map.merge(group_actor_fields(user))
     |> maybe_put_misskey_summary(user.raw_bio)

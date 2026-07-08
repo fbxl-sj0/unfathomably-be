@@ -29,4 +29,6 @@ Mox.defmock(Pleroma.ConfigMock, for: Pleroma.Config.Getting)
 Mox.defmock(Pleroma.UnstubbedConfigMock, for: Pleroma.Config.Getting)
 
 Mox.defmock(Pleroma.LoggerMock, for: Pleroma.Logging)
+
+Mox.defmock(Pleroma.Uploaders.S3.ExAwsMock, for: Pleroma.Uploaders.S3.ExAwsAPI)
 Mox.defmock(Pleroma.StubbedHTTPSignaturesMock, for: Pleroma.Signature.HTTPSignatures)

@@ -241,7 +241,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
   def filter(%{"actor" => _actor} = activity), do: {:ok, activity}
 
   def filter(%{"id" => actor, "type" => actor_type} = activity)
-      when is_binary(actor) and actor_type in ["Application", "Group", "Organization", "Person", "Service"] do
+      when is_binary(actor) and
+             actor_type in ["Application", "Group", "Organization", "Person", "Service"] do
     actor_info = URI.parse(actor)
 
     with {:ok, activity} <- check_accept(actor_info, activity),

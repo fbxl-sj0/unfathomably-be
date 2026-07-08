@@ -53,10 +53,20 @@ defmodule Pleroma.Upload.Filter.AnalyzeMetadata do
   def filter(_), do: {:ok, :noop}
 
   defp get_blurhash(file) do
-    with {:ok, blurhash} <- :eblurhash.magick(file) do
-      blurhash
-    else
-      _ -> nil
+    try do
+      with {:ok, blurhash} <- :eblurhash.magick(file) do
+        blurhash
+      else
+        _ -> nil
+      end
+    rescue
+      e in ErlangError ->
+        Logger.warning("#{__MODULE__}: blurhash metadata failed: #{inspect(e)}")
+        nil
+    catch
+      kind, reason ->
+        Logger.warning("#{__MODULE__}: blurhash metadata failed: #{inspect({kind, reason})}")
+        nil
     end
   end
 

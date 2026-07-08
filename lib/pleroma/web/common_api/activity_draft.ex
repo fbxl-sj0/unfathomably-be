@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.CommonAPI.ActivityDraft do
@@ -8,6 +8,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   alias Pleroma.Language.LanguageDetector
   alias Pleroma.Object
   alias Pleroma.Repo
+  alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.ActivityPub.Addressing
@@ -16,8 +17,6 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
 
   import Pleroma.Web.Gettext
   import Pleroma.Web.Utils.Guards, only: [not_empty_string: 1]
-
-  @group_page_title_limit 200
 
   defstruct valid?: true,
             errors: [],
@@ -94,10 +93,13 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   end
 
   defp listen_object(%__MODULE__{} = draft) do
+    external_link = draft.params[:externalLink] || draft.params[:url]
+
     object =
       draft.params
-      |> Map.take([:album, :artist, :title, :length, :url])
+      |> Map.take([:album, :artist, :title, :length])
       |> Map.new(fn {key, value} -> {to_string(key), value} end)
+      |> maybe_put_external_link(external_link)
       |> Map.put("type", "Audio")
       |> Map.put("to", draft.to)
       |> Map.put("cc", draft.cc)
@@ -105,6 +107,9 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
 
     %__MODULE__{draft | object: object}
   end
+
+  defp maybe_put_external_link(object, nil), do: object
+  defp maybe_put_external_link(object, external_link), do: Map.put(object, "externalLink", external_link)
 
   @spec event(any, map) :: {:error, any} | {:ok, %{:valid? => true, optional(any) => any}}
   def event(user, params, location \\ nil) do
@@ -211,9 +216,6 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   defp quote_post(%__MODULE__{params: %{quoted_status_id: id}} = draft)
        when not_empty_string(id) do
     case Activity.get_by_id_with_object(id) do
-      %Activity{actor: actor_ap_id} = activity when not_empty_string(actor_ap_id) ->
-        %__MODULE__{draft | quote_post: activity, mentions: [actor_ap_id]}
-
       %Activity{} = activity ->
         %__MODULE__{draft | quote_post: activity}
 
@@ -294,6 +296,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
         mentions =
           mentions
           |> Kernel.++(mentioned_ap_ids)
+          |> Kernel.++(quote_mentions(draft))
           |> Utils.get_addressed_users(draft.params[:to])
           |> Enum.uniq()
 
@@ -313,6 +316,17 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
     end
   end
 
+  defp quote_mentions(%__MODULE__{quote_post: %Activity{} = quote_post}) do
+    with %Object{data: %{"actor" => actor}} when is_binary(actor) <-
+           Object.normalize(quote_post, fetch: false) do
+      [actor]
+    else
+      _ -> []
+    end
+  end
+
+  defp quote_mentions(%__MODULE__{}), do: []
+
   defp to_and_cc(%__MODULE__{} = draft) do
     {to, cc} = Utils.get_to_and_cc(draft)
     %__MODULE__{draft | to: to, cc: cc}
@@ -324,9 +338,16 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   end
 
   defp sensitive(%__MODULE__{} = draft) do
-    sensitive = draft.params[:sensitive]
+    sensitive =
+      Pleroma.Web.Utils.Params.truthy_param?(draft.params[:sensitive]) ||
+        Enum.any?(draft.tags, &nsfw_tag?/1)
+
     %__MODULE__{draft | sensitive: sensitive}
   end
+
+  defp nsfw_tag?({_tag_text, "nsfw"}), do: true
+  defp nsfw_tag?({_tag_text, tag}) when is_binary(tag), do: String.downcase(tag) == "nsfw"
+  defp nsfw_tag?(_), do: false
 
   defp language(%__MODULE__{} = draft) do
     language =
@@ -372,7 +393,6 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
 
     object =
       note_data
-      |> maybe_promote_group_root_to_page(draft)
       |> Addressing.put_addressed_groups(draft.addressed_groups)
       |> Map.put("emoji", emoji)
       |> Map.put("source", %{
@@ -383,50 +403,79 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
       |> Map.put("generator", draft.params[:generator])
       |> Map.put("content_type", draft.params[:content_type])
       |> Map.put("language", draft.language)
+      |> maybe_put_group_root_post_type(draft)
 
     %__MODULE__{draft | object: object}
   end
 
-  defp maybe_promote_group_root_to_page(
+  defp maybe_put_group_root_post_type(
          object,
-         %__MODULE__{
-           addressed_groups: [_ | _],
-           in_reply_to: nil
-         } = draft
-       ) do
-    object
-    |> Map.put("type", "Page")
-    |> Map.put("name", group_page_title(draft))
-  end
-
-  defp maybe_promote_group_root_to_page(object, _draft), do: object
-
-  defp group_page_title(%__MODULE__{} = draft) do
-    [
-      draft.params[:title],
-      draft.params["title"],
-      draft.params[:name],
-      draft.params["name"],
-      draft.summary,
-      draft.status
-    ]
-    |> Enum.find_value(&present_string/1)
-    |> Kernel.||("Untitled group post")
-  end
-
-  defp present_string(value) when is_binary(value) do
-    value =
-      value
-      |> String.replace(~r/\s+/, " ")
-      |> String.trim()
-
-    case value do
-      "" -> nil
-      value -> String.slice(value, 0, @group_page_title_limit)
+         %__MODULE__{addressed_groups: [_ | _] = group_ap_ids}
+       )
+       when is_map(object) do
+    if is_nil(Map.get(object, "inReplyTo")) and Enum.any?(group_ap_ids, &discourse_group_ap_id?/1) do
+      Map.put(object, "type", "Article")
+    else
+      object
     end
   end
 
-  defp present_string(_value), do: nil
+  defp maybe_put_group_root_post_type(object, _draft), do: object
+
+  defp discourse_group_ap_id?(ap_id) when is_binary(ap_id) do
+    case User.get_cached_by_ap_id(ap_id) do
+      %User{actor_type: "Group"} = group -> discourse_group_actor?(group)
+      _ -> false
+    end
+  end
+
+  defp discourse_group_ap_id?(_), do: false
+
+  defp discourse_group_actor?(%User{} = group) do
+    host = uri_host(group.ap_id)
+
+    actor_paths =
+      [group.ap_id, group.inbox, group.shared_inbox]
+      |> Enum.map(&uri_path/1)
+      |> Enum.reject(&is_nil/1)
+
+    profile_paths =
+      [group.uri]
+      |> Enum.map(&uri_path/1)
+      |> Enum.reject(&is_nil/1)
+
+    String.contains?(host || "", "discourse") or
+      (Enum.any?(profile_paths, &String.starts_with?(&1, "/c/")) and
+         Enum.any?(actor_paths, &String.contains?(&1, "/ap/actor/")))
+  end
+
+  defp uri_host(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:host)
+    |> case do
+      host when is_binary(host) -> String.downcase(host)
+      _ -> nil
+    end
+  rescue
+    URI.Error -> nil
+  end
+
+  defp uri_host(_), do: nil
+
+  defp uri_path(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:path)
+    |> case do
+      path when is_binary(path) -> String.downcase(path)
+      _ -> nil
+    end
+  rescue
+    URI.Error -> nil
+  end
+
+  defp uri_path(_), do: nil
 
   defp maybe_put(map, key, value, true), do: Map.put(map, key, value)
   defp maybe_put(map, _key, _value, _condition), do: map
@@ -541,3 +590,8 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   defp validate(%__MODULE__{valid?: true} = draft), do: {:ok, draft}
   defp validate(%__MODULE__{errors: [message | _]}), do: {:error, message}
 end
+
+
+
+
+

@@ -62,7 +62,12 @@ defmodule Pleroma.Object.Fetcher do
     end
   end
 
+  @typep fetcher_errors ::
+           :error | :reject | :allowed_depth | :fetch | :containment | :transmogrifier
+
   # Note: will create a Create activity, which we need internally at the moment.
+  @spec fetch_object_from_id(String.t(), list()) ::
+          {:ok, Object.t()} | {fetcher_errors(), any()} | Pipeline.errors()
   def fetch_object_from_id(id, options \\ []) do
     with {_, nil} <- {:fetch_object, Object.get_cached_by_ap_id(id)},
          {_, true} <- {:allowed_depth, Federator.allowed_thread_distance?(options[:depth])},
@@ -84,9 +89,11 @@ defmodule Pleroma.Object.Fetcher do
         {:error, "Object containment failed."}
 
       {:transmogrifier, {:error, {:reject, e}}} ->
+        Logger.info("Rejected #{id} while fetching: #{inspect(e)}")
         {:reject, e}
 
       {:transmogrifier, {:reject, e}} ->
+        Logger.info("Rejected #{id} while fetching: #{inspect(e)}")
         {:reject, e}
 
       {:transmogrifier, {:error, {:persist, {:error, %Ecto.Changeset{} = changeset}}} = error} ->
@@ -105,10 +112,12 @@ defmodule Pleroma.Object.Fetcher do
         {:ok, object}
 
       {:fetch, {:error, error}} ->
+        log_fetch_error(id, {:error, error})
         {:error, error}
 
       e ->
-        e
+        log_fetch_error(id, e)
+        {:error, e}
     end
   end
 
@@ -197,49 +206,66 @@ defmodule Pleroma.Object.Fetcher do
 
   defp put_object_fetch_actor(data, _actor), do: data
 
-  def fetch_object_from_id!(id, options \\ []) do
-    with {:ok, object} <- fetch_object_from_id(id, options) do
-      object
-    else
-      {:error, %Tesla.Mock.Error{}} ->
-        nil
-
-      {:error, "Object has been deleted"} ->
-        nil
-
-      {:reject, reason} ->
-        Logger.info("Rejected #{id} while fetching: #{inspect(reason)}")
-        nil
-
-      e ->
-        log_fetch_error(id, e)
-        nil
-    end
-  end
-
   defp log_fetch_error(id, {:error, {:http, code}}) when code in [401, 403, 404, 410] do
     Logger.debug("Remote object #{id} returned HTTP #{code} while fetching")
+  end
+
+  defp log_fetch_error(id, {:error, {:http, code}}) when code in 500..599 do
+    Logger.debug("Transient error while fetching #{id}: #{inspect({:http, code})}")
   end
 
   defp log_fetch_error(id, {:error, {:http, code}}) do
     Logger.warning("Remote object #{id} returned HTTP #{code} while fetching")
   end
 
-  defp log_fetch_error(id, {:error, {:content_type, content_type}}) do
-    Logger.debug("Error while fetching #{id}: remote returned content-type #{inspect(content_type)}")
-  end
-
   defp log_fetch_error(id, e) do
-    case Churn.mark_deactivated_actor(e, id) do
-      {:ok, actor_id} ->
-        Logger.info(
-          "Remote actor #{actor_id} is deactivated; marked local user inactive while fetching #{id}"
-        )
+    case transient_fetch_failure_reason(e) do
+      {:ok, reason} ->
+        Logger.debug("Transient error while fetching #{id}: #{inspect(reason)}")
 
-      :noop ->
-        Logger.warning("Error while fetching #{id}: #{inspect(e)}")
+      :error ->
+        case Churn.mark_deactivated_actor(e, id) do
+          {:ok, actor_id} ->
+            Logger.info(
+              "Remote actor #{actor_id} is deactivated; marked local user inactive while fetching #{id}"
+            )
+
+          :noop ->
+            Logger.warning("Error while fetching #{id}: #{inspect(e)}")
+        end
     end
   end
+
+  defp record_transient_fetch_failure(id, error) do
+    case transient_fetch_failure_reason(error) do
+      {:ok, reason} ->
+        _ = Instances.record_failure(id, reason, source: "object_fetch")
+        Logger.debug("Transient error while fetching #{id}: #{inspect(reason)}")
+
+      :error ->
+        :ok
+    end
+  end
+
+  defp transient_fetch_failure_reason({:error, reason}),
+    do: transient_fetch_failure_reason(reason)
+
+  defp transient_fetch_failure_reason({:http, code}) when code in 500..599,
+    do: {:ok, "http_#{code}"}
+
+  defp transient_fetch_failure_reason(reason)
+       when reason in [
+              :closed,
+              :econnrefused,
+              :ehostunreach,
+              :enetunreach,
+              :nxdomain,
+              :recv_response_timeout,
+              :timeout
+            ],
+       do: {:ok, reason}
+
+  defp transient_fetch_failure_reason(_), do: :error
 
   defp make_signature(id, date) do
     uri = URI.parse(id)
@@ -318,6 +344,7 @@ defmodule Pleroma.Object.Fetcher do
         {:error, :unreachable_host}
 
       {:error, e} ->
+        record_transient_fetch_failure(id, e)
         {:error, e}
 
       e ->
@@ -349,6 +376,7 @@ defmodule Pleroma.Object.Fetcher do
         {:error, :unreachable_host}
 
       {:error, e} ->
+        record_transient_fetch_failure(id, e)
         {:error, e}
 
       e ->
@@ -421,8 +449,11 @@ defmodule Pleroma.Object.Fetcher do
             {:error, {:content_type, nil}}
         end
 
+      {:ok, %{status: code}} when code in [401, 403] ->
+        {:error, :forbidden}
+
       {:ok, %{status: code}} when code in [404, 410] ->
-        {:error, "Object has been deleted"}
+        {:error, :not_found}
 
       {:ok, %{status: code}} ->
         {:error, {:http, code}}

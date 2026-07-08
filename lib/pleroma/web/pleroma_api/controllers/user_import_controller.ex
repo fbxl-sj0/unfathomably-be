@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.UserImportController do
@@ -23,39 +23,60 @@ defmodule Pleroma.Web.PleromaAPI.UserImportController do
   defdelegate open_api_operation(action), to: ApiSpec.UserImportOperation
   action_fallback(Pleroma.Web.MastodonAPI.FallbackController)
 
-  def follow(%Plug.Conn{body_params: %{list: %Plug.Upload{path: path}}} = conn, _) do
-    read_import_file(conn, path, &follow(&1, %{}))
+  def follow(%Plug.Conn{} = conn, _) do
+    case body_param(conn, :list) do
+      %Plug.Upload{path: path} ->
+        read_import_file(conn, path, &follow(&1, %{}))
+
+      list when is_binary(list) ->
+        %{assigns: %{user: follower}} = conn
+
+        identifiers =
+          list
+          |> String.split("\n")
+          |> Enum.map(&(&1 |> String.split(",") |> List.first()))
+          |> List.delete("Account address")
+          |> Enum.map(&(&1 |> String.trim() |> String.trim_leading("@")))
+          |> Enum.reject(&(&1 == ""))
+
+        User.Import.follows_import(follower, identifiers)
+        json(conn, "job started")
+
+      _ ->
+        render_error(conn, :bad_request, "Missing import list")
+    end
   end
 
-  def follow(%{assigns: %{user: follower}, body_params: %{list: list}} = conn, _) do
-    identifiers =
-      list
-      |> String.split("\n")
-      |> Enum.map(&(&1 |> String.split(",") |> List.first()))
-      |> List.delete("Account address")
-      |> Enum.map(&(&1 |> String.trim() |> String.trim_leading("@")))
-      |> Enum.reject(&(&1 == ""))
+  def blocks(%Plug.Conn{} = conn, _) do
+    case body_param(conn, :list) do
+      %Plug.Upload{path: path} ->
+        read_import_file(conn, path, &blocks(&1, %{}))
 
-    User.Import.follow_import(follower, identifiers)
-    json(conn, "job started")
+      list when is_binary(list) ->
+        %{assigns: %{user: blocker}} = conn
+
+        User.Import.blocks_import(blocker, prepare_user_identifiers(list))
+        json(conn, "job started")
+
+      _ ->
+        render_error(conn, :bad_request, "Missing import list")
+    end
   end
 
-  def blocks(%Plug.Conn{body_params: %{list: %Plug.Upload{path: path}}} = conn, _) do
-    read_import_file(conn, path, &blocks(&1, %{}))
-  end
+  def mutes(%Plug.Conn{} = conn, _) do
+    case body_param(conn, :list) do
+      %Plug.Upload{path: path} ->
+        read_import_file(conn, path, &mutes(&1, %{}))
 
-  def blocks(%{assigns: %{user: blocker}, body_params: %{list: list}} = conn, _) do
-    User.Import.blocks_import(blocker, prepare_user_identifiers(list))
-    json(conn, "job started")
-  end
+      list when is_binary(list) ->
+        %{assigns: %{user: user}} = conn
 
-  def mutes(%Plug.Conn{body_params: %{list: %Plug.Upload{path: path}}} = conn, _) do
-    read_import_file(conn, path, &mutes(&1, %{}))
-  end
+        User.Import.mutes_import(user, prepare_user_identifiers(list))
+        json(conn, "job started")
 
-  def mutes(%{assigns: %{user: user}, body_params: %{list: list}} = conn, _) do
-    User.Import.mutes_import(user, prepare_user_identifiers(list))
-    json(conn, "job started")
+      _ ->
+        render_error(conn, :bad_request, "Missing import list")
+    end
   end
 
   def post_archive_imports(%{assigns: %{user: user}} = conn, _params) do
@@ -83,10 +104,14 @@ defmodule Pleroma.Web.PleromaAPI.UserImportController do
     |> Enum.map(&String.trim_leading(&1, "@"))
   end
 
+  defp body_param(%Plug.Conn{body_params: body_params}, key) do
+    Map.get(body_params, key) || Map.get(body_params, Atom.to_string(key))
+  end
+
   defp read_import_file(%Plug.Conn{} = conn, path, next) do
     case File.read(path) do
       {:ok, list} ->
-        next.(%Plug.Conn{conn | body_params: %{list: list}})
+        next.(%Plug.Conn{conn | body_params: %{"list" => list}})
 
       {:error, reason} ->
         Logger.warning("Could not read import file #{inspect(path)}: #{inspect(reason)}")

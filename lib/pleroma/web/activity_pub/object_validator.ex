@@ -178,7 +178,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
          meta = Keyword.put(meta, :object_data, object_data),
          {:ok, update_activity} <-
            update_activity
-           |> UpdateValidator.cast_and_validate()
+           |> UpdateValidator.cast_and_validate(meta)
            |> Ecto.Changeset.apply_action(:insert) do
       update_activity = stringify_keys(update_activity)
       {:ok, update_activity, meta}
@@ -186,7 +186,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
       {:local, _} ->
         with {:ok, object} <-
                update_activity
-               |> UpdateValidator.cast_and_validate()
+               |> UpdateValidator.cast_and_validate(meta)
                |> Ecto.Changeset.apply_action(:insert) do
           object = stringify_keys(object)
           {:ok, object, meta}
@@ -200,15 +200,24 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
     end
   end
 
+  def validate(%{"type" => "Update"} = object, meta) do
+    with {:ok, object} <-
+           object
+           |> UpdateValidator.cast_and_validate(meta)
+           |> Ecto.Changeset.apply_action(:insert) do
+      object = stringify_keys(object)
+      {:ok, object, meta}
+    end
+  end
+
   def validate(%{"type" => type} = object, meta)
-      when type in ~w[Accept Reject Follow Update Like EmojiReact Announce
+      when type in ~w[Accept Reject Follow Like EmojiReact Announce
       ChatMessage Answer Join Leave Lock] do
     validator =
       case type do
         "Accept" -> AcceptRejectValidator
         "Reject" -> AcceptRejectValidator
         "Follow" -> FollowValidator
-        "Update" -> UpdateValidator
         "Like" -> LikeValidator
         "EmojiReact" -> EmojiReactValidator
         "Announce" -> AnnounceValidator
@@ -334,7 +343,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
     end
   end
 
-  defp fetch_thread_or_object(object) when is_map(object), do: Object.normalize(object, fetch: true)
+  defp fetch_thread_or_object(object) when is_map(object),
+    do: Object.normalize(object, fetch: true)
 
   defp fetch_thread_or_object(_object), do: nil
 

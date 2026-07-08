@@ -17,12 +17,23 @@ defmodule Pleroma.Web.ApiSpec.Schemas.List do
       exclusive: %Schema{
         type: :boolean,
         description: "Whether members of the list should be removed from the Home feed"
+      },
+      pleroma: %Schema{
+        type: :object,
+        properties: %{
+          emoji: %Schema{type: :string, nullable: true},
+          emoji_url: %Schema{type: :string, nullable: true}
+        }
       }
     },
     example: %{
       "id" => "12249",
       "title" => "Friends",
-      "exclusive" => false
+      "exclusive" => false,
+      "pleroma" => %{
+        "emoji" => nil,
+        "emoji_url" => nil
+      }
     }
   })
 end

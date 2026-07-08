@@ -894,16 +894,16 @@ defmodule Pleroma.Web.FederatedTarget do
   defp path(_), do: nil
 
   defp list_targets(kind, %User{} = user, params) do
-    case search_param(params) do
-      "" ->
-        followed_targets(kind, user, params)
-
-      _ ->
-        if followed_scope?(params) do
+    if followed_scope?(params) do
+      followed_targets(kind, user, params)
+    else
+      case search_param(params) do
+        "" ->
           followed_targets(kind, user, params)
-        else
+
+        _ ->
           search_targets(kind, params)
-        end
+      end
     end
   end
 
@@ -913,12 +913,29 @@ defmodule Pleroma.Web.FederatedTarget do
     user
     |> FollowingRelationship.following_query()
     |> filter_followed_kind(kind)
-    |> filter_target_search(params)
+    |> filter_followed_search(search_param(params))
     |> order_by([r, _u], desc: r.updated_at)
     |> select([_r, u], u)
     |> offset(^offset_param(params))
     |> limit(^limit_param(params))
     |> Repo.all()
+  end
+
+  defp filter_followed_search(query, ""), do: query
+
+  defp filter_followed_search(query, search) do
+    term = "%#{search}%"
+
+    where(
+      query,
+      [_r, u],
+      ilike(u.nickname, ^term) or ilike(u.name, ^term) or ilike(u.ap_id, ^term) or
+        ilike(u.uri, ^term)
+    )
+  end
+
+  defp followed_scope?(params) do
+    param(params, :scope) in ["followed", :followed]
   end
 
   defp filter_followed_kind(query, :group) do
@@ -995,23 +1012,6 @@ defmodule Pleroma.Web.FederatedTarget do
         ^reachability_datetime_threshold
       )
     )
-  end
-
-  defp filter_target_search(query, params) do
-    case search_param(params) do
-      "" ->
-        query
-
-      query_text ->
-        term = "%#{query_text}%"
-
-        where(
-          query,
-          [_r, u],
-          ilike(u.nickname, ^term) or ilike(u.name, ^term) or ilike(u.ap_id, ^term) or
-            ilike(u.uri, ^term)
-        )
-    end
   end
 
   defp search_targets(kind, params) do
@@ -1821,15 +1821,6 @@ defmodule Pleroma.Web.FederatedTarget do
     end
   end
 
-  defp followed_scope?(params) do
-    params
-    |> param(:scope)
-    |> case do
-      value when value in [:followed, "followed"] -> true
-      _ -> false
-    end
-  end
-
   defp limit_param(params) do
     params
     |> param(:limit)
@@ -1919,7 +1910,6 @@ defmodule Pleroma.Web.FederatedTarget do
         is_approved: true,
         is_confirmed: true,
         is_discoverable: local_group_truthy_param(params, "discoverable", true),
-        group_join_notifications: local_group_truthy_param(params, "group_join_notifications", true),
         is_indexable: local_group_truthy_param(params, "indexable", true),
         is_locked: local_group_locked_param(params),
         keys: keys,
@@ -1987,14 +1977,6 @@ defmodule Pleroma.Web.FederatedTarget do
       |> maybe_put(
         :is_discoverable,
         local_group_truthy_param(params, "discoverable", group.is_discoverable)
-      )
-      |> maybe_put(
-        :group_join_notifications,
-        local_group_truthy_param(
-          params,
-          "group_join_notifications",
-          group.group_join_notifications
-        )
       )
       |> maybe_put(
         :is_indexable,
@@ -2357,16 +2339,16 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_items_collection(%User{} = source) do
     case source_items_fetch_json(source.ap_id || source.uri) do
       {:ok, %{} = actor_or_collection} ->
-      case first_source_item_page(actor_or_collection) do
-        {:ok, _page} ->
-          {:ok, actor_or_collection}
+        case first_source_item_page(actor_or_collection) do
+          {:ok, _page} ->
+            {:ok, actor_or_collection}
 
-        {:error, _reason} ->
-          case source_outbox_collection(actor_or_collection) do
-            {:ok, _collection} = result -> result
-            _ -> source_stored_or_inferred_outbox_collection(source)
-          end
-      end
+          {:error, _reason} ->
+            case source_outbox_collection(actor_or_collection) do
+              {:ok, _collection} = result -> result
+              _ -> source_stored_or_inferred_outbox_collection(source)
+            end
+        end
 
       {:error, :invalid_body} = error ->
         if source_profile(source) == "activitypub_profile" do
@@ -3675,7 +3657,8 @@ defmodule Pleroma.Web.FederatedTarget do
                reading_user,
                total_items
              ) do
-          {:ok, envelope} -> {:ok, envelope}
+          {:ok, envelope} ->
+            {:ok, envelope}
 
           _ ->
             case cached_source_status_fallback_items(
@@ -3751,7 +3734,10 @@ defmodule Pleroma.Web.FederatedTarget do
     |> where([activity], activity.actor == ^ap_id)
     |> where([activity], fragment("?->>'type' = 'Create'", activity.data))
     |> Activity.with_preloaded_object(:inner)
-    |> where([activity, object: object], fragment("?->>'type'", object.data) in ^@source_item_status_types)
+    |> where(
+      [activity, object: object],
+      fragment("?->>'type'", object.data) in ^@source_item_status_types
+    )
     |> order_by([activity], desc: activity.id)
     |> limit(^limit)
   end

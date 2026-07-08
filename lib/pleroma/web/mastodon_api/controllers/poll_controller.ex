@@ -1,16 +1,15 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.PollController do
   use Pleroma.Web, :controller
 
-  import Pleroma.Web.ControllerHelper, only: [try_render: 3, json_response: 3]
-
   alias Pleroma.Activity
   alias Pleroma.Object
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI
+  alias Pleroma.Web.ControllerHelper
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   action_fallback(Pleroma.Web.MastodonAPI.FallbackController)
@@ -25,6 +24,9 @@ defmodule Pleroma.Web.MastodonAPI.PollController do
   plug(OAuthScopesPlug, %{scopes: ["write:statuses"]} when action == :vote)
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.PollOperation
+  defp try_render(conn, target, params), do: ControllerHelper.try_render(conn, target, params)
+
+  defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
 
   @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
 
