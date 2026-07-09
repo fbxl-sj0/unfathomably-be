@@ -30,6 +30,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fixed protected frontend streaming hooks so user, notification, direct, list,
   group-feed, and source-feed streams wait for an OAuth token before opening
   WebSocket connections.
+- Fixed invalid Mastodon list IDs such as `undefined` so list APIs and list
+  timelines return normal not-found responses instead of raising Ecto cast
+  errors.
+- Tuned the remote group discussion cleanup worker for large live databases by
+  reducing the default cleanup batch and allowing longer candidate-query
+  timeouts before a daily janitor run is skipped.
+- Reduced duplicate-key federation races by making hot object, remote actor,
+  and instance-host inserts conflict-aware before falling back to the existing
+  winning database row.
 
 ## [3.3.0] - 2026-07-06
 ### Added

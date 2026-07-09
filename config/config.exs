@@ -78,8 +78,7 @@ config :pleroma, Pleroma.Uploaders.S3,
   bucket: nil,
   bucket_namespace: nil,
   truncated_namespace: nil,
-  streaming_enabled: true,
-  force_media_proxy: false
+  streaming_enabled: true
 
 config :ex_aws, :s3,
   # host: "s3.wasabisys.com", # required if not Amazon AWS
@@ -670,8 +669,8 @@ config :pleroma, Pleroma.Workers.Cron.RemotePostCleanupWorker,
 config :pleroma, Pleroma.Workers.Cron.GroupDiscussionCleanupWorker,
   enabled: true,
   max_age_days: 183,
-  batch_size: 200,
-  query_timeout_ms: 60_000
+  batch_size: 100,
+  query_timeout_ms: 120_000
 
 config :pleroma, Pleroma.Workers.RemoteFetcherWorker, timeout_ms: 30_000
 
@@ -805,7 +804,7 @@ config :pleroma, Pleroma.Workers.PurgeExpiredActivity, enabled: true, min_lifeti
 config :pleroma, Pleroma.Web.Plugs.RemoteIp,
   enabled: true,
   headers: ["x-forwarded-for"],
-  clients: ["127.0.0.0/8", "::1/128"],
+  clients: ["192.168.250.0/24"],
   proxies: [],
   reserved: [
     "127.0.0.0/8",

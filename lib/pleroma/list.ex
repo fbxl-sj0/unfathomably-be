@@ -9,7 +9,6 @@ defmodule Pleroma.List do
   import Ecto.Changeset
 
   alias Pleroma.Activity
-  alias Pleroma.Emoji
   alias Pleroma.Repo
   alias Pleroma.User
 
@@ -19,7 +18,6 @@ defmodule Pleroma.List do
     field(:following, {:array, :string}, default: [])
     field(:ap_id, :string)
     field(:exclusive, :boolean, default: false)
-    field(:emoji, :string)
 
     timestamps()
   end
@@ -30,10 +28,8 @@ defmodule Pleroma.List do
 
   def update_changeset(list, attrs \\ %{}) do
     list
-    |> cast(attrs, [:title, :exclusive, :emoji])
-    |> fix_emoji()
+    |> cast(attrs, [:title, :exclusive])
     |> validate_required([:title])
-    |> validate_emoji()
   end
 
   def follow_changeset(list, attrs \\ %{}) do
@@ -55,28 +51,43 @@ defmodule Pleroma.List do
   end
 
   def get(id, %{id: user_id} = _user) do
-    query =
-      from(
-        l in Pleroma.List,
-        where: l.id == ^id,
-        where: l.user_id == ^user_id
-      )
+    with {:ok, id} <- normalize_id(id) do
+      query =
+        from(
+          l in Pleroma.List,
+          where: l.id == ^id,
+          where: l.user_id == ^user_id
+        )
 
-    Repo.one(query)
+      Repo.one(query)
+    else
+      :error -> nil
+    end
   end
+
+  defp normalize_id(id) when is_integer(id) and id > 0, do: {:ok, id}
+
+  defp normalize_id(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {id, ""} when id > 0 -> {:ok, id}
+      _ -> :error
+    end
+  end
+
+  defp normalize_id(_), do: :error
 
   def get_by_ap_id(ap_id) do
     Repo.get_by(__MODULE__, ap_id: ap_id)
   end
 
   def get_following(%Pleroma.List{following: following} = _list) do
-    q =
+    query =
       from(
         u in User,
         where: u.follower_address in ^following
       )
 
-    {:ok, Repo.all(q)}
+    {:ok, Repo.all(query)}
   end
 
   # Get lists the activity should be streamed to.
@@ -166,41 +177,6 @@ defmodule Pleroma.List do
     list
     |> follow_changeset(attrs)
     |> Repo.update()
-  end
-
-  defp fix_emoji(changeset) do
-    with emoji when is_binary(emoji) <- get_field(changeset, :emoji) do
-      emoji =
-        emoji
-        |> Emoji.fully_qualify_emoji()
-        |> Emoji.maybe_quote()
-
-      put_change(changeset, :emoji, emoji)
-    else
-      _ -> changeset
-    end
-  end
-
-  defp validate_emoji(changeset) do
-    validate_change(changeset, :emoji, fn
-      :emoji, nil ->
-        []
-
-      :emoji, emoji ->
-        if Emoji.is_unicode_emoji?(emoji) or valid_local_custom_emoji?(emoji) do
-          []
-        else
-          [emoji: "Invalid emoji"]
-        end
-    end)
-  end
-
-  defp valid_local_custom_emoji?(emoji) do
-    with %{file: _path} <- Emoji.get(emoji) do
-      true
-    else
-      _ -> false
-    end
   end
 
   def memberships(%User{follower_address: follower_address}) do

@@ -19,16 +19,6 @@ defmodule Pleroma.Web.MastodonAPI.ListControllerTest do
              |> json_response_and_validate_schema(:ok)
   end
 
-  test "creating a list with an emoji" do
-    %{conn: conn} = oauth_access(["write:lists"])
-
-    assert %{"title" => "cuties", "pleroma" => %{"emoji" => "🕓", "emoji_url" => nil}} =
-             conn
-             |> put_req_header("content-type", "application/json")
-             |> post("/api/v1/lists", %{"title" => "cuties", "emoji" => "🕓"})
-             |> json_response_and_validate_schema(:ok)
-  end
-
   test "creating an exclusive list" do
     %{conn: conn} = oauth_access(["write:lists"])
 
@@ -49,18 +39,6 @@ defmodule Pleroma.Web.MastodonAPI.ListControllerTest do
 
     assert %{"error" => "title - null value where string expected."} =
              json_response_and_validate_schema(conn, 400)
-  end
-
-  test "renders error for an invalid emoji" do
-    %{conn: conn} = oauth_access(["write:lists"])
-
-    conn =
-      conn
-      |> put_req_header("content-type", "application/json")
-      |> post("/api/v1/lists", %{"title" => "cuties", "emoji" => "not an emoji"})
-
-    assert %{"error" => "Invalid emoji"} =
-             json_response_and_validate_schema(conn, :unprocessable_entity)
   end
 
   test "listing a user's lists" do
@@ -180,6 +158,14 @@ defmodule Pleroma.Web.MastodonAPI.ListControllerTest do
     assert %{"error" => "List not found"} = json_response_and_validate_schema(conn, :not_found)
   end
 
+  test "renders 404 if list id is not valid" do
+    %{conn: conn} = oauth_access(["read:lists"])
+
+    conn = get(conn, "/api/v1/lists/undefined")
+
+    assert %{"error" => "List not found"} = json_response_and_validate_schema(conn, :not_found)
+  end
+
   test "renaming a list" do
     %{user: user, conn: conn} = oauth_access(["write:lists"])
     {:ok, list} = Pleroma.List.create("name", user)
@@ -199,17 +185,6 @@ defmodule Pleroma.Web.MastodonAPI.ListControllerTest do
              conn
              |> put_req_header("content-type", "application/json")
              |> put("/api/v1/lists/#{list.id}", %{"exclusive" => true})
-             |> json_response_and_validate_schema(:ok)
-  end
-
-  test "updating a list's emoji" do
-    %{user: user, conn: conn} = oauth_access(["write:lists"])
-    {:ok, list} = Pleroma.List.create(%{title: "name"}, user)
-
-    assert %{"pleroma" => %{"emoji" => "🕓", "emoji_url" => nil}} =
-             conn
-             |> put_req_header("content-type", "application/json")
-             |> put("/api/v1/lists/#{list.id}", %{"title" => "name", "emoji" => "🕓"})
              |> json_response_and_validate_schema(:ok)
   end
 

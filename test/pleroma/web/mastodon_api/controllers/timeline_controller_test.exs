@@ -740,6 +740,12 @@ defmodule Pleroma.Web.MastodonAPI.TimelineControllerTest do
       assert id == to_string(activity_two.id)
     end
 
+    test "list timeline returns not found for invalid list ids", %{conn: conn} do
+      conn = get(conn, "/api/v1/timelines/list/undefined")
+
+      assert %{"error" => "List not found"} = json_response_and_validate_schema(conn, :not_found)
+    end
+
     test "list timeline does not leak non-public statuses for unfollowed users", %{
       user: user,
       conn: conn

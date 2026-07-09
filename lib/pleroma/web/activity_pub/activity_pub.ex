@@ -2147,7 +2147,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   defp log_follow_information_refresh_error(ap_id, reason) do
-    message = "Follower/Following counter update for #{ap_id} failed.\n#{inspect(reason)}"
+    message = "Follower/Following counter update for #{ap_id} failed: #{inspect(reason)}"
 
     if expected_remote_collection_unavailable?(reason) do
       Logger.debug(message)
@@ -2157,6 +2157,9 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   defp expected_remote_collection_unavailable?("Object has been deleted"), do: true
+
+  defp expected_remote_collection_unavailable?(reason) when reason in [:forbidden, :not_found],
+    do: true
 
   defp expected_remote_collection_unavailable?({:http, status})
        when status in [401, 403, 404, 410],
@@ -2257,6 +2260,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp log_remote_fetch_error(message, ap_id, :not_found) do
     Logger.debug("#{message} at fetch #{ap_id}, :not_found")
+  end
+
+  defp log_remote_fetch_error(message, ap_id, reason) when reason in [:forbidden, :unauthorized] do
+    Logger.debug("#{message} at fetch #{ap_id}, #{inspect(reason)}")
   end
 
   defp log_remote_fetch_error(message, ap_id, {:http, code}) do
@@ -2485,9 +2492,9 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   defp insert_remote_user(changeset, ap_id) do
-    case Repo.insert(changeset) do
-      {:ok, user} ->
-        User.set_cache(user)
+    case Repo.insert(changeset, on_conflict: :nothing) do
+      {:ok, _user} ->
+        fetch_inserted_or_existing_remote_user(ap_id)
 
       {:error, %Ecto.Changeset{} = changeset} = error ->
         maybe_return_existing_remote_user(ap_id, changeset, error)
@@ -2495,6 +2502,13 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   rescue
     e in Ecto.ConstraintError ->
       maybe_return_existing_remote_user(ap_id, e, {:error, e})
+  end
+
+  defp fetch_inserted_or_existing_remote_user(ap_id) do
+    case User.get_by_ap_id(ap_id) do
+      %User{} = user -> User.set_cache(user)
+      _ -> {:error, :conflict}
+    end
   end
 
   defp maybe_return_existing_remote_user(ap_id, constraint_error, error) do
@@ -2521,6 +2535,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp user_unique_ap_id_error?(%Ecto.ConstraintError{constraint: "users_ap_id_index"}),
     do: true
+
+  defp user_unique_ap_id_error?(:conflict), do: true
 
   defp user_unique_ap_id_error?(_), do: false
 

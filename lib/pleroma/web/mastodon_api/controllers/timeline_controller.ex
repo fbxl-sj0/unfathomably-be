@@ -254,7 +254,7 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
         with_muted: Map.get(params, :with_muted, false)
       )
     else
-      _e -> render_error(conn, :forbidden, "Error.")
+      _ -> render_error(conn, :not_found, "List not found")
     end
   end
 end

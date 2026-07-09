@@ -393,10 +393,38 @@ defmodule Pleroma.Instances.Instance do
     end
   end
 
-  defp insert_or_update(%Ecto.Changeset{data: %Instance{id: nil}} = changeset),
-    do: Repo.insert(changeset)
+  defp insert_or_update(%Ecto.Changeset{data: %Instance{id: nil}} = changeset) do
+    case Repo.insert(changeset, on_conflict: :nothing) do
+      {:ok, %Instance{id: nil}} ->
+        update_conflicting_instance(changeset)
+
+      {:ok, %Instance{} = instance} ->
+        {:ok, instance}
+
+      {:error, %Ecto.Changeset{} = changeset} = error ->
+        if instance_unique_host_error?(changeset) do
+          update_conflicting_instance(changeset)
+        else
+          error
+        end
+    end
+  end
 
   defp insert_or_update(changeset), do: Repo.update(changeset)
+
+  defp update_conflicting_instance(conflicting_changeset) do
+    host = Ecto.Changeset.get_field(conflicting_changeset, :host)
+
+    case Repo.get_by(Instance, %{host: host}) do
+      %Instance{} = instance ->
+        instance
+        |> changeset(conflicting_changeset.changes)
+        |> Repo.update()
+
+      _ ->
+        {:error, conflicting_changeset}
+    end
+  end
 
   defp tap_log_health_update({:ok, instance} = result, host, opts) do
     if Keyword.get(opts, :log, false) do
@@ -515,7 +543,7 @@ defmodule Pleroma.Instances.Instance do
       else
         %Instance{}
         |> changeset(%{host: host, favicon: favicon, favicon_updated_at: now})
-        |> Repo.insert()
+        |> insert_or_update()
       end
 
       favicon
@@ -589,7 +617,7 @@ defmodule Pleroma.Instances.Instance do
       else
         %Instance{}
         |> changeset(%{host: host, metadata: metadata, metadata_updated_at: now})
-        |> Repo.insert()
+        |> insert_or_update()
       end
 
       metadata
@@ -724,9 +752,5 @@ defmodule Pleroma.Instances.Instance do
       end)
     end)
     |> Stream.run()
-
-    Repo.delete_all(from(i in Instance, where: i.host == ^host))
-    Pleroma.Workers.ReachabilityWorker.delete_jobs_for_host(host)
-    InstanceCache.sync(host, nil)
   end
 end

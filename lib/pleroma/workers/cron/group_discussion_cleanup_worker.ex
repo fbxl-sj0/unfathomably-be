@@ -28,8 +28,8 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   alias Pleroma.Repo
 
   @default_max_age_days 183
-  @default_batch_size 200
-  @default_query_timeout_ms 60_000
+  @default_batch_size 100
+  @default_query_timeout_ms 120_000
   @seconds_per_day 86_400
   @group_service_actor_regex "fedigroups|gancio|gup\\.pe|buzzrelay|tootgroup"
 

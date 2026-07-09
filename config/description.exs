@@ -205,12 +205,6 @@ config :pleroma, :config_description, [
         type: :boolean,
         description:
           "Enable streaming uploads, when enabled the file will be sent to the server in chunks as it's being read. This may be unsupported by some providers, try disabling this if you have upload problems."
-      },
-      %{
-        key: :force_media_proxy,
-        type: :boolean,
-        description:
-          "Force S3 upload URLs through the media proxy. Useful when the public S3 endpoint should not be exposed directly to clients."
       }
     ]
   },
@@ -2234,14 +2228,14 @@ config :pleroma, :config_description, [
         key: :batch_size,
         type: :integer,
         description: "Maximum number of group discussion objects to purge per cleanup run.",
-        suggestions: [200]
+        suggestions: [100, 200]
       },
       %{
         key: :query_timeout_ms,
         type: :integer,
         description:
           "Maximum time, in milliseconds, for the database query used by the group discussion cleanup worker.",
-        suggestions: [60_000, 120_000]
+        suggestions: [120_000, 60_000]
       }
     ]
   },
@@ -3796,7 +3790,7 @@ config :pleroma, :config_description, [
         type: :string,
         suggestions: [
           "http://127.0.0.1:5000",
-          "http://10.0.0.10:5000",
+          "http://192.168.250.99:5000",
           "https://opentranslate.devol.it"
         ]
       },

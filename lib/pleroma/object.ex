@@ -50,7 +50,18 @@ defmodule Pleroma.Object do
     )
   end
 
-  def create(data) do
+  def create(%{"id" => ap_id} = data) when is_binary(ap_id) do
+    with_ap_id_insert_lock(ap_id, fn ->
+      case get_by_ap_id(ap_id) do
+        %Object{} = object -> {:ok, object}
+        _ -> insert_object(data)
+      end
+    end)
+  end
+
+  def create(data), do: insert_object(data)
+
+  defp insert_object(data) do
     changeset =
       %Object{}
       |> Object.change(%{data: data})
@@ -65,6 +76,16 @@ defmodule Pleroma.Object do
   rescue
     e in Ecto.ConstraintError ->
       maybe_return_existing_object(data["id"], e, {:error, e})
+  end
+
+  defp with_ap_id_insert_lock(ap_id, fun) when is_function(fun, 0) do
+    case Repo.transaction(fn ->
+           Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", [ap_id])
+           fun.()
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   def change(struct, params \\ %{}) do
@@ -101,6 +122,8 @@ defmodule Pleroma.Object do
   defp object_unique_ap_id_error?(%Ecto.ConstraintError{constraint: "objects_unique_apid_index"}),
     do: true
 
+  defp object_unique_ap_id_error?(:conflict), do: true
+
   defp object_unique_ap_id_error?(_), do: false
 
   # Note: not checking activity type (assuming non-legacy objects are associated with Create act.)
@@ -136,27 +159,6 @@ defmodule Pleroma.Object do
 
   def get_by_id(nil), do: nil
   def get_by_id(id), do: Repo.get(Object, id)
-
-  @spec get_by_id_and_maybe_refetch(term(), list()) :: Object.t() | nil
-  def get_by_id_and_maybe_refetch(id, opts \\ []) do
-    with %Object{updated_at: updated_at} = object <- get_by_id(id) do
-      if opts[:interval] &&
-           NaiveDateTime.diff(NaiveDateTime.utc_now(), updated_at) > opts[:interval] do
-        case Fetcher.refetch_object(object) do
-          {:ok, %Object{} = object} ->
-            object
-
-          e ->
-            Logger.error("Couldn't refresh #{object.data["id"]}:\n#{inspect(e)}")
-            object
-        end
-      else
-        object
-      end
-    else
-      nil -> nil
-    end
-  end
 
   def get_by_ap_id(nil), do: nil
 
