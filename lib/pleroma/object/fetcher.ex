@@ -83,7 +83,7 @@ defmodule Pleroma.Object.Fetcher do
       {:ok, object}
     else
       {:allowed_depth, false} ->
-        {:error, "Max thread distance exceeded."}
+        {:error, :allowed_depth}
 
       {:containment, _} ->
         {:error, "Object containment failed."}
@@ -210,62 +210,29 @@ defmodule Pleroma.Object.Fetcher do
     Logger.debug("Remote object #{id} returned HTTP #{code} while fetching")
   end
 
-  defp log_fetch_error(id, {:error, {:http, code}}) when code in 500..599 do
-    Logger.debug("Transient error while fetching #{id}: #{inspect({:http, code})}")
-  end
-
   defp log_fetch_error(id, {:error, {:http, code}}) do
     Logger.warning("Remote object #{id} returned HTTP #{code} while fetching")
   end
 
+  defp log_fetch_error(id, {:error, :not_found}) do
+    Logger.info("Remote object #{id} was not found while fetching")
+  end
+
+  defp log_fetch_error(id, {:error, :forbidden}) do
+    Logger.info("Remote object #{id} refused access while fetching")
+  end
+
   defp log_fetch_error(id, e) do
-    case transient_fetch_failure_reason(e) do
-      {:ok, reason} ->
-        Logger.debug("Transient error while fetching #{id}: #{inspect(reason)}")
+    case Churn.mark_deactivated_actor(e, id) do
+      {:ok, actor_id} ->
+        Logger.info(
+          "Remote actor #{actor_id} is deactivated; marked local user inactive while fetching #{id}"
+        )
 
-      :error ->
-        case Churn.mark_deactivated_actor(e, id) do
-          {:ok, actor_id} ->
-            Logger.info(
-              "Remote actor #{actor_id} is deactivated; marked local user inactive while fetching #{id}"
-            )
-
-          :noop ->
-            Logger.warning("Error while fetching #{id}: #{inspect(e)}")
-        end
+      :noop ->
+        Logger.warning("Error while fetching #{id}: #{inspect(e)}")
     end
   end
-
-  defp record_transient_fetch_failure(id, error) do
-    case transient_fetch_failure_reason(error) do
-      {:ok, reason} ->
-        _ = Instances.record_failure(id, reason, source: "object_fetch")
-        Logger.debug("Transient error while fetching #{id}: #{inspect(reason)}")
-
-      :error ->
-        :ok
-    end
-  end
-
-  defp transient_fetch_failure_reason({:error, reason}),
-    do: transient_fetch_failure_reason(reason)
-
-  defp transient_fetch_failure_reason({:http, code}) when code in 500..599,
-    do: {:ok, "http_#{code}"}
-
-  defp transient_fetch_failure_reason(reason)
-       when reason in [
-              :closed,
-              :econnrefused,
-              :ehostunreach,
-              :enetunreach,
-              :nxdomain,
-              :recv_response_timeout,
-              :timeout
-            ],
-       do: {:ok, reason}
-
-  defp transient_fetch_failure_reason(_), do: :error
 
   defp make_signature(id, date) do
     uri = URI.parse(id)
@@ -327,6 +294,7 @@ defmodule Pleroma.Object.Fetcher do
     Logger.debug("Fetching object #{id} via AP")
 
     with {:scheme, true} <- {:scheme, String.starts_with?(id, "http")},
+         {:mrf, true} <- {:mrf, MRF.id_filter(id)},
          {:dormant, false} <- {:dormant, Instances.dormant?(id)},
          {:ok, body} <- get_object(id),
          {:ok, data} <- safe_json_decode(body),
@@ -343,8 +311,10 @@ defmodule Pleroma.Object.Fetcher do
       {:dormant, true} ->
         {:error, :unreachable_host}
 
+      {:mrf, false} ->
+        {:error, {:reject, "Filtered by id"}}
+
       {:error, e} ->
-        record_transient_fetch_failure(id, e)
         {:error, e}
 
       e ->
@@ -376,7 +346,6 @@ defmodule Pleroma.Object.Fetcher do
         {:error, :unreachable_host}
 
       {:error, e} ->
-        record_transient_fetch_failure(id, e)
         {:error, e}
 
       e ->

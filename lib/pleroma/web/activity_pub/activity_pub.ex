@@ -240,9 +240,12 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
     changeset = Activity.change(struct, %{data: data, recipients: recipients})
 
-    case Repo.insert(changeset) do
+    case Repo.insert(changeset, on_conflict: :nothing) do
       {:ok, activity} ->
-        maybe_create_activity_expiration(activity)
+        case persisted_activity(data["id"], activity) do
+          %Activity{} = activity -> maybe_create_activity_expiration(activity)
+          _ -> {:error, :activity_conflict}
+        end
 
       {:error, %Ecto.Changeset{} = changeset} = error ->
         maybe_return_existing_activity(data["id"], changeset, error)
@@ -254,6 +257,11 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     e in Ecto.ConstraintError ->
       maybe_return_existing_activity(data["id"], e, {:error, e})
   end
+
+  defp persisted_activity(ap_id, _fallback) when is_binary(ap_id),
+    do: Activity.get_by_ap_id(ap_id)
+
+  defp persisted_activity(_ap_id, fallback), do: fallback
 
   defp maybe_return_existing_activity(ap_id, constraint_error, error) when is_binary(ap_id) do
     if activity_unique_ap_id_error?(constraint_error) do
@@ -556,7 +564,9 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         "target_id" => target.id
       })
 
-      User.update_last_move_at(origin)
+      if local do
+        User.update_last_move_at(origin)
+      end
 
       {:ok, activity}
     else
@@ -2172,7 +2182,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
        do: {:ok, false}
 
   defp collection_private(%{"first" => first}) when is_binary(first) do
-    with {:ok, %{"type" => type}} when type in ["CollectionPage", "OrderedCollectionPage"] <-
+    with {:ok, %{"type" => type}}
+         when type in ["Collection", "OrderedCollection", "CollectionPage", "OrderedCollectionPage"] <-
            Fetcher.fetch_and_contain_remote_collection_from_id(first) do
       {:ok, false}
     else
@@ -2305,15 +2316,32 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         "orderedItems" => objects
       })
       when type in @featured_collection_item_types do
-    objects
-    |> List.wrap()
-    |> Enum.flat_map(&featured_object_ap_ids/1)
-    |> Map.new(&{&1, NaiveDateTime.utc_now()})
+    pin_data_from_featured_items(objects)
+  end
+
+  def pin_data_from_featured_collection(%{
+        "type" => type,
+        "items" => objects
+      })
+      when type in @featured_collection_item_types do
+    pin_data_from_featured_items(objects)
+  end
+
+  def pin_data_from_featured_collection(%{"type" => type})
+      when type in @featured_collection_item_types do
+    %{}
   end
 
   def pin_data_from_featured_collection(obj) do
     Logger.warning("Could not parse featured collection #{inspect(obj)}")
     %{}
+  end
+
+  defp pin_data_from_featured_items(objects) do
+    objects
+    |> List.wrap()
+    |> Enum.flat_map(&featured_object_ap_ids/1)
+    |> Map.new(&{&1, NaiveDateTime.utc_now()})
   end
 
   defp featured_object_ap_ids(%{"id" => object_ap_id}) when is_binary(object_ap_id),
@@ -2472,6 +2500,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         enqueue_pin_fetches(data)
 
         if user do
+          if user.nickname != data[:nickname] do
+            maybe_handle_clashing_nickname(data)
+          end
+
           user
           |> User.remote_user_changeset(data)
           |> User.update_and_set_cache()

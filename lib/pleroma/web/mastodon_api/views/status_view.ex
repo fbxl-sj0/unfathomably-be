@@ -294,6 +294,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
         Activity.create_by_object_ap_id(object.data["id"])
         |> Activity.with_preloaded_bookmark(opts[:for])
         |> Activity.with_set_thread_muted_field(opts[:for])
+        |> Ecto.Query.first()
         |> Repo.one()
       end
 
@@ -365,320 +366,25 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     nil
   end
 
-  def render("history.json", %{activity: %{data: %{"object" => _object}} = activity} = opts) do
-    object = Object.normalize(activity, fetch: false)
+  def render("history.json", opts), do: render_history(opts)
 
-    hashtags = Object.hashtags(object)
+  def render("history_item.json", opts), do: render_history_item(opts)
 
-    user = CommonAPI.get_user(activity.data["actor"])
+  def render("source.json", opts), do: render_source(opts)
 
-    past_history =
-      Object.Updater.history_for(object.data)
-      |> Map.get("orderedItems")
-      |> Enum.map(&Map.put(&1, "id", object.data["id"]))
-      |> Enum.map(&%Object{data: &1, id: object.id})
+  def render("card.json", %Card{} = card), do: render_card(card)
 
-    history =
-      [object | past_history]
-      # Mastodon expects the original to be at the first
-      |> Enum.reverse()
-      |> Enum.with_index()
-      |> Enum.map(fn {object, chrono_order} ->
-        %{
-          # The history is prepended every time there is a new edit.
-          # In chrono_order, the oldest item is always at 0, and so on.
-          # The chrono_order is an invariant kept between edits.
-          chrono_order: chrono_order,
-          object: object
-        }
-      end)
+  def render("card.json", %{embed: %Card{} = card}), do: render_card(card)
 
-    individual_opts =
-      opts
-      |> Map.put(:as, :item)
-      |> Map.put(:user, user)
-      |> Map.put(:hashtags, hashtags)
-
-    render_many(history, StatusView, "history_item.json", individual_opts)
-  end
-
-  def render(
-        "history_item.json",
-        %{
-          activity: activity,
-          user: user,
-          item: %{object: object, chrono_order: chrono_order},
-          hashtags: hashtags
-        } = opts
-      ) do
-    sensitive = object.data["sensitive"] || Enum.member?(hashtags, "nsfw")
-
-    attachment_data = object.data["attachment"] || []
-    attachments = render_many(attachment_data, StatusView, "attachment.json", as: :attachment)
-
-    created_at = Utils.to_masto_date(object.data["updated"] || object.data["published"])
-
-    content =
-      object
-      |> render_content()
-
-    content_html =
-      content
-      |> Activity.HTML.get_cached_scrubbed_html_for_activity(
-        User.html_filter_policy(opts[:for]),
-        activity,
-        "mastoapi:content:#{chrono_order}"
-      )
-
-    summary = object.data["summary"] || ""
-
-    %{
-      account:
-        AccountView.render("show.json", %{
-          user: user,
-          for: opts[:for]
-        }),
-      content: content_html,
-      sensitive: sensitive,
-      spoiler_text: summary,
-      created_at: created_at,
-      media_attachments: attachments,
-      emojis: build_emojis(object.data["emoji"]),
-      poll: render(PollView, "show.json", object: object, for: opts[:for])
-    }
-  end
-
-  def render("source.json", %{activity: %{data: %{"object" => _object}} = activity} = _opts) do
-    object = Object.normalize(activity, fetch: false)
-
-    %{
-      id: activity.id,
-      text: get_source_text(Map.get(object.data, "source", "")),
-      spoiler_text: Map.get(object.data, "summary", ""),
-      content_type: get_source_content_type(object.data["source"]),
-      location: build_source_location(object.data)
-    }
-  end
-
-  def render("card.json", %Card{fields: rich_media}) do
-    page_url_data = URI.parse(rich_media["url"])
-
-    page_url = page_url_data |> to_string
-
-    image_url = proxied_url(rich_media["image"], page_url_data)
-    audio_url = proxied_url(rich_media["audio"], page_url_data)
-    video_url = proxied_url(rich_media["video"], page_url_data)
-
-    %{
-      type: "link",
-      provider_name: page_url_data.host,
-      provider_url: page_url_data.scheme <> "://" <> page_url_data.host,
-      url: page_url,
-      image: image_url,
-      image_description: rich_media["image:alt"] || "",
-      title: rich_media["title"] || "",
-      description: rich_media["description"] || "",
-      pleroma: %{
-        opengraph:
-          rich_media
-          |> Maps.put_if_present("image", image_url)
-          |> Maps.put_if_present("audio", audio_url)
-          |> Maps.put_if_present("video", video_url)
-      }
-    }
-  end
-
-  def render("card.json", %{embed: %Card{} = card}), do: render("card.json", card)
   def render("card.json", _), do: nil
 
-  def render("attachment.json", %{attachment: attachment}) do
-    [attachment_url | _] = attachment["url"]
-    href_remote = attachment_url["href"]
+  def render("attachment.json", opts), do: render_attachment(opts)
 
-    media_type =
-      (attachment_url["mediaType"] || attachment_url["mimeType"])
-      |> attachment_media_type(href_remote)
+  def render("attachment_meta.json", opts), do: render_attachment_meta(opts)
 
-    href = href_remote |> MediaProxy.url()
-    href_preview = attachment_url["href"] |> MediaProxy.preview_url()
-    meta = render("attachment_meta.json", %{attachment: attachment})
+  def render("context.json", opts), do: render_context(opts)
 
-    type =
-      cond do
-        String.contains?(media_type, "image") -> "image"
-        String.contains?(media_type, "video") -> "video"
-        String.contains?(media_type, "audio") -> "audio"
-        true -> "unknown"
-      end
-
-    attachment_id =
-      with {_, ap_id} when is_binary(ap_id) <- {:ap_id, attachment["id"]},
-           {_, %Object{data: _object_data, id: object_id}} <-
-             {:object, Object.get_by_ap_id(ap_id)} do
-        to_string(object_id)
-      else
-        _ ->
-          <<hash_id::signed-32, _rest::binary>> = :crypto.hash(:md5, href)
-          to_string(attachment["id"] || hash_id)
-      end
-
-    description =
-      if attachment["summary"] do
-        HTML.strip_tags(attachment["summary"])
-      else
-        attachment["name"]
-      end
-
-    name = if attachment["summary"], do: attachment["name"]
-
-    pleroma =
-      %{mime_type: media_type}
-      |> Maps.put_if_present(:name, name)
-
-    %{
-      id: attachment_id,
-      url: href,
-      remote_url: href_remote,
-      preview_url: href_preview,
-      text_url: href,
-      type: type,
-      description: description,
-      pleroma: pleroma,
-      blurhash: attachment["blurhash"]
-    }
-    |> Maps.put_if_present(:meta, meta)
-  end
-
-  def render("attachment_meta.json", %{
-        attachment: %{"url" => [%{"width" => width, "height" => height} | _]}
-      })
-      when is_integer(width) and is_integer(height) and height > 0 do
-    %{
-      original: %{
-        width: width,
-        height: height,
-        aspect: width / height
-      }
-    }
-  end
-
-  def render("attachment_meta.json", %{
-        attachment: %{"url" => [%{"width" => width, "height" => height} | _]}
-      })
-      when is_integer(width) and is_integer(height) do
-    %{
-      original: %{
-        width: width,
-        height: height
-      }
-    }
-  end
-
-  def render("attachment_meta.json", _), do: nil
-
-  def render("context.json", %{activity: activity, activities: activities, user: user}) do
-    %{ancestors: ancestors, descendants: descendants} =
-      activities
-      |> Enum.reverse()
-      |> Enum.group_by(fn %{id: id} ->
-        if id < activity.id, do: :ancestors, else: :descendants
-      end)
-      |> Map.put_new(:ancestors, [])
-      |> Map.put_new(:descendants, [])
-
-    %{
-      ancestors: render("index.json", for: user, activities: ancestors, as: :activity),
-      descendants: render("index.json", for: user, activities: descendants, as: :activity)
-    }
-  end
-
-  def render("translation.json", %{
-        content: content,
-        detected_source_language: detected_source_language,
-        provider: provider
-      }) do
-    %{content: content, detected_source_language: detected_source_language, provider: provider}
-  end
-
-  defp attachment_media_type("application/octet-stream", href),
-    do: infer_media_type_from_href(href)
-
-  defp attachment_media_type(nil, href), do: infer_media_type_from_href(href)
-  defp attachment_media_type("", href), do: infer_media_type_from_href(href)
-  defp attachment_media_type(media_type, _href), do: media_type
-
-  defp infer_media_type_from_href(href) when is_binary(href) do
-    case URI.parse(href) do
-      %URI{path: path} when is_binary(path) ->
-        case String.downcase(Path.extname(path)) do
-          ".jpg" ->
-            "image/jpeg"
-
-          ".jpeg" ->
-            "image/jpeg"
-
-          ".svg" ->
-            "image/svg+xml"
-
-          extension when extension in [".avif", ".gif", ".png", ".webp"] ->
-            "image/" <> String.trim_leading(extension, ".")
-
-          extension
-          when extension in [".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".webm"] ->
-            "video/" <> String.trim_leading(extension, ".")
-
-          extension
-          when extension in [".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav"] ->
-            "audio/" <> String.trim_leading(extension, ".")
-
-          _ ->
-            "application/octet-stream"
-        end
-
-      _ ->
-        "application/octet-stream"
-    end
-  end
-
-  defp infer_media_type_from_href(_href), do: "application/octet-stream"
-
-  def get_reply_to(activity, %{replied_to_activities: replied_to_activities}) do
-    object = Object.normalize(activity, fetch: false)
-
-    with nil <- replied_to_activities[object.data["inReplyTo"]] do
-      # If user didn't participate in the thread
-      Activity.get_in_reply_to_activity(activity)
-    end
-  end
-
-  def get_reply_to(%{data: %{"object" => _object}} = activity, _) do
-    object = Object.normalize(activity, fetch: false)
-
-    if object.data["inReplyTo"] && object.data["inReplyTo"] != "" do
-      Activity.get_create_by_object_ap_id(object.data["inReplyTo"])
-    else
-      nil
-    end
-  end
-
-  def get_quote(activity, %{quoted_activities: quoted_activities}) do
-    object = Object.normalize(activity, fetch: false)
-
-    with nil <- quoted_activities[object.data["quoteUrl"]] do
-      # For when a quote post is inside an Announce
-      Activity.get_create_by_object_ap_id_with_object(object.data["quoteUrl"])
-    end
-  end
-
-  def get_quote(%{data: %{"object" => _object}} = activity, _) do
-    object = Object.normalize(activity, fetch: false)
-
-    if object.data["quoteUrl"] && object.data["quoteUrl"] != "" do
-      Activity.get_create_by_object_ap_id(object.data["quoteUrl"])
-    else
-      nil
-    end
-  end
+  def render("translation.json", opts), do: render_translation(opts)
 
   defp render_status_with_object(activity, %Object{} = object, opts) do
     actor = object.data["actor"] || activity.actor
@@ -709,6 +415,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
         ap_id -> User.get_cached_by_ap_id(ap_id)
       end)
       |> Enum.filter(& &1)
+      |> Enum.reject(&FederatedTarget.group?/1)
       |> Enum.map(fn user -> AccountView.render("mention.json", %{user: user}) end)
 
     favorited = opts[:for] && opts[:for].ap_id in (object.data["likes"] || [])
@@ -917,6 +624,317 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
 
   defp render_status_with_object(_activity, _object, _opts), do: nil
 
+  defp render_history(%{activity: %{data: %{"object" => _object}} = activity} = opts) do
+    object = Object.normalize(activity, fetch: false)
+
+    hashtags = Object.hashtags(object)
+
+    user = CommonAPI.get_user(activity.data["actor"])
+
+    past_history =
+      Object.Updater.history_for(object.data)
+      |> Map.get("orderedItems")
+      |> Enum.map(&Map.put(&1, "id", object.data["id"]))
+      |> Enum.map(&%Object{data: &1, id: object.id})
+
+    history =
+      [object | past_history]
+      # Mastodon expects the original to be at the first
+      |> Enum.reverse()
+      |> Enum.with_index()
+      |> Enum.map(fn {object, chrono_order} ->
+        %{
+          # The history is prepended every time there is a new edit.
+          # In chrono_order, the oldest item is always at 0, and so on.
+          # The chrono_order is an invariant kept between edits.
+          chrono_order: chrono_order,
+          object: object
+        }
+      end)
+
+    individual_opts =
+      opts
+      |> Map.put(:as, :item)
+      |> Map.put(:user, user)
+      |> Map.put(:hashtags, hashtags)
+
+    render_many(history, StatusView, "history_item.json", individual_opts)
+  end
+
+  defp render_history_item(
+         %{
+           activity: activity,
+           user: user,
+           item: %{object: object, chrono_order: chrono_order},
+           hashtags: hashtags
+         } = opts
+       ) do
+    sensitive = object.data["sensitive"] || Enum.member?(hashtags, "nsfw")
+
+    attachment_data = object.data["attachment"] || []
+    attachments = render_many(attachment_data, StatusView, "attachment.json", as: :attachment)
+
+    created_at = Utils.to_masto_date(object.data["updated"] || object.data["published"])
+
+    content =
+      object
+      |> render_content()
+
+    content_html =
+      content
+      |> Activity.HTML.get_cached_scrubbed_html_for_activity(
+        User.html_filter_policy(opts[:for]),
+        activity,
+        "mastoapi:content:#{chrono_order}"
+      )
+
+    summary = object.data["summary"] || ""
+
+    %{
+      account:
+        AccountView.render("show.json", %{
+          user: user,
+          for: opts[:for]
+        }),
+      content: content_html,
+      sensitive: sensitive,
+      spoiler_text: summary,
+      created_at: created_at,
+      media_attachments: attachments,
+      emojis: build_emojis(object.data["emoji"]),
+      poll: render(PollView, "show.json", object: object, for: opts[:for])
+    }
+  end
+
+  defp render_source(%{activity: %{data: %{"object" => _object}} = activity} = _opts) do
+    object = Object.normalize(activity, fetch: false)
+
+    %{
+      id: activity.id,
+      text: get_source_text(Map.get(object.data, "source", "")),
+      spoiler_text: Map.get(object.data, "summary", ""),
+      content_type: get_source_content_type(object.data["source"]),
+      location: build_source_location(object.data)
+    }
+  end
+
+  defp render_card(%Card{fields: rich_media}) do
+    page_url_data = URI.parse(rich_media["url"])
+
+    page_url = page_url_data |> to_string
+
+    image_url = proxied_url(rich_media["image"], page_url_data)
+    audio_url = proxied_url(rich_media["audio"], page_url_data)
+    video_url = proxied_url(rich_media["video"], page_url_data)
+
+    %{
+      type: "link",
+      provider_name: page_url_data.host,
+      provider_url: page_url_data.scheme <> "://" <> page_url_data.host,
+      url: page_url,
+      image: image_url,
+      image_description: rich_media["image:alt"] || "",
+      title: rich_media["title"] || "",
+      description: rich_media["description"] || "",
+      pleroma: %{
+        opengraph:
+          rich_media
+          |> Maps.put_if_present("image", image_url)
+          |> Maps.put_if_present("audio", audio_url)
+          |> Maps.put_if_present("video", video_url)
+      }
+    }
+  end
+
+  defp render_attachment(%{attachment: attachment}) do
+    [attachment_url | _] = attachment["url"]
+    href_remote = attachment_url["href"]
+
+    media_type =
+      (attachment_url["mediaType"] || attachment_url["mimeType"])
+      |> attachment_media_type(href_remote)
+
+    href = href_remote |> MediaProxy.url()
+    href_preview = attachment_url["href"] |> MediaProxy.preview_url()
+    meta = render("attachment_meta.json", %{attachment: attachment})
+
+    type =
+      cond do
+        String.contains?(media_type, "image") -> "image"
+        String.contains?(media_type, "video") -> "video"
+        String.contains?(media_type, "audio") -> "audio"
+        true -> "unknown"
+      end
+
+    attachment_id =
+      with {_, ap_id} when is_binary(ap_id) <- {:ap_id, attachment["id"]},
+           {_, %Object{data: _object_data, id: object_id}} <-
+             {:object, Object.get_by_ap_id(ap_id)} do
+        to_string(object_id)
+      else
+        _ ->
+          <<hash_id::signed-32, _rest::binary>> = :crypto.hash(:md5, href)
+          to_string(attachment["id"] || hash_id)
+      end
+
+    description =
+      if attachment["summary"] do
+        HTML.strip_tags(attachment["summary"])
+      else
+        attachment["name"]
+      end
+
+    name = if attachment["summary"], do: attachment["name"]
+
+    pleroma =
+      %{mime_type: media_type}
+      |> Maps.put_if_present(:name, name)
+
+    %{
+      id: attachment_id,
+      url: href,
+      remote_url: href_remote,
+      preview_url: href_preview,
+      text_url: href,
+      type: type,
+      description: description,
+      pleroma: pleroma,
+      blurhash: attachment["blurhash"]
+    }
+    |> Maps.put_if_present(:meta, meta)
+  end
+
+  defp render_attachment_meta(%{
+         attachment: %{"url" => [%{"width" => width, "height" => height} | _]}
+       })
+       when is_integer(width) and is_integer(height) and height > 0 do
+    %{
+      original: %{
+        width: width,
+        height: height,
+        aspect: width / height
+      }
+    }
+  end
+
+  defp render_attachment_meta(%{
+         attachment: %{"url" => [%{"width" => width, "height" => height} | _]}
+       })
+       when is_integer(width) and is_integer(height) do
+    %{
+      original: %{
+        width: width,
+        height: height
+      }
+    }
+  end
+
+  defp render_attachment_meta(_), do: nil
+
+  defp render_context(%{activity: activity, activities: activities, user: user}) do
+    %{ancestors: ancestors, descendants: descendants} =
+      activities
+      |> Enum.reverse()
+      |> Enum.group_by(fn %{id: id} ->
+        if id < activity.id, do: :ancestors, else: :descendants
+      end)
+      |> Map.put_new(:ancestors, [])
+      |> Map.put_new(:descendants, [])
+
+    %{
+      ancestors: render("index.json", for: user, activities: ancestors, as: :activity),
+      descendants: render("index.json", for: user, activities: descendants, as: :activity)
+    }
+  end
+
+  defp render_translation(%{
+         content: content,
+         detected_source_language: detected_source_language,
+         provider: provider
+       }) do
+    %{content: content, detected_source_language: detected_source_language, provider: provider}
+  end
+
+  defp attachment_media_type("application/octet-stream", href),
+    do: infer_media_type_from_href(href)
+
+  defp attachment_media_type(nil, href), do: infer_media_type_from_href(href)
+  defp attachment_media_type("", href), do: infer_media_type_from_href(href)
+  defp attachment_media_type(media_type, _href), do: media_type
+
+  defp infer_media_type_from_href(href) when is_binary(href) do
+    case URI.parse(href) do
+      %URI{path: path} when is_binary(path) ->
+        case String.downcase(Path.extname(path)) do
+          ".jpg" ->
+            "image/jpeg"
+
+          ".jpeg" ->
+            "image/jpeg"
+
+          ".svg" ->
+            "image/svg+xml"
+
+          extension when extension in [".avif", ".gif", ".png", ".webp"] ->
+            "image/" <> String.trim_leading(extension, ".")
+
+          extension
+          when extension in [".m4v", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".webm"] ->
+            "video/" <> String.trim_leading(extension, ".")
+
+          extension
+          when extension in [".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav"] ->
+            "audio/" <> String.trim_leading(extension, ".")
+
+          _ ->
+            "application/octet-stream"
+        end
+
+      _ ->
+        "application/octet-stream"
+    end
+  end
+
+  defp infer_media_type_from_href(_href), do: "application/octet-stream"
+
+  def get_reply_to(activity, %{replied_to_activities: replied_to_activities}) do
+    object = Object.normalize(activity, fetch: false)
+
+    with nil <- replied_to_activities[object.data["inReplyTo"]] do
+      # If user didn't participate in the thread
+      Activity.get_in_reply_to_activity(activity)
+    end
+  end
+
+  def get_reply_to(%{data: %{"object" => _object}} = activity, _) do
+    object = Object.normalize(activity, fetch: false)
+
+    if object.data["inReplyTo"] && object.data["inReplyTo"] != "" do
+      Activity.get_create_by_object_ap_id(object.data["inReplyTo"])
+    else
+      nil
+    end
+  end
+
+  def get_quote(activity, %{quoted_activities: quoted_activities}) do
+    object = Object.normalize(activity, fetch: false)
+
+    with nil <- quoted_activities[object.data["quoteUrl"]] do
+      # For when a quote post is inside an Announce
+      Activity.get_create_by_object_ap_id_with_object(object.data["quoteUrl"])
+    end
+  end
+
+  def get_quote(%{data: %{"object" => _object}} = activity, _) do
+    object = Object.normalize(activity, fetch: false)
+
+    if object.data["quoteUrl"] && object.data["quoteUrl"] != "" do
+      Activity.get_create_by_object_ap_id(object.data["quoteUrl"])
+    else
+      nil
+    end
+  end
+
   def render_content(%{data: %{"name" => name, "type" => type}} = object)
       when not is_nil(name) and name != "" and type != "Event" do
     url = content_url(object)
@@ -948,9 +966,9 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
 
   ## Examples
 
-  iex> Pleroma.Web.MastodonAPI.StatusView.build_tags(["fediverse", "opensource"])
+  iex> Pleroma.Web.MastodonAPI.StatusView.build_tags(["fediverse", "nextcloud"])
   [{"name": "fediverse", "url": "/tag/fediverse"},
-   {"name": "opensource", "url": "/tag/opensource"}]
+   {"name": "nextcloud", "url": "/tag/nextcloud"}]
 
   """
   @spec build_tags(list(any())) :: list(map())

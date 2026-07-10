@@ -16,7 +16,16 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
     max_attempts: 3,
     unique: [
       period: :infinity,
-      states: :incomplete,
+      states: [
+        :available,
+        :scheduled,
+        :executing,
+        :retryable,
+        :suspended,
+        :completed,
+        :cancelled,
+        :discarded
+      ],
       keys: [:op, :object_id, :refresh_index]
     ]
 
@@ -351,6 +360,7 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
   defp handle_fetch_error({:http, code}) when code in [404, 410], do: {:cancel, :not_found}
   defp handle_fetch_error({:http, 405}), do: {:cancel, :method_not_allowed}
   defp handle_fetch_error({:http, 406}), do: {:cancel, :not_acceptable}
+  defp handle_fetch_error({:http, 429}), do: {:cancel, :rate_limited}
   defp handle_fetch_error({:http, 501}), do: {:cancel, :not_implemented}
   defp handle_fetch_error({:content_type, _} = reason), do: {:cancel, reason}
   defp handle_fetch_error(:unreachable_host), do: {:cancel, :unreachable_host}

@@ -14,30 +14,12 @@ defmodule Pleroma.Stats do
 
   @default_interval :timer.minutes(5)
   @peer_hosts_query """
-  WITH RECURSIVE peer_hosts(host) AS (
-    (
-      SELECT lower(split_part(nickname::text, '@', 2)) AS host
-      FROM users
-      WHERE local = false
-        AND nickname IS NOT NULL
-        AND lower(split_part(nickname::text, '@', 2)) <> ''
-      ORDER BY host
-      LIMIT 1
-    )
-    UNION ALL
-    SELECT next_host.host
-    FROM peer_hosts current_host
-    CROSS JOIN LATERAL (
-      SELECT lower(split_part(nickname::text, '@', 2)) AS host
-      FROM users
-      WHERE local = false
-        AND nickname IS NOT NULL
-        AND lower(split_part(nickname::text, '@', 2)) > current_host.host
-      ORDER BY host
-      LIMIT 1
-    ) next_host
-  )
-  SELECT host FROM peer_hosts
+  SELECT DISTINCT lower(split_part(nickname::text, '@', 2)) AS host
+  FROM users
+  WHERE local = false
+    AND nickname IS NOT NULL
+    AND lower(split_part(nickname::text, '@', 2)) <> ''
+  ORDER BY host
   """
   @state_key {__MODULE__, :state}
   @empty_state %{

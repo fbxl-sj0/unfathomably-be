@@ -16,7 +16,7 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
 
     clear_config(
       [Pleroma.Language.Translation.Opentranslate, :base_url],
-      "http://opentranslate.example:5000"
+      "http://192.168.250.99:5000"
     )
 
     clear_config([Pleroma.Language.Translation.Opentranslate, :api_key], nil)
@@ -62,7 +62,7 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
     Tesla.Mock.mock_global(fn
       %Tesla.Env{
         method: :post,
-        url: "http://opentranslate.example:5000/translate",
+        url: "http://192.168.250.99:5000/translate",
         body: body
       } ->
         assert %{
@@ -93,6 +93,47 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
     assert %{
              content: "<p>Game started</p>",
              detected_source_language: "ja",
+             provider: "OpenTranslate"
+           } = res
+  end
+
+  test "it retries concrete but unsupported source languages with auto-detection" do
+    Tesla.Mock.mock_global(fn
+      %Tesla.Env{
+        method: :post,
+        url: "http://192.168.250.99:5000/translate",
+        body: body
+      } ->
+        case Jason.decode!(body) do
+          %{"source" => "lt"} ->
+            {:ok,
+             %Tesla.Env{
+               status: 400,
+               body: ~s({"error":"unsupported source language"}),
+               headers: [{"content-type", "application/json"}]
+             }}
+
+          %{"source" => "auto", "target" => "en"} ->
+            {:ok,
+             %Tesla.Env{
+               status: 200,
+               body:
+                 ~s({"translatedText":"<p>I know even the cause of my death</p>","detectedLanguage":{"language":"lt"}}),
+               headers: [{"content-type", "application/json"}]
+             }}
+        end
+    end)
+
+    {:ok, res} =
+      Opentranslate.translate(
+        "<p>aš žinau savo mirties net priežastį</p>",
+        "lt",
+        "en"
+      )
+
+    assert %{
+             content: "<p>I know even the cause of my death</p>",
+             detected_source_language: "lt",
              provider: "OpenTranslate"
            } = res
   end

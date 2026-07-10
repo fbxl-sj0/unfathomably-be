@@ -22,23 +22,7 @@ defmodule Pleroma.Language.Translation.Opentranslate do
     target_language = normalize_language(target_language)
 
     if target_language == "en" do
-      case Pleroma.HTTP.post(
-             endpoint("/translate"),
-             request_body(content, source_language, target_language),
-             [{"Content-Type", "application/json"}]
-           ) do
-        {:ok, %{status: 429}} ->
-          {:error, :too_many_requests}
-
-        {:ok, %{status: 403}} ->
-          {:error, :quota_exceeded}
-
-        {:ok, %{status: 200} = res} ->
-          decode_translation(res.body, source_language)
-
-        _ ->
-          {:error, :internal_server_error}
-      end
+      translate_to_english(content, source_language)
     else
       {:error, :unsupported_language}
     end
@@ -84,6 +68,39 @@ defmodule Pleroma.Language.Translation.Opentranslate do
     }
     |> maybe_put_api_key(api_key())
     |> Jason.encode!()
+  end
+
+  defp translate_to_english(content, source_language) do
+    case do_translate(content, source_language, "en") do
+      {:retry_with_auto, _reason} when source_language != "auto" ->
+        do_translate(content, "auto", "en")
+
+      result ->
+        result
+    end
+  end
+
+  defp do_translate(content, source_language, target_language) do
+    case Pleroma.HTTP.post(
+           endpoint("/translate"),
+           request_body(content, source_language, target_language),
+           [{"Content-Type", "application/json"}]
+         ) do
+      {:ok, %{status: 429}} ->
+        {:error, :too_many_requests}
+
+      {:ok, %{status: 403}} ->
+        {:error, :quota_exceeded}
+
+      {:ok, %{status: 200} = res} ->
+        decode_translation(res.body, source_language)
+
+      {:ok, %{status: status}} when status in [400, 422] ->
+        {:retry_with_auto, status}
+
+      _ ->
+        {:error, :internal_server_error}
+    end
   end
 
   defp maybe_put_api_key(body, api_key) when is_binary(api_key) and api_key != "" do

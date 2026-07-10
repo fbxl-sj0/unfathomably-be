@@ -15,13 +15,14 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   alias Pleroma.Object.Containment
   alias Pleroma.Repo
   alias Pleroma.User
-  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.ObjectValidator
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.Visibility
+  alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.Federator
 
   import Pleroma.Web.CommonAPI.Utils, only: [get_valid_language: 1]
@@ -276,56 +277,56 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     attachments =
       Enum.map(attachment, fn
         data when is_map(data) ->
-        url =
-          cond do
-            is_list(data["url"]) -> List.first(data["url"])
-            is_map(data["url"]) -> data["url"]
-            true -> nil
-          end
+          url =
+            cond do
+              is_list(data["url"]) -> List.first(data["url"])
+              is_map(data["url"]) -> data["url"]
+              true -> nil
+            end
 
-        media_type =
-          cond do
-            is_map(url) && valid_media_type?(url["mediaType"]) ->
-              url["mediaType"]
+          media_type =
+            cond do
+              is_map(url) && valid_media_type?(url["mediaType"]) ->
+                url["mediaType"]
 
-            valid_media_type?(data["mediaType"]) ->
-              data["mediaType"]
+              valid_media_type?(data["mediaType"]) ->
+                data["mediaType"]
 
-            valid_media_type?(data["mimeType"]) ->
-              data["mimeType"]
+              valid_media_type?(data["mimeType"]) ->
+                data["mimeType"]
 
-            true ->
-              nil
-          end
+              true ->
+                nil
+            end
 
-        href =
-          cond do
-            is_map(url) && is_binary(url["href"]) -> url["href"]
-            is_binary(data["url"]) -> data["url"]
-            is_binary(data["href"]) -> data["href"]
-            true -> nil
-          end
+          href =
+            cond do
+              is_map(url) && is_binary(url["href"]) -> url["href"]
+              is_binary(data["url"]) -> data["url"]
+              is_binary(data["href"]) -> data["href"]
+              true -> nil
+            end
 
-        if href do
-          attachment_url =
+          if href do
+            attachment_url =
+              %{
+                "href" => href,
+                "type" => Map.get(url || %{}, "type", "Link")
+              }
+              |> Maps.put_if_present("mediaType", media_type)
+              |> Maps.put_if_present("width", (url || %{})["width"] || data["width"])
+              |> Maps.put_if_present("height", (url || %{})["height"] || data["height"])
+
             %{
-              "href" => href,
-              "type" => Map.get(url || %{}, "type", "Link")
+              "url" => [attachment_url],
+              "type" => data["type"] || "Document"
             }
             |> Maps.put_if_present("mediaType", media_type)
-            |> Maps.put_if_present("width", (url || %{})["width"] || data["width"])
-            |> Maps.put_if_present("height", (url || %{})["height"] || data["height"])
-
-          %{
-            "url" => [attachment_url],
-            "type" => data["type"] || "Document"
-          }
-          |> Maps.put_if_present("mediaType", media_type)
-          |> Maps.put_if_present("name", data["name"])
-          |> Maps.put_if_present("blurhash", data["blurhash"])
-        else
-          nil
-        end
+            |> Maps.put_if_present("name", data["name"])
+            |> Maps.put_if_present("blurhash", data["blurhash"])
+          else
+            nil
+          end
 
         _ ->
           nil
@@ -378,6 +379,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def fix_emoji(%{"tag" => %{"type" => "Emoji", "name" => raw_name} = tag} = object)
       when is_binary(raw_name) do
     name = String.trim(raw_name, ":")
+
     emoji =
       if valid_emoji_tag?(tag) do
         %{name => tag["icon"]["url"]}
@@ -633,12 +635,12 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         options
       )
       when type in [
-              "Create",
-              "Like",
-              "EmojiReact",
-              "Dislike",
-              "Undo",
-              "Delete",
+             "Create",
+             "Like",
+             "EmojiReact",
+             "Dislike",
+             "Undo",
+             "Delete",
              "Update",
              "Add",
              "Remove",
@@ -652,7 +654,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         %{"type" => "Create", "object" => %{"type" => objtype, "id" => obj_id}} = data,
         options
       )
-      when objtype in ~w{Question Answer ChatMessage Audio Video Event Article Note Page Image} do
+      when objtype in ~w{Question Answer ChatMessage Audio Video Event Article Note Page Image Track} do
     fetch_options = Keyword.put(options, :depth, (options[:depth] || 0) + 1)
 
     object =
@@ -721,7 +723,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         with {:ok, object_id} <- ObjectValidators.ObjectID.cast(data["object"]),
              :ok <- Containment.contain_origin(object_id, %{"actor" => data["actor"]}),
              %Activity{data: %{"actor" => actor}} <-
-               Activity.create_by_object_ap_id(object_id) |> Repo.one(),
+               Activity.create_by_object_ap_id(object_id) |> Ecto.Query.first() |> Repo.one(),
              # We have one, insert a tombstone and retry
              {:ok, tombstone_data, _} <- Builder.tombstone(actor, object_id),
              {:ok, _tombstone} <- Object.create(tombstone_data) do
@@ -1101,7 +1103,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     |> Map.put("object", normalize_threadiverse_audience(object))
   end
 
-  defp normalize_threadiverse_audience(data), do: normalize_threadiverse_audience_for_activity(data)
+  defp normalize_threadiverse_audience(data),
+    do: normalize_threadiverse_audience_for_activity(data)
 
   defp normalize_threadiverse_audience_for_activity(%{"audience" => []} = data) do
     Map.delete(data, "audience")
@@ -1389,13 +1392,26 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       object["to"]
       |> ap_id_values()
       |> User.get_users_from_set(local_only: false)
+      |> Enum.reject(&FederatedTarget.group?/1)
       |> Enum.reject(&Addressing.suppress_implicit_mention_user?(&1, object))
 
     mentions = Enum.map(mentioned, &build_mention_tag/1)
 
-    tags = tag_values(object["tag"])
+    tags =
+      object["tag"]
+      |> tag_values()
+      |> Enum.reject(&group_mention_tag?/1)
+
     Map.put(object, "tag", tags ++ mentions)
   end
+
+  defp group_mention_tag?(%{"type" => "Mention", "href" => href}) when is_binary(href) do
+    href
+    |> User.get_cached_by_ap_id()
+    |> FederatedTarget.group?()
+  end
+
+  defp group_mention_tag?(_), do: false
 
   defp ap_id_values(values) when is_list(values), do: Enum.flat_map(values, &ap_id_values/1)
   defp ap_id_values(value) when is_binary(value), do: [value]
@@ -1483,7 +1499,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     Map.put(object, "attachment", attachments)
   end
 
-  defp prepare_attachment(%{"url" => [%{"mediaType" => media_type, "href" => href} = url | _]} = data)
+  defp prepare_attachment(
+         %{"url" => [%{"mediaType" => media_type, "href" => href} = url | _]} = data
+       )
        when is_binary(media_type) and is_binary(href) do
     %{
       "url" => href,

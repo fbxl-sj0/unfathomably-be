@@ -1877,8 +1877,9 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       %{test_file: test_file}
     end
 
-    test "strips / from filename", %{test_file: %Plug.Upload{} = file} do
-      file = %{file | filename: "../../../../../nested/bad.jpg"}
+    test "strips / from filename", %{test_file: file} do
+      %Plug.Upload{} = file = file
+      file = %Plug.Upload{file | filename: "../../../../../nested/bad.jpg"}
       {:ok, %Object{} = object} = ActivityPub.upload(file)
       [%{"href" => href}] = object.data["url"]
       assert Regex.match?(~r"/bad.jpg$", href)
@@ -2191,7 +2192,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
     {:ok, activity} = CommonAPI.post(user, %{status: "foobar", visibility: "list:#{list.id}"})
 
     %Activity{} = activity = Repo.preload(activity, :bookmark)
-    activity = %{activity | thread_muted?: !!activity.thread_muted?}
+    activity = %Activity{activity | thread_muted?: !!activity.thread_muted?}
 
     assert ActivityPub.fetch_activities([], %{user: user}) == [activity]
   end
@@ -2392,7 +2393,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       assert User.following?(follower, old_user)
       assert User.following?(follower_move_opted_out, old_user)
 
-      assert {:ok, %Activity{} = activity} = ActivityPub.move(old_user, new_user)
+      assert {:ok, activity} = ActivityPub.move(old_user, new_user)
 
       assert %Activity{
                actor: ^old_ap_id,
@@ -2424,7 +2425,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       assert User.following?(follower_move_opted_out, old_user)
       refute User.following?(follower_move_opted_out, new_user)
 
-      activity = %{activity | object: nil}
+      %Activity{} = activity = activity
+      activity = %Activity{activity | object: nil}
 
       assert [%Notification{activity: ^activity}] = Notification.for_user(follower)
 
@@ -3253,6 +3255,28 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
     assert %{^object_url => %NaiveDateTime{}} = pins
     assert %{^second_object_url => %NaiveDateTime{}} = pins
     assert Enum.sort(Map.keys(pins)) == Enum.sort([object_url, second_object_url])
+  end
+
+  test "pin_data_from_featured_collection accepts empty collection pages" do
+    refute capture_log(fn ->
+             for type <- ["OrderedCollectionPage", "CollectionPage"] do
+               assert %{} =
+                        ActivityPub.pin_data_from_featured_collection(%{
+                          "id" => "https://social.example/collections/featured?page=true",
+                          "type" => type
+                        })
+             end
+           end) =~ "Could not parse featured collection"
+  end
+
+  test "pin_data_from_featured_collection accepts Collection items" do
+    object_url = "https://social.example/objects/1"
+
+    assert %{^object_url => %NaiveDateTime{}} =
+             ActivityPub.pin_data_from_featured_collection(%{
+               "type" => "CollectionPage",
+               "items" => [object_url]
+             })
   end
 
   test "fetch_and_prepare_featured_from_ap_id handles embedded first collection pages" do

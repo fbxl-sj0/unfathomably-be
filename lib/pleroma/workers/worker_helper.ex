@@ -25,17 +25,22 @@ defmodule Pleroma.Workers.WorkerHelper do
   defmacro __using__(opts) do
     caller_module = __CALLER__.module
     queue = Keyword.fetch!(opts, :queue)
-    worker_opts = Keyword.put_new(opts, :max_attempts, 1)
+
+    worker_options =
+      opts
+      |> Keyword.delete(:queue)
+      |> Keyword.put_new(:max_attempts, 1)
+      |> Keyword.put(:queue, queue)
 
     quote do
       # Note: `max_attempts` is intended to be overridden in `new/2` call
-      use Oban.Worker, unquote(worker_opts)
+      use Oban.Worker, unquote(worker_options)
 
       alias Oban.Job
 
       def enqueue(op, params, worker_args \\ []) do
         params = Map.merge(%{"op" => op}, params)
-        queue_atom = unquote(queue) |> to_string() |> String.to_atom()
+        queue_atom = String.to_atom(unquote(queue))
         worker_args = worker_args ++ WorkerHelper.worker_args(queue_atom)
 
         unquote(caller_module)

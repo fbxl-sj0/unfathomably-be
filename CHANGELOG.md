@@ -39,6 +39,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Reduced duplicate-key federation races by making hot object, remote actor,
   and instance-host inserts conflict-aware before falling back to the existing
   winning database row.
+- Fixed OpenTranslate-backed status translation for remote posts whose detected
+  source language is not directly advertised by the provider by retrying those
+  concrete source-code failures with provider auto-detection.
+- Accepted valid empty ActivityStreams featured collection pages and
+  `items`-based Collection pages without treating them as malformed remote
+  responses.
 
 ## [3.3.0] - 2026-07-06
 ### Added
@@ -128,6 +134,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   including terminal cancelled fetches during a cooldown window, and taught the
   Oban janitor to collapse pre-existing duplicate remote fetch rows so repeated
   reply refreshes cannot flood the remote fetch queue.
+- Fixed a remote-fetch queue amplification path by enforcing incomplete-job
+  uniqueness at insertion, increasing bounded fetch capacity, and making the
+  hourly Oban janitor remove redundant historical jobs while preserving work
+  already executing.
+- Fixed incoming federation lookups when legacy or idless Create envelopes
+  point at the same object, and made Activity inserts conflict-safe so a normal
+  concurrent delivery cannot abort its surrounding database transaction.
+- Fixed remote actor refreshes that adopt a nickname held by a stale actor
+  alias by applying the existing collision-safe rename before updating.
+- Fixed websocket status rendering when several legacy Create envelopes point
+  at one object, added a cooldown for repeated terminal remote-fetch outcomes,
+  and accepted collection pages that remote servers label as collection roots
+  while refreshing follower and following counters.
+- Fixed remote reply backfills that rapidly retried rate-limited collections,
+  and replaced the recursive peer-domain stats scan with a single distinct scan
+  that preserves the full peer set without timing out on large user tables.
+- Fixed reactions against Tombstones so recipient normalization preserves the
+  supplied audience instead of raising when the deleted object has no actor,
+  and stopped incoming remote Move activities from invoking the local-account
+  move cooldown updater.
+- Kept remote-fetch uniqueness complete across Oban's suspended state and
+  avoided misleading nickname-race logging when an actor refresh keeps the
+  same nickname.
 - Fixed the notification receiver fallback so unsupported or fake activities
   return the normal `{enabled, disabled}` tuple shape instead of a bare list,
   avoiding future MatchError-class crashes in notification helper callers.

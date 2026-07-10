@@ -10,7 +10,7 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
   use Pleroma.Workers.WorkerHelper,
     queue: "remote_fetcher",
     unique: [
-      period: 86_400,
+      period: :infinity,
       states: [
         :available,
         :scheduled,
@@ -21,7 +21,7 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
         :cancelled,
         :discarded
       ],
-      keys: [:op, :id, :depth, :thread]
+      keys: [:op, :id, :thread]
     ]
 
   @default_timeout_ms 30_000
@@ -47,15 +47,12 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
       {:error, {:http, code}} when code in @terminal_http_statuses ->
         {:cancel, http_cancel_reason(code)}
 
-      {:error, {:content_type, content_type}} ->
-        {:cancel, {:content_type, content_type}}
-
       {:error, reason}
       when reason in [:allowed_depth, :forbidden, :not_found, "Object has been deleted"] ->
         {:cancel, reason}
 
       {:error, {:transmogrifier, {:error, reason}}}
-      when reason in [:actor_not_found, :object_not_found, :forbidden, :not_found] ->
+      when reason in [:actor_not_found, :object_not_found] ->
         {:cancel, reason}
 
       {:error, reason} ->

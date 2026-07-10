@@ -252,6 +252,7 @@ defmodule Pleroma.Activity do
   def get_create_by_object_ap_id(ap_id) when is_binary(ap_id) do
     create_by_object_ap_id(ap_id)
     |> restrict_deactivated_users()
+    |> first()
     |> Repo.one()
   end
 
@@ -271,6 +272,7 @@ defmodule Pleroma.Activity do
   def get_create_by_object_ap_id_with_object(ap_id) when is_binary(ap_id) do
     ap_id
     |> create_by_object_ap_id_with_object()
+    |> first()
     |> Repo.one()
   end
 

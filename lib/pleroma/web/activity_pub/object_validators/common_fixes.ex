@@ -200,6 +200,11 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     Map.put(data, "to", to)
   end
 
+  # Tombstones intentionally omit the original actor. Keep the recipients from
+  # the wire and let the activity-specific validator decide whether the action
+  # against a deleted object is still meaningful.
+  defp do_fix_object_action_recipients(data, %Object{}), do: data
+
   defp group_actor?(actor) when is_binary(actor) do
     case User.get_by_ap_id(actor) do
       %User{actor_type: "Group"} -> true

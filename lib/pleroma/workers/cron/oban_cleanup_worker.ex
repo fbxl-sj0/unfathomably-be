@@ -32,6 +32,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
   @terminal_publisher_status_pattern "status[^0-9]*(400|403|404|405|406|410|501)"
   @terminal_incoming_status_pattern "http[^0-9]*(400|401|403|404|405|406|410|501)"
   @terminal_remote_fetch_status_pattern "http[^0-9]*(400|403|404|405|406|410|501)"
+  @remote_fetch_worker "Pleroma.Workers.RemoteFetcherWorker"
   @fixed_federation_error_patterns [
     "%activities_unique_apid_index%",
     "%objects_unique_apid_index%",
@@ -67,6 +68,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
 
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
+    collapsed_duplicate_remote_fetch_jobs = collapse_duplicate_remote_fetch_jobs()
     deleted_far_future_polls = delete_far_future_poll_notifications()
     discarded_stale_event_reminders = discard_stale_event_reminders()
     discarded_stale_cleanup_retries = discard_stale_cleanup_retries()
@@ -77,6 +79,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
 
     {:ok,
      %{
+       collapsed_duplicate_remote_fetch_jobs: collapsed_duplicate_remote_fetch_jobs,
        deleted_far_future_poll_notifications: deleted_far_future_polls,
        discarded_stale_event_reminders: discarded_stale_event_reminders,
        discarded_stale_cleanup_retries: discarded_stale_cleanup_retries,
@@ -85,6 +88,54 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
        discarded_unreachable_publisher_jobs: discarded_unreachable_publisher_jobs,
        discarded_fixed_federation_exception_retries: discarded_fixed_federation_exception_retries
      }}
+  end
+
+  def collapse_duplicate_remote_fetch_jobs do
+    # Oban uniqueness prevents new amplification, while this query repairs rows
+    # created by older code. An executing job always wins so cleanup never
+    # removes work that a live process currently owns.
+    %{num_rows: count} =
+      Repo.query!(
+        """
+        WITH ranked AS MATERIALIZED (
+          SELECT
+            id,
+            state,
+            row_number() OVER (
+              PARTITION BY
+                worker,
+                args->>'op',
+                args->>'id',
+                coalesce(args->>'thread', 'false')
+              ORDER BY
+                CASE state
+                  WHEN 'executing' THEN 0
+                  WHEN 'available' THEN 1
+                  WHEN 'scheduled' THEN 2
+                  WHEN 'retryable' THEN 3
+                  ELSE 4
+                END,
+                id
+            ) AS duplicate_rank
+          FROM oban_jobs
+          WHERE queue = 'remote_fetcher'
+            AND worker = $1
+            AND state IN ('available', 'scheduled', 'retryable', 'executing')
+        ), duplicates AS (
+          SELECT id
+          FROM ranked
+          WHERE duplicate_rank > 1
+            AND state <> 'executing'
+        )
+        DELETE FROM oban_jobs AS job
+        USING duplicates
+        WHERE job.id = duplicates.id
+          AND job.state <> 'executing'
+        """,
+        [@remote_fetch_worker]
+      )
+
+    count
   end
 
   def delete_far_future_poll_notifications(now \\ DateTime.utc_now()) do
@@ -169,7 +220,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     discard_jobs(
       Oban.Job
       |> where([job], job.queue == "remote_fetcher")
-      |> where([job], job.worker == "Pleroma.Workers.RemoteFetcherWorker")
+      |> where([job], job.worker == ^@remote_fetch_worker)
       |> where([job], job.state == "retryable")
       |> where(
         [job],

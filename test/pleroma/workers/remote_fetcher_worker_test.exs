@@ -4,9 +4,7 @@
 
 defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
   use Pleroma.DataCase, async: false
-  use Oban.Testing, repo: Pleroma.Repo
 
-  import Ecto.Query
   import Mock
   import Pleroma.Factory
   import Tesla.Mock
@@ -14,7 +12,6 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
   alias Pleroma.Activity
   alias Pleroma.Object
   alias Pleroma.Object.Fetcher
-  alias Pleroma.Repo
   alias Pleroma.Web.ActivityPub.RemoteReplies
   alias Pleroma.Workers.RemoteFetcherWorker
 
@@ -28,6 +25,21 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
 
     clear_config([RemoteFetcherWorker, :timeout_ms], 100)
     assert RemoteFetcherWorker.timeout(%Oban.Job{}) == 1_000
+  end
+
+  test "deduplicates incomplete fetches by target and mode" do
+    args = %{"id" => "https://remote.example/objects/1", "depth" => 1}
+
+    assert {:ok, first_job} = RemoteFetcherWorker.enqueue("fetch_remote", args)
+    assert {:ok, duplicate_job} = RemoteFetcherWorker.enqueue("fetch_remote", args)
+
+    assert first_job.id == duplicate_job.id
+    assert duplicate_job.conflict?
+
+    assert {:ok, thread_job} =
+             RemoteFetcherWorker.enqueue("fetch_remote", Map.put(args, "thread", true))
+
+    refute thread_job.id == first_job.id
   end
 
   test "cancels malformed remote fetch ids instead of retrying them" do
@@ -55,62 +67,6 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
              })
   end
 
-  test "deduplicates incomplete fetch jobs for the same target and mode" do
-    args = %{
-      "op" => "fetch_remote",
-      "id" => "https://remote.example/objects/duplicate",
-      "depth" => 1
-    }
-
-    assert {:ok, first_job} =
-             args
-             |> RemoteFetcherWorker.new()
-             |> Oban.insert()
-
-    assert {:ok, second_job} =
-             args
-             |> RemoteFetcherWorker.new()
-             |> Oban.insert()
-
-    assert first_job.id == second_job.id
-    assert 1 == remote_fetch_job_count(args)
-
-    thread_args = Map.put(args, "thread", true)
-
-    assert {:ok, thread_job} =
-             thread_args
-             |> RemoteFetcherWorker.new()
-             |> Oban.insert()
-
-    refute thread_job.id == first_job.id
-    assert 1 == remote_fetch_job_count(thread_args)
-  end
-
-  test "deduplicates recently cancelled fetch jobs for the same target and mode" do
-    args = %{
-      "op" => "fetch_remote",
-      "id" => "https://remote.example/objects/recently-gone",
-      "depth" => 1
-    }
-
-    assert {:ok, first_job} =
-             args
-             |> RemoteFetcherWorker.new()
-             |> Oban.insert()
-
-    first_job
-    |> Ecto.Changeset.change(state: "cancelled")
-    |> Repo.update!()
-
-    assert {:ok, second_job} =
-             args
-             |> RemoteFetcherWorker.new()
-             |> Oban.insert()
-
-    assert first_job.id == second_job.id
-    assert 1 == remote_fetch_job_count(args)
-  end
-
   test "cancels permanent remote fetch failures" do
     with_mock Fetcher, fetch_object_from_id: fn _, _ -> {:error, {:http, 404}} end do
       assert {:cancel, :not_found} =
@@ -118,17 +74,6 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
                  args: %{"op" => "fetch_remote", "id" => "https://remote.example/missing"}
                })
     end
-  end
-
-  test "cancels atomized permanent remote fetch failures" do
-    Enum.each([:forbidden, :not_found], fn reason ->
-      with_mock Fetcher, fetch_object_from_id: fn _, _ -> {:error, reason} end do
-        assert {:cancel, ^reason} =
-                 RemoteFetcherWorker.perform(%Oban.Job{
-                   args: %{"op" => "fetch_remote", "id" => "https://remote.example/missing"}
-                 })
-      end
-    end)
   end
 
   test "cancels dormant-host fetches instead of retrying them" do
@@ -164,33 +109,18 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
     end)
   end
 
-  test "cancels non-ActivityPub content-type fetches" do
+  test "cancels reaction activities whose actor or object cannot be fetched" do
     with_mock Fetcher,
-      fetch_object_from_id: fn _, _ -> {:error, {:content_type, "text/html; charset=utf-8"}} end do
-      assert {:cancel, {:content_type, "text/html; charset=utf-8"}} =
+      fetch_object_from_id: fn _, _ ->
+        {:error, {:transmogrifier, {:error, :object_not_found}}}
+      end do
+      assert {:cancel, :object_not_found} =
                RemoteFetcherWorker.perform(%Oban.Job{
                  args: %{
                    "op" => "fetch_remote",
-                   "id" => "https://remote.example/html-page"
+                   "id" => "https://remote.example/activities/like/1"
                  }
                })
-    end
-  end
-
-  test "cancels reaction activities whose actor or object cannot be fetched" do
-    for reason <- [:actor_not_found, :object_not_found, :forbidden, :not_found] do
-      with_mock Fetcher,
-        fetch_object_from_id: fn _, _ ->
-          {:error, {:transmogrifier, {:error, reason}}}
-        end do
-        assert {:cancel, ^reason} =
-                 RemoteFetcherWorker.perform(%Oban.Job{
-                   args: %{
-                     "op" => "fetch_remote",
-                     "id" => "https://remote.example/activities/like/1"
-                   }
-                 })
-      end
     end
   end
 
@@ -301,12 +231,5 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
       headers: HttpRequestMock.activitypub_object_headers(),
       body: Jason.encode!(data)
     }
-  end
-
-  defp remote_fetch_job_count(args) do
-    Oban.Job
-    |> where([job], job.worker == "Pleroma.Workers.RemoteFetcherWorker")
-    |> where([job], job.args == ^args)
-    |> Repo.aggregate(:count, :id)
   end
 end

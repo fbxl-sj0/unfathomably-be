@@ -41,6 +41,18 @@ defmodule Pleroma.ActivityTest do
     assert activity == found_activity
   end
 
+  test "returns the earliest Create when a remote object has multiple Create envelopes" do
+    user = insert(:user)
+    object = insert(:note, user: user)
+    first_activity = insert(:note_activity, user: user, note: object)
+    _second_activity = insert(:note_activity, user: user, note: object)
+
+    assert first_activity.id == Activity.get_create_by_object_ap_id(object.data["id"]).id
+
+    assert first_activity.id ==
+             Activity.get_create_by_object_ap_id_with_object(object.data["id"]).id
+  end
+
   test "preloading a bookmark" do
     user = insert(:user)
     user2 = insert(:user)
