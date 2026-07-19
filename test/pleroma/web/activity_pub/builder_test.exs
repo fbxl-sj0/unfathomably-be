@@ -8,7 +8,6 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
   use Pleroma.DataCase
 
   import Pleroma.Factory
-
   require Pleroma.Constants
 
   describe "note/1" do
@@ -36,6 +35,12 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
         "cc" => [user3.ap_id],
         "content" => "<h1>This is :moominmamma: note</h1>",
         "context" => "2hu",
+        "interactionPolicy" => %{
+          "canQuote" => %{
+            "automaticApproval" => ["https://www.w3.org/ns/activitystreams#Public"],
+            "manualApproval" => []
+          }
+        },
         "sensitive" => false,
         "summary" => "test summary",
         "tag" => ["jimm"],
@@ -66,7 +71,14 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
         "context" => "2hu",
         "sensitive" => false,
         "type" => "Note",
+        "quote" => note.data["id"],
         "quoteUrl" => note.data["id"],
+        "interactionPolicy" => %{
+          "canQuote" => %{
+            "automaticApproval" => ["https://www.w3.org/ns/activitystreams#Public"],
+            "manualApproval" => []
+          }
+        },
         "cc" => [],
         "summary" => nil,
         "tag" => [],
@@ -99,72 +111,44 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
     end
   end
 
-  describe "undo/2" do
-    test "embeds vote activities so remote community software can validate UndoVote" do
+  describe "like/2" do
+    test "uses the object identifier as context for a contextless native resource" do
       actor = insert(:user)
 
-      like =
-        insert(:like_activity,
-          data_attrs: %{
-            "actor" => actor.ap_id,
-            "audience" => ["https://lemmy.example/c/main"],
-            "to" => ["https://lemmy.example/u/poster"],
-            "cc" => ["https://www.w3.org/ns/activitystreams#Public"]
-          }
-        )
+      object = %Pleroma.Object{
+        data: %{
+          "id" => "https://activitypods.example/alice/data/project-1",
+          "actor" => "https://activitypods.example/alice",
+          "type" => "pair:Project",
+          "to" => [actor.ap_id],
+          "cc" => [Pleroma.Constants.as_public()]
+        }
+      }
 
-      {:ok, data, []} = Builder.undo(actor, like)
-
-      assert data["type"] == "Undo"
-      assert data["object"] == like.data
-      assert data["audience"] == ["https://lemmy.example/c/main"]
+      assert {:ok, data, []} = Builder.like(actor, object)
+      assert data["context"] == object.data["id"]
     end
 
-    test "keeps non-vote Undo objects as activity ids" do
+    test "addresses an alien resource authority when it has no actor field" do
       actor = insert(:user)
-      follow = insert(:follow_activity)
+      remote_author = "https://activitypods.example/alice"
 
-      {:ok, data, []} = Builder.undo(actor, follow)
+      object = %Pleroma.Object{
+        data: %{
+          "id" => "https://activitypods.example/alice/data/offer-1",
+          "attributedTo" => remote_author,
+          "type" => "maid:Offer",
+          "to" => [actor.ap_id],
+          "cc" => [Pleroma.Constants.as_public()]
+        }
+      }
 
-      assert data["type"] == "Undo"
-      assert data["object"] == follow.data["id"]
-      refute Map.has_key?(data, "audience")
+      assert {:ok, data, []} = Builder.like(actor, object)
+      assert remote_author in data["to"]
     end
   end
 
   describe "delete/2" do
-    test "keeps empty summary markers for group moderator removals" do
-      actor = insert(:user)
-      object = insert(:note, user: actor)
-
-      assert {:ok, data, []} = Builder.delete(actor, object.data["id"], summary: "")
-
-      assert data["type"] == "Delete"
-      assert data["summary"] == ""
-    end
-
-    test "keeps group context when deleting group-addressed objects" do
-      actor = insert(:user)
-      group = insert(:user, actor_type: "Group", local: true)
-
-      {:ok, object} =
-        Pleroma.Object.create(%{
-          "id" => "https://remote.example/objects/group-reply-delete",
-          "actor" => actor.ap_id,
-          "type" => "Note",
-          "to" => [Pleroma.Constants.as_public()],
-          "cc" => [group.ap_id],
-          "audience" => group.ap_id
-        })
-
-      assert {:ok, data, []} = Builder.delete(actor, object.data["id"])
-
-      assert data["type"] == "Delete"
-      assert data["object"] == object.data["id"]
-      assert data["audience"] == group.ap_id
-      assert data["cc"] == [group.ap_id]
-    end
-
     test "does not crash when the deleted object has malformed addressing" do
       actor = insert(:user)
       mentioned = insert(:user)

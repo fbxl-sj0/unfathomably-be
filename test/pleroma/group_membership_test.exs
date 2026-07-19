@@ -32,6 +32,39 @@ defmodule Pleroma.GroupMembershipTest do
     assert %GroupMembership{role: "owner", state: "active"} =
              GroupMembership.get(group, account)
   end
+
+  test "federated Follow synchronization preserves managers and bans" do
+    group = insert(:user, actor_type: "Group", local: true)
+    owner = insert(:user)
+    moderator = insert(:user)
+    banned_account = insert(:user)
+
+    assert {:ok, _membership} = GroupMembership.ensure_owner(group, owner)
+
+    assert {:ok, _membership} =
+             GroupMembership.sync_federated_follow(group, moderator, "active")
+
+    assert {:ok, [_membership]} =
+             GroupMembership.promote(owner, group, [moderator], "moderator")
+
+    assert {:ok, %GroupMembership{role: "moderator", state: "active"}} =
+             GroupMembership.sync_federated_follow(group, moderator, "pending")
+
+    assert {:ok, %GroupMembership{role: "moderator", state: "active"}} =
+             GroupMembership.sync_federated_unfollow(group, moderator)
+
+    assert {:ok, [%GroupMembership{state: "banned"}]} =
+             GroupMembership.ban(owner, group, [banned_account])
+
+    assert {:error, :banned} =
+             GroupMembership.validate_federated_follow(group, banned_account)
+
+    assert {:error, :banned} =
+             GroupMembership.sync_federated_follow(group, banned_account, "active")
+
+    assert {:ok, %GroupMembership{state: "banned"}} =
+             GroupMembership.sync_federated_unfollow(group, banned_account)
+  end
 end
 
 # end of group_membership_test.exs

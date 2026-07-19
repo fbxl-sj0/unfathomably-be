@@ -20,8 +20,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   alias Pleroma.Repo
   alias Pleroma.Upload
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.MRF
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.Streamer
@@ -42,7 +44,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   @behaviour Pleroma.Web.ActivityPub.ActivityPub.Persisting
   @behaviour Pleroma.Web.ActivityPub.ActivityPub.Streaming
 
-  defp get_recipients(%{"type" => "Create"} = data) do
+  @doc false
+  def get_recipients(%{"type" => "Create"} = data) do
     to = recipient_values(data, "to")
     cc = recipient_values(data, "cc")
     bcc = recipient_values(data, "bcc")
@@ -58,7 +61,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     {recipients, to, cc}
   end
 
-  defp get_recipients(data) do
+  def get_recipients(data) do
     to = recipient_values(data, "to")
     cc = recipient_values(data, "cc")
     bcc = recipient_values(data, "bcc")
@@ -161,7 +164,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp increase_quotes_count_if_quote(_create_data), do: :noop
 
-  @object_types ~w[ChatMessage Question Answer Audio Video Image Event Article Note Page]
+  @object_types ~w[ChatMessage Question Answer Audio Video Image Event Article Document Note Page Track]
   @impl true
   def persist(%{"type" => type} = object, meta) when type in @object_types do
     with {:ok, object} <- Object.create(object) do
@@ -170,11 +173,27 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   @impl true
+  def persist(%{"type" => _type} = object, meta) do
+    if CustomObject.custom_object?(object) do
+      with {:ok, object} <- Object.create(object) do
+        {:ok, object, meta}
+      end
+    else
+      persist_activity(object, meta)
+    end
+  end
+
+  @impl true
   def persist(object, meta) do
+    persist_activity(object, meta)
+  end
+
+  defp persist_activity(object, meta) do
     with local <- Keyword.fetch!(meta, :local),
          {recipients, _, _} <- get_recipients(object),
-         {:ok, activity} <- insert_activity_with_expiration(object, local, recipients) do
-      {:ok, activity, meta}
+         {:ok, activity, inserted?} <-
+           insert_activity_with_expiration(object, local, recipients) do
+      {:ok, activity, Keyword.put(meta, :activity_inserted, inserted?)}
     end
   end
 
@@ -189,7 +208,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
          {:fake, false, map, recipients} <- {:fake, fake, map, recipients},
          {:containment, :ok} <- {:containment, Containment.contain_child(map)},
          {:ok, map, object} <- insert_full_object(map),
-         {:ok, activity} <- insert_activity_with_expiration(map, local, recipients) do
+         {:ok, activity, _inserted?} <-
+           insert_activity_with_expiration(map, local, recipients) do
       # Splice in the child object if we have one.
       activity = Maps.put_if_present(activity, :object, object)
 
@@ -243,8 +263,16 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     case Repo.insert(changeset, on_conflict: :nothing) do
       {:ok, activity} ->
         case persisted_activity(data["id"], activity) do
-          %Activity{} = activity -> maybe_create_activity_expiration(activity)
-          _ -> {:error, :activity_conflict}
+          %Activity{} = persisted_activity ->
+            inserted? = persisted_activity.id == activity.id
+
+            with {:ok, persisted_activity} <-
+                   maybe_create_activity_expiration(persisted_activity) do
+              {:ok, persisted_activity, inserted?}
+            end
+
+          _ ->
+            {:error, :activity_conflict}
         end
 
       {:error, %Ecto.Changeset{} = changeset} = error ->
@@ -266,7 +294,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp maybe_return_existing_activity(ap_id, constraint_error, error) when is_binary(ap_id) do
     if activity_unique_ap_id_error?(constraint_error) do
       case Activity.get_by_ap_id(ap_id) do
-        %Activity{} = activity -> {:ok, activity}
+        %Activity{} = activity -> {:ok, activity, false}
         _ -> error
       end
     else
@@ -300,7 +328,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     original_activity =
       case activity do
         %{data: %{"type" => "Update"}, object: %{data: %{"id" => id}}} ->
-          Activity.get_create_by_object_ap_id_with_object(id)
+          Activity.get_create_by_object_ap_id_with_object(id) || activity
 
         _ ->
           activity
@@ -312,10 +340,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     stream_out_participations(participations)
   end
 
-  defp maybe_create_activity_expiration(
-         %{data: %{"expires_at" => %DateTime{} = expires_at}} = activity
-       ) do
-    with {:ok, _job} <-
+  defp maybe_create_activity_expiration(%{data: %{"expires_at" => expires_at}} = activity) do
+    with {:ok, expires_at} <-
+           Pleroma.EctoType.ActivityPub.ObjectValidators.DateTime.cast(expires_at),
+         {:ok, _job} <-
            Pleroma.Workers.PurgeExpiredActivity.enqueue(%{
              activity_id: activity.id,
              expires_at: expires_at
@@ -611,6 +639,14 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     context
     |> fetch_activities_for_context_query(opts)
     |> Repo.all()
+  end
+
+  def fetch_activities_for_context_collection(context, opts \\ %{}) do
+    opts = Map.new(opts)
+
+    context
+    |> fetch_activities_for_context_query(opts)
+    |> Pagination.fetch_paginated(Map.put_new(opts, :limit, 40), :keyset)
   end
 
   def fetch_objects_for_replies_collection(parent_ap_id, opts \\ %{}) do
@@ -1846,7 +1882,15 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     [data["alsoKnownAs"], data["copiedTo"]]
     |> Enum.flat_map(&normalize_actor_alias_value/1)
     |> Enum.reject(&(&1 == data["id"]))
+    |> Enum.filter(&valid_actor_alias?/1)
     |> Enum.uniq()
+  end
+
+  defp valid_actor_alias?(url) do
+    match?(
+      {:ok, _},
+      Pleroma.EctoType.ActivityPub.ObjectValidators.ObjectID.cast(url)
+    )
   end
 
   defp normalize_actor_alias_value(urls) when is_list(urls) do
@@ -1889,7 +1933,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     data = Transmogrifier.maybe_fix_user_object(data)
     is_discoverable = data["discoverable"] || false
     invisible = data["invisible"] || false
-    actor_type = data["type"] || "Person"
+    {actor_type, actor_types} = normalize_actor_types(data["type"])
 
     featured_collection = data["featured"]
     featured_address = collection_address(featured_collection)
@@ -1940,6 +1984,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
          bio: data["summary"] || "",
          raw_bio: data["_misskey_summary"],
          actor_type: actor_type,
+         actor_types: actor_types,
+         actor_extensions: ActorExtensions.extract(data),
          also_known_as: normalize_actor_aliases(data),
          public_key: public_key,
          inbox: data["inbox"],
@@ -1954,6 +2000,29 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
          pinned_objects: pinned_objects
        }}
     end
+  end
+
+  @actor_type_priority ~w[
+    Repository Project Team Factory TicketTracker PatchTracker ReleaseTracker
+    Roadmap Workflow Organization Group Application Service Person
+  ]
+  @maximum_actor_types 32
+  @maximum_actor_type_bytes 512
+
+  defp normalize_actor_types(value) do
+    actor_types =
+      value
+      |> List.wrap()
+      |> Enum.filter(&(is_binary(&1) and byte_size(&1) <= @maximum_actor_type_bytes))
+      |> Enum.uniq()
+      |> Enum.take(@maximum_actor_types)
+
+    primary_type =
+      Enum.find(@actor_type_priority, fn candidate ->
+        Enum.any?(actor_types, &(CustomObject.short_type(&1) == candidate))
+      end) || "Person"
+
+    {primary_type, actor_types}
   end
 
   defp nickname_from_actor(data, additional) do
@@ -2183,7 +2252,12 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp collection_private(%{"first" => first}) when is_binary(first) do
     with {:ok, %{"type" => type}}
-         when type in ["Collection", "OrderedCollection", "CollectionPage", "OrderedCollectionPage"] <-
+         when type in [
+                "Collection",
+                "OrderedCollection",
+                "CollectionPage",
+                "OrderedCollectionPage"
+              ] <-
            Fetcher.fetch_and_contain_remote_collection_from_id(first) do
       {:ok, false}
     else
@@ -2273,7 +2347,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     Logger.debug("#{message} at fetch #{ap_id}, :not_found")
   end
 
-  defp log_remote_fetch_error(message, ap_id, reason) when reason in [:forbidden, :unauthorized] do
+  defp log_remote_fetch_error(message, ap_id, reason)
+       when reason in [:forbidden, :unauthorized] do
     Logger.debug("#{message} at fetch #{ap_id}, #{inspect(reason)}")
   end
 

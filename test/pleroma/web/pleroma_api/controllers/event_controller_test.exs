@@ -6,7 +6,10 @@ defmodule Pleroma.Web.PleromaAPI.EventControllerTest do
   use Pleroma.Web.ConnCase
   use Oban.Testing, repo: Pleroma.Repo
 
+  alias Pleroma.Activity
+  alias Pleroma.Activity.Queries
   alias Pleroma.Object
+  alias Pleroma.Repo
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.CommonAPI
 
@@ -246,6 +249,20 @@ defmodule Pleroma.Web.PleromaAPI.EventControllerTest do
                  "participation_count" => 1
                }
              } = Object.get_by_ap_id(activity.data["object"])
+
+      actor_ap_id = user.ap_id
+      event_ap_id = activity.data["object"]
+
+      assert %Activity{
+               data: %{
+                 "actor" => ^actor_ap_id,
+                 "object" => ^event_ap_id,
+                 "type" => "Leave"
+               }
+             } =
+               Activity
+               |> Queries.by_type("Leave")
+               |> Repo.one()
     end
 
     test "can't leave event you are not participating in", %{conn: conn} do

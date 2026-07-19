@@ -9,9 +9,10 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
-  alias Pleroma.Web.ActivityPub.Builder
-  alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.ActivityPub.Addressing
+  alias Pleroma.Web.ActivityPub.Builder
+  alias Pleroma.Web.ActivityPub.QuotePolicy
+  alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.CommonAPI.Utils
 
@@ -88,28 +89,55 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
     |> to_and_cc()
     |> context()
     |> listen_object()
+    |> listen_target()
     |> with_valid(&changes/1)
     |> validate()
   end
 
   defp listen_object(%__MODULE__{} = draft) do
-    external_link = draft.params[:externalLink] || draft.params[:url]
-
     object =
-      draft.params
-      |> Map.take([:album, :artist, :title, :length])
-      |> Map.new(fn {key, value} -> {to_string(key), value} end)
-      |> maybe_put_external_link(external_link)
-      |> Map.put("type", "Audio")
-      |> Map.put("to", draft.to)
-      |> Map.put("cc", draft.cc)
-      |> Map.put("actor", draft.user.ap_id)
+      case draft.params[:track_ap_id] do
+        track_ap_id when is_binary(track_ap_id) and track_ap_id != "" ->
+          track_ap_id
+
+        _ ->
+          external_link = draft.params[:externalLink] || draft.params[:url]
+
+          draft.params
+          |> Map.take([:album, :artist, :title, :length])
+          |> Map.new(fn {key, value} -> {to_string(key), value} end)
+          |> maybe_put_external_link(external_link)
+          |> Map.put("type", "Audio")
+          |> Map.put("to", draft.to)
+          |> Map.put("cc", draft.cc)
+          |> Map.put("actor", draft.user.ap_id)
+      end
 
     %__MODULE__{draft | object: object}
   end
 
+  defp listen_target(
+         %__MODULE__{
+           params: %{track_ap_id: track_ap_id},
+           visibility: visibility
+         } = draft
+       )
+       when not_empty_string(track_ap_id) and visibility in ["public", "unlisted"] do
+    case Object.get_cached_by_ap_id(track_ap_id) do
+      %Object{data: %{"actor" => actor}} when is_binary(actor) and actor != draft.user.ap_id ->
+        %__MODULE__{draft | cc: Enum.uniq([actor | draft.cc])}
+
+      _ ->
+        draft
+    end
+  end
+
+  defp listen_target(%__MODULE__{} = draft), do: draft
+
   defp maybe_put_external_link(object, nil), do: object
-  defp maybe_put_external_link(object, external_link), do: Map.put(object, "externalLink", external_link)
+
+  defp maybe_put_external_link(object, external_link),
+    do: Map.put(object, "externalLink", external_link)
 
   @spec event(any, map) :: {:error, any} | {:ok, %{:valid? => true, optional(any) => any}}
   def event(user, params, location \\ nil) do
@@ -185,7 +213,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   defp in_reply_to(%__MODULE__{params: %{in_reply_to_status_id: id}} = draft)
        when is_binary(id) do
     with %Activity{} = activity <- Activity.get_by_id(id),
-         true <- Pleroma.Web.ActivityPub.Visibility.visible_for_user?(activity, draft.user),
+         true <- Visibility.visible_for_user?(activity, draft.user),
          {_, type} when type in ["Create", "Announce"] <- {:type, activity.data["type"]} do
       %__MODULE__{draft | in_reply_to: activity}
     else
@@ -245,24 +273,13 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
     end
   end
 
-  defp can_quote?(_draft, _object, visibility) when visibility in ~w(public unlisted local) do
-    true
-  end
-
-  defp can_quote?(draft, object, "private") do
-    draft.user.ap_id == object.data["actor"]
-  end
-
-  defp can_quote?(_, _, _) do
-    false
-  end
-
   defp quoting_visibility(%__MODULE__{quote_post: %Activity{}} = draft) do
     with %Object{} = object <- Object.normalize(draft.quote_post, fetch: false),
-         true <- can_quote?(draft, object, Visibility.get_visibility(object)) do
+         decision when decision in [:automatic, :manual] <-
+           QuotePolicy.decision(object, draft.user) do
       draft
     else
-      _ -> add_error(draft, dgettext("errors", "Cannot quote private message"))
+      _ -> add_error(draft, dgettext("errors", "This post cannot be quoted"))
     end
   end
 
@@ -487,7 +504,18 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
 
   defp changes(%__MODULE__{} = draft) do
     direct? = draft.visibility == "direct"
+
     additional = %{"cc" => draft.cc, "directMessage" => direct?}
+    additional = maybe_put_listen_audience(additional, draft)
+
+    additional =
+      case draft.params[:track_ap_id] do
+        track_ap_id when is_binary(track_ap_id) and track_ap_id != "" ->
+          Map.put(additional, "_pleroma_listen_track_ap_id", track_ap_id)
+
+        _ ->
+          additional
+      end
 
     additional =
       case draft.expires_at do
@@ -507,6 +535,31 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
 
     %__MODULE__{draft | changes: changes}
   end
+
+  # Funkwhale publishes its privacy level in the ActivityStreams audience
+  # field. Matching those stable values lets it validate federated Listen
+  # activities while the ordinary to/cc fields retain Pleroma visibility.
+  defp maybe_put_listen_audience(additional, %__MODULE__{
+         params: %{track_ap_id: track_ap_id},
+         visibility: visibility
+       })
+       when not_empty_string(track_ap_id) do
+    Map.put(additional, "audience", listen_audience(visibility))
+  end
+
+  defp maybe_put_listen_audience(additional, %__MODULE__{
+         object: %{"type" => "Audio"},
+         visibility: visibility
+       }) do
+    Map.put(additional, "audience", listen_audience(visibility))
+  end
+
+  defp maybe_put_listen_audience(additional, %__MODULE__{}), do: additional
+
+  defp listen_audience(visibility) when visibility in ["public", "unlisted"], do: "everyone"
+  defp listen_audience("local"), do: "instance"
+  defp listen_audience("private"), do: "followers"
+  defp listen_audience(_), do: "me"
 
   defp event_date(%__MODULE__{} = draft) do
     case draft.params[:start_time] do
@@ -590,8 +643,3 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   defp validate(%__MODULE__{valid?: true} = draft), do: {:ok, draft}
   defp validate(%__MODULE__{errors: [message | _]}), do: {:error, message}
 end
-
-
-
-
-

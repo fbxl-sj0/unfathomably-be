@@ -1,0 +1,1 @@
+Accept ActivityPub payload actor identifiers that differ from the HTTP signature actor only by an explicit default HTTP or HTTPS port.

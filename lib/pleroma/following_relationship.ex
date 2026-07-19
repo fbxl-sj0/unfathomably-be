@@ -67,7 +67,7 @@ defmodule Pleroma.FollowingRelationship do
       following_relationship ->
         with {:ok, _following_relationship} <-
                following_relationship
-               |> change(state: state)
+               |> cast(%{state: state}, [:state])
                |> validate_required([:state])
                |> Repo.update() do
           after_update(state, follower, following)
@@ -158,24 +158,24 @@ defmodule Pleroma.FollowingRelationship do
 
   def get_follow_requests(%User{id: id}, params \\ %{}) do
     __MODULE__
-    |> join(:inner, [r], f in assoc(r, :follower), as: :follow_request_user)
+    |> join(:inner, [r], f in assoc(r, :follower), as: :requesting_user)
     |> where([r], r.state == ^:follow_pending)
     |> where([r], r.following_id == ^id)
     |> where([r, f], f.is_active == true)
     |> without_dormant_remote_user()
     |> select([r, f], f)
-    |> Pagination.fetch_paginated(params, :keyset, :follow_request_user)
+    |> Pagination.fetch_paginated(params, :keyset, :requesting_user)
   end
 
   def get_outgoing_follow_requests(%User{id: id}, params \\ %{}) do
     __MODULE__
-    |> join(:inner, [r], f in assoc(r, :following), as: :follow_request_user)
+    |> join(:inner, [r], f in assoc(r, :following), as: :requested_user)
     |> where([r], r.state == ^:follow_pending)
     |> where([r], r.follower_id == ^id)
     |> where([r, f], f.is_active == true)
     |> without_dormant_remote_user()
     |> select([r, f], f)
-    |> Pagination.fetch_paginated(params, :keyset, :follow_request_user)
+    |> Pagination.fetch_paginated(params, :keyset, :requested_user)
   end
 
   def following?(%User{id: follower_id}, %User{id: followed_id}) do

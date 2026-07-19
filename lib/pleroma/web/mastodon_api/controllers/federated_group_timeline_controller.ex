@@ -180,7 +180,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
 
         case refreshed_activities do
           [] -> activities
-          _ -> refreshed_activities
+          _ -> merge_received_group_announces(activities, refreshed_activities, group)
         end
 
       true ->
@@ -189,6 +189,24 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   end
 
   defp maybe_backfill_remote_group(activities, _group, _activity_params), do: activities
+
+  defp merge_received_group_announces(activities, refreshed_activities, %User{ap_id: ap_id}) do
+    #
+    # A remote collection is a useful first-page snapshot, but it is not
+    # necessarily a delivery log. Ibis, for example, announces a new Article
+    # after an embedded Update while its all-articles collection can still
+    # contain only the bootstrap page. Keep authoritative group Announces that
+    # have already reached this instance, then use the collection for the rest
+    # of the refreshed page.
+    #
+    received_announces =
+      Enum.filter(activities, fn
+        %Activity{actor: ^ap_id, data: %{"type" => "Announce"}} -> true
+        _ -> false
+      end)
+
+    unique_group_activities(received_announces ++ refreshed_activities)
+  end
 
   defp maybe_backfill_first_remote_group_page(%User{} = group, activity_params) do
     group

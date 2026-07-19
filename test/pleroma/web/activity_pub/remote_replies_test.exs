@@ -82,12 +82,36 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
       end do
       assert :ok = RemoteReplies.fetch_for_object(object)
 
-      assert_received {:fetch_object_from_id, @reply_1, [depth: 1]}
-      assert_received {:fetch_object_from_id, @reply_2, [depth: 1]}
+      assert_received {:fetch_object_from_id, @reply_1, reply_1_opts}
+      assert_received {:fetch_object_from_id, @reply_2, reply_2_opts}
+      assert reply_1_opts[:depth] == 1
+      assert reply_1_opts[:prefetched_data]["id"] == @reply_1
+      assert reply_2_opts[:depth] == 1
+      assert reply_2_opts[:prefetched_data]["id"] == @reply_2
       refute_received {:fetch_object_from_id, @object_id, _}
 
       object = Object.get_by_ap_id(@object_id)
       refute object.data["replies"] == [@reply_1, @reply_2]
+    end
+  end
+
+  test "does not repeat a failed discovery fetch while hydrating a reply" do
+    test_pid = self()
+
+    with_mock Fetcher,
+      fetch_and_contain_remote_object_from_id: fn @reply_1 ->
+        send(test_pid, {:discovery_fetch, @reply_1})
+        {:error, :recv_response_timeout}
+      end,
+      fetch_object_from_id: fn id, opts ->
+        send(test_pid, {:persistence_fetch, id, opts})
+        {:error, :recv_response_timeout}
+      end do
+      assert {:error, :recv_response_timeout} =
+               RemoteReplies.fetch_thread_from_reply(@reply_1, depth: 0)
+
+      assert_received {:discovery_fetch, @reply_1}
+      refute_received {:persistence_fetch, @reply_1, _}
     end
   end
 end

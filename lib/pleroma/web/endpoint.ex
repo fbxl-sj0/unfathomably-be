@@ -9,6 +9,8 @@ defmodule Pleroma.Web.Endpoint do
 
   alias Pleroma.Config
 
+  plug(Pleroma.Web.Plugs.RejectMalformedPathPlug)
+
   plug(Pleroma.Web.MastodonAPI.WebsocketPlug,
     path: "/api/v1/streaming",
     websocket: [

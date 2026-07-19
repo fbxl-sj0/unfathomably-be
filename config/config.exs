@@ -149,7 +149,7 @@ config :mime, :types, %{
   "application/xrd+xml" => ["xrd+xml"],
   "application/jrd+json" => ["jrd+json"],
   "application/activity+json" => ["activity+json"],
-  "application/ld+json" => ["activity+json"]
+  "application/ld+json" => ["activity+json", "jsonld"]
 }
 
 config :tesla, adapter: Tesla.Adapter.Gun
@@ -670,9 +670,12 @@ config :pleroma, Pleroma.Workers.Cron.GroupDiscussionCleanupWorker,
   enabled: true,
   max_age_days: 183,
   batch_size: 100,
+  candidate_scan_limit: 1_000,
+  max_scan_pages: 10,
   query_timeout_ms: 120_000
 
 config :pleroma, Pleroma.Workers.RemoteFetcherWorker, timeout_ms: 30_000
+config :pleroma, Pleroma.Workers.ReceiverWorker, timeout_ms: 90_000
 
 config :pleroma, Pleroma.Workers.Cron.RssSourceIngestWorker,
   enabled: true,
@@ -788,6 +791,7 @@ config :pleroma, :rate_limit,
   authentication: {60_000, 15},
   timeline: {500, 3},
   search: [{1000, 10}, {1000, 30}],
+  federated_target_search: [{60_000, 3}, {60_000, 12}],
   app_account_creation: {1_800_000, 25},
   oauth_app_creation: {900_000, 5},
   relations_actions: {10_000, 10},
@@ -861,7 +865,7 @@ config :pleroma, :frontends,
       "git" => "https://git.pleroma.social/pleroma/admin-fe",
       "build_url" =>
         "https://git.pleroma.social/pleroma/admin-fe/-/jobs/artifacts/${ref}/download?job=build",
-      "ref" => "develop"
+      "ref" => "stable"
     },
     "soapbox" => %{
       "name" => "soapbox",

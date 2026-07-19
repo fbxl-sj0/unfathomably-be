@@ -118,8 +118,30 @@ defmodule Pleroma.SignatureTest do
   end
 
   describe "validate_signature/1" do
+    test "rejects duplicate legacy Signature parameters before validation" do
+      conn = %Plug.Conn{
+        method: "POST",
+        request_path: "/inbox",
+        query_string: "",
+        req_headers: [
+          {"signature",
+           "keyId=\"https://example.com/first#main-key\",KEYID=\"https://example.com/second#main-key\""}
+        ]
+      }
+
+      refute Signature.validate_signature(conn)
+    end
+
     test "treats HTTP signature errors as failed validation" do
-      conn = %Plug.Conn{method: "GET", request_path: "/inbox", req_headers: []}
+      user = insert(:user)
+
+      conn = %Plug.Conn{
+        method: "GET",
+        request_path: "/inbox",
+        req_headers: [
+          {"signature", "keyId=\"#{user.ap_id}#main-key\",signature=\"invalid\""}
+        ]
+      }
 
       Mox.expect(HTTPSignaturesMock, :validate_conn, fn _conn ->
         {:error, :request_target_header}
@@ -169,7 +191,7 @@ defmodule Pleroma.SignatureTest do
 
     test "it calls webfinger for 'acct:' accounts" do
       with_mock(Pleroma.Web.WebFinger,
-        finger: fn _ -> %{"ap_id" => "https://gensokyo.2hu/users/raymoo"} end
+        finger: fn _ -> {:ok, %{"ap_id" => "https://gensokyo.2hu/users/raymoo"}} end
       ) do
         assert Signature.key_id_to_actor_id("acct:raymoo@gensokyo.2hu") ==
                  {:ok, "https://gensokyo.2hu/users/raymoo"}

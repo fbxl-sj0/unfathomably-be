@@ -94,6 +94,11 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Status do
         type: :integer,
         description: "How many favourites this status has received"
       },
+      disliked: %Schema{type: :boolean, description: "Have you disliked this status?"},
+      dislikes_count: %Schema{
+        type: :integer,
+        description: "How many dislikes this status has received"
+      },
       id: FlakeID,
       in_reply_to_account_id: %Schema{
         allOf: [FlakeID],
@@ -227,6 +232,50 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Status do
           quote_visible: %Schema{
             type: :boolean,
             description: "`true` if the quoted post is visible to the user"
+          },
+          quote_state: %Schema{
+            type: :string,
+            nullable: true,
+            enum: ["pending", "accepted", "rejected", "revoked"],
+            description: "The authorization state of this status's quote, if applicable"
+          },
+          quote_authorization: %Schema{
+            type: :string,
+            format: :uri,
+            nullable: true,
+            description: "The ActivityPub QuoteAuthorization URI for this quote"
+          },
+          quote_approval_required: %Schema{
+            type: :boolean,
+            description: "`true` when this quote is awaiting manual approval"
+          },
+          quote_manageable: %Schema{
+            type: :boolean,
+            description: "`true` when the authenticated user may approve or reject this quote"
+          },
+          quote_allowed: %Schema{
+            type: :boolean,
+            description: "`true` when the authenticated user may quote this status"
+          },
+          interaction_policy: %Schema{
+            type: :object,
+            nullable: true,
+            additionalProperties: true,
+            description: "The ActivityPub interaction policy advertised by this status"
+          },
+          native: %Schema{
+            type: :object,
+            nullable: true,
+            description:
+              "Bounded presentation metadata for a status using an extension ActivityPub vocabulary",
+            properties: %{
+              canonical_id: %Schema{type: :string, format: :uri},
+              class: %Schema{type: :string},
+              context: %Schema{type: :string, nullable: true},
+              controls: %Schema{type: :array, items: %Schema{type: :string}},
+              fields: %Schema{type: :object, additionalProperties: true},
+              type: %Schema{type: :string}
+            }
           },
           quotes_count: %Schema{
             type: :integer,
@@ -372,6 +421,8 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Status do
       "emojis" => [],
       "favourited" => false,
       "favourites_count" => 0,
+      "disliked" => false,
+      "dislikes_count" => 0,
       "id" => "9toJCu5YZW7O7gfvH6",
       "in_reply_to_account_id" => nil,
       "in_reply_to_id" => nil,

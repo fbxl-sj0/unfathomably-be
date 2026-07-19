@@ -93,6 +93,8 @@ defmodule Pleroma.Web.Plugs.FrontendStaticPlugTest do
       "users",
       "tags",
       "mailer",
+      "contexts",
+      "quote_authorizations",
       "inbox",
       "relay",
       "internal",

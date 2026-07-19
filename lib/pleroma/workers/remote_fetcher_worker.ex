@@ -4,11 +4,14 @@
 
 defmodule Pleroma.Workers.RemoteFetcherWorker do
   alias Pleroma.Config
+  alias Pleroma.Object
   alias Pleroma.Object.Fetcher
   alias Pleroma.Web.ActivityPub.RemoteReplies
+  alias Pleroma.Web.Federation.Churn
 
   use Pleroma.Workers.WorkerHelper,
     queue: "remote_fetcher",
+    max_attempts: 3,
     unique: [
       period: :infinity,
       states: [
@@ -34,8 +37,27 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
   end
 
   def perform(%Job{args: %{"op" => "fetch_remote", "id" => id} = args}) do
-    case fetch_object(id, args) do
+    result = fetch_object(id, args)
+
+    case Churn.mark_deactivated_actor(result) do
+      {:ok, actor_id} ->
+        {:cancel, {:remote_actor_deactivated, actor_id}}
+
+      :noop ->
+        process_fetch_result(result)
+    end
+  end
+
+  def perform(%Job{args: %{"op" => "fetch_remote"}}), do: {:cancel, :bad_request}
+
+  def perform(%Job{}), do: {:cancel, :bad_request}
+
+  defp process_fetch_result(result) do
+    case result do
       {:ok, _object} ->
+        :ok
+
+      %Object{} ->
         :ok
 
       {:reject, reason} ->
@@ -63,9 +85,8 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
     end
   end
 
-  def perform(%Job{args: %{"op" => "fetch_remote"}}), do: {:cancel, :bad_request}
-
-  def perform(%Job{}), do: {:cancel, :bad_request}
+  @impl Oban.Worker
+  def backoff(%Job{attempt: attempt}), do: min(300, 60 * max(attempt, 1))
 
   @impl Oban.Worker
   def timeout(_job), do: timeout_ms()

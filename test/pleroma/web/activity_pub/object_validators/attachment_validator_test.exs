@@ -56,6 +56,23 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AttachmentValidatorTest do
       assert attachment.mediaType == "x-custom/x-type"
     end
 
+    test "uses the safe fallback for Link attachments with an explicit null media type" do
+      attachment = %{
+        "href" => "http://example.org/articles/1",
+        "mediaType" => nil,
+        "type" => "Link"
+      }
+
+      assert {:ok, attachment} =
+               AttachmentValidator.cast_and_validate(attachment)
+               |> Ecto.Changeset.apply_action(:insert)
+
+      assert attachment.mediaType == "application/octet-stream"
+
+      assert [%{href: "http://example.org/articles/1", mediaType: "application/octet-stream"}] =
+               attachment.url
+    end
+
     test "works with invalid mime types" do
       attachment = %{
         "mediaType" => "x-customx-type",

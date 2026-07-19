@@ -128,6 +128,9 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
 
   def perform(%Oban.Job{}), do: {:cancel, :bad_request}
 
+  @impl Oban.Worker
+  def backoff(%Oban.Job{attempt: attempt}), do: min(900, 300 * max(attempt, 1))
+
   defp fetch_reply_ids(collection_id) do
     opts = %{
       collection_id: collection_id,

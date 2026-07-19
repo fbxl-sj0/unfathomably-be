@@ -20,6 +20,8 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
   alias Pleroma.Config
   alias Pleroma.Repo
 
+  require Logger
+
   @default_max_poll_schedule_seconds 365 * 24 * 60 * 60
   @stale_event_reminder_seconds 24 * 60 * 60
   @stale_cleanup_retry_seconds 24 * 60 * 60
@@ -68,26 +70,39 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
 
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
-    collapsed_duplicate_remote_fetch_jobs = collapse_duplicate_remote_fetch_jobs()
-    deleted_far_future_polls = delete_far_future_poll_notifications()
-    discarded_stale_event_reminders = discard_stale_event_reminders()
-    discarded_stale_cleanup_retries = discard_stale_cleanup_retries()
-    discarded_stale_federator_retries = discard_stale_federator_retries()
-    discarded_terminal_publisher_retries = discard_terminal_publisher_retries()
-    discarded_unreachable_publisher_jobs = discard_unreachable_publisher_jobs()
-    discarded_fixed_federation_exception_retries = discard_fixed_federation_exception_retries()
+    steps = [
+      {:collapsed_duplicate_remote_fetch_jobs, &collapse_duplicate_remote_fetch_jobs/0},
+      {:deleted_far_future_poll_notifications, &delete_far_future_poll_notifications/0},
+      {:discarded_stale_event_reminders, &discard_stale_event_reminders/0},
+      {:discarded_stale_cleanup_retries, &discard_stale_cleanup_retries/0},
+      {:discarded_stale_federator_retries, &discard_stale_federator_retries/0},
+      {:discarded_terminal_publisher_retries, &discard_terminal_publisher_retries/0},
+      {:discarded_unreachable_publisher_jobs, &discard_unreachable_publisher_jobs/0},
+      {:discarded_fixed_federation_exception_retries,
+       &discard_fixed_federation_exception_retries/0}
+    ]
 
-    {:ok,
-     %{
-       collapsed_duplicate_remote_fetch_jobs: collapsed_duplicate_remote_fetch_jobs,
-       deleted_far_future_poll_notifications: deleted_far_future_polls,
-       discarded_stale_event_reminders: discarded_stale_event_reminders,
-       discarded_stale_cleanup_retries: discarded_stale_cleanup_retries,
-       discarded_stale_federator_retries: discarded_stale_federator_retries,
-       discarded_terminal_publisher_retries: discarded_terminal_publisher_retries,
-       discarded_unreachable_publisher_jobs: discarded_unreachable_publisher_jobs,
-       discarded_fixed_federation_exception_retries: discarded_fixed_federation_exception_retries
-     }}
+    {counts, failures} =
+      Enum.reduce(steps, {%{}, []}, fn {name, operation}, {counts, failures} ->
+        case safe_cleanup_step(name, operation) do
+          {:ok, count} -> {Map.put(counts, name, count), failures}
+          {:error, reason} -> {Map.put(counts, name, 0), [{name, reason} | failures]}
+        end
+      end)
+
+    {:ok, Map.put(counts, :failed_steps, Enum.reverse(failures))}
+  end
+
+  defp safe_cleanup_step(name, operation) do
+    {:ok, operation.()}
+  rescue
+    error ->
+      Logger.warning("Oban cleanup step #{name} failed: #{Exception.message(error)}")
+      {:error, Exception.message(error)}
+  catch
+    kind, reason ->
+      Logger.warning("Oban cleanup step #{name} stopped: #{inspect({kind, reason})}")
+      {:error, inspect({kind, reason})}
   end
 
   def collapse_duplicate_remote_fetch_jobs do

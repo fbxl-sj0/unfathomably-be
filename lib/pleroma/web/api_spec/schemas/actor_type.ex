@@ -3,11 +3,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ApiSpec.Schemas.ActorType do
+  require Pleroma.Constants
   require OpenApiSpex
 
   OpenApiSpex.schema(%{
     title: "ActorType",
     type: :string,
-    enum: ["Application", "Group", "Organization", "Person", "Service"]
+    enum: Pleroma.Constants.actor_types()
   })
 end

@@ -32,25 +32,12 @@ defmodule Pleroma.Instances do
 
   def record_gone(url_or_host, opts \\ []), do: Instance.record_gone(url_or_host, opts)
 
+  def record_delivery_success(url, opts \\ []), do: Instance.record_delivery_success(url, opts)
+
+  def record_delivery_failure(url, reason \\ :failure, opts \\ []),
+    do: Instance.record_delivery_failure(url, reason, opts)
+
   def get_consistently_unreachable, do: Instance.get_consistently_unreachable()
-
-  def check_all_unreachable do
-    get_consistently_unreachable()
-    |> Enum.each(fn {host, _unreachable_since} ->
-      %{"domain" => host}
-      |> Pleroma.Workers.ReachabilityWorker.new()
-      |> Oban.insert()
-    end)
-  end
-
-  def delete_all_unreachable do
-    get_consistently_unreachable()
-    |> Enum.each(fn {host, _unreachable_since} ->
-      %{"op" => "delete_instance", "host" => host}
-      |> Pleroma.Workers.BackgroundWorker.new()
-      |> Oban.insert()
-    end)
-  end
 
   def set_consistently_unreachable(url_or_host),
     do: set_unreachable(url_or_host, reachability_datetime_threshold())

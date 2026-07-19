@@ -57,6 +57,11 @@ defmodule Pleroma.Web.ApiSpec.PleromaScrobbleOperation do
         album: %Schema{type: :string, description: "The album of the media playing"},
         artist: %Schema{type: :string, description: "The artist of the media playing"},
         length: %Schema{type: :integer, description: "The length of the media playing"},
+        track_ap_id: %Schema{
+          type: :string,
+          format: :uri,
+          description: "ActivityPub ID of an existing federated Track"
+        },
         externalLink: %Schema{type: :string, description: "A URL referencing the media playing"},
         url: %Schema{
           type: :string,

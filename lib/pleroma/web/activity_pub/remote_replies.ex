@@ -75,9 +75,19 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
     if Activity.get_create_by_object_ap_id(reply_id) do
       Fetcher.fetch_object_from_id(reply_id, opts)
     else
-      fetch_reply_ancestors(reply_id, depth, MapSet.new([reply_id]), @max_parent_hops)
+      case safe_fetch_remote_object(reply_id) do
+        {:ok, %{} = data} ->
+          fetch_reply_ancestors(data, depth, MapSet.new([reply_id]), @max_parent_hops)
 
-      Fetcher.fetch_object_from_id(reply_id, opts)
+          opts = Keyword.put(opts, :prefetched_data, data)
+          Fetcher.fetch_object_from_id(reply_id, opts)
+
+        {:ok, _invalid_data} ->
+          {:error, :invalid_remote_object}
+
+        error ->
+          error
+      end
     end
   end
 
@@ -263,21 +273,23 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
     end
   end
 
-  defp fetch_reply_ancestors(_reply_id, _depth, _seen, 0), do: :ok
+  defp fetch_reply_ancestors(_data, _depth, _seen, 0), do: :ok
 
-  defp fetch_reply_ancestors(reply_id, depth, seen, hops_left) do
-    with true <- http_url?(reply_id),
-         true <- Federator.allowed_thread_distance?(depth),
-         {:ok, %{} = data} <- safe_fetch_remote_object(reply_id),
+  defp fetch_reply_ancestors(data, depth, seen, hops_left) do
+    with true <- Federator.allowed_thread_distance?(depth),
          parent_id when is_binary(parent_id) <- in_reply_to_id(data),
          true <- http_url?(parent_id),
          false <- MapSet.member?(seen, parent_id),
-         nil <- Object.get_cached_by_ap_id(parent_id) do
+         nil <- Object.get_cached_by_ap_id(parent_id),
+         {:ok, %{} = parent_data} <- safe_fetch_remote_object(parent_id) do
       seen = MapSet.put(seen, parent_id)
 
-      fetch_reply_ancestors(parent_id, depth, seen, hops_left - 1)
+      fetch_reply_ancestors(parent_data, depth, seen, hops_left - 1)
 
-      case Fetcher.fetch_object_from_id(parent_id, depth: depth) do
+      case Fetcher.fetch_object_from_id(parent_id,
+             depth: depth,
+             prefetched_data: parent_data
+           ) do
         {:ok, _object} ->
           :ok
 

@@ -1374,8 +1374,10 @@ if discourse_delete_is_deliverable "$DISCOURSE_DELETE_REPLY"; then
         "$ALICE_TOKEN" \
         404 \
         "Unfathomably sees Discourse deleted reply"
+    DISCOURSE_REPLY_DELETE_SUMMARY="* supported: Discourse-origin reply Delete propagation"
 else
     log_discourse_delete_not_supported "the Discourse reply" "$DISCOURSE_DELETE_REPLY"
+    DISCOURSE_REPLY_DELETE_SUMMARY="* not_supported: stock Discourse generated a non-deliverable Delete for its reply"
 fi
 
 DISCOURSE_LIKE_BE="$(discourse_like_post "$DISCOURSE_VIEW_OF_BE_POST_ID")"
@@ -1404,8 +1406,10 @@ if discourse_delete_is_deliverable "$DISCOURSE_DELETE_POST"; then
         "$ALICE_TOKEN" \
         404 \
         "Unfathomably sees deleted Discourse post"
+    DISCOURSE_POST_DELETE_SUMMARY="* supported: Discourse-origin top-level post Delete propagation"
 else
     log_discourse_delete_not_supported "the Discourse top-level post" "$DISCOURSE_DELETE_POST"
+    DISCOURSE_POST_DELETE_SUMMARY="* not_supported: stock Discourse generated a non-deliverable Delete for its top-level post"
 fi
 
 http_form DELETE "$BASE_URL/api/v1/statuses/$BE_TO_DISCOURSE_POST_ID" "$ALICE_TOKEN" 200 >/dev/null
@@ -1454,14 +1458,15 @@ cat <<EOF
 Unfathomably/Discourse federation smoke test passed.
 
 Covered:
-  * stock Discourse dev Docker boot with the official ActivityPub plugin
-  * Unfathomably follow of a Discourse category Group actor
-  * Discourse category follow of an Unfathomably group and posting user
-  * Discourse-to-Unfathomably category post, like, unlike, reply, and delete capability detection
-  * Unfathomably-to-Discourse group post, like, unlike, reply, reply delete, and post delete
-  * Discourse-origin deletes when the stock plugin emits a deliverable Delete; otherwise reported as not_supported
-  * group unfollow both directions
-  * basic log scan for 500/crash output
+  * supported: stock Discourse dev Docker boot with the official ActivityPub plugin
+  * supported: Unfathomably follow of a Discourse category Group actor
+  * supported: Discourse category follow of an Unfathomably group and posting user
+  * supported: Discourse-to-Unfathomably category post, like, unlike, and reply lifecycle
+  * supported: Unfathomably-to-Discourse group post, like, unlike, reply, reply Delete, and post Delete
+  $DISCOURSE_REPLY_DELETE_SUMMARY
+  $DISCOURSE_POST_DELETE_SUMMARY
+  * supported: group unfollow both directions
+  * supported: basic log scan for 500/crash output
 
 Run with KEEP_SMOKE=1 to leave both servers available for manual browser/API work.
 EOF

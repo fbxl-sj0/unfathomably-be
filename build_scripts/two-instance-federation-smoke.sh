@@ -516,7 +516,7 @@ prepare_database() {
         -v "$REPO_ROOT:/work" \
         -v "$secret:/work/config/dev.secret.exs:ro" \
         "$IMAGE" \
-        bash -lc 'set -euo pipefail; cd /work; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; mix compile --force >/dev/null; mix pleroma.ecto.migrate --migrations-path /work/priv/repo/migrations'
+        bash -lc 'set -euo pipefail; cd /work; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; mix compile >/dev/null; mix pleroma.ecto.migrate --migrations-path /work/priv/repo/migrations'
 }
 
 start_instance() {
@@ -547,7 +547,7 @@ start_instance() {
         -v "$REPO_ROOT:/work" \
         -v "$secret:/work/config/dev.secret.exs:ro" \
         "$IMAGE" \
-        bash -lc 'set -euo pipefail; cd /work; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; mix compile --force >/dev/null; exec mix phx.server' \
+        bash -lc 'set -euo pipefail; cd /work; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; mix compile >/dev/null; exec mix phx.server' \
         >/dev/null
 }
 
@@ -580,7 +580,7 @@ create_users() {
         -v "$secret:/work/config/dev.secret.exs:ro" \
         -v "$WORK_DIR/create_smoke_user.exs:/tmp/create_smoke_user.exs:ro" \
         "$IMAGE" \
-        bash -lc 'set -euo pipefail; cd /work; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; mix compile --force >/dev/null; mix run /tmp/create_smoke_user.exs >/dev/null'
+        bash -lc 'set -euo pipefail; cd /work; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; mix compile >/dev/null; mix run /tmp/create_smoke_user.exs >/dev/null'
 }
 
 create_token() {

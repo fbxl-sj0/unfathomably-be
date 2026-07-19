@@ -99,6 +99,8 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorkerTest do
             DateTime.utc_now() |> DateTime.add(-200 * 86_400, :second) |> DateTime.to_iso8601()
         }
       )
+      |> Ecto.Changeset.change(inserted_at: old_inserted_at, updated_at: old_inserted_at)
+      |> Repo.update!()
 
     activity =
       insert(:note_activity,

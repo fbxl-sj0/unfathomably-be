@@ -18,10 +18,13 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   alias Pleroma.GroupMembership
   alias Pleroma.Notification
   alias Pleroma.Object
+  alias Pleroma.QuoteAuthorization
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.ActivityPub.Builder
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.Push
@@ -53,10 +56,19 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       ) do
     with %Activity{} = activity <-
            Activity.get_by_ap_id(activity_id) do
-      handle_accepted(activity, actor)
+      case activity.data["type"] do
+        "QuoteRequest" ->
+          QuoteAuthorization.accept_from_activity(activity, actor, object.data["result"])
 
-      if activity.data["type"] === "Join" do
-        Notification.create_notifications(object)
+        "Offer" ->
+          :ok
+
+        _ ->
+          handle_accepted(activity, actor)
+
+          if activity.data["type"] === "Join" do
+            Notification.create_notifications(object)
+          end
       end
     end
 
@@ -80,10 +92,27 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       ) do
     with %Activity{} = activity <-
            Activity.get_by_ap_id(activity_id) do
-      handle_rejected(activity, actor)
+      case activity.data["type"] do
+        "QuoteRequest" ->
+          QuoteAuthorization.reject_from_activity(activity, actor)
+
+        "Offer" ->
+          :ok
+
+        _type ->
+          handle_rejected(activity, actor)
+      end
     end
 
     {:ok, object, meta}
+  end
+
+  @impl true
+  def handle(%{data: %{"type" => "QuoteRequest"}} = object, meta) do
+    case QuoteAuthorization.handle_request(object) do
+      {:ok, _quote_object} -> {:ok, object, meta}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   # Tasks this handle
@@ -105,7 +134,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     with %User{} = follower <- User.get_cached_by_ap_id(following_user),
          %User{} = followed <- User.get_cached_by_ap_id(followed_user),
          {_, {:ok, _, _}, _, _} <-
-           {:following, User.follow(follower, followed, :follow_pending), follower, followed} do
+           {:following, follow_with_group_membership(follower, followed), follower, followed} do
       if followed.local && !followed.is_locked do
         {:ok, accept_data, _} = Builder.accept(followed, object)
         {:ok, _activity, _} = Pipeline.common_pipeline(accept_data, local: true)
@@ -202,62 +231,26 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - Index incoming posts for search (if needed)
   @impl true
   def handle(%{data: %{"type" => "Create"}} = activity, meta) do
-    with {:ok, object, meta} <- handle_object_creation(meta[:object_data], activity, meta),
-         %User{} = user <- User.get_cached_by_ap_id(activity.data["actor"]) do
-      {:ok, notifications} = Notification.create_notifications(activity, do_send: false)
-      {:ok, _user} = ActivityPub.increase_note_count_if_public(user, object)
-      {:ok, _user} = ActivityPub.update_last_status_at_if_public(user, object)
-
-      if in_reply_to = object.data["type"] != "Answer" && object.data["inReplyTo"] do
-        Object.increase_replies_count(in_reply_to)
+    with {:ok, object, meta} <- handle_object_creation(meta[:object_data], activity, meta) do
+      if CustomObject.timeline_object?(object.data) do
+        handle_timeline_object_creation(activity, object, meta)
+      else
+        {:ok, activity, meta}
       end
-
-      if quote_url = object.data["quoteUrl"] do
-        Object.increase_quotes_count(quote_url)
-      end
-
-      reply_depth = (meta[:depth] || 0) + 1
-
-      # Remote reply prefetching follows the explicit replies collection when a
-      # server provides it. The depth guard keeps hostile or huge trees bounded.
-      if Pleroma.Web.Federator.allowed_thread_distance?(reply_depth) and
-           object.data["replies"] != nil do
-        for reply_id <- object.data["replies"] do
-          Pleroma.Workers.RemoteFetcherWorker.enqueue("fetch_remote", %{
-            "id" => reply_id,
-            "depth" => reply_depth,
-            "thread" => true
-          })
-        end
-      end
-
-      if not activity.local do
-        current_depth = meta[:depth] || 1
-
-        RemoteRepliesFetcherWorker.enqueue_for_object(object, reply_depth)
-        RemoteRepliesFetcherWorker.enqueue_for_reply_ancestors(object, current_depth)
-      end
-
-      Pleroma.Web.RichMedia.Card.get_by_activity(activity)
-
-      Pleroma.Search.add_to_index(Map.put(activity, :object, object))
-
-      Utils.maybe_handle_group_posts(activity)
-
-      meta =
-        meta
-        |> add_notifications(notifications)
-
-      # ChatMessages are special, as they get streamed in handle_object_creation/3.
-      # Other Create activities stream here so clients see Articles, Events,
-      # Questions, and future object types without needing a release for each one.
-      if object.data["type"] != "ChatMessage" do
-        ap_streamer().stream_out(activity)
-      end
-
-      {:ok, activity, meta}
     else
       e -> Repo.rollback(e)
+    end
+  end
+
+  @impl true
+  def handle(
+        %{data: %{"type" => "Delete", "object" => %{"type" => "QuoteAuthorization"} = auth}} =
+          object,
+        meta
+      ) do
+    case QuoteAuthorization.revoke_from_document(auth) do
+      {:ok, _quote_object} -> {:ok, object, meta}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -294,22 +287,6 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     {:ok, object, meta}
   end
 
-  defp ensure_announce_counters(%Object{data: data} = object) do
-    announcements =
-      case data["announcements"] do
-        announcements when is_list(announcements) -> announcements
-        _ -> []
-      end
-
-    count = length(announcements)
-
-    if data["announcement_count"] == count do
-      {:ok, object}
-    else
-      Utils.update_element_in_object("announcement", announcements, object, count)
-    end
-  end
-
   @impl true
   def handle(%{data: %{"type" => "Undo", "object" => undone_object}} = object, meta) do
     with undone_object_id when is_binary(undone_object_id) <- object_ap_id(undone_object),
@@ -328,12 +305,17 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   def handle(%{data: %{"type" => "EmojiReact"}} = object, meta) do
     reacted_object = object.data["object"] |> object_ap_id() |> Object.get_by_ap_id()
 
-    if reacted_object do
-      Utils.add_emoji_reaction_to_object(object, reacted_object)
-      Notification.create_notifications(object)
-    end
+    case reacted_object do
+      %Object{} ->
+        with {:ok, _reacted_object} <-
+               Utils.add_emoji_reaction_to_object(object, reacted_object) do
+          Notification.create_notifications(object)
+          {:ok, object, meta}
+        end
 
-    {:ok, object, meta}
+      _ ->
+        {:ok, object, meta}
+    end
   end
 
   # Tasks this handles:
@@ -344,7 +326,16 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - Stream out the activity
   # - Removes posts from search index (if needed)
   @impl true
-  def handle(%{data: %{"type" => "Delete", "object" => %{"type" => "Tombstone"}}} = object, meta) do
+  def handle(
+        %{
+          data: %{
+            "type" => "Delete",
+            "object" => %{"id" => deleted_ap_id, "type" => "Tombstone"}
+          }
+        } = object,
+        meta
+      ) do
+    Activity.delete_all_by_object_ap_id(deleted_ap_id)
     {:ok, object, meta}
   end
 
@@ -356,47 +347,20 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
     result =
       case deleted_object do
+        %Object{data: %{"type" => "Tombstone"}} ->
+          Activity.delete_all_by_object_ap_id(deleted_object.data["id"])
+          :ok
+
         %Object{} ->
-          with {_, {:ok, deleted_object, _activity}} <- {:object, Object.delete(deleted_object)},
-               {_, actor} when is_binary(actor) <- {:actor, deleted_object.data["actor"]},
-               {_, %User{} = user} <- {:user, User.get_cached_by_ap_id(actor)} do
-            User.remove_pinned_object_id(user, deleted_object.data["id"])
-
-            {:ok, user} = ActivityPub.decrease_note_count_if_public(user, deleted_object)
-
-            if in_reply_to = deleted_object.data["inReplyTo"] do
-              Object.decrease_replies_count(in_reply_to)
-            end
-
-            if quote_url = deleted_object.data["quoteUrl"] do
-              Object.decrease_quotes_count(quote_url)
-            end
-
-            MessageReference.delete_for_object(deleted_object)
-
-            ap_streamer().stream_out(object)
-            ap_streamer().stream_out_participations(deleted_object, user)
-            Utils.maybe_handle_group_deletes(object)
-            :ok
+          if CustomObject.direct_resource?(deleted_object.data) do
+            delete_custom_resource(deleted_object, object)
           else
-            {:actor, _} ->
-              @logger.error("The object doesn't have an actor: #{inspect(deleted_object)}")
-              :no_object_actor
-
-            {:user, _} ->
-              @logger.error(
-                "The object's actor could not be resolved to a user: #{inspect(deleted_object)}"
-              )
-
-              :no_object_user
-
-            {:object, _} ->
-              @logger.error("The object could not be deleted: #{inspect(deleted_object)}")
-              {:error, object}
+            delete_timeline_object(deleted_object, object)
           end
 
         %User{} ->
-          with {:ok, _} <- User.delete(deleted_object) do
+          with :ok <- delete_native_resource_statuses(deleted_object, object),
+               {:ok, _} <- User.delete(deleted_object) do
             :ok
           end
 
@@ -413,21 +377,6 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       {:ok, object, meta}
     else
       {:error, result}
-    end
-  end
-
-  defp handle_missing_delete_target(meta) do
-    case Keyword.get(meta, :delete_target) do
-      %{state: :remote_tombstone} ->
-        :ok
-
-      %{state: :pruned_object_with_create, create_activity: %Activity{} = create_activity} ->
-        with {:ok, _activity} <- Repo.delete(create_activity) do
-          :ok
-        end
-
-      _ ->
-        :missing_delete_target
     end
   end
 
@@ -544,6 +493,211 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   @impl true
   def handle(object, meta) do
     {:ok, object, meta}
+  end
+
+  defp follow_with_group_membership(%User{} = follower, %User{} = followed) do
+    with :ok <- GroupMembership.validate_federated_follow(followed, follower),
+         {:ok, follower, followed} <- User.follow(follower, followed, :follow_pending),
+         {:ok, _membership} <-
+           GroupMembership.sync_federated_follow(followed, follower, "pending") do
+      {:ok, follower, followed}
+    else
+      error ->
+        # Do not leave a generic relationship behind when local group policy or
+        # membership persistence rejects the corresponding group membership.
+        FollowingRelationship.unfollow(follower, followed)
+        error
+    end
+  end
+
+  # Custom resources and process objects do not participate in status counts,
+  # pins, conversations, or timeline streams. Their authority can be expressed
+  # through owner or attributedTo without an actor field, so cleanup must stop
+  # after replacing the object with a Tombstone and removing linked activities.
+  defp delete_custom_resource(deleted_object, delete_activity) do
+    case Object.delete(deleted_object) do
+      {:ok, _tombstone, _activity} ->
+        :ok
+
+      _error ->
+        @logger.error("The custom resource could not be deleted: #{inspect(deleted_object)}")
+        {:error, delete_activity}
+    end
+  end
+
+  defp delete_timeline_object(deleted_object, delete_activity) do
+    with {_, {:ok, _tombstone, _activity}} <- {:object, Object.delete(deleted_object)},
+         {_, actor} when is_binary(actor) <- {:actor, timeline_object_actor(deleted_object.data)},
+         {_, %User{} = user} <- {:user, User.get_cached_by_ap_id(actor)} do
+      User.remove_pinned_object_id(user, deleted_object.data["id"])
+
+      {:ok, user} = ActivityPub.decrease_note_count_if_public(user, deleted_object)
+
+      if in_reply_to = deleted_object.data["inReplyTo"] do
+        Object.decrease_replies_count(in_reply_to)
+      end
+
+      if quote_url =
+           deleted_object.data["quoteUrl"] &&
+             QuoteAuthorization.visible_state?(deleted_object.data) do
+        Object.decrease_quotes_count(quote_url)
+      end
+
+      MessageReference.delete_for_object(deleted_object)
+
+      ap_streamer().stream_out(delete_activity)
+      ap_streamer().stream_out_participations(deleted_object, user)
+      Utils.maybe_handle_group_deletes(delete_activity)
+      :ok
+    else
+      {:actor, _} ->
+        @logger.error("The object doesn't have an actor: #{inspect(deleted_object)}")
+        :no_object_actor
+
+      {:user, _} ->
+        @logger.error(
+          "The object's actor could not be resolved to a user: #{inspect(deleted_object)}"
+        )
+
+        :no_object_user
+
+      {:object, _} ->
+        @logger.error("The object could not be deleted: #{inspect(deleted_object)}")
+        {:error, delete_activity}
+    end
+  end
+
+  # Manyfold publishes a 3D model as an actor and mirrors it as a status Note
+  # authored by the model's Creator. A valid model actor Delete therefore also
+  # owns cleanup of Notes bound to the cached canonical model URL. Exact URL
+  # matching and same-origin checks prevent an actor from deleting unrelated
+  # compatibility statuses.
+  defp delete_native_resource_statuses(
+         %User{local: false, ap_id: ap_id, uri: uri, actor_extensions: extensions},
+         delete_activity
+       )
+       when is_binary(uri) do
+    with "3DModel" <- ActorExtensions.concrete_type(extensions),
+         true <- same_origin?(ap_id, uri) do
+      from(object in Object,
+        where: fragment("?->>'type' = 'Note'", object.data),
+        where: fragment("?->>'context' = ?", object.data, ^uri),
+        where: fragment("?->>'url' = ?", object.data, ^uri)
+      )
+      |> Repo.all()
+      |> Enum.filter(fn %Object{data: data} ->
+        same_origin?(ap_id, data["id"]) and
+          same_origin?(ap_id, timeline_object_actor(data))
+      end)
+      |> Enum.reduce_while(:ok, fn compatibility_object, :ok ->
+        case delete_timeline_object(compatibility_object, delete_activity) do
+          :ok -> {:cont, :ok}
+          error -> {:halt, error}
+        end
+      end)
+    else
+      _other -> :ok
+    end
+  end
+
+  defp delete_native_resource_statuses(_user, _delete_activity), do: :ok
+
+  defp timeline_object_actor(%{} = object) do
+    object["actor"] || List.first(CustomObject.authorities(object))
+  end
+
+  defp handle_timeline_object_creation(activity, object, meta) do
+    with %User{} = user <- User.get_cached_by_ap_id(activity.data["actor"]) do
+      {:ok, notifications} = Notification.create_notifications(activity, do_send: false)
+      {:ok, _user} = ActivityPub.increase_note_count_if_public(user, object)
+      {:ok, _user} = ActivityPub.update_last_status_at_if_public(user, object)
+
+      if in_reply_to = object.data["type"] != "Answer" && object.data["inReplyTo"] do
+        Object.increase_replies_count(in_reply_to)
+      end
+
+      {object, quote_counted?} =
+        case QuoteAuthorization.register(object, activity.local) do
+          {:ok, object, counted?} -> {object, counted?}
+          _ -> {object, false}
+        end
+
+      if quote_counted?, do: Object.increase_quotes_count(object.data["quoteUrl"])
+
+      if activity.local, do: QuoteAuthorization.maybe_request(object, true)
+
+      reply_depth = (meta[:depth] || 0) + 1
+
+      # Remote reply prefetching follows the explicit replies collection when a
+      # server provides it. The depth guard keeps hostile or huge trees bounded.
+      if Pleroma.Web.Federator.allowed_thread_distance?(reply_depth) and
+           object.data["replies"] != nil do
+        for reply_id <- object.data["replies"] do
+          Pleroma.Workers.RemoteFetcherWorker.enqueue("fetch_remote", %{
+            "id" => reply_id,
+            "depth" => reply_depth,
+            "thread" => true
+          })
+        end
+      end
+
+      if not activity.local do
+        current_depth = meta[:depth] || 1
+
+        RemoteRepliesFetcherWorker.enqueue_for_object(object, reply_depth)
+        RemoteRepliesFetcherWorker.enqueue_for_reply_ancestors(object, current_depth)
+      end
+
+      Pleroma.Web.RichMedia.Card.get_by_activity(activity)
+
+      Pleroma.Search.add_to_index(Map.put(activity, :object, object))
+
+      Utils.maybe_handle_group_posts(activity)
+
+      meta = add_notifications(meta, notifications)
+
+      # ChatMessages are special, as they get streamed in handle_object_creation/3.
+      # Other Create activities stream here so clients see Articles, Events,
+      # Questions, and future object types without needing a release for each one.
+      if object.data["type"] != "ChatMessage" do
+        ap_streamer().stream_out(activity)
+      end
+
+      {:ok, activity, meta}
+    else
+      e -> Repo.rollback(e)
+    end
+  end
+
+  defp ensure_announce_counters(%Object{data: data} = object) do
+    announcements =
+      case data["announcements"] do
+        announcements when is_list(announcements) -> announcements
+        _ -> []
+      end
+
+    count = length(announcements)
+
+    if data["announcement_count"] == count do
+      {:ok, object}
+    else
+      Utils.update_element_in_object("announcement", announcements, object, count)
+    end
+  end
+
+  defp handle_missing_delete_target(meta) do
+    case Keyword.get(meta, :delete_target) do
+      %{state: :remote_tombstone} ->
+        :ok
+
+      %{state: :pruned_object_with_create, create_activity: %Activity{} = create_activity} ->
+        with {:ok, _activity} <- Repo.delete(create_activity) do
+          :ok
+        end
+
+      _ ->
+        :missing_delete_target
+    end
   end
 
   defp add_collection_object(data) do
@@ -736,7 +890,9 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
          %User{} = follower <- User.get_cached_by_ap_id(follower_id),
          {:ok, follow_activity} <- Utils.update_follow_state_for_all(follow_activity, "accept"),
          {:ok, _follower, followed} <-
-           FollowingRelationship.update(follower, followed, :follow_accept) do
+           FollowingRelationship.update(follower, followed, :follow_accept),
+         {:ok, _membership} <-
+           GroupMembership.sync_federated_follow(followed, follower, "active") do
       Notification.update_notification_type(followed, follow_activity)
     end
   end
@@ -759,7 +915,11 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
          %User{} = follower <- User.get_cached_by_ap_id(follower_id),
          {:ok, _follow_activity} <- Utils.update_follow_state_for_all(follow_activity, "reject") do
       FollowingRelationship.update(follower, followed, :follow_reject)
-      Notification.dismiss(follow_activity)
+
+      with {:ok, _membership} <-
+             GroupMembership.sync_federated_unfollow(followed, follower) do
+        Notification.dismiss(follow_activity)
+      end
     end
   end
 
@@ -798,7 +958,6 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
        ) do
     orig_object_ap_id = updated_object["id"]
     orig_object = Object.get_by_ap_id(orig_object_ap_id)
-    orig_object_data = orig_object.data
 
     updated_object =
       if meta[:local] do
@@ -809,18 +968,82 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
         meta[:object_data]
       end
 
-    if orig_object_data["type"] in Pleroma.Constants.updatable_object_types() do
-      {:ok, _, updated} =
-        Object.Updater.do_update_and_invalidate_cache(orig_object, updated_object)
+    case orig_object do
+      %Object{data: %{"type" => type}} = orig_object
+      when type in Pleroma.Constants.updatable_object_types() ->
+        {:ok, _, updated} =
+          Object.Updater.do_update_and_invalidate_cache(orig_object, updated_object)
 
-      if updated do
-        object
-        |> Activity.normalize()
-        |> ActivityPub.notify_and_stream()
-      end
+        if updated do
+          object
+          |> update_activity_for_streaming(updated_object, meta)
+          |> ActivityPub.notify_and_stream()
+        end
+
+        {:ok, object, meta}
+
+      %Object{} = orig_object ->
+        if CustomObject.custom_object?(orig_object.data) do
+          {:ok, _, updated} =
+            Object.Updater.do_custom_update_and_invalidate_cache(
+              orig_object,
+              updated_object,
+              allow_untimestamped: meta[:allow_untimestamped_update] == true,
+              allow_unversioned: meta[:allow_unversioned_custom_update] == true
+            )
+
+          if updated and CustomObject.timeline_object?(orig_object.data) do
+            object
+            |> update_activity_for_streaming(updated_object, meta)
+            |> ActivityPub.notify_and_stream()
+          end
+
+          meta =
+            if updated do
+              add_object_cache_refresh(meta, orig_object_ap_id)
+            else
+              meta
+            end
+
+          {:ok, object, meta}
+        else
+          {:ok, object, meta}
+        end
+
+      nil ->
+        # A recent Update can legitimately race ahead of its Create. Validation
+        # has already required the embedded object's actor to match the Update
+        # actor and bounded the object's age, so importing it here does not turn
+        # arbitrary old Updates into fresh timeline content.
+        case handle_object_creation(
+               updated_object,
+               object,
+               Keyword.put(meta, :do_not_federate, true)
+             ) do
+          {:ok, _imported_object, imported_meta} -> {:ok, object, imported_meta}
+          error -> error
+        end
+
+      _ ->
+        {:ok, object, meta}
     end
+  end
 
-    {:ok, object, meta}
+  #
+  # A Flohmarkt Update can reuse its persisted Create ID.  The database keeps
+  # that Create as the canonical timeline activity, so build an in-memory
+  # Update around the freshly reloaded object for streaming.  Ordinary Update
+  # activities continue through the normal persisted-activity lookup.
+  #
+  defp update_activity_for_streaming(activity, updated_object, meta) do
+    if meta[:reused_create_activity_update] == true do
+      case Activity.get_create_by_object_ap_id_with_object(updated_object["id"]) do
+        %Activity{} = create_activity -> %{create_activity | data: activity.data}
+        _missing_create -> activity
+      end
+    else
+      Activity.normalize(activity)
+    end
   end
 
   def handle_object_creation(%{"type" => "ChatMessage"} = object, _activity, meta) do
@@ -834,6 +1057,57 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       {:ok, object, meta}
     end
   end
+
+  def handle_object_creation(%{"type" => "Question"} = object, activity, meta) do
+    with {:ok, object, meta} <- Pipeline.common_pipeline(object, meta) do
+      PollWorker.schedule_poll_end(activity)
+      {:ok, object, meta}
+    end
+  end
+
+  def handle_object_creation(%{"type" => "Answer"} = object_map, _activity, meta) do
+    with {:ok, object, meta} <- Pipeline.common_pipeline(object_map, meta) do
+      Object.increase_vote_count(
+        object.data["inReplyTo"],
+        object.data["name"],
+        object.data["actor"]
+      )
+
+      {:ok, object, meta}
+    end
+  end
+
+  def handle_object_creation(%{"type" => "Event"} = object, activity, meta) do
+    with {:ok, object, meta} <- Pipeline.common_pipeline(object, meta) do
+      EventReminderWorker.schedule_event_reminder(activity)
+      {:ok, object, meta}
+    end
+  end
+
+  def handle_object_creation(%{"type" => objtype} = object, _activity, meta)
+      when objtype in ~w[Audio Video Image Article Document Note Page] do
+    meta = Keyword.put(meta, :preserve_internal_replies_collection, true)
+
+    with {:ok, object, meta} <- Pipeline.common_pipeline(object, meta) do
+      {:ok, object, meta}
+    end
+  end
+
+  def handle_object_creation(%{"type" => _type} = object, activity, meta) do
+    if CustomObject.custom_object?(object) do
+      meta =
+        meta
+        |> Keyword.put(:activity_actor, activity.data["actor"])
+        |> Keyword.put(:preserve_internal_replies_collection, true)
+
+      Pipeline.common_pipeline(object, meta)
+    else
+      {:ok, object, meta}
+    end
+  end
+
+  # Nothing to do
+  def handle_object_creation(object, _activity, meta), do: {:ok, object, meta}
 
   defp chat_message_streamables(object, meta) do
     with %User{} = actor <- User.get_cached_by_ap_id(object.data["actor"]),
@@ -866,46 +1140,6 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
   defp chat_message_recipient_id([recipient | _]) when is_binary(recipient), do: recipient
   defp chat_message_recipient_id(_), do: nil
-
-  def handle_object_creation(%{"type" => "Question"} = object, activity, meta) do
-    with {:ok, object, meta} <- Pipeline.common_pipeline(object, meta) do
-      PollWorker.schedule_poll_end(activity)
-      {:ok, object, meta}
-    end
-  end
-
-  def handle_object_creation(%{"type" => "Answer"} = object_map, _activity, meta) do
-    with {:ok, object, meta} <- Pipeline.common_pipeline(object_map, meta) do
-      Object.increase_vote_count(
-        object.data["inReplyTo"],
-        object.data["name"],
-        object.data["actor"]
-      )
-
-      {:ok, object, meta}
-    end
-  end
-
-  def handle_object_creation(%{"type" => "Event"} = object, activity, meta) do
-    with {:ok, object, meta} <- Pipeline.common_pipeline(object, meta) do
-      EventReminderWorker.schedule_event_reminder(activity)
-      {:ok, object, meta}
-    end
-  end
-
-  def handle_object_creation(%{"type" => objtype} = object, _activity, meta)
-      when objtype in ~w[Audio Video Image Article Note Page] do
-    meta = Keyword.put(meta, :preserve_internal_replies_collection, true)
-
-    with {:ok, object, meta} <- Pipeline.common_pipeline(object, meta) do
-      {:ok, object, meta}
-    end
-  end
-
-  # Nothing to do
-  def handle_object_creation(object, _activity, meta) do
-    {:ok, object, meta}
-  end
 
   defp undo_like(nil, object), do: delete_object(object)
 
@@ -1032,9 +1266,44 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     |> Keyword.put(:notifications, notifications ++ existing)
   end
 
+  defp add_object_cache_refresh(meta, object_id) when is_binary(object_id) do
+    object_ids = Keyword.get(meta, :object_cache_refreshes, [])
+    Keyword.put(meta, :object_cache_refreshes, Enum.uniq([object_id | object_ids]))
+  end
+
+  defp refresh_object_caches(meta) do
+    meta
+    |> Keyword.get(:object_cache_refreshes, [])
+    |> Enum.each(fn object_id ->
+      with %Object{} = object <- Object.get_by_ap_id(object_id),
+           {:ok, _} <- Object.invalid_object_cache(object),
+           {:ok, _} <- Object.set_cache(object) do
+        invalidate_object_html_caches(object)
+      end
+    end)
+
+    Keyword.delete(meta, :object_cache_refreshes)
+  end
+
+  defp invalidate_object_html_caches(%Object{data: %{"id" => object_id}} = object) do
+    #
+    # Status HTML is cached under the Create activity's database ID. Unknown
+    # vocabularies do not necessarily maintain formerRepresentations, so an
+    # Update can retain chronology slot zero and otherwise reuse the old HTML
+    # forever. This runs after commit, which also closes the window where a
+    # concurrent API request can repopulate the old value during the update.
+    #
+    Pleroma.Activity.HTML.invalidate_cache_for(object.id)
+
+    object_id
+    |> Activity.get_all_create_by_object_ap_id()
+    |> Enum.each(&Pleroma.Activity.HTML.invalidate_cache_for(&1.id))
+  end
+
   @impl true
   def handle_after_transaction(meta) do
     meta
+    |> refresh_object_caches()
     |> send_notifications()
     |> send_streamables()
   end

@@ -29,6 +29,8 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
 
   @default_max_age_days 183
   @default_batch_size 100
+  @default_candidate_scan_limit 1_000
+  @default_max_scan_pages 10
   @default_query_timeout_ms 120_000
   @seconds_per_day 86_400
   @group_service_actor_regex "fedigroups|gancio|gup\\.pe|buzzrelay|tootgroup"
@@ -51,13 +53,88 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
     cutoff = cutoff()
     batch_size = batch_size()
 
-    case cutoff |> candidates_query(batch_size) |> safe_repo_all() do
-      {:ok, objects} ->
-        Enum.reduce(objects, 0, &delete_object/2)
+    case candidate_objects(cutoff, batch_size) do
+      {:ok, objects, scanned_count} ->
+        count = Enum.reduce(objects, 0, &safely_delete_object/2)
+
+        Logger.info(
+          "Group discussion cleanup deleted #{count} objects after scanning #{scanned_count} stale remote candidates"
+        )
+
+        count
 
       {:error, reason} ->
         Logger.warning("Group discussion cleanup skipped after query failure: #{inspect(reason)}")
         0
+    end
+  end
+
+  defp safely_delete_object(object, count) do
+    delete_object(object, count)
+  rescue
+    error ->
+      Logger.warning(
+        "Group discussion cleanup skipped object #{object.id}: #{Exception.message(error)}"
+      )
+
+      count
+  catch
+    kind, reason ->
+      Logger.warning(
+        "Group discussion cleanup skipped object #{object.id}: #{inspect({kind, reason})}"
+      )
+
+      count
+  end
+
+  defp candidate_objects(cutoff, batch_size) do
+    collect_candidate_objects(cutoff, batch_size, nil, [], 0, max_scan_pages())
+  end
+
+  defp collect_candidate_objects(_, _, _, objects, scanned_count, 0) do
+    {:ok, Enum.reverse(objects), scanned_count}
+  end
+
+  defp collect_candidate_objects(_, batch_size, _, objects, scanned_count, _)
+       when length(objects) >= batch_size do
+    {:ok, Enum.reverse(objects), scanned_count}
+  end
+
+  defp collect_candidate_objects(
+         cutoff,
+         batch_size,
+         after_cursor,
+         objects,
+         scanned_count,
+         pages_left
+       ) do
+    case candidate_object_rows(cutoff, after_cursor) do
+      {:ok, []} ->
+        {:ok, Enum.reverse(objects), scanned_count}
+
+      {:ok, object_rows} ->
+        object_ids = Enum.map(object_rows, &elem(&1, 0))
+        remaining_count = batch_size - length(objects)
+
+        case object_ids |> candidates_query(cutoff, remaining_count) |> safe_repo_all() do
+          {:ok, page_objects} ->
+            mark_retained_candidates(object_ids, Enum.map(page_objects, & &1.id))
+
+            collect_candidate_objects(
+              cutoff,
+              batch_size,
+              List.last(object_rows),
+              Enum.reverse(page_objects) ++ objects,
+              scanned_count + length(object_ids),
+              pages_left - 1
+            )
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -68,7 +145,46 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
     end
   end
 
-  defp candidates_query(cutoff, batch_size) do
+  defp candidate_object_rows(cutoff, after_cursor) do
+    Object
+    |> maybe_after_object_cursor(after_cursor)
+    |> where([object], object.inserted_at < ^cutoff)
+    |> where([object], object.updated_at < ^cutoff)
+    |> where(
+      [object],
+      fragment(
+        "?->>'type' in ('Note', 'Article', 'Page', 'Question', 'Event', 'Audio', 'Video')",
+        object.data
+      )
+    )
+    |> order_by([object], asc: object.updated_at, asc: object.id)
+    |> limit(^candidate_scan_limit())
+    |> select([object], {object.id, object.updated_at})
+    |> safe_repo_all()
+  end
+
+  defp maybe_after_object_cursor(query, nil), do: query
+
+  defp maybe_after_object_cursor(query, {after_id, after_updated_at}) do
+    where(
+      query,
+      [object],
+      object.updated_at > ^after_updated_at or
+        (object.updated_at == ^after_updated_at and object.id > ^after_id)
+    )
+  end
+
+  defp mark_retained_candidates(scanned_ids, prunable_ids) do
+    retained_ids = scanned_ids -- prunable_ids
+
+    if retained_ids != [] do
+      Object
+      |> where([object], object.id in ^retained_ids)
+      |> Repo.update_all(set: [updated_at: NaiveDateTime.utc_now()])
+    end
+  end
+
+  defp candidates_query(object_ids, cutoff, batch_size) do
     from(activity in Activity,
       join: object in Object,
       on:
@@ -77,6 +193,7 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
           object.data,
           activity.data
         ),
+      where: object.id in ^object_ids,
       where: activity.local == false,
       where: activity.inserted_at < ^cutoff,
       where: fragment("?->>'type' = 'Create'", activity.data),
@@ -213,6 +330,18 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   defp batch_size do
     __MODULE__
     |> config_integer(:batch_size, @default_batch_size)
+    |> max(1)
+  end
+
+  defp candidate_scan_limit do
+    __MODULE__
+    |> config_integer(:candidate_scan_limit, @default_candidate_scan_limit)
+    |> max(1)
+  end
+
+  defp max_scan_pages do
+    __MODULE__
+    |> config_integer(:max_scan_pages, @default_max_scan_pages)
     |> max(1)
   end
 

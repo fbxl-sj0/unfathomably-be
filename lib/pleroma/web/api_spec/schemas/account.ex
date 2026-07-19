@@ -8,6 +8,7 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Account do
   alias Pleroma.Web.ApiSpec.Schemas.AccountRelationship
   alias Pleroma.Web.ApiSpec.Schemas.ActorType
   alias Pleroma.Web.ApiSpec.Schemas.Emoji
+  alias Pleroma.Web.ApiSpec.Schemas.FederationStatus
   alias Pleroma.Web.ApiSpec.Schemas.FlakeID
   alias Pleroma.Web.ApiSpec.Schemas.VisibilityScope
 
@@ -44,6 +45,21 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Account do
         type: :object,
         properties: %{
           ap_id: %Schema{type: :string},
+          actor_types: %Schema{type: :array, items: %Schema{type: :string}},
+          native: %Schema{
+            type: :object,
+            nullable: true,
+            description:
+              "Bounded presentation metadata for an actor using an extension ActivityPub vocabulary",
+            properties: %{
+              canonical_id: %Schema{type: :string, format: :uri},
+              class: %Schema{type: :string},
+              context: %Schema{type: :string, nullable: true},
+              controls: %Schema{type: :array, items: %Schema{type: :string}},
+              fields: %Schema{type: :object, additionalProperties: true},
+              type: %Schema{type: :string}
+            }
+          },
           also_known_as: %Schema{type: :array, items: %Schema{type: :string}},
           allow_following_move: %Schema{
             type: :boolean,
@@ -114,6 +130,7 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Account do
             nullable: true,
             description: "Favicon image of the user's instance"
           },
+          federation: %Schema{allOf: [FederationStatus], nullable: true},
           avatar_description: %Schema{type: :string},
           header_description: %Schema{type: :string}
         }
@@ -133,6 +150,7 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Account do
             type: :object,
             properties: %{
               actor_type: ActorType,
+              actor_types: %Schema{type: :array, items: %Schema{type: :string}},
               discoverable: %Schema{
                 type: :boolean,
                 description:

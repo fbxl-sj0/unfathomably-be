@@ -4,8 +4,10 @@
 
 defmodule Pleroma.Workers.SignatureRetryWorker do
   alias Pleroma.Instances
+  alias Pleroma.Helpers.UriHelper
   alias Pleroma.Signature
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.ForwardedActivityVerifier
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.Federation.Churn
   alias Pleroma.Web.Federator
@@ -47,13 +49,15 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
         with actor_id = Utils.get_ap_id(params["actor"]),
              {:signature_actor, {:ok, signature_actor_id}} <-
                {:signature_actor, signature_actor_result},
-             {:same_actor, true} <- {:same_actor, signature_actor_id == actor_id},
-             {:ok, %User{}} <- User.get_or_fetch_by_ap_id(actor_id),
              {:ok, _public_key} <- Signature.refetch_public_key(conn_data),
              {:signature, true} <- {:signature, validate_signature(conn_data)},
-             {:same_actor, true} <- {:same_actor, validate_same_actor(conn_data)},
              {:host_header, true} <- {:host_header, validate_host_header(conn_data)},
-             {:ok, res} <- Federator.perform(:incoming_ap_doc, params) do
+             {:verified_activity, {:ok, verified_params}} <-
+               {:verified_activity, verify_activity_actor(params, actor_id, signature_actor_id)},
+             {:ok, %User{}} <- User.get_or_fetch_by_ap_id(actor_id),
+             {:same_actor, true} <-
+               {:same_actor, validate_same_actor(conn_data, actor_id, signature_actor_id)},
+             {:ok, res} <- Federator.perform(:incoming_ap_doc, verified_params) do
           unless Instances.reachable?(actor_id) do
             domain = uri_host(actor_id)
             Oban.insert(Pleroma.Workers.ReachabilityWorker.new(%{"domain" => domain}))
@@ -118,13 +122,25 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
     end
   end
 
-  defp validate_same_actor(conn_data) do
-    case MappedSignatureToIdentityPlug.call(conn_data, []) do
-      %Plug.Conn{assigns: %{valid_signature: true}} ->
-        true
+  defp validate_same_actor(conn_data, actor_id, signature_actor_id) do
+    if UriHelper.equivalent?(actor_id, signature_actor_id) do
+      case MappedSignatureToIdentityPlug.call(conn_data, []) do
+        %Plug.Conn{assigns: %{valid_signature: true}} -> true
+        _ -> false
+      end
+    else
+      # Cross-actor delivery reaches this branch only after the HTTP signature
+      # and canonical origin document have both been authenticated. The normal
+      # plug would reject the valid inbox-forwarding arrangement.
+      true
+    end
+  end
 
-      _ ->
-        false
+  defp verify_activity_actor(params, actor_id, signature_actor_id) do
+    if UriHelper.equivalent?(actor_id, signature_actor_id) do
+      {:ok, params}
+    else
+      ForwardedActivityVerifier.verify_and_fetch(params, signature_actor_id)
     end
   end
 
@@ -136,12 +152,10 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
     _, _ -> false
   end
 
-  defp uri_host(uri) do
-    if is_binary(uri) do
-      uri
-      |> URI.parse()
-      |> Map.get(:host)
-    end
+  defp uri_host(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:host)
   rescue
     URI.Error -> nil
   end
@@ -157,6 +171,15 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
   defp process_errors(errors, context \\ %{})
 
   defp process_errors({:error, {:error, _} = error}, context), do: process_errors(error, context)
+
+  defp process_errors(
+         {:verified_activity, {:error, {:origin_fetch, reason}}},
+         context
+       ),
+       do: process_errors({:error, reason}, context)
+
+  defp process_errors({:verified_activity, {:error, _reason}}, context),
+    do: process_errors({:same_actor, false}, context)
 
   defp process_errors(errors, context) do
     result =

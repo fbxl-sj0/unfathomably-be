@@ -11,6 +11,11 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.TagValidator do
 
   require Pleroma.Constants
 
+  @neodb_catalog_types ~w[
+    Album Edition Game Movie Performance PerformanceProduction Podcast
+    PodcastEpisode TVEpisode TVSeason TVShow
+  ]
+
   @primary_key false
   embedded_schema do
     # Common
@@ -29,6 +34,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.TagValidator do
     field(:mediaType, ObjectValidators.MIME)
     field(:updated, ObjectValidators.DateTime)
     field(:id, ObjectValidators.Uri)
+
+    # NeoDB catalog tags use an ordinary URI image rather than an Image object.
+    field(:image, ObjectValidators.Uri)
   end
 
   def cast_and_validate(data) do
@@ -69,6 +77,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.TagValidator do
     |> cast(data, [:type, :name, :mediaType, :href])
     |> validate_inclusion(:mediaType, Pleroma.Constants.activity_json_mime_types())
     |> validate_required([:type, :href, :mediaType])
+  end
+
+  def changeset(struct, %{"type" => type} = data) when type in @neodb_catalog_types do
+    struct
+    |> cast(data, [:type, :name, :href, :id, :image])
+    |> validate_required([:type, :href])
   end
 
   def changeset(struct, %{"type" => _} = data) do

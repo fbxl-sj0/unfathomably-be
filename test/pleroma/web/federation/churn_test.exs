@@ -26,6 +26,7 @@ defmodule Pleroma.Web.Federation.ChurnTest do
   import Ecto.Changeset
   import Pleroma.Factory
 
+  alias Pleroma.Object
   alias Pleroma.User
   alias Pleroma.Web.Federation.Churn
 
@@ -48,6 +49,11 @@ defmodule Pleroma.Web.Federation.ChurnTest do
       assert :noop = Churn.mark_deactivated_actor(error, "https://example.com/object/1")
       assert User.get_by_ap_id(local_user.ap_id).is_active
     end
+  end
+
+  test "ignores successful object structs while looking for validation errors" do
+    assert :error = Churn.deactivated_actor_id(%Object{})
+    assert :noop = Churn.mark_deactivated_actor(%Object{})
   end
 
   test "classifies PeerTube telemetry signature mismatches as expected churn" do

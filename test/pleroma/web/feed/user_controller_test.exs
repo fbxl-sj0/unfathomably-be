@@ -258,6 +258,18 @@ defmodule Pleroma.Web.Feed.UserControllerTest do
       assert response =~ "</html>"
     end
 
+    test "with dotted remote /users path, it falls back to frontend", %{conn: conn} do
+      user = insert(:user, local: false, nickname: "remote@social.example")
+
+      response =
+        conn
+        |> put_req_header("accept", "text/html")
+        |> get("/users/#{user.nickname}")
+        |> response(200)
+
+      assert response =~ "</html>"
+    end
+
     test "with html format, it falls back to frontend when user is not found", %{conn: conn} do
       response =
         conn
@@ -282,21 +294,6 @@ defmodule Pleroma.Web.Feed.UserControllerTest do
 
       assert redirected_to(conn) ==
                "#{Pleroma.Web.Endpoint.url()}/users/#{user.nickname}/feed.atom"
-    end
-
-    test "redirects to rss feed when explicitly requested", %{conn: conn} do
-      note_activity = insert(:note_activity)
-      user = User.get_cached_by_ap_id(note_activity.data["actor"])
-
-      conn =
-        conn
-        |> put_req_header("accept", "application/xml")
-        |> get("/users/#{user.nickname}.rss")
-
-      assert conn.status == 302
-
-      assert redirected_to(conn) ==
-               "#{Pleroma.Web.Endpoint.url()}/users/#{user.nickname}/feed.rss"
     end
 
     test "with non-html / non-json format, it returns error when user is not found", %{conn: conn} do

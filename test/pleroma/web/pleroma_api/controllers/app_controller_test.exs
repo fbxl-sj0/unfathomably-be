@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.PleromaAPI.AppControllerTest do
-  use Pleroma.Web.ConnCase, async: true
+  use Pleroma.Web.ConnCase, async: false
 
+  alias Pleroma.Maps
   alias Pleroma.Web.OAuth.App
   alias Pleroma.Web.Push
 
@@ -25,15 +26,16 @@ defmodule Pleroma.Web.PleromaAPI.AppControllerTest do
 
     [app] = App.get_user_apps(user)
 
-    expected = %{
-      "name" => app.client_name,
-      "website" => app.website,
-      "client_id" => app.client_id,
-      "client_secret" => app.client_secret,
-      "id" => app.id |> to_string(),
-      "redirect_uri" => app.redirect_uris,
-      "vapid_key" => Push.vapid_config() |> Keyword.get(:public_key)
-    }
+    expected =
+      %{
+        "name" => app.client_name,
+        "website" => app.website,
+        "client_id" => app.client_id,
+        "client_secret" => app.client_secret,
+        "id" => app.id |> to_string(),
+        "redirect_uri" => app.redirect_uris
+      }
+      |> Maps.put_if_present("vapid_key", Push.vapid_config() |> Keyword.get(:public_key))
 
     assert expected == json_response_and_validate_schema(creation, 200)
 

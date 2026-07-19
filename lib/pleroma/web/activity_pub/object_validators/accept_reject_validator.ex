@@ -6,8 +6,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
   use Ecto.Schema
 
   alias Pleroma.Activity
+  alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Object
-  alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.CustomObject
 
   import Ecto.Changeset
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
@@ -22,6 +23,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
         activity_fields()
       end
     end
+
+    field(:result, ObjectValidators.ObjectID)
   end
 
   def cast_data(data) do
@@ -34,7 +37,10 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
     |> validate_required([:id, :type, :actor, :to, :object])
     |> validate_inclusion(:type, ["Accept", "Reject"])
     |> CommonValidations.validate_actor_presence()
-    |> CommonValidations.validate_object_presence(allowed_types: ["Follow", "Join"])
+    |> CommonValidations.validate_object_presence(
+      allowed_types: ["Follow", "Join", "Offer", "QuoteRequest"]
+    )
+    |> validate_quote_result()
     |> validate_accept_reject_rights()
   end
 
@@ -61,21 +67,48 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
   end
 
   defp validate_actor(%Activity{data: %{"type" => "Join", "object" => joined_event}}, actor) do
-    cond do
-      joined_event == actor ->
-        true
+    with %Object{data: %{"actor" => event_author}} <- Object.get_cached_by_ap_id(joined_event) do
+      event_author == actor
+    else
+      _ -> false
+    end
+  end
 
-      match?(%User{actor_type: "Group"}, User.get_cached_by_ap_id(joined_event)) ->
-        joined_event == actor
+  defp validate_actor(%Activity{data: %{"type" => "QuoteRequest", "object" => target}}, actor) do
+    with %Object{data: %{"actor" => quoted_actor}} <- Object.get_by_ap_id(target) do
+      quoted_actor == actor
+    else
+      _ -> false
+    end
+  end
 
-      true ->
-        with %Object{data: %{"actor" => event_author}} <- Object.get_cached_by_ap_id(joined_event) do
-          event_author == actor
+  defp validate_actor(%Activity{data: %{"type" => "Offer", "target" => target}}, actor) do
+    with target_id when is_binary(target_id) <- object_id(target) do
+      target_id == actor or
+        with %Object{} = object <- Object.get_cached_by_ap_id(target_id) do
+          CustomObject.authorized?(object.data, actor)
         else
           _ -> false
         end
+    else
+      _ -> false
     end
   end
 
   defp validate_actor(_, _), do: false
+
+  defp validate_quote_result(changeset) do
+    with "Accept" <- get_field(changeset, :type),
+         object_id when is_binary(object_id) <- get_field(changeset, :object),
+         %Activity{data: %{"type" => type}} when type in ["Offer", "QuoteRequest"] <-
+           Activity.get_by_ap_id(object_id) do
+      validate_required(changeset, [:result])
+    else
+      _ -> changeset
+    end
+  end
+
+  defp object_id(value) when is_binary(value), do: value
+  defp object_id(%{"id" => id}) when is_binary(id), do: id
+  defp object_id(_value), do: nil
 end

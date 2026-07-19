@@ -3,6 +3,8 @@ Description=Pleroma social network
 After=network.target postgresql.service nginx.service
 
 [Service]
+# Federation and media bursts can exceed systemd's 1,024 descriptor default.
+LimitNOFILE=65536
 KillMode=process
 Restart=on-failure
 

@@ -380,6 +380,68 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AnnounceHandlingTest do
     assert %{data: %{"content" => "<p>new body</p>"}} = Object.get_by_ap_id(note.data["id"])
   end
 
+  test "it accepts Ibis comments whose wrapping Create adds the Group recipient" do
+    author =
+      insert(:user,
+        local: false,
+        ap_id: "https://ibis.example/user/editor",
+        follower_address: nil
+      )
+
+    group =
+      insert(:user,
+        local: false,
+        actor_type: "Group",
+        ap_id: "https://ibis.example/",
+        follower_address: nil
+      )
+
+    _article =
+      insert(:note,
+        user: author,
+        data: %{
+          "id" => "https://ibis.example/article/Alien_Wiki",
+          "content" => "<p>The parent Ibis Article.</p>",
+          "to" => [Pleroma.Constants.as_public(), group.ap_id]
+        }
+      )
+
+    note = %{
+      "attributedTo" => author.ap_id,
+      "content" => "<p>A native Ibis comment.</p>",
+      "id" => "https://ibis.example/comment/1",
+      "inReplyTo" => "https://ibis.example/article/Alien_Wiki",
+      "published" => "2026-07-18T00:00:00Z",
+      "to" => [Pleroma.Constants.as_public()],
+      "type" => "Note"
+    }
+
+    create = %{
+      "actor" => author.ap_id,
+      "cc" => [],
+      "id" => "https://ibis.example/activity/create-comment-1",
+      "object" => note,
+      "to" => [Pleroma.Constants.as_public(), group.ap_id],
+      "type" => "Create"
+    }
+
+    announce = %{
+      "actor" => group.ap_id,
+      "cc" => ["https://ibis.example/followers"],
+      "id" => "https://ibis.example/activity/announce-comment-1",
+      "object" => create,
+      "to" => [Pleroma.Constants.as_public()],
+      "type" => "Announce"
+    }
+
+    assert {:ok, %Activity{data: %{"type" => "Create"}}} =
+             Transmogrifier.handle_incoming(announce)
+
+    assert %Object{data: stored_note} = Object.get_by_ap_id(note["id"])
+    assert group.ap_id in stored_note["to"]
+    assert Pleroma.Constants.as_public() in stored_note["to"]
+  end
+
   # Ignore inlined activities for now
   @tag skip: true
   test "it works for incoming announces with an inlined activity" do

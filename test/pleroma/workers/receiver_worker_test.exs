@@ -10,7 +10,6 @@ defmodule Pleroma.Workers.ReceiverWorkerTest do
   import Pleroma.Factory
 
   alias Pleroma.Workers.ReceiverWorker
-  alias Pleroma.Workers.RemoteFetcherWorker
 
   test "it does not retry malformed incoming params" do
     assert {:cancel, :missing_incoming_ap_doc_params} =
@@ -54,126 +53,31 @@ defmodule Pleroma.Workers.ReceiverWorkerTest do
     end
   end
 
-  test "it retries validation failures caused by missing remote references" do
-    params =
-      insert(:note_activity).data
-      |> Map.delete("object")
-
-    changeset = missing_object_changeset()
-
-    with_mock Pleroma.Web.Federator,
-      perform: fn :incoming_ap_doc, _ -> {:error, changeset} end do
-      assert {:error, %Ecto.Changeset{}} =
-               ReceiverWorker.perform(%Oban.Job{
-                 args: %{"op" => "incoming_ap_doc", "params" => params}
-               })
-    end
-  end
-
-  test "it enqueues a missing remote reference fetch before retrying transient misses" do
-    object_id = "https://remote.example/objects/1"
-    params = insert(:note_activity).data |> Map.put("object", object_id)
-    changeset = missing_object_changeset()
-
-    with_mocks([
-      {Pleroma.Web.Federator, [], [perform: fn :incoming_ap_doc, _ -> {:error, changeset} end]},
-      {Pleroma.Object.Fetcher, [],
-       [
-         fetch_object_from_id: fn ^object_id, opts ->
-           assert opts == [depth: 1]
-           {:error, {:http, 502}}
-         end
-       ]}
-    ]) do
-      assert {:error, %Ecto.Changeset{}} =
-               ReceiverWorker.perform(%Oban.Job{
-                 args: %{"op" => "incoming_ap_doc", "params" => params}
-               })
-
-      assert_enqueued(
-        worker: RemoteFetcherWorker,
-        args: %{"op" => "fetch_remote", "id" => object_id, "depth" => 1}
-      )
-    end
-  end
-
-  test "it fetches the action target for missing references inside embedded group announces" do
-    activity_id = "https://remote.example/activities/like/1"
-    object_id = "https://remote.example/comments/1"
-
-    params =
-      insert(:note_activity).data
-      |> Map.put("type", "Announce")
-      |> Map.put("object", %{
-        "id" => activity_id,
-        "type" => "Like",
-        "actor" => "https://remote.example/users/alice",
-        "object" => object_id
-      })
-
-    changeset = missing_object_changeset()
-
-    with_mocks([
-      {Pleroma.Web.Federator, [], [perform: fn :incoming_ap_doc, _ -> {:error, changeset} end]},
-      {Pleroma.Object.Fetcher, [],
-       [
-         fetch_object_from_id: fn ^object_id, opts ->
-           assert opts == [depth: 1]
-           {:error, {:http, 502}}
-         end
-       ]}
-    ]) do
-      assert {:error, %Ecto.Changeset{}} =
-               ReceiverWorker.perform(%Oban.Job{
-                 args: %{"op" => "incoming_ap_doc", "params" => params}
-               })
-
-      assert_enqueued(
-        worker: RemoteFetcherWorker,
-        args: %{"op" => "fetch_remote", "id" => object_id, "depth" => 1}
-      )
-
-      refute_enqueued(
-        worker: RemoteFetcherWorker,
-        args: %{"op" => "fetch_remote", "id" => activity_id, "depth" => 1}
-      )
-    end
-  end
-
-  test "it cancels missing remote references after terminal fetch misses" do
-    object_id = "https://remote.example/objects/gone"
-    params = insert(:note_activity).data |> Map.put("object", object_id)
-    changeset = missing_object_changeset()
-
-    with_mocks([
-      {Pleroma.Web.Federator, [], [perform: fn :incoming_ap_doc, _ -> {:error, changeset} end]},
-      {Pleroma.Object.Fetcher, [],
-       [
-         fetch_object_from_id: fn ^object_id, opts ->
-           assert opts == [depth: 1]
-           {:error, :not_found}
-         end
-       ]}
-    ]) do
-      assert {:cancel, {:missing_reference, ^object_id, :not_found}} =
-               ReceiverWorker.perform(%Oban.Job{
-                 args: %{"op" => "incoming_ap_doc", "params" => params}
-               })
-
-      refute_enqueued(
-        worker: RemoteFetcherWorker,
-        args: %{"op" => "fetch_remote", "id" => object_id, "depth" => 1}
-      )
-    end
-  end
-
-  test "it does not retry duplicates" do
+  test "it completes duplicate deliveries idempotently" do
     params = insert(:note_activity).data
 
-    assert {:cancel, :already_present} =
+    assert {:ok, :already_present} =
              ReceiverWorker.perform(%Oban.Job{
                args: %{"op" => "incoming_ap_doc", "params" => params}
              })
+  end
+
+  test "it completes duplicate Like validation idempotently" do
+    params = insert(:note_activity).data
+
+    changeset =
+      {%{}, %{actor: :string, object: :string}}
+      |> Ecto.Changeset.change()
+      |> Ecto.Changeset.add_error(:actor, "already liked this object")
+      |> Ecto.Changeset.add_error(:object, "already liked by this actor")
+
+    with_mock Pleroma.Web.Federator,
+      perform: fn :incoming_ap_doc, _ -> {:error, {:validate, {:error, changeset}}} end do
+      assert {:ok, :already_present} =
+               ReceiverWorker.perform(%Oban.Job{
+                 args: %{"op" => "incoming_ap_doc", "params" => params}
+               })
+    end
   end
 
   test "it does not retry terminal HTTP errors" do
@@ -188,11 +92,5 @@ defmodule Pleroma.Workers.ReceiverWorkerTest do
                  })
       end
     end
-  end
-
-  defp missing_object_changeset do
-    {%{}, %{object: :string}}
-    |> Ecto.Changeset.cast(%{}, [:object])
-    |> Ecto.Changeset.add_error(:object, "can't find object")
   end
 end

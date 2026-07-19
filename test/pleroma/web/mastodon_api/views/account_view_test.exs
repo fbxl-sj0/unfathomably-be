@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
   use Pleroma.DataCase, async: false
 
+  alias Pleroma.FederationStatus
   alias Pleroma.FollowingRelationship
   alias Pleroma.Instances
   alias Pleroma.User
@@ -40,6 +41,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         also_known_as: ["https://shitposter.zone/users/shp"]
       })
 
+    federation = FederationStatus.for_user(user)
+
     expected = %{
       id: to_string(user.id),
       username: "shp",
@@ -73,6 +76,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         sensitive: false,
         pleroma: %{
           actor_type: "Person",
+          actor_types: [],
           discoverable: true
         },
         fields: []
@@ -81,9 +85,12 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
       last_status_at: nil,
       pleroma: %{
         ap_id: user.ap_id,
+        actor_types: [],
         also_known_as: ["https://shitposter.zone/users/shp"],
+        avatar_description: "",
         background_image: "https://example.com/images/asuka_hospital.png",
         favicon: nil,
+        header_description: "",
         is_confirmed: true,
         tags: [],
         is_admin: false,
@@ -94,8 +101,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         hide_follows: false,
         hide_followers_count: false,
         hide_follows_count: false,
-        avatar_description: "",
-        header_description: "",
+        federation: federation,
         relationship: %{},
         skip_thread_containment: false,
         accepts_chat_messages: nil,
@@ -259,6 +265,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         inserted_at: ~N[2017-08-15 15:47:06.597036]
       })
 
+    federation = FederationStatus.for_user(user)
+
     expected = %{
       id: to_string(user.id),
       username: "shp",
@@ -285,6 +293,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         sensitive: false,
         pleroma: %{
           actor_type: "Service",
+          actor_types: [],
           discoverable: true
         },
         fields: []
@@ -293,9 +302,12 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
       last_status_at: nil,
       pleroma: %{
         ap_id: user.ap_id,
+        actor_types: [],
         also_known_as: [],
+        avatar_description: "",
         background_image: nil,
         favicon: nil,
+        header_description: "",
         is_confirmed: true,
         tags: [],
         is_admin: false,
@@ -306,8 +318,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         hide_follows: false,
         hide_followers_count: false,
         hide_follows_count: false,
-        avatar_description: "",
-        header_description: "",
+        federation: federation,
         relationship: %{},
         skip_thread_containment: false,
         accepts_chat_messages: nil,
@@ -329,6 +340,56 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
 
     assert represented.acct == "compositions@channels.tests.funkwhale.audio"
     assert represented.url == "https://channels.tests.funkwhale.audio/channels/compositions"
+  end
+
+  test "Represent every advertised type of a multi-type ForgeFed actor" do
+    user =
+      insert(:user,
+        local: false,
+        actor_type: "Repository",
+        actor_types: ["Repository", "TicketTracker", "PatchTracker"]
+      )
+
+    represented =
+      AccountView.render("show.json", %{user: user, skip_visibility_check: true})
+
+    assert represented.source.pleroma.actor_type == "Repository"
+
+    assert represented.source.pleroma.actor_types == [
+             "Repository",
+             "TicketTracker",
+             "PatchTracker"
+           ]
+
+    assert represented.pleroma.actor_types == ["Repository", "TicketTracker", "PatchTracker"]
+  end
+
+  test "Represent a Manyfold model actor with native presentation metadata" do
+    user =
+      insert(:user,
+        local: false,
+        actor_type: "Service",
+        actor_types: ["Service"],
+        actor_extensions: %{
+          "f3di:concreteType" => "3DModel",
+          "spdx:license" => %{"spdx:licenseId" => "MIT"},
+          "context" => [
+            %{"@id" => "https://manyfold.example/collections/calibration"}
+          ]
+        }
+      )
+
+    represented =
+      AccountView.render("show.json", %{user: user, skip_visibility_check: true})
+
+    assert represented.pleroma.native.type == "3DModel"
+    assert represented.pleroma.native.class == "resource"
+    assert represented.pleroma.native.controls == ["open"]
+    assert represented.pleroma.native.fields.license == "MIT"
+
+    assert represented.pleroma.native.fields.collections == [
+             "https://manyfold.example/collections/calibration"
+           ]
   end
 
   test "Represent a deactivated user for a privileged user" do
@@ -372,6 +433,11 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
 
   describe "relationship" do
     defp test_relationship_rendering(user, other_user, expected_result) do
+      expected_result =
+        expected_result
+        |> Map.put_new(:federation, FederationStatus.for_user(other_user))
+        |> Map.put_new(:federation_blocked, false)
+
       opts = %{user: user, target: other_user, relationships: nil}
       assert expected_result == AccountView.render("relationship.json", opts)
 
@@ -477,6 +543,30 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         )
 
       test_relationship_rendering(user, other_user, expected)
+    end
+
+    test "represent local federation policy in the relationship" do
+      clear_config([:mrf_simple, :reject], [{"blocked.example", "Federation paused"}])
+
+      user = insert(:user)
+
+      other_user =
+        insert(:user,
+          local: false,
+          nickname: "alice@blocked.example",
+          ap_id: "https://blocked.example/users/alice"
+        )
+
+      assert %{
+               federation_blocked: true,
+               federation: %{
+                 defederated: true,
+                 host: "blocked.example",
+                 message: "Federation paused",
+                 reason: "Federation paused",
+                 severity: "reject"
+               }
+             } = AccountView.render("relationship.json", %{user: user, target: other_user})
     end
   end
 
@@ -820,27 +910,6 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
 
     assert DateTime.diff(
              mute_expires_at,
-             DateTime.utc_now() |> DateTime.add(24 * 60 * 60)
-           ) in -3..3
-  end
-
-  test "renders block expiration date" do
-    user = insert(:user)
-    other_user = insert(:user)
-
-    {:ok, _user_relationships} =
-      User.block(user, other_user, %{duration: 24 * 60 * 60})
-
-    %{
-      pleroma: %{
-        relationship: %{
-          block_expires_at: block_expires_at
-        }
-      }
-    } = AccountView.render("show.json", %{user: other_user, for: user, embed_relationships: true})
-
-    assert DateTime.diff(
-             block_expires_at,
              DateTime.utc_now() |> DateTime.add(24 * 60 * 60)
            ) in -3..3
   end

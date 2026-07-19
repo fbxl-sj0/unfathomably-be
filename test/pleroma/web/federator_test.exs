@@ -4,7 +4,9 @@
 
 defmodule Pleroma.Web.FederatorTest do
   alias Pleroma.Instances
+  alias Pleroma.Object
   alias Pleroma.Tests.ObanHelpers
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.Federator
   alias Pleroma.Workers.PublisherWorker
@@ -132,6 +134,103 @@ defmodule Pleroma.Web.FederatorTest do
 
       assert {:ok, job} = Federator.incoming_ap_doc(params)
       assert {:cancel, :already_present} = ObanHelpers.perform(job)
+    end
+
+    test "reprocesses a native Create that shares its fallback activity ID" do
+      actor = "http://mastodon.example.org/users/admin"
+      object_id = "http://mastodon.example.org/users/admin/reviews/1"
+
+      fallback = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "actor" => actor,
+        "type" => "Create",
+        "id" => "http://mastodon.example.org/users/admin/activities/review-1",
+        "object" => %{
+          "type" => "Article",
+          "content" => "A compatibility review",
+          "id" => object_id,
+          "attributedTo" => actor,
+          "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+          "cc" => ["#{actor}/followers"]
+        },
+        "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc" => ["#{actor}/followers"]
+      }
+
+      assert {:ok, job} = Federator.incoming_ap_doc(fallback)
+      assert {:ok, _activity} = ObanHelpers.perform(job)
+      assert Object.get_by_ap_id(object_id).data["type"] == "Article"
+
+      native =
+        put_in(fallback, ["object"], %{
+          "type" => "Review",
+          "content" => "The native review",
+          "id" => object_id,
+          "attributedTo" => actor,
+          "rating" => 4.5,
+          "inReplyToBook" => "http://mastodon.example.org/books/1",
+          "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+          "cc" => ["#{actor}/followers"]
+        })
+
+      stored = Object.get_by_ap_id(object_id)
+
+      assert CustomObject.compatibility_upgrade?(stored.data, native["object"], actor),
+             inspect(stored: stored.data, incoming: native["object"])
+
+      assert {:ok, job} = Federator.incoming_ap_doc(native)
+      assert {:ok, _activity} = ObanHelpers.perform(job)
+
+      upgraded = Object.get_by_ap_id(object_id)
+      assert upgraded.data["type"] == "Review"
+      assert upgraded.data["rating"] == 4.5
+    end
+
+    test "processes a BookWyrm Delete that reuses its Create activity ID" do
+      actor = "http://mastodon.example.org/users/admin"
+      activity_id = "http://mastodon.example.org/users/admin/comments/1/activity"
+      object_id = "http://mastodon.example.org/users/admin/comments/1"
+
+      create = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "actor" => actor,
+        "type" => "Create",
+        "id" => activity_id,
+        "object" => %{
+          "type" => "Comment",
+          "content" => "A native BookWyrm comment",
+          "id" => object_id,
+          "attributedTo" => actor,
+          "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+          "cc" => ["#{actor}/followers"]
+        },
+        "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc" => ["#{actor}/followers"]
+      }
+
+      assert {:ok, job} = Federator.incoming_ap_doc(create)
+      assert {:ok, _activity} = ObanHelpers.perform(job)
+      assert Object.get_by_ap_id(object_id).data["type"] == "Comment"
+
+      delete = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "actor" => actor,
+        "type" => "Delete",
+        "id" => activity_id,
+        "object" => %{"type" => "Tombstone", "id" => object_id},
+        "to" => ["#{actor}/followers"],
+        "cc" => ["https://www.w3.org/ns/activitystreams#Public"]
+      }
+
+      assert {:ok, job} = Federator.incoming_ap_doc(delete)
+      assert {:ok, delete_activity} = ObanHelpers.perform(job)
+
+      assert delete_activity.data["id"] == activity_id <> "#unfathomably-delete"
+      assert delete_activity.data["type"] == "Delete"
+
+      tombstone = Object.get_by_ap_id(object_id)
+      assert tombstone.data["type"] == "Tombstone"
+      assert tombstone.data["formerType"] == "Comment"
     end
 
     test "rejects incoming AP docs with incorrect origin" do

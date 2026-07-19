@@ -1,0 +1,16 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://forgefed.org/ns"
+  ],
+  "id": "https://dev.example/aviva/game-of-life/outbox/096al",
+  "type": "Accept",
+  "actor": "https://dev.example/aviva/game-of-life",
+  "to": [
+    "https://forge.example/luke",
+    "https://dev.example/aviva/game-of-life/team",
+    "https://dev.example/aviva/game-of-life/followers"
+  ],
+  "object": "https://forge.example/luke/outbox/02Ljp",
+  "result": "https://dev.example/aviva/game-of-life/issues/113"
+}

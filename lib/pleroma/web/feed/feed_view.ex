@@ -72,13 +72,16 @@ defmodule Pleroma.Web.Feed.FeedView do
 
   def last_activity(activities), do: List.last(activities)
 
-  def activity_title(%{"content" => content} = data, opts \\ %{}) do
-    summary = Map.get(data, "summary", "")
+  def activity_title(data, opts \\ %{}) when is_map(data) do
+    summary = if is_binary(data["summary"]), do: data["summary"], else: ""
+    content = if is_binary(data["content"]), do: data["content"], else: ""
+    name = if is_binary(data["name"]), do: data["name"], else: ""
 
     title =
       cond do
         summary != "" -> summary
         content != "" -> activity_content(data)
+        name != "" -> name
         true -> "a post"
       end
 
@@ -89,16 +92,17 @@ defmodule Pleroma.Web.Feed.FeedView do
 
   def activity_description(data) do
     content = activity_content(data)
-    summary = data["summary"]
+    summary = if is_binary(data["summary"]), do: data["summary"], else: ""
+    type = if is_binary(data["type"]), do: data["type"], else: "Object"
 
     cond do
       content != "" -> escape(content)
       summary != "" -> escape(summary)
-      true -> escape(data["type"])
+      true -> escape(type)
     end
   end
 
-  def activity_content(%{"content" => content}) do
+  def activity_content(%{"content" => content}) when is_binary(content) do
     content
     |> String.replace(~r/[\n\r]/, "")
   end

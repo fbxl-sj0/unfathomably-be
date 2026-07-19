@@ -12,6 +12,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
 
   import Ecto.Changeset
 
+  require Pleroma.Constants
+
   @primary_key false
   @derive Jason.Encoder
 
@@ -99,6 +101,14 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
 
   defp fix_content(data), do: data
 
+  # PeerTube advertises the remote likes collection by URL. The local `likes`
+  # field stores individual actor IDs, so a collection URL must not be cast as
+  # a one-element local interaction list.
+  defp fix_likes_collection(%{"likes" => likes} = data) when is_binary(likes),
+    do: Map.delete(data, "likes")
+
+  defp fix_likes_collection(data), do: data
+
   defp fix_replies_collection(data) do
     collection_id =
       replies_collection_id(data["replies"]) ||
@@ -166,11 +176,114 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
   defp uri_port(%URI{port: nil, scheme: scheme}), do: URI.default_port(scheme)
   defp uri_port(%URI{port: port}), do: port
 
+  defp fix_funkwhale_track(%{"type" => "Track"} = data) do
+    data
+    |> Map.put("type", "Audio")
+    |> put_funkwhale_track_content()
+    |> put_funkwhale_track_attachment()
+    |> put_funkwhale_track_recipients()
+  end
+
+  defp fix_funkwhale_track(data), do: data
+
+  defp put_funkwhale_track_content(%{"content" => content} = data)
+       when is_binary(content) and content != "" do
+    data
+  end
+
+  defp put_funkwhale_track_content(data) do
+    data
+    |> funkwhale_track_parts()
+    |> Enum.reject(&blank?/1)
+    |> Enum.join(" - ")
+    |> case do
+      "" -> data
+      content -> Map.put(data, "content", html_escape(content))
+    end
+  end
+
+  defp funkwhale_track_parts(data) do
+    [
+      data["name"],
+      funkwhale_artist_credit(data["artist_credit"]),
+      get_in(data, ["album", "name"])
+    ]
+  end
+
+  defp funkwhale_artist_credit(credits) when is_list(credits) do
+    credits
+    |> Enum.map(fn
+      %{"credit" => credit} when is_binary(credit) -> credit
+      %{"artist" => %{"name" => name}} when is_binary(name) -> name
+      _ -> nil
+    end)
+    |> Enum.reject(&blank?/1)
+    |> Enum.join(", ")
+  end
+
+  defp funkwhale_artist_credit(_), do: nil
+
+  defp put_funkwhale_track_attachment(%{"attachment" => [_ | _]} = data), do: data
+
+  defp put_funkwhale_track_attachment(%{"id" => id} = data) when is_binary(id) do
+    attachment = %{
+      "type" => "Link",
+      "mediaType" => "text/html",
+      "name" => data["name"],
+      "url" => [
+        %{
+          "type" => "Link",
+          "href" => id,
+          "mediaType" => "text/html"
+        }
+      ]
+    }
+
+    Map.put(data, "attachment", [attachment])
+  end
+
+  defp put_funkwhale_track_attachment(data), do: data
+
+  defp put_funkwhale_track_recipients(data) do
+    if any_recipient?(data) do
+      data
+    else
+      cc =
+        data
+        |> Map.get("attributedTo")
+        |> List.wrap()
+        |> Enum.filter(&is_binary/1)
+
+      data
+      |> Map.put("to", [Pleroma.Constants.as_public()])
+      |> Map.put("cc", cc)
+    end
+  end
+
+  defp any_recipient?(data) do
+    Enum.any?(~w(to cc audience), fn field ->
+      data
+      |> Map.get(field)
+      |> List.wrap()
+      |> Enum.any?()
+    end)
+  end
+
+  defp blank?(value), do: value in [nil, ""]
+
+  defp html_escape(text) when is_binary(text) do
+    text
+    |> Phoenix.HTML.html_escape()
+    |> Phoenix.HTML.safe_to_string()
+  end
+
   defp fix(data) do
     data
+    |> fix_funkwhale_track()
     |> CommonFixes.fix_actor()
     |> CommonFixes.fix_object_defaults()
     |> CommonFixes.fix_quote_url()
+    |> fix_likes_collection()
     |> CommonFixes.fix_likes()
     |> Transmogrifier.fix_emoji()
     |> fix_url()

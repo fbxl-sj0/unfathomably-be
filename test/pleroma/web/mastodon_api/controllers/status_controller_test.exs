@@ -2230,6 +2230,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
            } = response
   end
 
+  test "context returns not found for a missing status" do
+    build_conn()
+    |> get("/api/v1/statuses/#{Ecto.UUID.generate()}/context")
+    |> json_response_and_validate_schema(:not_found)
+  end
+
   test "context hydrates remote comments collections before listing descendants" do
     remote_user =
       insert(:user,

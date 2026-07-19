@@ -358,6 +358,12 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
       refute response =~ "Could not find status"
       assert response =~ "Interacting with"
     end
+
+    test "returns a client error when no interaction target is supplied", %{conn: conn} do
+      conn = get(conn, "/main/ostatus")
+
+      assert response(conn, :bad_request) == "Missing nickname or status_id"
+    end
   end
 
   test "it returns new captcha", %{conn: conn} do

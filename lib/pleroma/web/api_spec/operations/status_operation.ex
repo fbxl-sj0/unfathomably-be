@@ -423,7 +423,8 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
       security: [%{"oAuth" => ["read:statuses"]}],
       parameters: [id_param()],
       responses: %{
-        200 => Operation.response("Context", "application/json", context())
+        200 => Operation.response("Context", "application/json", context()),
+        404 => Operation.response("Not Found", "application/json", ApiError)
       }
     }
   end
@@ -643,6 +644,12 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
           nullable: true,
           allOf: [FlakeID],
           description: "ID of the status being quoted, if any"
+        },
+        quote_approval_policy: %Schema{
+          type: :string,
+          enum: ["public", "followers", "following", "manual", "nobody"],
+          default: "public",
+          description: "Who may quote this status automatically or after approval"
         },
         # Pleroma-specific properties:
         preview: %Schema{

@@ -20,8 +20,8 @@
 #     HTTP reverse proxy
 #   * reuse the existing two-instance Unfathomably smoke bootstrap so
 #     the backend is known-good before PieFed-specific checks begin
-#   * exercise follow, unfollow, post, comment, like, unlike, and delete
-#     paths across the Unfathomably/PieFed boundary
+#   * exercise follow, unfollow, post, comment, like, unlike, dislike,
+#     undislike, and delete paths across the Unfathomably/PieFed boundary
 #   * fail loudly if either server logs obvious 500/crash output
 #
 # This file intentionally does NOT contain:
@@ -451,6 +451,49 @@ sql_escape() {
     printf '%s' "$1" | sed "s/'/''/g"
 }
 
+piefed_remote_vote_count() {
+    local post_id="$1"
+
+    case "$post_id" in
+        ''|*[!0-9]*)
+            fail "PieFed post id must be numeric before inspecting its vote rows: $post_id"
+            ;;
+    esac
+
+    docker exec "$PREFIX-piefed-db" \
+        psql -U piefed -d piefed -Atc "
+            select count(*)
+            from post_vote
+            where post_id = $post_id
+              and user_id <> author_id;
+        "
+}
+
+poll_piefed_remote_vote_count() {
+    local post_id="$1"
+    local expected="$2"
+    local message="$3"
+    local result=""
+
+    case "$expected" in
+        ''|*[!0-9]*)
+            fail "Expected PieFed vote-row count must be numeric: $expected"
+            ;;
+    esac
+
+    for _ in $(seq 1 45); do
+        result="$(piefed_remote_vote_count "$post_id")"
+
+        if [ "$result" = "$expected" ]; then
+            return 0
+        fi
+
+        sleep 2
+    done
+
+    fail "$message: expected $expected remote vote rows, found $result"
+}
+
 poll_be_object_unliked() {
     local object_ap_id="$1"
     local actor_ap_id="$2"
@@ -561,7 +604,10 @@ FROM python:3.13-alpine AS builder
 
 RUN adduser -D python
 
-RUN apk add --no-cache pkgconfig gcc python3-dev musl-dev tesseract-ocr tesseract-ocr-data-eng postgresql-client bash
+# PieFed installs psycopg2 from source.  Alpine's postgresql-client package
+# stopped carrying pg_config, so the matching development package is required
+# for the extension build as well as the runtime client package.
+RUN apk add --no-cache pkgconfig gcc python3-dev musl-dev tesseract-ocr tesseract-ocr-data-eng postgresql-client postgresql-dev bash
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
@@ -816,6 +862,60 @@ poll_json_assert GET \
     90 \
     2 >/dev/null
 
+BE_DISLIKE_PIEFED="$(
+    http_form POST "$BASE_URL/api/friendica/statuses/$BE_VIEW_OF_PIEFED_POST_ID/dislike" "$ALICE_TOKEN" 200
+)"
+json_assert "$BE_DISLIKE_PIEFED" 'data.get("disliked") is True and int(data.get("dislikes_count") or 0) >= 1' \
+    "Unfathomably could not dislike PieFed post"
+run_piefed_queue_until
+poll_json_assert GET \
+    "$PIEFED_URL/api/alpha/post?id=$PIEFED_POST_ID" \
+    "$PIEFED_JWT" \
+    200 \
+    'int(data.get("post_view", {}).get("counts", {}).get("downvotes") or 0) >= 1' \
+    "PieFed sees Unfathomably dislike on PieFed post" \
+    90 \
+    2 >/dev/null
+poll_piefed_remote_vote_count \
+    "$PIEFED_POST_ID" \
+    1 \
+    "PieFed did not persist Unfathomably's downvote voter row"
+
+BE_UNDISLIKE_PIEFED="$(
+    http_form POST "$BASE_URL/api/friendica/statuses/$BE_VIEW_OF_PIEFED_POST_ID/undislike" "$ALICE_TOKEN" 200
+)"
+json_assert "$BE_UNDISLIKE_PIEFED" 'data.get("disliked") is False and int(data.get("dislikes_count") or 0) == 0' \
+    "Unfathomably could not remove dislike from PieFed post"
+run_piefed_queue_until
+poll_piefed_remote_vote_count \
+    "$PIEFED_POST_ID" \
+    0 \
+    "PieFed did not remove Unfathomably's downvote voter row after Undo Dislike"
+
+PIEFED_AFTER_UNDO_DISLIKE="$(piefed_get_auth "post?id=$PIEFED_POST_ID")"
+PIEFED_AFTER_UNDO_DISLIKE_COUNT="$(
+    json_get "$PIEFED_AFTER_UNDO_DISLIKE" post_view.counts.downvotes
+)"
+
+case "$PIEFED_AFTER_UNDO_DISLIKE_COUNT" in
+    0)
+        PIEFED_UNDO_DISLIKE_RESULT="supported: PieFed removes the remote voter row and corrects its downvote aggregate after Unfathomably Undo Dislike"
+        ;;
+    1)
+        #
+        # Current PieFed main stores a newly received downvote with effect 0.
+        # Its Undo handler removes that voter row, but effect 0 follows the
+        # upvote branch and leaves the down_votes aggregate stale. The direct
+        # row assertion above distinguishes that stock bookkeeping defect from
+        # a lost or rejected Undo activity.
+        #
+        PIEFED_UNDO_DISLIKE_RESULT="not_supported: stock PieFed removes the remote voter row after Unfathomably Undo Dislike but leaves its downvote aggregate stale"
+        ;;
+    *)
+        fail "PieFed reported unexpected downvote count after Unfathomably Undo Dislike: $PIEFED_AFTER_UNDO_DISLIKE_COUNT"
+        ;;
+esac
+
 BE_REPLY_TEXT="Unfathomably reply to PieFed $(basename "$WORK_DIR")"
 BE_REPLY="$(
     http_form POST "$BASE_URL/api/v1/statuses" "$ALICE_TOKEN" 200 \
@@ -914,6 +1014,65 @@ poll_be_object_unliked \
     "http://$PIEFED_HOST/u/piefedadmin" \
     "Unfathomably sees PieFed unlike on Unfathomably post"
 
+PIEFED_DISLIKE_BE="$(
+    piefed_json POST post/like \
+        "{\"post_id\":$PIEFED_VIEW_OF_BE_POST_ID,\"score\":-1}"
+)"
+json_assert "$PIEFED_DISLIKE_BE" 'int(data.get("post_view", {}).get("counts", {}).get("downvotes") or 0) >= 1' \
+    "PieFed could not dislike Unfathomably post"
+run_piefed_queue_until
+poll_json_assert GET \
+    "$BASE_URL/api/v1/statuses/$BE_TO_PIEFED_POST_ID" \
+    "$ALICE_TOKEN" \
+    200 \
+    'int(data.get("dislikes_count") or 0) >= 1 and data.get("disliked") is False' \
+    "Unfathomably sees PieFed dislike on Unfathomably post" \
+    90 \
+    2 >/dev/null
+
+PIEFED_UNDISLIKE_BE="$(
+    piefed_json POST post/like \
+        "{\"post_id\":$PIEFED_VIEW_OF_BE_POST_ID,\"score\":0}"
+)"
+PIEFED_UNDISLIKE_BE_COUNT="$(
+    json_get "$PIEFED_UNDISLIKE_BE" post_view.counts.downvotes
+)"
+run_piefed_queue_until
+
+case "$PIEFED_UNDISLIKE_BE_COUNT" in
+    0)
+        poll_json_assert GET \
+            "$BASE_URL/api/v1/statuses/$BE_TO_PIEFED_POST_ID" \
+            "$ALICE_TOKEN" \
+            200 \
+            'int(data.get("dislikes_count") or 0) == 0' \
+            "Unfathomably sees PieFed remove dislike from Unfathomably post" \
+            90 \
+            2 >/dev/null
+        PIEFED_REVERSE_UNDO_DISLIKE_RESULT="supported: PieFed Undo Dislike is reflected correctly by Unfathomably"
+        ;;
+    1)
+        #
+        # With the current zero-effect downvote bug, PieFed's score=0 path
+        # cannot recognize the vote as reversible. It queues another Dislike
+        # instead of an Undo. Unfathomably must keep that retry idempotent and
+        # continue to expose exactly one remote dislike.
+        #
+        poll_json_assert GET \
+            "$BASE_URL/api/v1/statuses/$BE_TO_PIEFED_POST_ID" \
+            "$ALICE_TOKEN" \
+            200 \
+            'int(data.get("dislikes_count") or 0) == 1 and data.get("disliked") is False' \
+            "Unfathomably did not keep PieFed's repeated Dislike idempotent" \
+            90 \
+            2 >/dev/null
+        PIEFED_REVERSE_UNDO_DISLIKE_RESULT="not_supported: stock PieFed cannot reverse its zero-effect downvote and emits another Dislike instead of Undo; Unfathomably keeps the duplicate idempotent"
+        ;;
+    *)
+        fail "PieFed reported unexpected downvote count after its local score=0 reversal: $PIEFED_UNDISLIKE_BE_COUNT"
+        ;;
+esac
+
 log "Deleting posts and unfollowing groups"
 piefed_json POST post/delete "{\"post_id\":$PIEFED_POST_ID,\"deleted\":true}" >/dev/null
 run_piefed_queue_until
@@ -964,14 +1123,15 @@ cat <<EOF
 Unfathomably/PieFed federation smoke test passed.
 
 Covered:
-  * clean PieFed Docker boot with PostgreSQL, Redis, Celery, and internal proxy
-  * Unfathomably follow of a PieFed community
-  * PieFed follow of an Unfathomably group
-  * PieFed-to-Unfathomably group post, like, unlike, reply, reply delete
-  * Unfathomably-to-PieFed group post, like, unlike, reply, reply delete
-  * post deletion propagation both directions
-  * group unfollow both directions
-  * basic log scan for 500/crash output
+  * supported: clean PieFed Docker boot with PostgreSQL, Redis, Celery, and internal proxy
+  * supported: group follows and group unfollows in both directions
+  * supported: group posts, replies, and reply Deletes in both directions
+  * supported: Like, Undo Like, and Dislike in both directions
+  * $PIEFED_UNDO_DISLIKE_RESULT
+  * $PIEFED_REVERSE_UNDO_DISLIKE_RESULT
+  * supported: top-level post Delete propagation in both directions
+  * not_supported: PieFed has no durable signal that a remote server defederated it
+  * supported: basic log scan for 500/crash output
 
 Run with KEEP_SMOKE=1 to leave both servers available for manual browser/API work.
 EOF

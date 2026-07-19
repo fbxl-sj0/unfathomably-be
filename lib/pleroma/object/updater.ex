@@ -8,6 +8,7 @@ defmodule Pleroma.Object.Updater do
   alias Pleroma.Maps
   alias Pleroma.Object
   alias Pleroma.Repo
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Workers.EventReminderWorker
 
   def update_content_fields(orig_object_data, updated_object) do
@@ -30,6 +31,34 @@ defmodule Pleroma.Object.Updater do
         %{data: data, updated: updated}
       end
     )
+    |> update_standard_extension_fields(orig_object_data, updated_object)
+  end
+
+  defp update_standard_extension_fields(result, original, incoming) do
+    incoming_fields = CustomObject.standard_extension_fields(incoming)
+
+    if incoming_fields == [] do
+      result
+    else
+      original_fields = CustomObject.standard_extension_fields(original)
+      fields = Enum.uniq(original_fields ++ incoming_fields)
+
+      Enum.reduce(fields, result, fn field, %{data: data, updated: updated} = result ->
+        next_data =
+          if Map.has_key?(incoming, field) do
+            Map.put(data, field, incoming[field])
+          else
+            Map.delete(data, field)
+          end
+
+        %{result | data: next_data, updated: updated or next_data != data}
+      end)
+      |> then(fn %{data: data} = result ->
+        marker = incoming[CustomObject.internal_field()]
+        next_data = Map.put(data, CustomObject.internal_field(), marker)
+        %{result | data: next_data, updated: result.updated or next_data != data}
+      end)
+    end
   end
 
   def maybe_history(object) do
@@ -307,5 +336,125 @@ defmodule Pleroma.Object.Updater do
 
       {:ok, new_object, updated}
     end
+  end
+
+  @doc """
+  Applies an authority-checked update to an object from an unknown vocabulary.
+
+  Extension fields are merged instead of passed through the status whitelist.
+  Identity and authority fields remain anchored to the stored object so that a
+  valid editor cannot use an Update to grant itself broader future authority.
+  A newly inserted activity may use arrival order when its producer omits an
+  `updated` timestamp but preserves the object's original `published` value.
+  """
+  def do_custom_update_and_invalidate_cache(orig_object, updated_object, opts \\ []) do
+    original_data = orig_object.data
+
+    ordered_update? =
+      newer_update?(original_data, updated_object) or
+        (opts[:allow_untimestamped] == true and
+           compatible_untimestamped_update?(original_data, updated_object)) or
+        (opts[:allow_unversioned] == true and
+           compatible_unversioned_update?(original_data, updated_object))
+
+    if ordered_update? do
+      protected_fields = [
+        "id",
+        "type",
+        "actor",
+        "attributedTo",
+        "owner",
+        "lastEditedBy",
+        "managedBy",
+        CustomObject.internal_field()
+      ]
+
+      authority_data = Map.take(original_data, protected_fields)
+
+      updated_data =
+        original_data
+        |> Map.merge(Map.drop(updated_object, protected_fields))
+        |> Map.merge(authority_data)
+        |> CustomObject.put_internal_metadata()
+
+      changeset =
+        orig_object
+        |> Repo.preload(:hashtags)
+        |> Object.change(%{data: updated_data})
+        |> maybe_touch_changeset(true)
+
+      with {:ok, new_object} <- Repo.update(changeset),
+           {:ok, _} <- Object.invalid_object_cache(new_object),
+           {:ok, _} <- Object.set_cache(new_object),
+           {:ok, _} <- Pleroma.Activity.HTML.invalidate_cache_for(new_object.id) do
+        {:ok, new_object, true}
+      end
+    else
+      {:ok, orig_object, false}
+    end
+  end
+
+  @doc """
+  Replaces a compatibility status with its richer native representation.
+
+  This path is only used for the same canonical object and does not create new
+  timeline side effects. Existing internal counters and state survive because
+  fields absent from the native representation remain anchored locally.
+  """
+  def do_custom_compatibility_upgrade(orig_object, incoming_object, actor) do
+    if CustomObject.compatibility_upgrade?(orig_object.data, incoming_object, actor) do
+      upgraded_data =
+        orig_object.data
+        |> Map.merge(incoming_object)
+        |> CustomObject.put_internal_metadata()
+
+      changeset =
+        orig_object
+        |> Repo.preload(:hashtags)
+        |> Object.change(%{data: upgraded_data})
+        |> maybe_touch_changeset(true)
+
+      with {:ok, new_object} <- Repo.update(changeset),
+           {:ok, _} <- Object.invalid_object_cache(new_object),
+           {:ok, _} <- Object.set_cache(new_object),
+           {:ok, _} <- Pleroma.Activity.HTML.invalidate_cache_for(new_object.id) do
+        {:ok, new_object, true}
+      end
+    else
+      {:ok, orig_object, false}
+    end
+  end
+
+  defp newer_update?(original_data, updated_object) do
+    with updated when is_binary(updated) <- updated_object["updated"],
+         {:ok, updated_time, _offset} <- DateTime.from_iso8601(updated),
+         previous when is_binary(previous) <-
+           original_data["updated"] || original_data["published"],
+         {:ok, previous_time, _offset} <- DateTime.from_iso8601(previous) do
+      DateTime.compare(updated_time, previous_time) == :gt
+    else
+      _ -> false
+    end
+  end
+
+  defp compatible_untimestamped_update?(original_data, updated_object) do
+    is_nil(updated_object["updated"]) and
+      is_binary(original_data["published"]) and
+      updated_object["published"] == original_data["published"] and
+      updated_object["id"] == original_data["id"] and
+      updated_object["type"] == original_data["type"]
+  end
+
+  # ActivityPods Pod resources do not carry ActivityStreams timestamps.  The
+  # caller enables this only after a linked Update has passed existing-object,
+  # actor-authority, same-origin, and fresh-activity checks.  Identity and type
+  # still have to match here before arrival order may decide the update.
+  defp compatible_unversioned_update?(original_data, updated_object) do
+    is_nil(original_data["updated"]) and
+      is_nil(original_data["published"]) and
+      is_nil(updated_object["updated"]) and
+      is_nil(updated_object["published"]) and
+      updated_object["id"] == original_data["id"] and
+      updated_object["type"] == original_data["type"]
   end
 end

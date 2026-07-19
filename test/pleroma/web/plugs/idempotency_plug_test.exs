@@ -71,6 +71,77 @@ defmodule Pleroma.Web.Plugs.IdempotencyPlugTest do
     assert [^key] = Conn.get_resp_header(conn, "idempotency-key")
   end
 
+  test "serializes concurrent requests with the same scoped key" do
+    key = "concurrent"
+    parent = self()
+
+    first =
+      Task.async(fn ->
+        conn =
+          :post
+          |> conn("/cofe")
+          |> assign(:user, %{id: "alice"})
+          |> put_req_header("idempotency-key", key)
+          |> Conn.put_resp_header("x-request-id", "first")
+          |> Conn.put_resp_content_type("application/json")
+          |> IdempotencyPlug.call([])
+
+        send(parent, :first_request_locked)
+
+        receive do
+          :finish_first_request -> Conn.send_resp(conn, 200, "first response")
+        end
+      end)
+
+    assert_receive :first_request_locked
+
+    second =
+      Task.async(fn ->
+        :post
+        |> conn("/cofe")
+        |> assign(:user, %{id: "alice"})
+        |> put_req_header("idempotency-key", key)
+        |> Conn.put_resp_header("x-request-id", "second")
+        |> Conn.put_resp_content_type("application/json")
+        |> IdempotencyPlug.call([])
+      end)
+
+    assert Task.yield(second, 50) == nil
+    send(first.pid, :finish_first_request)
+
+    Task.await(first)
+    replayed = Task.await(second)
+
+    assert replayed.status == 200
+    assert replayed.resp_body == "first response"
+    assert ["true"] = Conn.get_resp_header(replayed, "idempotent-replayed")
+  end
+
+  test "does not replay a key across authenticated users" do
+    key = "user-scoped"
+
+    :post
+    |> conn("/cofe")
+    |> assign(:user, %{id: "alice"})
+    |> put_req_header("idempotency-key", key)
+    |> Conn.put_resp_header("x-request-id", "alice-request")
+    |> Conn.put_resp_content_type("application/json")
+    |> IdempotencyPlug.call([])
+    |> Conn.send_resp(200, "alice")
+
+    bob =
+      :post
+      |> conn("/cofe")
+      |> assign(:user, %{id: "bob"})
+      |> put_req_header("idempotency-key", key)
+      |> Conn.put_resp_header("x-request-id", "bob-request")
+      |> Conn.put_resp_content_type("application/json")
+      |> IdempotencyPlug.call([])
+
+    refute bob.halted
+    assert [] = Conn.get_resp_header(bob, "idempotent-replayed")
+  end
+
   test "passes conn downstream if idempotency is not present in headers" do
     orig_request_id = "test4"
     body = "testing"

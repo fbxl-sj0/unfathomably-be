@@ -27,11 +27,22 @@ defmodule Pleroma.ReverseProxy do
   """
   @transient_request_errors [
     :closed,
+    :connect_timeout,
     :timeout,
     :econnrefused,
     :enotconn,
     :invalid_state,
-    :nxdomain
+    :nxdomain,
+    :recv_body_timeout,
+    :recv_chunk_timeout,
+    :recv_response_timeout
+  ]
+  @timeout_request_errors [
+    :connect_timeout,
+    :recv_body_timeout,
+    :recv_chunk_timeout,
+    :recv_response_timeout,
+    :timeout
   ]
 
   @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
@@ -148,11 +159,13 @@ defmodule Pleroma.ReverseProxy do
         log_http_response_error(url, code)
         track_failed_url(url, code, opts)
 
+        {response_code, reason_phrase} = error_response_status(code)
+
         conn
         |> error_or_redirect(
           url,
-          code,
-          "Request failed: " <> Plug.Conn.Status.reason_phrase(code),
+          response_code,
+          "Request failed: " <> reason_phrase,
           opts
         )
         |> halt()
@@ -161,8 +174,10 @@ defmodule Pleroma.ReverseProxy do
         log_request_error(url, error)
         track_failed_url(url, error, opts)
 
+        {response_code, response_body} = request_error_response(error)
+
         conn
-        |> error_or_redirect(url, 500, "Request failed", opts)
+        |> error_or_redirect(url, response_code, response_body, opts)
         |> halt()
     end
   end
@@ -501,6 +516,20 @@ defmodule Pleroma.ReverseProxy do
   defp log_request_error(url, error) do
     Logger.error("#{__MODULE__}: request to #{inspect(url)} failed: #{inspect(error)}")
   end
+
+  defp error_response_status(code) when is_integer(code) do
+    {code, Plug.Conn.Status.reason_phrase(code)}
+  rescue
+    ArgumentError -> {502, Plug.Conn.Status.reason_phrase(502)}
+  end
+
+  defp error_response_status(_code), do: {502, Plug.Conn.Status.reason_phrase(502)}
+
+  defp request_error_response(error) when error in @timeout_request_errors do
+    {504, "Upstream request timed out"}
+  end
+
+  defp request_error_response(_error), do: {502, "Upstream request failed"}
 
   defp track_failed_url(url, error, opts) do
     ttl =

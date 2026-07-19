@@ -540,6 +540,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
         })
 
       render(conn, "context.json", activity: activity, activities: activities, user: user)
+    else
+      nil -> {:error, :not_found}
     end
   end
 

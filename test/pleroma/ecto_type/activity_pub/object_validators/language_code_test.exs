@@ -17,10 +17,15 @@ defmodule Pleroma.EctoType.ActivityPub.ObjectValidators.LanguageCodeTest do
     assert {:ok, ^text} = LanguageCode.cast(text)
   end
 
+  test "accepts a language descriptor with an identifier" do
+    assert {:ok, "en"} =
+             LanguageCode.cast(%{"identifier" => "en", "name" => "English"})
+  end
+
   test "rejects invalid language code" do
-    assert {:error, [validation: :invalid_language]} = LanguageCode.cast("ru_RU")
-    assert {:error, [validation: :invalid_language]} = LanguageCode.cast(" ")
-    assert {:error, [validation: :invalid_language]} = LanguageCode.cast("en-US\n")
+    assert {:error, [message: :invalid_language]} = LanguageCode.cast("ru_RU")
+    assert {:error, [message: :invalid_language]} = LanguageCode.cast(" ")
+    assert {:error, [message: :invalid_language]} = LanguageCode.cast("en-US\n")
   end
 
   test "rejects non-text" do

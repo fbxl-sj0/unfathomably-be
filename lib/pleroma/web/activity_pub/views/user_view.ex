@@ -10,6 +10,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.ActivityPub.ObjectView
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.ActivityPub.Utils
@@ -105,7 +106,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
 
     %{
       "id" => user.ap_id,
-      "type" => user.actor_type,
+      "type" => actor_json_ld_type(user),
       "following" => User.ap_following(user),
       "followers" => User.ap_followers(user),
       "inbox" => "#{user.ap_id}/inbox",
@@ -126,6 +127,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "tag" => emoji_tags,
       # Note: key name is indeed "discoverable" (not an error)
       "discoverable" => user.is_discoverable,
+      "indexable" => user.is_indexable,
       "capabilities" => capabilities,
       "alsoKnownAs" => user.also_known_as,
       "vcard:bday" => birthday,
@@ -147,6 +149,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       )
     )
     |> Map.merge(Utils.make_json_ld_header())
+    |> ActorExtensions.merge_into_actor(user.actor_extensions)
   end
 
   def render("following.json", %{user: user, page: page} = opts) do
@@ -183,16 +186,20 @@ defmodule Pleroma.Web.ActivityPub.UserView do
         0
       end
 
+    first =
+      if showing_items do
+        collection(following, "#{user.ap_id}/following", 1, !user.hide_follows)
+      else
+        "#{user.ap_id}/following?page=1"
+      end
+
     %{
       "id" => "#{user.ap_id}/following",
       "type" => "OrderedCollection",
       "totalItems" => total,
-      "first" =>
-        if showing_items do
-          collection(following, "#{user.ap_id}/following", 1, !user.hide_follows)
-        else
-          "#{user.ap_id}/following?page=1"
-        end
+      "count" => total,
+      "results" => collection_results(first),
+      "first" => first
     }
     |> Map.merge(Utils.make_json_ld_header())
   end
@@ -231,15 +238,19 @@ defmodule Pleroma.Web.ActivityPub.UserView do
         0
       end
 
+    first =
+      if showing_items do
+        collection(followers, "#{user.ap_id}/followers", 1, showing_items, total)
+      else
+        "#{user.ap_id}/followers?page=1"
+      end
+
     %{
       "id" => "#{user.ap_id}/followers",
       "type" => "OrderedCollection",
-      "first" =>
-        if showing_items do
-          collection(followers, "#{user.ap_id}/followers", 1, showing_items, total)
-        else
-          "#{user.ap_id}/followers?page=1"
-        end
+      "count" => total,
+      "results" => collection_results(first),
+      "first" => first
     }
     |> maybe_put_total_items(showing_count, total)
     |> Map.merge(Utils.make_json_ld_header())
@@ -326,7 +337,9 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "id" => "#{iri}?page=#{page}",
       "type" => "OrderedCollectionPage",
       "partOf" => iri,
+      "count" => total,
       "totalItems" => total,
+      "results" => if(show_items, do: items, else: []),
       "orderedItems" => if(show_items, do: items, else: [])
     }
 
@@ -336,6 +349,9 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       map
     end
   end
+
+  defp collection_results(%{"orderedItems" => items}) when is_list(items), do: items
+  defp collection_results(_), do: []
 
   defp group_actor_fields(%User{actor_type: "Group"} = user) do
     %{
@@ -348,6 +364,14 @@ defmodule Pleroma.Web.ActivityPub.UserView do
   end
 
   defp group_actor_fields(_), do: %{}
+
+  defp actor_json_ld_type(%User{actor_types: [actor_type]}), do: actor_type
+
+  defp actor_json_ld_type(%User{actor_types: actor_types})
+       when is_list(actor_types) and length(actor_types) > 1,
+       do: actor_types
+
+  defp actor_json_ld_type(%User{actor_type: actor_type}), do: actor_type
 
   defp maybe_put_misskey_summary(data, raw_bio) when is_binary(raw_bio) and raw_bio != "" do
     Map.put(data, "_misskey_summary", raw_bio)

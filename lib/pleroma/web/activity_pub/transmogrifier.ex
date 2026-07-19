@@ -9,16 +9,21 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   alias Pleroma.Activity
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Emoji
+  alias Pleroma.GroupMembership
   alias Pleroma.Language.LanguageDetector
   alias Pleroma.Maps
   alias Pleroma.Object
   alias Pleroma.Object.Containment
-  alias Pleroma.Repo
+  alias Pleroma.Object.Fetcher
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.Addressing
+  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.ActivityPub.Builder
+  alias Pleroma.Web.ActivityPub.CustomActivity
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.ObjectValidator
+  alias Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.Visibility
@@ -322,7 +327,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
               "type" => data["type"] || "Document"
             }
             |> Maps.put_if_present("mediaType", media_type)
-            |> Maps.put_if_present("name", data["name"])
+            |> Maps.put_if_present("name", attachment_description(data))
             |> Maps.put_if_present("blurhash", data["blurhash"])
           else
             nil
@@ -343,6 +348,27 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   end
 
   def fix_attachments(object), do: object
+
+  defp attachment_description(data) do
+    [data["name"], data["summary"], data["nameMap"], data["summaryMap"]]
+    |> Enum.find_value(&attachment_text/1)
+  end
+
+  defp attachment_text(value) when is_binary(value) and value != "", do: value
+
+  defp attachment_text(%{"@value" => value}), do: attachment_text(value)
+
+  defp attachment_text(value) when is_list(value) do
+    Enum.find_value(value, &attachment_text/1)
+  end
+
+  defp attachment_text(value) when is_map(value) do
+    value
+    |> Enum.sort_by(fn {language, _text} -> to_string(language) end)
+    |> Enum.find_value(fn {_language, text} -> attachment_text(text) end)
+  end
+
+  defp attachment_text(_), do: nil
 
   def fix_url(%{"url" => url} = object) when is_map(url) do
     Map.put(object, "url", url["href"])
@@ -553,7 +579,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     do: {:ok, :ignored}
 
   def handle_incoming(%{"type" => "Offer"} = data, _options) do
-    if owncast_stream_lifecycle?(data), do: {:ok, :ignored}, else: :error
+    if owncast_stream_lifecycle?(data), do: {:ok, :ignored}, else: handle_actor_activity(data)
   end
 
   def handle_incoming(%{"type" => "Leave"} = data, _options) do
@@ -595,6 +621,20 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     end
   end
 
+  def handle_incoming(
+        %{"type" => "Listen", "object" => %{"type" => "Track", "id" => track_ap_id}} =
+          data,
+        options
+      )
+      when is_binary(track_ap_id) do
+    handle_incoming_track_listen(data, track_ap_id, options)
+  end
+
+  def handle_incoming(%{"type" => "Listen", "object" => track_ap_id} = data, options)
+      when is_binary(track_ap_id) do
+    handle_incoming_track_listen(data, track_ap_id, options)
+  end
+
   # Rewrite misskey likes into EmojiReacts.
   def handle_incoming(%{"type" => "Like"} = data, options) do
     case misskey_like_reaction(data) do
@@ -631,7 +671,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   end
 
   def handle_incoming(
-        %{"type" => "Announce", "object" => %{"type" => type} = object},
+        %{"type" => "Announce", "object" => %{"type" => type} = object} = announce,
         options
       )
       when type in [
@@ -647,19 +687,70 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
              "Flag",
              "Lock"
            ] do
-    handle_incoming(object, options)
+    object = maybe_fix_embedded_group_create_addressing(announce, object)
+    object_id = embedded_ap_id(object["object"])
+
+    initial_group_update? =
+      type == "Update" and is_binary(object_id) and is_nil(Object.get_by_ap_id(object_id))
+
+    case handle_incoming(object, options) do
+      {:ok, %Activity{} = activity} ->
+        maybe_preserve_initial_group_announce(
+          announce,
+          activity,
+          object_id,
+          initial_group_update?
+        )
+
+      result ->
+        result
+    end
+  end
+
+  def handle_incoming(
+        %{
+          "type" => "Create",
+          "actor" => actor,
+          "object" => object_id
+        } = data,
+        options
+      )
+      when is_binary(actor) and is_binary(object_id) do
+    #
+    # ActivityPods publishes native Pod resources by reference.  Resolve only
+    # an object on the activity actor's origin, then pass the fetched map back
+    # through the ordinary Create validators.  This keeps authority, size,
+    # depth, addressing, and lifecycle checks in one place and prevents a
+    # linked Create from becoming an arbitrary remote fetch primitive.
+    #
+    case Activity.get_by_ap_id(data["id"]) do
+      %Activity{} = activity ->
+        {:ok, activity}
+
+      nil ->
+        with :ok <- Containment.contain_origin(object_id, %{"actor" => actor}),
+             {:ok, %{"id" => ^object_id, "type" => _type} = object} <-
+               Fetcher.fetch_and_contain_remote_object_from_id(object_id) do
+          data
+          |> Map.put("object", object)
+          |> handle_incoming(options)
+        else
+          _reason -> :error
+        end
+    end
   end
 
   def handle_incoming(
         %{"type" => "Create", "object" => %{"type" => objtype, "id" => obj_id}} = data,
         options
       )
-      when objtype in ~w{Question Answer ChatMessage Audio Video Event Article Note Page Image Track} do
+      when objtype in ~w{Question Answer ChatMessage Audio Video Event Article Document Note Page Image Track} do
     fetch_options = Keyword.put(options, :depth, (options[:depth] || 0) + 1)
 
     object =
       data["object"]
       |> strip_internal_fields()
+      |> preserve_remote_document_language(data["object"])
       |> fix_type(fetch_options)
       |> fix_in_reply_to(fetch_options)
       |> fix_quote_url_and_maybe_fetch(fetch_options)
@@ -675,6 +766,45 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     else
       %Activity{} = activity -> {:ok, activity}
       e -> e
+    end
+  end
+
+  def handle_incoming(
+        %{"type" => "Create", "object" => %{"type" => _type, "id" => obj_id}} = data,
+        options
+      )
+      when is_binary(obj_id) do
+    if CustomObject.custom_object?(data["object"]) do
+      fetch_options = Keyword.put(options, :depth, (options[:depth] || 0) + 1)
+
+      object =
+        data["object"]
+        |> strip_internal_fields()
+        |> maybe_fix_custom_reply(fetch_options)
+        |> maybe_add_language_from_activity(data)
+
+      data = Map.put(data, "object", object)
+      options = Keyword.put(options, :local, false)
+
+      with {:ok, %User{}} <- ObjectValidator.fetch_actor(data),
+           {:ok, activity, _} <- Pipeline.common_pipeline(data, options) do
+        {:ok, activity}
+      else
+        e -> e
+      end
+    else
+      :error
+    end
+  end
+
+  def handle_incoming(
+        %{"type" => "Announce", "object" => %{"type" => _type} = object} = announce,
+        options
+      ) do
+    if CustomActivity.custom_activity?(object) do
+      handle_incoming(object, options)
+    else
+      handle_object_action(announce)
     end
   end
 
@@ -703,11 +833,78 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   end
 
   def handle_incoming(
+        %{
+          "type" => "Update",
+          "actor" => actor,
+          "object" => actor
+        } = data,
+        options
+      )
+      when is_binary(actor) do
+    #
+    # Federails and Manyfold use a linked object for self-updates of actor
+    # entities. Resolve exactly that actor once, through the normal bounded
+    # fetch and containment path, before applying the usual Update validator.
+    # A linked Update for any other object remains unsupported because fetching
+    # an arbitrary target here would weaken both authority and resource bounds.
+    #
+    case Activity.get_by_ap_id(data["id"]) do
+      %Activity{} = activity ->
+        {:ok, activity}
+
+      nil ->
+        with {:ok, %{"id" => ^actor, "type" => type} = object} <-
+               Fetcher.fetch_and_contain_remote_object_from_id(actor),
+             true <- type in Pleroma.Constants.actor_types() do
+          data
+          |> Map.put("object", object)
+          |> handle_incoming(options)
+        else
+          _ -> :error
+        end
+    end
+  end
+
+  def handle_incoming(
+        %{
+          "type" => "Update",
+          "actor" => actor,
+          "object" => object_id
+        } = data,
+        options
+      )
+      when is_binary(actor) and is_binary(object_id) do
+    #
+    # A linked non-actor Update is safe only for an object already stored with
+    # this exact authority.  ActivityPods uses this form after changing a Pod
+    # resource.  Requiring the known object before dereferencing preserves the
+    # stricter unknown-linked-Update boundary used for arbitrary targets.
+    #
+    case Activity.get_by_ap_id(data["id"]) do
+      %Activity{} = activity ->
+        {:ok, activity}
+
+      nil ->
+        with %Object{data: existing} <- Object.get_by_ap_id(object_id),
+             true <- CustomObject.authorized?(existing, actor),
+             :ok <- Containment.contain_origin(object_id, %{"actor" => actor}),
+             {:ok, %{"id" => ^object_id, "type" => _type} = object} <-
+               Fetcher.fetch_and_contain_remote_object_from_id(object_id) do
+          data
+          |> Map.put("object", object)
+          |> handle_incoming(Keyword.put(options, :allow_unversioned_custom_update, true))
+        else
+          _reason -> handle_actor_activity(data, options)
+        end
+    end
+  end
+
+  def handle_incoming(
         %{"type" => type} = data,
-        _options
+        options
       )
       when type in ~w{Update Follow Accept Reject Join} do
-    handle_actor_activity(data)
+    handle_actor_activity(data, options)
   end
 
   def handle_incoming(
@@ -719,17 +916,26 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       {:ok, activity}
     else
       {:error, {:validate, _}} = e ->
-        # Check if we have a create activity for this
-        with {:ok, object_id} <- ObjectValidators.ObjectID.cast(data["object"]),
-             :ok <- Containment.contain_origin(object_id, %{"actor" => data["actor"]}),
-             %Activity{data: %{"actor" => actor}} <-
-               Activity.create_by_object_ap_id(object_id) |> Ecto.Query.first() |> Repo.one(),
-             # We have one, insert a tombstone and retry
-             {:ok, tombstone_data, _} <- Builder.tombstone(actor, object_id),
-             {:ok, _tombstone} <- Object.create(tombstone_data) do
-          handle_incoming(data)
-        else
-          _ -> e
+        # A missing object can still have a retained Create activity after
+        # pruning. Only that state may synthesize a Tombstone and retry. Using
+        # this recovery for an ordinary validation error could turn an
+        # unauthorized Delete into a live-object replacement attempt.
+        case DeleteValidator.classify_target(data) do
+          %{
+            state: :pruned_object_with_create,
+            object_id: object_id,
+            create_activity: %Activity{data: %{"actor" => actor}}
+          } ->
+            with :ok <- Containment.contain_origin(object_id, %{"actor" => data["actor"]}),
+                 {:ok, tombstone_data, _} <- Builder.tombstone(actor, object_id),
+                 {:ok, _tombstone} <- Object.create(tombstone_data) do
+              handle_incoming(data)
+            else
+              _ -> e
+            end
+
+          _target ->
+            e
         end
 
       e ->
@@ -748,8 +954,10 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       ) do
     with %User{local: true} = followed <- User.get_cached_by_ap_id(followed),
          {:ok, %User{} = follower} <- User.get_or_fetch_by_ap_id(follower),
-         {:ok, activity} <- ActivityPub.unfollow(follower, followed, id, false) do
-      User.unfollow(follower, followed)
+         {:ok, activity} <- ActivityPub.unfollow(follower, followed, id, false),
+         {:ok, _follower, _follow_activity} <- User.unfollow(follower, followed),
+         {:ok, _membership} <-
+           GroupMembership.sync_federated_unfollow(followed, follower) do
       {:ok, activity}
     else
       _e -> :error
@@ -809,7 +1017,41 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     end
   end
 
+  def handle_incoming(%{"type" => _type} = data, _options) do
+    if CustomActivity.custom_activity?(data), do: handle_actor_activity(data), else: :error
+  end
+
   def handle_incoming(_, _), do: :error
+
+  defp maybe_fix_custom_reply(object, options) do
+    if CustomObject.timeline_object?(object) do
+      fix_in_reply_to(object, options)
+    else
+      object
+    end
+  end
+
+  defp handle_incoming_track_listen(data, track_ap_id, options) do
+    actor = Containment.get_actor(data)
+    data = data |> Map.put("actor", actor) |> fix_addressing()
+
+    with {:ok, %User{} = user} <- User.get_or_fetch_by_ap_id(actor),
+         {:ok, %Object{}} <- Pleroma.Object.Fetcher.fetch_object_from_id(track_ap_id, options) do
+      params = %{
+        to: data["to"],
+        object: track_ap_id,
+        actor: user,
+        context: nil,
+        local: false,
+        published: data["published"],
+        additional: Map.take(data, ["cc", "id"])
+      }
+
+      ActivityPub.listen(params)
+    else
+      _ -> :error
+    end
+  end
 
   defp handle_object_action(data) do
     with :ok <- ObjectValidator.fetch_actor_and_object(data),
@@ -821,10 +1063,81 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     end
   end
 
-  defp handle_actor_activity(data) do
+  defp maybe_preserve_initial_group_announce(
+         announce,
+         %Activity{} = activity,
+         object_id,
+         true
+       ) do
+    with %User{actor_type: "Group"} = group <- User.get_cached_by_ap_id(announce["actor"]),
+         %Object{} = object <- Object.get_by_ap_id(object_id),
+         true <- CustomObject.timeline_object?(object.data),
+         {:ok, %Activity{} = group_announce} <-
+           announce
+           |> Map.put("object", object_id)
+           |> Map.put_new("audience", group.ap_id)
+           |> Map.put_new("published", object.data["published"] || object.data["updated"])
+           |> handle_object_action() do
+      {:ok, group_announce}
+    else
+      _ -> {:ok, activity}
+    end
+  end
+
+  defp maybe_preserve_initial_group_announce(
+         _announce,
+         %Activity{} = activity,
+         _object_id,
+         _initial_group_update?
+       ),
+       do: {:ok, activity}
+
+  defp maybe_fix_embedded_group_create_addressing(
+         %{"actor" => group_ap_id},
+         %{"type" => "Create", "object" => %{} = created_object} = activity
+       ) do
+    with %User{actor_type: "Group"} <- User.get_cached_by_ap_id(group_ap_id),
+         true <- group_is_only_added_recipient?(activity, created_object, group_ap_id) do
+      created_object =
+        Enum.reduce(~w[to cc bto bcc audience], created_object, fn field, object ->
+          Map.put(object, field, Map.get(activity, field, []))
+        end)
+
+      Map.put(activity, "object", created_object)
+    else
+      _ -> activity
+    end
+  end
+
+  defp maybe_fix_embedded_group_create_addressing(_announce, activity), do: activity
+
+  defp group_is_only_added_recipient?(activity, object, group_ap_id) do
+    activity_recipients = embedded_recipient_set(activity)
+    object_recipients = embedded_recipient_set(object)
+
+    MapSet.subset?(object_recipients, activity_recipients) and
+      MapSet.difference(activity_recipients, object_recipients) == MapSet.new([group_ap_id])
+  end
+
+  defp embedded_recipient_set(data) do
+    ~w[to cc bto bcc audience]
+    |> Enum.flat_map(&embedded_recipient_values(data[&1]))
+    |> MapSet.new()
+  end
+
+  defp embedded_recipient_values(values) when is_list(values) do
+    Enum.filter(values, &is_binary/1)
+  end
+
+  defp embedded_recipient_values(value) when is_binary(value), do: [value]
+  defp embedded_recipient_values(_value), do: []
+
+  defp handle_actor_activity(data, options \\ []) do
+    options = Keyword.put(options, :local, false)
+
     with {:ok, %User{}} <- ObjectValidator.fetch_actor(data),
          {:ok, activity, _} <-
-           Pipeline.common_pipeline(data, local: false) do
+           Pipeline.common_pipeline(data, options) do
       {:ok, activity}
     end
   end
@@ -914,6 +1227,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   # Prepares the object of an outgoing create activity.
   def prepare_object(object) do
+    original_object = object
+
     object
     |> add_hashtags
     |> add_mention_tags
@@ -930,6 +1245,21 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     |> strip_internal_tags
     |> set_type
     |> maybe_process_history
+    |> restore_zenpub_document_license(original_object)
+  end
+
+  # ZenPub's licence is a scalar `tag`, not a social hashtag. Validation records
+  # the platform identity before storage, so use that classification to restore
+  # the native wire shape after ordinary ActivityStreams tag preparation.
+  defp restore_zenpub_document_license(prepared_object, original_object) do
+    if CustomObject.zenpub_document?(original_object) do
+      case Enum.find(List.wrap(original_object["tag"]), &is_binary/1) do
+        license when is_binary(license) -> Map.put(prepared_object, "tag", license)
+        _missing_license -> prepared_object
+      end
+    else
+      prepared_object
+    end
   end
 
   defp maybe_process_history(%{"formerRepresentations" => %{"orderedItems" => history}} = object) do
@@ -953,6 +1283,24 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   #  """
   #  internal -> Mastodon
   #  """
+
+  def prepare_outgoing(
+        %{
+          "type" => "Listen",
+          "object" => object_id,
+          "_pleroma_listen_track_ap_id" => track_ap_id
+        } = data
+      )
+      when is_binary(object_id) and is_binary(track_ap_id) do
+    data =
+      data
+      |> Map.put("object", %{"id" => track_ap_id, "type" => "Track"})
+      |> Map.delete("_pleroma_listen_track_ap_id")
+      |> Map.merge(Utils.make_json_ld_header(data))
+      |> Map.delete("bcc")
+
+    {:ok, data}
+  end
 
   def prepare_outgoing(%{"type" => activity_type, "object" => object_id} = data)
       when activity_type in ["Create", "Listen"] do
@@ -1038,41 +1386,42 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     {:ok, data}
   end
 
-  # Mastodon Accept/Reject requires a non-normalized object containing the actor URIs,
-  # because of course it does.
-  def prepare_outgoing(%{"type" => "Accept"} = data) do
-    with follow_activity <- Activity.normalize(data["object"]) do
-      object = %{
-        "actor" => follow_activity.actor,
-        "object" => follow_activity.data["object"],
-        "id" => follow_activity.data["id"],
-        "type" => "Follow"
-      }
-
-      data =
-        data
-        |> Map.put("object", object)
-        |> Map.merge(Utils.make_json_ld_header(data))
-
-      {:ok, data}
-    end
+  #
+  # A string-valued Delete object is a valid Link, but some applications use
+  # that shape only for actor deletion. An embedded Tombstone is equally valid
+  # ActivityStreams and lets those peers distinguish a deleted post without
+  # fetching a resource that has intentionally gone away.
+  #
+  def prepare_outgoing(
+        %{"type" => "Delete", "object" => object_id, "deleted_activity_id" => _} = data
+      )
+      when is_binary(object_id) do
+    data
+    |> Map.put("object", outgoing_tombstone(object_id))
+    |> prepare_generic_outgoing()
   end
 
-  def prepare_outgoing(%{"type" => "Reject"} = data) do
-    with follow_activity <- Activity.normalize(data["object"]) do
-      object = %{
-        "actor" => follow_activity.actor,
-        "object" => follow_activity.data["object"],
-        "id" => follow_activity.data["id"],
-        "type" => "Follow"
-      }
+  # Mastodon requires Follow responses to embed the Follow. Other protocols,
+  # including ForgeFed, require the response to retain the referenced activity.
+  def prepare_outgoing(%{"type" => type} = data) when type in ["Accept", "Reject"] do
+    case Activity.normalize(data["object"]) do
+      %Activity{data: %{"type" => "Follow"}} = follow_activity ->
+        object = %{
+          "actor" => follow_activity.actor,
+          "object" => follow_activity.data["object"],
+          "id" => follow_activity.data["id"],
+          "type" => "Follow"
+        }
 
-      data =
-        data
-        |> Map.put("object", object)
-        |> Map.merge(Utils.make_json_ld_header(data))
+        data =
+          data
+          |> Map.put("object", object)
+          |> Map.merge(Utils.make_json_ld_header(data))
 
-      {:ok, data}
+        {:ok, data}
+
+      _activity ->
+        prepare_generic_outgoing(data)
     end
   end
 
@@ -1085,10 +1434,16 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   end
 
   def prepare_outgoing(%{"type" => _type} = data) do
+    prepare_generic_outgoing(data)
+  end
+
+  defp prepare_generic_outgoing(data) do
     data =
       data
       |> maybe_expand_group_announce_object()
       |> maybe_expand_undo_object()
+      |> prepare_native_resource_action()
+      |> prepare_native_dislike()
       |> strip_internal_fields
       |> normalize_threadiverse_audience()
       |> maybe_fix_object_url
@@ -1096,6 +1451,107 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
     {:ok, data}
   end
+
+  defp outgoing_tombstone(object_id) do
+    case Object.normalize(object_id, fetch: false) do
+      %Object{data: %{"id" => ^object_id, "type" => "Tombstone"} = tombstone} ->
+        Map.take(tombstone, ["id", "type", "formerType", "deleted"])
+
+      _ ->
+        %{"id" => object_id, "type" => "Tombstone"}
+    end
+  end
+
+  defp prepare_native_dislike(
+         %{"type" => "EmojiReact", "_pleroma_reaction_type" => "Dislike"} = data
+       ) do
+    data
+    |> Map.put("type", "Dislike")
+    |> Map.drop(["content", "tag", "_misskey_reaction", "_pleroma_reaction_type"])
+  end
+
+  defp prepare_native_dislike(%{"type" => "Undo", "object" => %{} = object} = data) do
+    Map.put(data, "object", prepare_native_dislike(object))
+  end
+
+  defp prepare_native_dislike(data), do: data
+
+  # Manyfold exposes a model as an actor and also publishes a compatibility
+  # Note for status-oriented clients. A favourite on that Note means a Like of
+  # the model. Retarget only when the Note's canonical URL resolves to a cached
+  # 3DModel actor on the same origin.
+  defp prepare_native_resource_action(%{"type" => "Like", "object" => object_id} = data)
+       when is_binary(object_id) do
+    case native_resource_target(object_id) do
+      target when is_binary(target) -> retarget_native_resource_action(data, target)
+      _other -> data
+    end
+  end
+
+  defp prepare_native_resource_action(
+         %{
+           "type" => "Undo",
+           "object" => %{"type" => "Like", "object" => object_id} = object
+         } = data
+       )
+       when is_binary(object_id) do
+    case native_resource_target(object_id) do
+      target when is_binary(target) ->
+        data
+        |> Map.put("object", retarget_native_resource_action(object, target))
+        |> Map.put("to", [target])
+
+      _other ->
+        data
+    end
+  end
+
+  defp prepare_native_resource_action(data), do: data
+
+  defp retarget_native_resource_action(data, target) do
+    # Manyfold applies an activity once for every local inbox that receives it.
+    # Address the translated action only to the native model actor so the
+    # compatibility Note author and the local user's followers do not cause the
+    # same Like identifier to be counted more than once.
+    data
+    |> Map.put("object", target)
+    |> Map.put("to", [target])
+  end
+
+  defp native_resource_target(object_id) do
+    with %Object{
+           data: %{
+             "type" => "Note",
+             "actor" => actor,
+             "context" => resource_url,
+             "url" => resource_url
+           }
+         } <- Object.get_by_ap_id(object_id),
+         %User{local: false, ap_id: target, actor_extensions: extensions} <-
+           User.get_by_uri(resource_url),
+         "3DModel" <- ActorExtensions.concrete_type(extensions),
+         true <- same_uri_origin?(object_id, actor),
+         true <- same_uri_origin?(object_id, target) do
+      target
+    else
+      _other -> nil
+    end
+  end
+
+  defp same_uri_origin?(left, right) when is_binary(left) and is_binary(right) do
+    left = URI.parse(left)
+    right = URI.parse(right)
+
+    is_binary(left.scheme) and is_binary(left.host) and is_binary(right.scheme) and
+      is_binary(right.host) and left.scheme == right.scheme and
+      String.downcase(left.host) == String.downcase(right.host) and
+      (left.port || URI.default_port(left.scheme)) ==
+        (right.port || URI.default_port(right.scheme))
+  rescue
+    URI.Error -> false
+  end
+
+  defp same_uri_origin?(_left, _right), do: false
 
   defp normalize_threadiverse_audience(%{"object" => %{} = object} = data) do
     data
@@ -1519,6 +1975,20 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def strip_internal_fields(object) do
     Map.drop(object, Pleroma.Constants.object_internal_fields())
   end
+
+  # CommonsPub/ZenPub uses an explicit language label as native publishing
+  # metadata on Document resources. `language` is otherwise an internal field,
+  # so retain it only in this remote standard-Document ingestion path. The
+  # ordinary validator still applies the language-code and object-size bounds.
+  defp preserve_remote_document_language(
+         stripped_object,
+         %{"type" => "Document", "language" => language}
+       )
+       when is_binary(language),
+       do: Map.put(stripped_object, "language", language)
+
+  defp preserve_remote_document_language(stripped_object, _original_object),
+    do: stripped_object
 
   defp strip_internal_tags(%{"tag" => tags} = object) do
     tags = Enum.filter(tags, fn x -> is_map(x) end)

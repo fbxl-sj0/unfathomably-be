@@ -1,0 +1,1 @@
+Fixed upload metadata and blurhash analysis on Windows hosts and executable paths containing spaces.

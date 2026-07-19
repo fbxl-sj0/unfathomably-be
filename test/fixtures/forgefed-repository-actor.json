@@ -1,0 +1,24 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://forgefed.org/ns"
+  ],
+  "id": "https://forge.example/projects/alpha",
+  "type": [
+    "Repository",
+    "TicketTracker",
+    "PatchTracker"
+  ],
+  "preferredUsername": "alpha",
+  "name": "Alpha",
+  "summary": "A repository actor with ForgeFed tracker capabilities.",
+  "inbox": "https://forge.example/projects/alpha/inbox",
+  "outbox": "https://forge.example/projects/alpha/outbox",
+  "followers": "https://forge.example/projects/alpha/followers",
+  "following": "https://forge.example/projects/alpha/following",
+  "publicKey": {
+    "id": "https://forge.example/projects/alpha#main-key",
+    "owner": "https://forge.example/projects/alpha",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuFixtureOnlyNotForSignatures\n-----END PUBLIC KEY-----\n"
+  }
+}

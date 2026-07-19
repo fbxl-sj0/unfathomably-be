@@ -23,11 +23,17 @@ defmodule Pleroma.Constants do
       "assigned_account",
       "rules",
       "content_type",
+      "_pleroma_reaction_type",
+      "_pleroma_listen_track_ap_id",
       "language",
       "participations",
       "participation_count",
       "participation_request_count",
-      "location_id"
+      "location_id",
+      "quoteRequest",
+      "quoteState",
+      "quoteTargetActor",
+      "_unfathomably_native"
     ]
   )
 
@@ -84,10 +90,19 @@ defmodule Pleroma.Constants do
   const(actor_types,
     do: [
       "Application",
+      "Factory",
       "Group",
       "Organization",
+      "PatchTracker",
       "Person",
-      "Service"
+      "Project",
+      "ReleaseTracker",
+      "Repository",
+      "Roadmap",
+      "Service",
+      "Team",
+      "TicketTracker",
+      "Workflow"
     ]
   )
 
@@ -97,14 +112,19 @@ defmodule Pleroma.Constants do
       "Add",
       "Announce",
       "Answer",
+      "Apply",
+      "Assign",
       "Block",
       "ChatMessage",
       "Create",
       "Delete",
       "Dislike",
       "EmojiReact",
+      "Edit",
       "Flag",
       "Follow",
+      "Grant",
+      "Invite",
       "Join",
       "Leave",
       "Like",
@@ -112,9 +132,12 @@ defmodule Pleroma.Constants do
       "Lock",
       "Move",
       "Offer",
+      "Push",
       "Read",
       "Reject",
       "Remove",
+      "Resolve",
+      "Revoke",
       "Undo",
       "Update",
       "View"

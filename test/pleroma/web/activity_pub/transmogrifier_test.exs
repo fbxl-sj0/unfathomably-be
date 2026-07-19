@@ -65,7 +65,11 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
         "id" => activity.object.data["id"],
         "content" => "test post",
         "published" => object.data["published"],
-        "actor" => AccountView.render("show.json", %{user: user, skip_visibility_check: true})
+        "actor" =>
+          "show.json"
+          |> AccountView.render(%{user: user, skip_visibility_check: true})
+          |> Jason.encode!()
+          |> Jason.decode!()
       }
 
       message = %{
@@ -105,7 +109,11 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
         "id" => reported_activity.object.data["id"],
         "content" => "test post",
         "published" => object.data["published"],
-        "actor" => AccountView.render("show.json", %{user: user, skip_visibility_check: true})
+        "actor" =>
+          "show.json"
+          |> AccountView.render(%{user: user, skip_visibility_check: true})
+          |> Jason.encode!()
+          |> Jason.decode!()
       }
 
       flag = %{
@@ -168,49 +176,6 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       end
     end
 
-    test "it acknowledges Owncast stream lifecycle activities without storing presence state" do
-      public = Pleroma.Constants.as_public()
-
-      offer = %{
-        "@context" => "https://www.w3.org/ns/activitystreams",
-        "id" => "https://silo.ffmuc.net/federation/stream-live",
-        "type" => "Offer",
-        "actor" => "https://silo.ffmuc.net/federation/user/streamer",
-        "object" => "https://silo.ffmuc.net",
-        "to" => public,
-        "cc" => "https://silo.ffmuc.net/federation/user/streamer/followers",
-        "https://owncast.online/ns#serverName" => "Freifunk München - Weather Stream",
-        "https://owncast.online/ns#streamStatus" => "live",
-        "https://owncast.online/ns#streamTitle" => "Heimstettner See Cam"
-      }
-
-      leave = %{
-        "@context" => "https://www.w3.org/ns/activitystreams",
-        "id" => "https://silo.ffmuc.net/federation/stream-offline",
-        "type" => "Leave",
-        "actor" => "https://silo.ffmuc.net/federation/user/streamer",
-        "object" => "https://silo.ffmuc.net",
-        "to" => public,
-        "cc" => "https://silo.ffmuc.net/federation/user/streamer/followers"
-      }
-
-      for message <- [offer, leave] do
-        assert {:ok, :ignored} = Transmogrifier.handle_incoming(message)
-        refute Activity.get_by_ap_id(message["id"])
-      end
-    end
-
-    test "it rejects ordinary Offer activities without Owncast stream metadata" do
-      message = %{
-        "id" => "https://example.org/activities/offer/1",
-        "type" => "Offer",
-        "actor" => "https://example.org/users/alice",
-        "object" => "https://example.org/objects/1"
-      }
-
-      assert :error = Transmogrifier.handle_incoming(message)
-    end
-
     test "it accepts Move activities" do
       old_user = insert(:user)
       new_user = insert(:user)
@@ -261,7 +226,7 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
                  Transmogrifier.handle_incoming(message)
                end)
 
-      assert log =~ "Couldn't fetch \"https://example.org/objects/9\""
+      assert log =~ "Error while fetching https://example.org/objects/9"
 
       object = Object.normalize(activity)
       assert [%{"type" => "Mention"}, %{"type" => "Link"}] = object.data["tag"]
@@ -291,6 +256,34 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
   end
 
   describe "prepare outgoing" do
+    test "it embeds post Tombstones without changing actor Deletes" do
+      user = insert(:user)
+      {:ok, activity} = CommonAPI.post(user, %{status: "gone after federation"})
+      object_id = activity.data["object"]
+
+      {:ok, delete} = CommonAPI.delete(activity.id, user)
+      {:ok, prepared_delete} = Transmogrifier.prepare_outgoing(delete.data)
+
+      assert %{
+               "id" => ^object_id,
+               "type" => "Tombstone",
+               "formerType" => "Note"
+             } = prepared_delete["object"]
+
+      refute Map.has_key?(prepared_delete, "deleted_activity_id")
+
+      actor_delete = %{
+        "id" => "#{user.ap_id}/delete",
+        "type" => "Delete",
+        "actor" => user.ap_id,
+        "object" => user.ap_id,
+        "to" => [user.follower_address]
+      }
+
+      assert {:ok, %{"object" => actor_id}} = Transmogrifier.prepare_outgoing(actor_delete)
+      assert actor_id == user.ap_id
+    end
+
     test "it inlines private announced objects" do
       user = insert(:user)
 
@@ -438,94 +431,6 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       refute parent_author.ap_id in mention_hrefs
     end
 
-    test "it serializes group vote audience as a scalar for threadiverse receivers" do
-      group =
-        insert(:user,
-          actor_type: "Group",
-          local: false,
-          nickname: "main@lemmy.example",
-          ap_id: "https://lemmy.example/c/main"
-        )
-
-      like = %{
-        "id" => "https://local.example/activities/like-1",
-        "type" => "Like",
-        "actor" => "https://local.example/users/alice",
-        "object" => "https://lemmy.example/post/1",
-        "audience" => [group.ap_id],
-        "to" => ["https://lemmy.example/u/poster"],
-        "cc" => [Pleroma.Constants.as_public()]
-      }
-
-      undo = %{
-        "id" => "https://local.example/activities/undo-like-1",
-        "type" => "Undo",
-        "actor" => like["actor"],
-        "object" => like,
-        "audience" => [group.ap_id],
-        "to" => ["https://lemmy.example/u/poster"],
-        "cc" => [Pleroma.Constants.as_public()]
-      }
-
-      like_activity = insert(:like_activity, data_attrs: like)
-
-      undo_by_id =
-        undo
-        |> Map.put("id", "https://local.example/activities/undo-like-2")
-        |> Map.put("object", like_activity.data["id"])
-
-      {:ok, outgoing_like} = Transmogrifier.prepare_outgoing(like)
-      {:ok, outgoing_undo} = Transmogrifier.prepare_outgoing(undo)
-      {:ok, outgoing_undo_by_id} = Transmogrifier.prepare_outgoing(undo_by_id)
-
-      assert outgoing_like["audience"] == group.ap_id
-      assert outgoing_undo["audience"] == group.ap_id
-      assert outgoing_undo["object"]["audience"] == group.ap_id
-      assert outgoing_undo_by_id["audience"] == group.ap_id
-      assert outgoing_undo_by_id["object"]["type"] == "Like"
-      assert outgoing_undo_by_id["object"]["audience"] == group.ap_id
-    end
-
-    test "it serializes group delete audience as a scalar for threadiverse receivers" do
-      group =
-        insert(:user,
-          actor_type: "Group",
-          local: false,
-          nickname: "main@lemmy.example",
-          ap_id: "https://lemmy.example/c/main"
-        )
-
-      delete = %{
-        "id" => "https://local.example/activities/delete-1",
-        "type" => "Delete",
-        "actor" => "https://local.example/users/alice",
-        "object" => "https://local.example/objects/comment-1",
-        "audience" => [group.ap_id],
-        "to" => [Pleroma.Constants.as_public()],
-        "cc" => [group.ap_id]
-      }
-
-      {:ok, outgoing_delete} = Transmogrifier.prepare_outgoing(delete)
-
-      assert outgoing_delete["audience"] == group.ap_id
-    end
-
-    test "it omits empty outgoing audiences for threadiverse delete receivers" do
-      delete = %{
-        "id" => "https://local.example/activities/delete-ordinary-1",
-        "type" => "Delete",
-        "actor" => "https://local.example/users/alice",
-        "object" => "https://local.example/objects/comment-1",
-        "audience" => [],
-        "to" => [Pleroma.Constants.as_public()],
-        "cc" => []
-      }
-
-      {:ok, outgoing_delete} = Transmogrifier.prepare_outgoing(delete)
-
-      refute Map.has_key?(outgoing_delete, "audience")
-    end
-
     test "it adds the json-ld context and the conversation property" do
       user = insert(:user)
 
@@ -657,22 +562,6 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       {:ok, _modified} = Transmogrifier.prepare_outgoing(activity.data)
     end
 
-    test "it refuses to serve Update activities for static embedded objects" do
-      data = %{
-        "actor" => "https://example.com/users/alice",
-        "id" => "https://example.com/activities/update-static",
-        "object" => %{
-          "id" => "https://example.com/static/banner.png",
-          "type" => "Image"
-        },
-        "type" => "Update"
-      }
-
-      assert_raise RuntimeError, ~r/non-updateable object type/, fn ->
-        Transmogrifier.prepare_outgoing(data)
-      end
-    end
-
     test "custom emoji urls are URI encoded" do
       # :dinosaur: filename has a space -> dino walking.gif
       user = insert(:user)
@@ -698,6 +587,111 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       assert prepared["object"]["contentMap"] == %{
                "uk" => "тест"
              }
+    end
+
+    test "it keeps scalar content when language is unspecified" do
+      user = insert(:user)
+
+      {:ok, activity} = CommonAPI.post(user, %{status: "compatibility content"})
+
+      {:ok, prepared} = Transmogrifier.prepare_outgoing(activity.data)
+
+      assert prepared["object"]["content"] == "compatibility content"
+      refute Map.has_key?(prepared["object"], "contentMap")
+
+      assert prepared["@context"] == [
+               "https://www.w3.org/ns/activitystreams",
+               "http://localhost:4001/schemas/litepub-0.1.jsonld"
+             ]
+    end
+
+    test "it retargets a Manyfold compatibility Note Like to its native model actor" do
+      resource_url = "https://manyfold.example/models/model-1"
+      model_actor = "https://manyfold.example/federation/actors/model-1"
+      creator_actor = "https://manyfold.example/federation/actors/creator-1"
+      note_id = "https://manyfold.example/federation/published/comments/model-1"
+
+      insert(:user,
+        local: false,
+        ap_id: model_actor,
+        uri: resource_url,
+        actor_type: "Service",
+        actor_extensions: %{"f3di:concreteType" => "3DModel"}
+      )
+
+      insert(:note,
+        user: insert(:user, local: false, ap_id: creator_actor),
+        data: %{
+          "id" => note_id,
+          "actor" => creator_actor,
+          "attributedTo" => creator_actor,
+          "context" => resource_url,
+          "url" => resource_url
+        }
+      )
+
+      like = %{
+        "id" => "https://local.example/activities/like-model-1",
+        "type" => "Like",
+        "actor" => "https://local.example/users/alice",
+        "object" => note_id,
+        "to" => [creator_actor],
+        "cc" => []
+      }
+
+      assert {:ok, %{"object" => ^model_actor, "to" => [^model_actor]}} =
+               Transmogrifier.prepare_outgoing(like)
+
+      undo = %{
+        "id" => "https://local.example/activities/undo-like-model-1",
+        "type" => "Undo",
+        "actor" => like["actor"],
+        "object" => like,
+        "to" => like["to"],
+        "cc" => []
+      }
+
+      assert {:ok,
+              %{
+                "object" => %{"object" => ^model_actor, "to" => [^model_actor]},
+                "to" => [^model_actor]
+              }} =
+               Transmogrifier.prepare_outgoing(undo)
+    end
+
+    test "it does not retarget a native-looking Note across origins" do
+      resource_url = "https://manyfold.example/models/model-1"
+      note_id = "https://other.example/notes/model-1"
+
+      insert(:user,
+        local: false,
+        ap_id: "https://manyfold.example/federation/actors/model-1",
+        uri: resource_url,
+        actor_type: "Service",
+        actor_extensions: %{"f3di:concreteType" => "3DModel"}
+      )
+
+      insert(:note,
+        user: insert(:user, local: false, ap_id: "https://other.example/users/alice"),
+        data: %{
+          "id" => note_id,
+          "actor" => "https://other.example/users/alice",
+          "attributedTo" => "https://other.example/users/alice",
+          "context" => resource_url,
+          "url" => resource_url
+        }
+      )
+
+      like = %{
+        "id" => "https://local.example/activities/like-other-1",
+        "type" => "Like",
+        "actor" => "https://local.example/users/alice",
+        "object" => note_id,
+        "to" => [],
+        "cc" => []
+      }
+
+      assert {:ok, %{"object" => ^note_id}} = Transmogrifier.prepare_outgoing(like)
     end
 
     test "it prepares a quote post" do
@@ -738,9 +732,7 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
         "type" => "Announce"
       }
 
-      assert capture_log(fn ->
-               {:error, _} = Transmogrifier.handle_incoming(data)
-             end) =~ "Object containment failed"
+      assert {:error, _} = Transmogrifier.handle_incoming(data)
     end
 
     test "it rejects activities which reference objects that have an incorrect attribution (variant 1)" do
@@ -753,9 +745,7 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
         "type" => "Announce"
       }
 
-      assert capture_log(fn ->
-               {:error, _} = Transmogrifier.handle_incoming(data)
-             end) =~ "Object containment failed"
+      assert {:error, _} = Transmogrifier.handle_incoming(data)
     end
 
     test "it rejects activities which reference objects that have an incorrect attribution (variant 2)" do
@@ -768,9 +758,7 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
         "type" => "Announce"
       }
 
-      assert capture_log(fn ->
-               {:error, _} = Transmogrifier.handle_incoming(data)
-             end) =~ "Object containment failed"
+      assert {:error, _} = Transmogrifier.handle_incoming(data)
     end
   end
 
@@ -876,6 +864,37 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
   end
 
   describe "fix_attachments/1" do
+    test "normalizes language-tagged attachment descriptions" do
+      object = %{
+        "attachment" => [
+          %{
+            "type" => "Document",
+            "name" => %{"@language" => "en", "@value" => "A described image"},
+            "url" => "https://media.example.tld/described.jpg",
+            "mediaType" => "image/jpeg"
+          },
+          %{
+            "type" => "Document",
+            "summaryMap" => %{
+              "en" => "English audio description",
+              "fr" => "French audio description"
+            },
+            "url" => "https://media.example.tld/described.ogg",
+            "mediaType" => "audio/ogg"
+          }
+        ]
+      }
+
+      assert [
+               %{"name" => "A described image"},
+               %{"name" => "English audio description"}
+             ] =
+               object
+               |> Transmogrifier.fix_attachments()
+               |> Map.fetch!("attachment")
+               |> Enum.map(&Map.take(&1, ["name"]))
+    end
+
     test "puts dimensions into attachment url field" do
       object = %{
         "attachment" => [

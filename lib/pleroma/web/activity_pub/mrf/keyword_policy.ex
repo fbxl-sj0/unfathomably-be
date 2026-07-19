@@ -15,11 +15,17 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicy do
   end
 
   defp string_matches?(string, pattern) when is_binary(pattern) do
-    String.contains?(string, pattern)
+    String.contains?(normalize_match_text(string), normalize_match_text(pattern))
   end
 
   defp string_matches?(string, pattern) do
-    String.match?(string, pattern)
+    String.match?(String.normalize(string, :nfkc), pattern)
+  end
+
+  defp normalize_match_text(value) do
+    value
+    |> String.normalize(:nfkc)
+    |> String.downcase()
   end
 
   defp object_payload(%{} = object) do

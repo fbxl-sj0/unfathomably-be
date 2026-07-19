@@ -28,10 +28,12 @@ defmodule Pleroma.Web.Push.Subscription do
   # credo:disable-for-next-line Credo.Check.Readability.MaxLineLength
   @supported_alert_types ~w[follow favourite mention status reblog poll pleroma:chat_mention pleroma:emoji_reaction]a
 
-  defp alerts(%{data: %{alerts: alerts}}) do
+  defp alerts(%{data: %{alerts: alerts}}) when is_map(alerts) do
     alerts = Map.take(alerts, @supported_alert_types)
     %{"alerts" => alerts}
   end
+
+  defp alerts(_params), do: %{"alerts" => %{}}
 
   def enabled?(subscription, "follow_request") do
     enabled?(subscription, "follow")

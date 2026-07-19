@@ -491,6 +491,89 @@ defmodule Pleroma.Web.MastodonAPI.SourceItemsControllerTest do
       assert String.ends_with?(summary, "...")
     end
 
+    test "renders public native metadata and excludes restricted custom objects", %{conn: conn} do
+      collection_url = "https://books.example.org/outbox"
+      public_review_url = "https://books.example.org/reviews/public"
+      private_review_url = "https://books.example.org/reviews/followers"
+      unaddressed_review_url = "https://books.example.org/reviews/unaddressed"
+
+      source =
+        insert(:user,
+          actor_type: "Service",
+          local: false,
+          nickname: "reviews@books.example.org",
+          ap_id: collection_url,
+          name: "reviews"
+        )
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^collection_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => collection_url,
+                "type" => "OrderedCollection",
+                "totalItems" => 3,
+                "orderedItems" => [
+                  %{
+                    "id" => public_review_url,
+                    "type" => "Review",
+                    "attributedTo" => "https://books.example.org/users/alice",
+                    "to" => [%{"id" => "as:Public"}],
+                    "content" => "A public native review.",
+                    "context" => public_review_url,
+                    "inReplyToBook" => "https://books.example.org/books/1",
+                    "rating" => 4.5
+                  },
+                  %{
+                    "id" => private_review_url,
+                    "type" => "Review",
+                    "attributedTo" => "https://books.example.org/users/alice",
+                    "to" => ["https://books.example.org/users/alice/followers"],
+                    "content" => "A follower-only review."
+                  },
+                  %{
+                    "id" => unaddressed_review_url,
+                    "type" => "Review",
+                    "attributedTo" => "https://books.example.org/users/alice",
+                    "content" => "An access-controlled review with no public audience."
+                  }
+                ]
+              })
+          }
+
+        %{method: :get, url: ^public_review_url} ->
+          %Tesla.Env{status: 404, body: "not found"}
+      end)
+
+      assert %{
+               "items" => [
+                 %{
+                   "id" => ^public_review_url,
+                   "native" => %{
+                     "canonical_id" => ^public_review_url,
+                     "class" => "status",
+                     "context" => ^public_review_url,
+                     "controls" => ["open"],
+                     "fields" => %{
+                       "in_reply_to_book" => "https://books.example.org/books/1",
+                       "rating" => 4.5
+                     },
+                     "type" => "Review"
+                   },
+                   "platform" => "bookwyrm",
+                   "platform_family" => "books",
+                   "render_hint" => %{"layout" => "book", "primary_action" => "open"}
+                 }
+               ]
+             } =
+               conn
+               |> get("/api/v1/sources/#{source.id}/items")
+               |> json_response(200)
+    end
+
     test "renders native families from ActivityPub object types when source software is unknown",
          %{
            conn: conn

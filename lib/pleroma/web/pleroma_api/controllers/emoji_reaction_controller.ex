@@ -5,21 +5,29 @@
 defmodule Pleroma.Web.PleromaAPI.EmojiReactionController do
   use Pleroma.Web, :controller
 
+  import Ecto.Query, only: [where: 3]
+
   alias Pleroma.Activity
   alias Pleroma.Object
+  alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.MastodonAPI.StatusView
+  alias Pleroma.Web.MastodonAPI.AccountView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate)
-  plug(OAuthScopesPlug, %{scopes: ["write:statuses"]} when action in [:create, :delete])
+
+  plug(
+    OAuthScopesPlug,
+    %{scopes: ["write:statuses"]} when action in [:create, :delete, :dislike, :undislike]
+  )
 
   plug(
     OAuthScopesPlug,
     %{scopes: ["read:statuses"], fallback: :proceed_unauthenticated}
-    when action == :index
+    when action in [:index, :disliked_by]
   )
 
   defdelegate open_api_operation(action), to: Pleroma.Web.ApiSpec.EmojiReactionOperation
@@ -143,5 +151,59 @@ defmodule Pleroma.Web.PleromaAPI.EmojiReactionController do
       |> put_view(StatusView)
       |> render("show.json", activity: activity, for: user, as: :activity)
     end
+  end
+
+  def dislike(%{assigns: %{user: user}} = conn, %{id: activity_id}) do
+    with {:ok, _activity} <- CommonAPI.dislike(activity_id, user) do
+      render_status(conn, activity_id, user)
+    end
+  end
+
+  def undislike(%{assigns: %{user: user}} = conn, %{id: activity_id}) do
+    with {:ok, _activity} <- CommonAPI.undislike(activity_id, user) do
+      render_status(conn, activity_id, user)
+    end
+  end
+
+  def disliked_by(%{assigns: %{user: user}} = conn, %{id: activity_id}) do
+    with true <- Pleroma.Config.get([:instance, :show_reactions]),
+         %Activity{} = activity <- Activity.get_by_id_with_object(activity_id),
+         {_, true} <- {:visible, Visibility.visible_for_user?(activity, user)},
+         %Object{} = object <- Object.normalize(activity, fetch: false) do
+      users = dislike_users(object, user)
+
+      conn
+      |> put_view(AccountView)
+      |> render("index.json", for: user, users: users, as: :user)
+    else
+      {:visible, _} -> {:error, :forbidden}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  defp dislike_users(object, user) do
+    ap_ids =
+      object
+      |> Object.get_emoji_reactions()
+      |> enumerable_reactions()
+      |> Enum.find_value([], fn
+        ["👎", users, _url] when is_list(users) -> users
+        {"👎", users, _url} when is_list(users) -> users
+        _ -> nil
+      end)
+      |> Enum.filter(&is_binary/1)
+
+    User
+    |> where([u], u.ap_id in ^ap_ids)
+    |> Repo.all()
+    |> Enum.reject(&User.blocks?(user, &1))
+  end
+
+  defp render_status(conn, activity_id, user) do
+    activity = Activity.get_by_id(activity_id)
+
+    conn
+    |> put_view(StatusView)
+    |> render("show.json", activity: activity, for: user, as: :activity)
   end
 end

@@ -6,6 +6,7 @@ defmodule Pleroma.Web.Federator do
   alias Pleroma.Activity
   alias Pleroma.Object.Containment
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.Federator.Publisher
@@ -121,17 +122,16 @@ defmodule Pleroma.Web.Federator do
     # NOTE: we use the actor ID to do the containment, this is fine because an
     # actor shouldn't be acting on objects outside their own AP server.
     with {_, {:ok, _user}} <- {:actor, User.get_or_fetch_by_ap_id(actor)},
-         nil <- Activity.normalize(params["id"]),
          {_, :ok} <-
            {:correct_origin?, Containment.contain_origin_from_id(actor, params)},
-         {:ok, activity} <- Transmogrifier.handle_incoming(params) do
+         {:ok, activity} <- handle_incoming_or_duplicate(params) do
       {:ok, activity}
     else
       {:correct_origin?, _} ->
         Logger.debug("Origin containment failure for #{params["id"]}")
         {:error, :origin_containment_failed}
 
-      %Activity{} ->
+      {:error, :already_present} ->
         Logger.debug("Already had #{params["id"]}")
         {:error, :already_present}
 
@@ -146,8 +146,54 @@ defmodule Pleroma.Web.Federator do
 
       e ->
         # Just drop those for now
-        Logger.debug(fn -> "Unhandled activity\n" <> Jason.encode!(params, pretty: true) end)
+        Logger.debug(fn ->
+          "Unhandled activity: #{inspect(e)}\n" <> Jason.encode!(params, pretty: true)
+        end)
+
         {:error, e}
     end
   end
+
+  defp handle_incoming_or_duplicate(params) do
+    case Activity.normalize(params["id"]) do
+      nil ->
+        Transmogrifier.handle_incoming(params)
+
+      %Activity{} = activity ->
+        maybe_reprocess_colliding_activity(activity, params)
+    end
+  end
+
+  defp maybe_reprocess_colliding_activity(
+         %Activity{} = _activity,
+         %{"type" => "Create", "object" => object} = params
+       ) do
+    if CustomObject.custom_object?(object) do
+      Transmogrifier.handle_incoming(params)
+    else
+      {:error, :already_present}
+    end
+  end
+
+  #
+  # BookWyrm uses the original Create activity ID again when it deletes a
+  # status. The duplicate guard must not confuse that lifecycle transition
+  # with a retransmitted Create. Give the inbound Delete a stable local ID so
+  # normal Delete validation still decides whether the actor has authority.
+  #
+  defp maybe_reprocess_colliding_activity(
+         %Activity{data: %{"type" => "Create", "object" => existing_object}},
+         %{"id" => id, "type" => "Delete", "object" => deleted_object} = params
+       ) do
+    if Utils.get_ap_id(existing_object) == Utils.get_ap_id(deleted_object) do
+      params
+      |> Map.put("id", id <> "#unfathomably-delete")
+      |> Transmogrifier.handle_incoming()
+    else
+      {:error, :already_present}
+    end
+  end
+
+  defp maybe_reprocess_colliding_activity(%Activity{}, _params),
+    do: {:error, :already_present}
 end

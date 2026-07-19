@@ -8,6 +8,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Object
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   import Ecto.Changeset
@@ -83,7 +84,15 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
            Object.normalize(object_id, fetch: false) || User.get_cached_by_ap_id(object_id) do
       case entity do
         %Object{} ->
-          if actor == entity.data["actor"] do
+          authorized? =
+            if CustomObject.custom_object?(entity.data) do
+              CustomObject.authorized?(entity.data, actor) and
+                CustomObject.authorized?(object, actor)
+            else
+              actor == entity.data["actor"]
+            end
+
+          if authorized? do
             cng
           else
             add_error(cng, :object, "Can't be updated by this actor")
@@ -97,7 +106,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
           end
 
         nil ->
-          add_error(cng, :object, "Can't be updated by this actor")
+          validate_unknown_object_update(cng, actor, object)
 
         _ ->
           add_error(cng, :object, "Update is neither for Object or Actor")
@@ -105,6 +114,40 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
     else
       _e ->
         add_error(cng, :object, "Can't be updated by this actor")
+    end
+  end
+
+  defp validate_unknown_object_update(cng, actor, %{} = object) do
+    with true <-
+           (CustomObject.custom_object?(object) and CustomObject.authorized?(object, actor)) or
+             object_actor_matches?(object, actor),
+         true <- recent_unknown_update?(object) do
+      cng
+    else
+      _ -> add_error(cng, :object, "Unknown or stale object can't be updated")
+    end
+  end
+
+  defp validate_unknown_object_update(cng, _actor, _object) do
+    add_error(cng, :object, "Unknown object can't be updated")
+  end
+
+  defp object_actor_matches?(object, actor) do
+    [object["actor"] | List.wrap(object["attributedTo"])]
+    |> Enum.any?(fn object_actor ->
+      match?({:ok, ^actor}, ObjectValidators.ObjectID.cast(object_actor))
+    end)
+  end
+
+  defp recent_unknown_update?(object) do
+    timestamp = object["updated"] || object["published"]
+
+    with timestamp when is_binary(timestamp) <- timestamp,
+         {:ok, datetime, _offset} <- DateTime.from_iso8601(timestamp),
+         age <- DateTime.diff(DateTime.utc_now(), datetime, :second) do
+      age >= -3600 and age <= 86_400
+    else
+      _ -> false
     end
   end
 end

@@ -123,6 +123,8 @@ defmodule Pleroma.Web.Federation.Churn do
 
   defp find_changeset(%Ecto.Changeset{} = changeset), do: changeset
 
+  defp find_changeset(%_{}), do: nil
+
   defp find_changeset({:error, value}), do: find_changeset(value)
 
   defp find_changeset({left, right}), do: find_changeset(left) || find_changeset(right)

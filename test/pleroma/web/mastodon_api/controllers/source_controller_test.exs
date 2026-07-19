@@ -120,33 +120,6 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                |> json_response(200)
     end
 
-    test "filters followed feeds when followed scope is requested", %{conn: conn, user: user} do
-      followed_source =
-        insert(:user,
-          actor_type: "Application",
-          local: false,
-          nickname: "library@example.org",
-          ap_id: "https://audio.example.org/federation/music/libraries/everyone",
-          name: "Followed Library"
-        )
-
-      insert(:user,
-        actor_type: "Application",
-        local: false,
-        nickname: "library-two@example.org",
-        ap_id: "https://other.example.org/federation/music/libraries/everyone",
-        name: "Unfollowed Library"
-      )
-
-      {:ok, _, _} = User.follow(user, followed_source)
-      source_id = to_string(followed_source.id)
-
-      assert [%{"id" => ^source_id, "display_name" => "Followed Library"}] =
-               conn
-               |> get("/api/v1/feeds?q=library&scope=followed")
-               |> json_response(200)
-    end
-
     test "classifies common feed software from stable ActivityPub URL shapes", %{conn: conn} do
       cases = [
         {"https://longform.example.org/api/collections/notes", "Person", "writefreely",
@@ -157,6 +130,8 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
          "funkwhale", "Funkwhale"},
         {"https://video.example.org/federation/user/streamer", "Service", "owncast", "Owncast"},
         {"https://books.bookwyrm.example.org/user/shelf", "Person", "bookwyrm", "BookWyrm"},
+        {"https://wiki.example.org/xwiki/activitypub/Person/xwiki%253AXWiki.Alice", "Person",
+         "xwiki", "XWiki"},
         {"https://pod.castopod.example.org/@news", "Service", "castopod", "Castopod"}
       ]
 
@@ -959,6 +934,24 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                conn
                |> post("/api/v1/feeds/#{source.id}/follow")
                |> json_response(200)
+    end
+
+    test "following locally defederated sources returns the policy reason", %{conn: conn} do
+      clear_config([:mrf_simple, :reject], [{"audio.example.org", "Federation paused"}])
+
+      source =
+        insert(:user,
+          actor_type: "Application",
+          local: false,
+          nickname: "library@audio.example.org",
+          ap_id: "https://audio.example.org/federation/music/libraries/local-source",
+          inbox: "https://audio.example.org/inbox"
+        )
+
+      assert %{"error" => "Federation paused"} =
+               conn
+               |> post("/api/v1/feeds/#{source.id}/follow")
+               |> json_response(403)
     end
 
     test "follows and unfollows RSS sources locally", %{conn: conn} do

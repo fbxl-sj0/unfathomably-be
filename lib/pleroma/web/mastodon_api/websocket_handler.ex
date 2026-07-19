@@ -84,13 +84,17 @@ defmodule Pleroma.Web.MastodonAPI.WebsocketHandler do
 
   @impl Phoenix.Socket.Transport
   def handle_info({:render_with_user, view, template, item, topic}, state) do
-    user = %User{} = User.get_cached_by_ap_id(state.user.ap_id)
+    case User.get_cached_by_ap_id(state.user.ap_id) do
+      %User{is_active: true} = user ->
+        if Streamer.filtered_by_user?(user, item) do
+          {:ok, state}
+        else
+          message = view.render(template, item, user, topic)
+          {:push, {:text, message}, %{state | user: user}}
+        end
 
-    if Streamer.filtered_by_user?(user, item) do
-      {:ok, state}
-    else
-      message = view.render(template, item, user, topic)
-      {:push, {:text, message}, %{state | user: user}}
+      _ ->
+        {:stop, {:closed, ~c"account is inactive"}, state}
     end
   end
 
@@ -132,7 +136,7 @@ defmodule Pleroma.Web.MastodonAPI.WebsocketHandler do
   # Authenticated streams.
   defp authenticate_request(access_token) do
     with oauth_token = %Token{user_id: user_id} <- Repo.get_by(Token, token: access_token),
-         user = %User{} <- User.get_cached_by_id(user_id) do
+         user = %User{is_active: true} <- User.get_cached_by_id(user_id) do
       {:ok, user, oauth_token}
     else
       _ -> {:error, :unauthorized}

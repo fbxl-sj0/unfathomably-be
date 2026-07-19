@@ -193,6 +193,7 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       end,
       "pleroma_emoji_reactions",
       "pleroma_custom_emoji_reactions",
+      "pleroma_dislikes",
       "pleroma_chat_messages",
       if Config.get([:shout, :enabled]) do
         "chat"

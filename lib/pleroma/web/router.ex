@@ -19,11 +19,12 @@ defmodule Pleroma.Web.Router do
   end
 
   pipeline :accepts_html_xml_json do
+    plug(Pleroma.Web.Plugs.SetFormatPlug)
     plug(:accepts, ["html", "xml", "rss", "atom", "activity+json", "json"])
   end
 
   pipeline :accepts_xml_rss_atom do
-    plug(:accepts, ["xml", "rss", "atom"])
+    plug(:accepts, ["html", "xml", "rss", "atom"])
   end
 
   pipeline :browser do
@@ -624,6 +625,14 @@ defmodule Pleroma.Web.Router do
     get("/reports/:id", ReportController, :show)
   end
 
+  scope "/api/friendica", Pleroma.Web.PleromaAPI do
+    pipe_through(:authenticated_api)
+
+    post("/statuses/:id/dislike", EmojiReactionController, :dislike)
+    post("/statuses/:id/undislike", EmojiReactionController, :undislike)
+    get("/statuses/:id/disliked_by", EmojiReactionController, :disliked_by)
+  end
+
   scope "/api/v1/pleroma", Pleroma.Web.PleromaAPI do
     scope [] do
       pipe_through(:authenticated_api)
@@ -847,6 +856,8 @@ defmodule Pleroma.Web.Router do
     put("/groups/:id", FederatedGroupController, :update)
     delete("/groups/:id", FederatedGroupController, :delete)
     get("/groups/search", FederatedGroupController, :search)
+    get("/discovery/targets", FederatedTargetController, :search)
+    post("/discovery/native-objects", NativeObjectController, :create)
     get("/groups/relationships", FederatedGroupController, :relationships)
     get("/groups/:id/memberships", FederatedGroupController, :memberships)
     get("/groups/:id/membership_requests", FederatedGroupController, :membership_requests)
@@ -944,6 +955,8 @@ defmodule Pleroma.Web.Router do
     post("/statuses/:id/unbookmark", StatusController, :unbookmark)
     post("/statuses/:id/mute", StatusController, :mute_conversation)
     post("/statuses/:id/unmute", StatusController, :unmute_conversation)
+    post("/statuses/:id/quote/approve", QuoteController, :approve)
+    post("/statuses/:id/quote/reject", QuoteController, :reject)
 
     post("/push/subscription", SubscriptionController, :create)
     get("/push/subscription", SubscriptionController, :show)
@@ -976,6 +989,7 @@ defmodule Pleroma.Web.Router do
 
     get("/accounts/search", SearchController, :account_search)
     get("/search", SearchController, :search)
+    get("/federation/status", FederationStatusController, :show)
 
     get("/accounts/lookup", AccountController, :lookup)
 
@@ -1044,12 +1058,6 @@ defmodule Pleroma.Web.Router do
     get("/suggestions", SuggestionController, :index2)
 
     get("/instance", InstanceController, :show2)
-  end
-
-  scope "/api/v3", Pleroma.Web.LemmyAPI do
-    pipe_through(:api)
-
-    get("/community/list", CommunityController, :list)
   end
 
   scope "/api", Pleroma.Web do
@@ -1183,6 +1191,9 @@ defmodule Pleroma.Web.Router do
     get("/users/:nickname/collections/featured", ActivityPubController, :pinned)
     get("/users/:nickname/collections/moderators", ActivityPubController, :moderators)
     get("/objects/:uuid/replies", ActivityPubController, :object_replies)
+    get("/contexts/:uuid", ActivityPubController, :context)
+    get("/contexts/:uuid/items", ActivityPubController, :context_items)
+    get("/quote_authorizations/:id", QuoteAuthorizationController, :show)
   end
 
   scope "/", Pleroma.Web.ActivityPub do

@@ -8,7 +8,7 @@ defmodule Pleroma.Mixfile do
       app: :pleroma,
       name: "unfathomably-be",
       compat_name: "unfathomably-be",
-      version: version("3.3.0"),
+      version: version("3.4.0"),
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
       compilers: Mix.compilers(),
@@ -21,12 +21,16 @@ defmodule Pleroma.Mixfile do
       aliases: aliases(),
       deps: deps(),
       test_coverage: [tool: :covertool, summary: true],
+      test_ignore_filters: [
+        ~r{test/credo/check/consistency/.*\.ex$},
+        ~r{test/fixtures/config/.*\.exs$}
+      ],
       # Docs
-      homepage_url: "https://github.com/unfathomably/unfathomably-be",
-      source_url: "https://github.com/unfathomably/unfathomably-be",
+      homepage_url: "https://github.com/fbxl-sj0/unfathomably-be",
+      source_url: "https://github.com/fbxl-sj0/unfathomably-be",
       docs: [
         source_url_pattern:
-          "https://github.com/unfathomably/unfathomably-be/blob/main/%{path}#L%{line}",
+          "https://github.com/fbxl-sj0/unfathomably-be/blob/main/%{path}#L%{line}",
         logo: "priv/static/images/logo.png",
         extras: ["README.md", "CHANGELOG.md"] ++ Path.wildcard("docs/**/*.md"),
         groups_for_extras: [
@@ -176,10 +180,10 @@ defmodule Pleroma.Mixfile do
       {:websock_adapter, "~> 0.6", override: true},
       {:swoosh, "~> 1.26"},
       {:phoenix_swoosh, "~> 1.1"},
-      {:multipart, "~> 0.6", optional: true},
+      {:multipart, "~> 0.4.0", optional: true},
       {:gen_smtp, "~> 1.3"},
       {:mua, "~> 0.2.0"},
-      {:mail, "~> 0.5"},
+      {:mail, "~> 0.3.0"},
       {:ex_syslogger, "~> 2.2", only: :prod},
       {:floki, "~> 0.38"},
       {:timex, "~> 3.7"},

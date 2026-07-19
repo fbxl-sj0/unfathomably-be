@@ -1,0 +1,44 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://forgefed.org/ns"
+  ],
+  "id": "https://forge.example/repos/treesim/outbox/push-1",
+  "type": "Push",
+  "actor": "https://forge.example/repos/treesim",
+  "attributedTo": "https://forge.example/users/aviva",
+  "to": [
+    "https://forge.example/users/aviva",
+    "https://forge.example/users/aviva/followers",
+    "https://forge.example/repos/treesim/followers"
+  ],
+  "context": "https://forge.example/repos/treesim",
+  "target": "https://forge.example/repos/treesim/branches/main",
+  "hashBefore": "017cbb00bc20d1cae85f46d638684898d095f0ae",
+  "hashAfter": "be9f48a341c4bb5cd79ae7ab85fbf0c05d2837bb",
+  "summary": "<p>Aviva pushed two commits to treesim</p>",
+  "object": {
+    "type": "OrderedCollection",
+    "totalItems": 2,
+    "orderedItems": [
+      {
+        "id": "https://forge.example/repos/treesim/commits/be9f48a341c4bb5cd79ae7ab85fbf0c05d2837bb",
+        "type": "Commit",
+        "attributedTo": "https://forge.example/users/aviva",
+        "context": "https://forge.example/repos/treesim",
+        "hash": "be9f48a341c4bb5cd79ae7ab85fbf0c05d2837bb",
+        "created": "2026-07-17T13:07:32Z",
+        "summary": "Add bounded custom ActivityPub ingestion"
+      },
+      {
+        "id": "https://forge.example/repos/treesim/commits/fa37fe100a8b1e69933889c5bf3caf95cd3ae1e6",
+        "type": "Commit",
+        "attributedTo": "https://forge.example/users/aviva",
+        "context": "https://forge.example/repos/treesim",
+        "hash": "fa37fe100a8b1e69933889c5bf3caf95cd3ae1e6",
+        "created": "2026-07-17T12:51:52Z",
+        "summary": "Preserve extension vocabulary"
+      }
+    ]
+  }
+}

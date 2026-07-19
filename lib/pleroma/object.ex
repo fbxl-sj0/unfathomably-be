@@ -160,6 +160,45 @@ defmodule Pleroma.Object do
   def get_by_id(nil), do: nil
   def get_by_id(id), do: Repo.get(Object, id)
 
+  @doc """
+  Gets an object by its database ID and refreshes stale remote data when requested.
+
+  Remote refresh failures return the cached object. API reads should remain available
+  when the originating server is slow or temporarily unreachable.
+  """
+  def get_by_id_and_maybe_refetch(id, opts \\ []) do
+    case get_by_id(id) do
+      %Object{} = object -> maybe_refetch_by_interval(object, opts)
+      nil -> nil
+    end
+  end
+
+  defp maybe_refetch_by_interval(%Object{} = object, opts) when is_list(opts) do
+    interval = Keyword.get(opts, :interval, 0)
+
+    if refetch_due?(object, interval) do
+      case Fetcher.refetch_object(object) do
+        {:ok, %Object{} = refreshed_object} -> refreshed_object
+        _ -> object
+      end
+    else
+      object
+    end
+  end
+
+  defp maybe_refetch_by_interval(%Object{} = object, _opts), do: object
+
+  defp refetch_due?(
+         %Object{updated_at: %NaiveDateTime{} = updated_at} = object,
+         interval
+       )
+       when is_integer(interval) and interval >= 0 do
+    not local?(object) and
+      NaiveDateTime.diff(NaiveDateTime.utc_now(), updated_at, :second) >= interval
+  end
+
+  defp refetch_due?(_object, _interval), do: false
+
   def get_by_ap_id(nil), do: nil
 
   def get_by_ap_id(ap_id) do
@@ -256,12 +295,18 @@ defmodule Pleroma.Object do
   end
 
   def make_tombstone(%Object{data: %{"id" => id, "type" => type}}, deleted \\ DateTime.utc_now()) do
-    %ObjectTombstone{
+    tombstone = %ObjectTombstone{
       id: id,
       formerType: type,
       deleted: deleted
     }
-    |> Map.from_struct()
+
+    %{
+      "id" => tombstone.id,
+      "formerType" => tombstone.formerType,
+      "deleted" => tombstone.deleted,
+      "type" => tombstone.type
+    }
   end
 
   def swap_object_with_tombstone(object) do
@@ -277,7 +322,7 @@ defmodule Pleroma.Object do
   end
 
   def delete(%Object{data: %{"id" => id}} = object) do
-    with {:ok, _obj} = swap_object_with_tombstone(object),
+    with {:ok, tombstone} <- swap_object_with_tombstone(object),
          deleted_activity = Activity.delete_all_by_object_ap_id(id),
          {:ok, _} <- invalid_object_cache(object) do
       cleanup_attachments(
@@ -285,7 +330,7 @@ defmodule Pleroma.Object do
         %{"object" => object}
       )
 
-      {:ok, object, deleted_activity}
+      {:ok, tombstone, deleted_activity}
     end
   end
 

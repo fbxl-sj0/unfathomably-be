@@ -164,10 +164,23 @@ defmodule Pleroma.Web.CommonAPI do
 
   def unfollow(follower, unfollowed) do
     with {:ok, follower, _follow_activity} <- User.unfollow(follower, unfollowed),
-         {:ok, _activity} <- ActivityPub.unfollow(follower, unfollowed),
+         {:ok, _activity} <- maybe_activitypub_unfollow(follower, unfollowed),
          {:ok, _subscription} <- User.unsubscribe(follower, unfollowed),
          {:ok, _endorsement} <- User.unendorse(follower, unfollowed) do
       {:ok, follower}
+    end
+  end
+
+  defp maybe_activitypub_unfollow(follower, unfollowed) do
+    case ActivityPub.unfollow(follower, unfollowed) do
+      {:ok, activity} ->
+        {:ok, activity}
+
+      nil ->
+        {:ok, nil}
+
+      error ->
+        error
     end
   end
 
@@ -355,6 +368,33 @@ defmodule Pleroma.Web.CommonAPI do
     end
   end
 
+  def dislike(id, user) do
+    with %Activity{} = activity <- Activity.get_by_id(id),
+         {_, true} <- {:visibility_error, activity_visible_to_actor(activity, user)},
+         object <- Object.normalize(activity, fetch: false),
+         nil <- Utils.get_existing_emoji_reaction(user.ap_id, object, "👎"),
+         {:ok, dislike, meta} <- Builder.dislike(user, object),
+         {:ok, activity, _} <-
+           Pipeline.common_pipeline(dislike, Keyword.put(meta, :local, true)) do
+      {:ok, activity}
+    else
+      %Activity{} -> {:ok, :already_disliked}
+      {:visibility_error, _} -> {:error, :not_found}
+      _ -> {:error, dgettext("errors", "Could not dislike")}
+    end
+  end
+
+  def undislike(id, user) do
+    with %Activity{} = reaction_activity <- Utils.get_latest_reaction(id, user, "👎"),
+         {_, {:ok, _}} <- {:cancel_jobs, maybe_cancel_jobs(reaction_activity)},
+         {:ok, undo, _} <- Builder.undo(user, reaction_activity),
+         {:ok, activity, _} <- Pipeline.common_pipeline(undo, local: true) do
+      {:ok, activity}
+    else
+      _ -> {:error, dgettext("errors", "Could not remove dislike")}
+    end
+  end
+
   def vote(%Pleroma.Object{} = object, %Pleroma.User{} = user, choices) do
     vote(user, object, choices)
   end
@@ -428,9 +468,10 @@ defmodule Pleroma.Web.CommonAPI do
 
   def leave(%User{ap_id: participant_ap_id} = user, event_id) do
     with %Activity{data: %{"object" => event_ap_id}} <- Activity.get_by_id(event_id),
-         %Activity{} = join_activity <- Utils.get_existing_join(participant_ap_id, event_ap_id),
-         {:ok, undo, _} <- Builder.undo(user, join_activity),
-         {:ok, activity, _} <- Pipeline.common_pipeline(undo, local: true) do
+         %Object{} = event <- Object.get_by_ap_id(event_ap_id),
+         %Activity{} <- Utils.get_existing_join(participant_ap_id, event_ap_id),
+         {:ok, leave, _} <- Builder.leave(user, event),
+         {:ok, activity, _} <- Pipeline.common_pipeline(leave, local: true) do
       {:ok, activity}
     else
       nil ->

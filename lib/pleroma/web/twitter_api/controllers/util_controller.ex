@@ -102,6 +102,12 @@ defmodule Pleroma.Web.TwitterAPI.UtilController do
     end
   end
 
+  def show_subscribe_form(conn, _params) do
+    conn
+    |> put_status(:bad_request)
+    |> text("Missing nickname or status_id")
+  end
+
   def remote_subscribe(conn, %{"nickname" => nick, "profile" => _}) do
     show_subscribe_form(conn, %{"nickname" => nick})
   end

@@ -59,6 +59,12 @@ defmodule Pleroma.Web.StaticFE.StaticFEController do
     end
   end
 
+  def show(conn, %{"nickname" => _nickname, "id" => id} = params) do
+    conn
+    |> assign(:notice_id, id)
+    |> show(params)
+  end
+
   def show(%{assigns: %{username_or_id: username_or_id}} = conn, params) do
     with {_, %User{local: true} = user} <-
            {:fetch_user, User.get_cached_by_nickname_or_id(username_or_id)},

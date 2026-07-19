@@ -9,7 +9,9 @@ defmodule Pleroma.Object.Fetcher do
   alias Pleroma.Object
   alias Pleroma.Object.Containment
   alias Pleroma.Signature
+  alias Pleroma.User
   alias Pleroma.Web.ActivityPub.InternalFetchActor
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.MRF
   alias Pleroma.Web.ActivityPub.ObjectValidator
   alias Pleroma.Web.ActivityPub.Pipeline
@@ -27,7 +29,11 @@ defmodule Pleroma.Object.Fetcher do
   defp reinject_object(%Object{data: %{}} = object, new_data) do
     Logger.debug("Reinjecting object #{new_data["id"]}")
 
-    with {:ok, new_data, _} <- ObjectValidator.validate(new_data, %{}),
+    with {:ok, new_data, _} <-
+           ObjectValidator.validate(new_data,
+             local: false,
+             fetched_from: object.data["id"]
+           ),
          {:ok, new_data} <- MRF.filter(new_data),
          {:ok, new_object, _} <-
            Object.Updater.do_update_and_invalidate_cache(
@@ -44,7 +50,14 @@ defmodule Pleroma.Object.Fetcher do
   end
 
   defp reinject_object(_, new_data) do
-    with {:ok, object, _} <- Pipeline.common_pipeline(new_data, local: false) do
+    meta =
+      if CustomObject.direct_resource?(new_data) do
+        [local: false, fetched_from: new_data["id"], do_not_federate: true]
+      else
+        [local: false]
+      end
+
+    with {:ok, object, _} <- Pipeline.common_pipeline(new_data, meta) do
       {:ok, object}
     else
       e -> e
@@ -69,15 +82,17 @@ defmodule Pleroma.Object.Fetcher do
   @spec fetch_object_from_id(String.t(), list()) ::
           {:ok, Object.t()} | {fetcher_errors(), any()} | Pipeline.errors()
   def fetch_object_from_id(id, options \\ []) do
+    {prefetched_data, options} = Keyword.pop(options, :prefetched_data)
+
     with {_, nil} <- {:fetch_object, Object.get_cached_by_ap_id(id)},
          {_, true} <- {:allowed_depth, Federator.allowed_thread_distance?(options[:depth])},
-         {_, {:ok, data}} <- {:fetch, fetch_and_contain_remote_object_from_id(id)},
+         {_, {:ok, data}} <- {:fetch, fetch_object_data(id, prefetched_data)},
          data <- RemoteReplies.maybe_inline_reply_ids(data, options),
          {_, nil} <- {:normalize, Object.normalize(data, fetch: false)},
          params <- prepare_activity_params(data),
-         {_, :ok} <- {:containment, Containment.contain_origin(id, params)},
+         {_, :ok} <- {:containment, contain_fetched_data(id, data, params)},
          {_, {:ok, activity}} <-
-           {:transmogrifier, Transmogrifier.handle_incoming(params, options)},
+           {:transmogrifier, ingest_fetched_data(id, data, params, options)},
          {_, _data, %Object{} = object} <-
            {:object, data, Object.normalize(activity, fetch: false)} do
       {:ok, object}
@@ -121,6 +136,21 @@ defmodule Pleroma.Object.Fetcher do
     end
   end
 
+  # Reply-thread discovery must inspect a remote object before its ancestors
+  # can be stored in order.  Recheck containment here so that discovery can
+  # pass that already-downloaded payload through the normal object pipeline
+  # without weakening the fetcher's origin boundary or issuing a second GET.
+  defp fetch_object_data(id, %{} = prefetched_data) do
+    case Containment.contain_origin_from_id(id, prefetched_data) do
+      :ok -> {:ok, prefetched_data}
+      error -> {:error, error}
+    end
+  end
+
+  defp fetch_object_data(id, _prefetched_data) do
+    fetch_and_contain_remote_object_from_id(id)
+  end
+
   defp maybe_return_existing_object(id, changeset, error) do
     with true <- object_unique_ap_id_error?(changeset),
          %Object{} = object <- Object.get_by_ap_id(id) do
@@ -156,6 +186,32 @@ defmodule Pleroma.Object.Fetcher do
     |> Maps.put_if_present("cc", data["cc"])
     |> Maps.put_if_present("bto", data["bto"])
     |> Maps.put_if_present("bcc", data["bcc"])
+  end
+
+  defp contain_fetched_data(id, data, _params) do
+    if CustomObject.direct_resource?(data) do
+      Containment.contain_origin_from_id(id, data)
+    else
+      Containment.contain_origin(id, prepare_activity_params(data))
+    end
+  end
+
+  defp ingest_fetched_data(id, data, params, options) do
+    if CustomObject.direct_resource?(data) do
+      meta =
+        options
+        |> Keyword.put(:local, false)
+        |> Keyword.put(:fetched_from, id)
+        |> Keyword.put(:do_not_federate, true)
+
+      case Pipeline.common_pipeline(data, meta) do
+        {:ok, %Object{} = object, _meta} -> {:ok, object}
+        {:error, _reason} = error -> error
+        {:reject, _reason} = error -> error
+      end
+    else
+      Transmogrifier.handle_incoming(params, options)
+    end
   end
 
   defp object_fetch_actor(%{"actor" => actor}) when is_binary(actor), do: actor
@@ -234,11 +290,11 @@ defmodule Pleroma.Object.Fetcher do
     end
   end
 
-  defp make_signature(id, date) do
+  defp make_signature(id, date, actor \\ InternalFetchActor.get_actor()) do
     uri = URI.parse(id)
 
     signature =
-      InternalFetchActor.get_actor()
+      actor
       |> Signature.sign(%{
         "(request-target)": "get #{request_target(uri)}",
         host: signature_host(uri),
@@ -274,6 +330,41 @@ defmodule Pleroma.Object.Fetcher do
       [make_signature(id, date) | headers]
     else
       headers
+    end
+  end
+
+  defp signed_fetch_options do
+    if Pleroma.Config.get([:activitypub, :sign_object_fetches]) do
+      actor = InternalFetchActor.get_actor()
+
+      [
+        follow_redirect: false,
+        force_redirect: false,
+        redirect_middleware:
+          {Pleroma.Tesla.Middleware.FederationRedirect,
+           signer: {__MODULE__, :resign_fetch_request, [actor]}}
+      ]
+    else
+      []
+    end
+  end
+
+  @doc false
+  def resign_fetch_request(%Tesla.Env{} = env, %User{} = actor) do
+    date = Signature.signed_date()
+
+    case make_signature(env.url, date, actor) do
+      {"signature", signature} when is_binary(signature) ->
+        headers =
+          env.headers
+          |> Enum.reject(fn {key, _value} ->
+            String.downcase(to_string(key)) in ["signature", "signature-input", "date", "host"]
+          end)
+
+        {:ok, %{env | headers: [{"signature", signature}, {"date", date} | headers]}}
+
+      _ ->
+        {:error, :signature_failed}
     end
   end
 
@@ -398,7 +489,7 @@ defmodule Pleroma.Object.Fetcher do
       |> maybe_date_fetch(date)
       |> sign_fetch(id, date)
 
-    case HTTP.get(id, headers) do
+    case HTTP.get(id, headers, signed_fetch_options()) do
       {:ok, %{body: body, status: code, headers: headers}} when code in 200..299 ->
         case List.keyfind(headers, "content-type", 0) do
           {_, content_type} ->

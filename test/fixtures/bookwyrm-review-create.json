@@ -1,0 +1,34 @@
+{
+  "@context": "https://www.w3.org/ns/activitystreams",
+  "id": "https://bookwyrm.example/user/alice/status/fixture/activity",
+  "type": "Create",
+  "actor": "https://bookwyrm.example/user/alice",
+  "to": [
+    "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "cc": [
+    "https://bookwyrm.example/user/alice/followers"
+  ],
+  "object": {
+    "id": "https://bookwyrm.example/user/alice/status/fixture",
+    "type": "Review",
+    "published": "2026-07-17T12:00:00Z",
+    "attributedTo": "https://bookwyrm.example/user/alice",
+    "content": "<p>A native BookWyrm review.</p>",
+    "to": [
+      "https://www.w3.org/ns/activitystreams#Public"
+    ],
+    "cc": [
+      "https://bookwyrm.example/user/alice/followers"
+    ],
+    "replies": {
+      "type": "OrderedCollection",
+      "totalItems": 0,
+      "orderedItems": []
+    },
+    "inReplyToBook": "https://bookwyrm.example/book/edition/1",
+    "readingStatus": "read",
+    "name": "A thoughtful review",
+    "rating": 5
+  }
+}

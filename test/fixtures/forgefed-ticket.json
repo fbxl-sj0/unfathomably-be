@@ -1,0 +1,24 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://forgefed.org/ns"
+  ],
+  "id": "https://forge.example/projects/alpha/tickets/42",
+  "type": "Ticket",
+  "attributedTo": "https://forge.example/users/alice",
+  "managedBy": "https://forge.example/projects/alpha",
+  "context": "https://forge.example/projects/alpha/ticket-tracker",
+  "to": [
+    "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "cc": [
+    "https://forge.example/projects/alpha/followers"
+  ],
+  "name": "Preserve extension vocabulary on tickets",
+  "content": "The receiving forge must retain the native Ticket fields.",
+  "published": "2026-07-17T12:00:00Z",
+  "forgefed:milestone": {
+    "id": "https://forge.example/projects/alpha/milestones/1",
+    "name": "Alien ActivityPub"
+  }
+}

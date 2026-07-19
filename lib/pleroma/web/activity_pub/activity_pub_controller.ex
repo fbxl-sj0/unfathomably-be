@@ -150,6 +150,57 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
     end
   end
 
+  def context(%{assigns: assigns, query_params: query_params} = conn, %{"uuid" => uuid}) do
+    context_ap_id = Endpoint.url() <> "/contexts/" <> uuid
+    params = context_collection_params(query_params, assigns)
+    activities = ActivityPub.fetch_activities_for_context_collection(context_ap_id, params)
+
+    case activities do
+      [] ->
+        {:error, :not_found}
+
+      _ ->
+        conn
+        |> maybe_skip_cache(Map.get(assigns, :user))
+        |> put_resp_content_type("application/activity+json")
+        |> put_view(ObjectView)
+        |> render("context.json", context: context_ap_id, activities: activities)
+    end
+  end
+
+  def context_items(
+        %{assigns: assigns, query_params: query_params} = conn,
+        %{"uuid" => uuid}
+      ) do
+    context_ap_id = Endpoint.url() <> "/contexts/" <> uuid
+    params = context_collection_params(query_params, assigns)
+    activities = ActivityPub.fetch_activities_for_context_collection(context_ap_id, params)
+
+    case activities do
+      [] ->
+        {:error, :not_found}
+
+      _ ->
+        conn
+        |> maybe_skip_cache(Map.get(assigns, :user))
+        |> put_resp_content_type("application/activity+json")
+        |> put_view(ObjectView)
+        |> render("context_items.json",
+          context: context_ap_id,
+          activities: activities,
+          page: Map.get(query_params, "page") in [true, "true"]
+        )
+    end
+  end
+
+  defp context_collection_params(query_params, assigns) do
+    query_params
+    |> Map.take(["max_id", "min_id", "since_id", "limit"])
+    |> Map.new(fn {key, value} -> {String.to_existing_atom(key), value} end)
+    |> Map.put_new(:limit, 40)
+    |> Map.put(:user, Map.get(assigns, :user))
+  end
+
   def track_object_fetch(conn, nil), do: conn
 
   def track_object_fetch(conn, object_id) do
@@ -558,6 +609,14 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
     {:error, "Updating profile is not currently supported in C2S"}
   end
 
+  defp check_allowed_action(_, %{"type" => "Create", "object" => %{"type" => "Note"}} = activity) do
+    {:ok, activity}
+  end
+
+  defp check_allowed_action(_, %{"type" => "Create"}) do
+    {:error, "Only Note creations are currently supported in C2S"}
+  end
+
   defp check_allowed_action(_, activity), do: {:ok, activity}
 
   defp validate_visibility(%User{} = user, %{"type" => type, "object" => object} = activity) do
@@ -606,14 +665,18 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
         |> json(message)
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        Logger.debug(fn -> "AP C2S validation rejected activity: #{inspect(changeset.errors)}" end)
+        Logger.debug(fn ->
+          "AP C2S validation rejected activity: #{inspect(changeset.errors)}"
+        end)
 
         conn
         |> put_status(:bad_request)
         |> json("Bad Request")
 
       {:error, {:error, %Ecto.Changeset{} = changeset}} ->
-        Logger.debug(fn -> "AP C2S validation rejected activity: #{inspect(changeset.errors)}" end)
+        Logger.debug(fn ->
+          "AP C2S validation rejected activity: #{inspect(changeset.errors)}"
+        end)
 
         conn
         |> put_status(:bad_request)
@@ -679,6 +742,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
   end
 
   defp log_inbox_metadata(conn, _), do: conn
+
   def upload_media(%{assigns: %{user: %User{} = user}} = conn, %{"file" => file} = data) do
     with {:ok, object} <-
            ActivityPub.upload(

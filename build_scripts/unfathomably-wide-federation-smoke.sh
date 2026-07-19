@@ -8,13 +8,15 @@
 #
 # Purpose:
 #
-#   Run the broad platform federation lane for group, forum, and channel
-#   software when a live public target is the only available peer.
+#   Run the broad platform federation lane across disposable stock peers and
+#   public targets where a locally controlled peer is not available.
 #
 # Responsibilities:
 #
+#   * run the shared moderation and defederation safety contract
 #   * exercise public target discovery, follow, content hydration,
 #     favourite, unfavourite, and follow cleanup through Unfathomably
+#   * run the locally controlled peer adapters and retain their full logs
 #   * optionally exercise reply and reply-delete against public targets
 #   * record which full-matrix capabilities still require a local peer
 #   * distinguish unsupported platform behavior from behavior that was
@@ -25,13 +27,14 @@
 #   * production deployment logic
 #   * private OAuth tokens
 #   * hidden success for untested reverse-direction federation paths
+#   * duplicated service setup that belongs in a platform adapter
 #
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-BASE_URL="${FEDERATION_WIDE_BASE_URL:-https://social.example.com}"
+BASE_URL="${FEDERATION_WIDE_BASE_URL:-https://social.fbxl.net}"
 TOKEN="${FEDERATION_WIDE_TOKEN:-${FEDERATION_AUDIT_TOKEN:-}}"
 PLATFORMS="${FEDERATION_WIDE_PLATFORMS:-peertube,nodebb,discourse,fedigroups,hubzilla,friendica}"
 LIMIT="${FEDERATION_WIDE_LIMIT:-6}"
@@ -40,6 +43,12 @@ REPORT_DIR="${FEDERATION_WIDE_REPORT_DIR:-/tmp/unfathomably-wide-federation-smok
 ACTIONS="${FEDERATION_WIDE_ACTIONS:-1}"
 PUBLIC_REPLIES="${FEDERATION_WIDE_PUBLIC_REPLIES:-0}"
 REQUIRE_FULL="${FEDERATION_WIDE_REQUIRE_FULL:-1}"
+RUN_LOCAL_ADAPTERS="${FEDERATION_WIDE_LOCAL_ADAPTERS:-1}"
+RUN_PUBLIC_AUDIT="${FEDERATION_WIDE_PUBLIC_AUDIT:-1}"
+LOCAL_PLATFORMS="${FEDERATION_WIDE_LOCAL_PLATFORMS:-bookwyrm,forgefed,manyfold,ibis,neodb,wanderer,dokieli,flohmarkt,castling,bonfire-valueflows,zenpub,activitypods,mutual-aid,fedigroups,gancio,mobilizon,wordpress,xwiki,writefreely,snac,mitra,owncast,sharkey,wafrn,postmarks}"
+LOCAL_KEEP_CONTAINERS="${FEDERATION_WIDE_KEEP_CONTAINERS:-0}"
+RUN_SAFETY="${FEDERATION_WIDE_SAFETY:-1}"
+SAFETY_BE_IMAGE="${FEDERATION_WIDE_SAFETY_BE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}}"
 
 usage() {
     cat <<'EOF'
@@ -48,7 +57,7 @@ Usage:
 
 Options:
   --base-url URL          Unfathomably base URL. Default:
-                          FEDERATION_WIDE_BASE_URL or https://social.example.com.
+                          FEDERATION_WIDE_BASE_URL or https://social.fbxl.net.
   --token TOKEN           OAuth token with read/write/follow access. May also
                           be provided as FEDERATION_WIDE_TOKEN or
                           FEDERATION_AUDIT_TOKEN.
@@ -57,6 +66,14 @@ Options:
   --limit N               Preview/status item limit per platform. Default: 6.
   --timeout SECONDS       HTTP timeout per request. Default: 45.
   --report-dir DIR        Directory for JSON and TSV reports.
+  --local-platforms CSV   Comma-separated disposable peer adapters. Default:
+                          bookwyrm,forgefed,manyfold,ibis,neodb,wanderer,dokieli,flohmarkt,castling,bonfire-valueflows,zenpub,activitypods,mutual-aid,fedigroups,gancio,mobilizon,
+                          wordpress,xwiki,writefreely,snac,mitra,owncast,sharkey,
+                          wafrn,postmarks.
+  --local-only            Run disposable local adapters without public targets.
+  --public-only           Run the earlier public-target lane only.
+  --no-safety             Skip the shared moderation/defederation contract.
+  --keep-containers       Preserve local adapter containers after each run.
   --public-replies        Post and delete a reply against public remote targets.
                           This is disabled by default.
   --no-actions            Skip favourite/unfavourite checks.
@@ -64,21 +81,27 @@ Options:
                           reverse-direction full-matrix checks are not tested.
   -h, --help              Show this help.
 
-The wide lane is deliberately stricter than a resolver probe, but it is still
-limited by public-target access. For each platform it writes a matrix row for
+The wide local lane first runs the shared moderation and defederation safety
+contract, then each selected locally controlled stock peer adapter. Those
+adapters contain the service-specific setup and broad bidirectional operation
+checks. Their supported and not_supported result lines are collected into a
+local adapter matrix without duplicating the setup here.
+
+The public-target portion is deliberately stricter than a resolver probe, but
+it is limited by public-target access. For each platform it writes a matrix row for
 discovery, follow, inbound remote content, local favourite/unfavourite,
 optional local reply/delete, follow cleanup, reverse follow, reverse posting,
 reverse comments, reverse reactions, reverse deletes, moderation, and modlog
 visibility. Capabilities that require an authenticated local peer are marked
 not_tested here and should be covered by the platform-specific Docker harnesses.
 
-The existing Lemmy, Mbin, PieFed, Mastodon, Pleroma, Rebased, PeerTube, NodeBB,
-Discourse, Hubzilla, and Friendica scripts remain the authoritative local Docker
-full-matrix peers where such a peer can be booted. This script is the broad
-public-target lane for PeerTube, NodeBB, Discourse, FediGroups, Hubzilla, and
-Friendica. If a platform cannot perform a capability, the matrix says
-unsupported. If we do not have a local peer or adapter for a capability, the
-matrix says not_tested and the script fails unless --allow-partial is used.
+All 39 names accepted by --local-platforms dispatch to their authoritative
+peer-specific Docker harness. The default list is the 25 newest adapters so
+the older established lanes are not repeated in every ordinary invocation.
+The public portion remains available for externally hosted targets. If a
+platform cannot perform a capability, the matrix says unsupported. If a
+capability cannot be exercised in the selected lane, the matrix says
+not_tested and the public audit fails unless --allow-partial is used.
 EOF
 }
 
@@ -108,6 +131,28 @@ while [ "$#" -gt 0 ]; do
             REPORT_DIR="${2:-}"
             shift 2
             ;;
+        --local-platforms)
+            LOCAL_PLATFORMS="${2:-}"
+            shift 2
+            ;;
+        --local-only)
+            RUN_LOCAL_ADAPTERS=1
+            RUN_PUBLIC_AUDIT=0
+            shift
+            ;;
+        --public-only)
+            RUN_LOCAL_ADAPTERS=0
+            RUN_PUBLIC_AUDIT=1
+            shift
+            ;;
+        --no-safety)
+            RUN_SAFETY=0
+            shift
+            ;;
+        --keep-containers)
+            LOCAL_KEEP_CONTAINERS=1
+            shift
+            ;;
         --public-replies)
             PUBLIC_REPLIES=1
             shift
@@ -132,7 +177,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ -z "$TOKEN" ]; then
+if [ "$RUN_PUBLIC_AUDIT" = "1" ] && [ -z "$TOKEN" ]; then
     cat >&2 <<'EOF'
 FEDERATION_WIDE_TOKEN or FEDERATION_AUDIT_TOKEN is required.
 
@@ -142,17 +187,137 @@ EOF
     exit 64
 fi
 
+if [ "$RUN_LOCAL_ADAPTERS" = "1" ]; then
+    "$SCRIPT_DIR/unfathomably-smoke-image.sh"
+fi
+
 mkdir -p "$REPORT_DIR"
 
 IFS=',' read -r -a PLATFORM_LIST <<< "$PLATFORMS"
+IFS=',' read -r -a LOCAL_PLATFORM_LIST <<< "$LOCAL_PLATFORMS"
 
 summary_file="$REPORT_DIR/summary.tsv"
 matrix_file="$REPORT_DIR/full-matrix.tsv"
+local_summary_file="$REPORT_DIR/local-adapter-summary.tsv"
+local_matrix_file="$REPORT_DIR/local-adapter-matrix.tsv"
 
 printf 'platform\tpublic_result\tresolved\tfollowed\titems\tnative_status\tactions\tfollow_cleanup\tfull_result\tnote\n' > "$summary_file"
 printf 'platform\tcapability\tresult\tnote\n' > "$matrix_file"
+printf 'platform\tresult\tlog\n' > "$local_summary_file"
+printf 'platform\tresult\tcapability\n' > "$local_matrix_file"
 
 failures=0
+
+adapter_script() {
+    case "$1" in
+        activitypods|bonfire-valueflows|bookwyrm|castling|discourse|dokieli|fedigroups|flohmarkt|forgefed|friendica|funkwhale|gancio|gotosocial|hubzilla|ibis|iceshrimp|lemmy|manyfold|mastodon|mbin|misskey|mitra|mobilizon|mutual-aid|neodb|nodebb|owncast|peertube|piefed|pixelfed|postmarks|sharkey|snac|wafrn|wanderer|wordpress|writefreely|xwiki|zenpub)
+            printf '%s/unfathomably-%s-smoke.sh\n' "$SCRIPT_DIR" "$1"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+record_local_adapter() {
+    local platform="$1"
+    local result="$2"
+    local output="$3"
+
+    python3 - "$platform" "$result" "$output" "$local_summary_file" "$local_matrix_file" <<'PY'
+import pathlib
+import sys
+
+platform, result, output_path, summary_path, matrix_path = sys.argv[1:]
+output = pathlib.Path(output_path)
+lines = output.read_text(encoding="utf-8", errors="replace").splitlines() if output.exists() else []
+capabilities = []
+
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("* supported:"):
+        capabilities.append(("passed", stripped.removeprefix("* supported:").strip()))
+    elif stripped.startswith("* not_supported:"):
+        capabilities.append(("unsupported", stripped.removeprefix("* not_supported:").strip()))
+    elif stripped.startswith("* stock_limitation:"):
+        note = stripped.removeprefix("* stock_limitation:").strip()
+        capabilities.append(("unsupported", f"stock limitation: {note}"))
+
+missing_explicit_results = False
+if not capabilities:
+    missing_explicit_results = result == "passed"
+    note = "adapter exited successfully without explicit supported or not_supported capability lines" if missing_explicit_results else "adapter did not complete"
+    capabilities.append(("failed", note))
+
+effective_result = "failed" if missing_explicit_results else result
+
+with open(summary_path, "a", encoding="utf-8") as handle:
+    handle.write(f"{platform}\t{effective_result}\t{output_path}\n")
+
+with open(matrix_path, "a", encoding="utf-8") as handle:
+    for status, capability in capabilities:
+        clean = capability.replace("\t", " ").replace("\n", " ")[:300]
+        handle.write(f"{platform}\t{status}\t{clean}\n")
+
+if missing_explicit_results:
+    raise SystemExit(2)
+PY
+}
+
+run_safety_contract() {
+    local output="$REPORT_DIR/local-shared-safety.log"
+
+    echo "checking shared moderation and defederation safety contract"
+
+    if FEDERATION_SAFETY_BE_IMAGE="$SAFETY_BE_IMAGE" \
+        bash "$SCRIPT_DIR/unfathomably-federation-safety-smoke.sh" >"$output" 2>&1; then
+        if record_local_adapter shared-safety passed "$output"; then
+            return 0
+        fi
+
+        tail -n 40 "$output" >&2 || true
+        return 1
+    fi
+
+    record_local_adapter shared-safety failed "$output"
+    tail -n 40 "$output" >&2 || true
+    return 1
+}
+
+run_local_adapter() {
+    local platform="$1"
+    local script output
+
+    if ! script="$(adapter_script "$platform")"; then
+        printf 'unknown local adapter: %s\n' "$platform" >&2
+        return 1
+    fi
+
+    output="$REPORT_DIR/local-$platform.log"
+    echo "checking local federation adapter: $platform"
+
+    if env KEEP_CONTAINERS="$LOCAL_KEEP_CONTAINERS" bash "$script" >"$output" 2>&1; then
+        # Adapter cleanup must never turn a failed assertion into a pass.  The
+        # explicit error marker is a second line of defense for specialized
+        # cleanup functions and remains useful for older external adapters.
+        if grep -q '^ERROR:' "$output"; then
+            record_local_adapter "$platform" failed "$output"
+            tail -n 40 "$output" >&2 || true
+            return 1
+        fi
+
+        if record_local_adapter "$platform" passed "$output"; then
+            return 0
+        fi
+
+        tail -n 40 "$output" >&2 || true
+        return 1
+    fi
+
+    record_local_adapter "$platform" failed "$output"
+    tail -n 40 "$output" >&2 || true
+    return 1
+}
 
 run_platform() {
     local platform="$1"
@@ -348,23 +513,51 @@ if result != "tested" or full_result == "failed" or (require_full == "1" and ful
 PY
 }
 
-for raw_platform in "${PLATFORM_LIST[@]}"; do
-    platform="$(printf '%s' "$raw_platform" | tr '[:upper:]' '[:lower:]' | xargs)"
-
-    if [ -z "$platform" ]; then
-        continue
-    fi
-
-    if ! run_platform "$platform"; then
+if [ "$RUN_LOCAL_ADAPTERS" = "1" ]; then
+    if [ "$RUN_SAFETY" = "1" ] && ! run_safety_contract; then
         failures=$((failures + 1))
     fi
-done
 
-echo
-cat "$summary_file"
-echo
-echo "Full capability matrix:"
-cat "$matrix_file"
+    for raw_platform in "${LOCAL_PLATFORM_LIST[@]}"; do
+        platform="$(printf '%s' "$raw_platform" | tr '[:upper:]' '[:lower:]' | xargs)"
+
+        if [ -z "$platform" ]; then
+            continue
+        fi
+
+        if ! run_local_adapter "$platform"; then
+            failures=$((failures + 1))
+        fi
+    done
+
+    echo
+    echo "Local adapter summary:"
+    cat "$local_summary_file"
+    echo
+    echo "Local adapter capability matrix:"
+    cat "$local_matrix_file"
+fi
+
+if [ "$RUN_PUBLIC_AUDIT" = "1" ]; then
+    for raw_platform in "${PLATFORM_LIST[@]}"; do
+        platform="$(printf '%s' "$raw_platform" | tr '[:upper:]' '[:lower:]' | xargs)"
+
+        if [ -z "$platform" ]; then
+            continue
+        fi
+
+        if ! run_platform "$platform"; then
+            failures=$((failures + 1))
+        fi
+    done
+
+    echo
+    cat "$summary_file"
+    echo
+    echo "Full public-target capability matrix:"
+    cat "$matrix_file"
+fi
+
 echo
 echo "Reports: $REPORT_DIR"
 

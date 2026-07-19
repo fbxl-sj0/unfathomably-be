@@ -20,6 +20,8 @@ defmodule Pleroma.Web.Plugs.DigestPlugTest do
       |> Pleroma.Web.Plugs.DigestPlug.read_body([])
 
     assert conn.assigns[:digest] == "sha-256=" <> digest
+    assert conn.assigns[:content_digest] == "sha-256=:#{digest}:"
+    refute conn.assigns[:content_digest_valid]
 
     {:ok, ^body, conn} =
       :get
@@ -29,6 +31,22 @@ defmodule Pleroma.Web.Plugs.DigestPlugTest do
       |> Pleroma.Web.Plugs.DigestPlug.read_body([])
 
     assert conn.assigns[:digest] == "SHA-256=" <> digest
+  end
+
+  test "validates an RFC 9530 SHA-256 content digest against the parsed body" do
+    body = "{\"hello\": \"world\"}"
+    digest = "X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE="
+    content_digest = "sha-256=:#{digest}:"
+
+    {:ok, ^body, conn} =
+      :post
+      |> conn("/", body)
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("content-digest", content_digest)
+      |> Pleroma.Web.Plugs.DigestPlug.read_body([])
+
+    assert conn.assigns[:content_digest] == content_digest
+    assert conn.assigns[:content_digest_valid]
   end
 
   test "error if digest algorithm is invalid" do

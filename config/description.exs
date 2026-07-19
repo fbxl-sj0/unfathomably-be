@@ -2231,11 +2231,40 @@ config :pleroma, :config_description, [
         suggestions: [100, 200]
       },
       %{
+        key: :candidate_scan_limit,
+        type: :integer,
+        description:
+          "Maximum number of stale remote objects to inspect in one bounded group cleanup window.",
+        suggestions: [1_000, 5_000]
+      },
+      %{
+        key: :max_scan_pages,
+        type: :integer,
+        description: "Maximum number of bounded candidate windows to inspect per cleanup run.",
+        suggestions: [10, 20]
+      },
+      %{
         key: :query_timeout_ms,
         type: :integer,
         description:
           "Maximum time, in milliseconds, for the database query used by the group discussion cleanup worker.",
         suggestions: [120_000, 60_000]
+      }
+    ]
+  },
+  %{
+    group: :pleroma,
+    key: Pleroma.Workers.ReceiverWorker,
+    type: :group,
+    description:
+      "Processes incoming federation documents, including remote reply-context discovery.",
+    children: [
+      %{
+        key: :timeout_ms,
+        type: :integer,
+        description:
+          "Maximum processing time for one incoming federation document. Deep reply chains may require more than the historical 30 second budget.",
+        suggestions: [90_000, 120_000]
       }
     ]
   },
@@ -2811,6 +2840,14 @@ config :pleroma, :config_description, [
         type: [:tuple, {:list, :tuple}],
         description: "For the search requests (account & status search etc.)",
         suggestions: [{1000, 10}, [{10_000, 10}, {10_000, 50}]]
+      },
+      %{
+        key: :federated_target_search,
+        label: "Federated target search",
+        type: [:tuple, {:list, :tuple}],
+        description:
+          "For explicit group, feed, actor handle, and remote URL discovery requests",
+        suggestions: [{60_000, 3}, [{60_000, 3}, {60_000, 12}]]
       },
       %{
         key: :timeline,

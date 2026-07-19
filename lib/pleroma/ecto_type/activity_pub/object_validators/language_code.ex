@@ -7,11 +7,13 @@ defmodule Pleroma.EctoType.ActivityPub.ObjectValidators.LanguageCode do
 
   def type, do: :string
 
+  def cast(%{"identifier" => language}) when is_binary(language), do: cast(language)
+
   def cast(language) when is_binary(language) do
     if good_locale_code?(language) do
       {:ok, language}
     else
-      {:error, [validation: :invalid_language]}
+      {:error, [message: :invalid_language]}
     end
   end
 

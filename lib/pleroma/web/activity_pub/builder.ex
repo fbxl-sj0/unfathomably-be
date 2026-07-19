@@ -9,10 +9,10 @@ defmodule Pleroma.Web.ActivityPub.Builder do
   This module encodes our addressing policies and general shape of our objects.
   """
 
-  alias Pleroma.Activity
   alias Pleroma.Emoji
   alias Pleroma.Object
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.Relay
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.Visibility
@@ -146,22 +146,24 @@ defmodule Pleroma.Web.ActivityPub.Builder do
     end
   end
 
+  @spec dislike(User.t(), Object.t()) :: {:ok, map(), keyword()}
+  def dislike(actor, object) do
+    with {:ok, data, meta} <- emoji_react(actor, object, "👎") do
+      {:ok, Map.put(data, "_pleroma_reaction_type", "Dislike"), meta}
+    end
+  end
+
   @spec undo(User.t(), Activity.t()) :: {:ok, map(), keyword()}
   def undo(actor, object) do
-    undo_object = undo_object(object)
-
-    data =
-      %{
-        "id" => Utils.generate_activity_id(),
-        "actor" => actor.ap_id,
-        "type" => "Undo",
-        "object" => undo_object,
-        "to" => object.data["to"] || [],
-        "cc" => object.data["cc"] || []
-      }
-      |> maybe_put_audience(object)
-
-    {:ok, data, []}
+    {:ok,
+     %{
+       "id" => Utils.generate_activity_id(),
+       "actor" => actor.ap_id,
+       "type" => "Undo",
+       "object" => object.data["id"],
+       "to" => object.data["to"] || [],
+       "cc" => object.data["cc"] || []
+     }, []}
   end
 
   @spec delete(User.t(), String.t()) :: {:ok, map(), keyword()}
@@ -184,30 +186,14 @@ defmodule Pleroma.Web.ActivityPub.Builder do
           []
       end
 
-    data =
-      %{
-        "id" => Utils.generate_activity_id(),
-        "actor" => actor.ap_id,
-        "object" => object_id,
-        "to" => to,
-        "type" => "Delete"
-      }
-      |> maybe_put_delete_group_context(object)
-
-    {:ok, data, []}
-  end
-
-  def delete(actor, object_id, opts) when is_list(opts) do
-    with {:ok, data, meta} <- delete(actor, object_id) do
-      data =
-        if Keyword.has_key?(opts, :summary) do
-          Map.put(data, "summary", Keyword.get(opts, :summary))
-        else
-          data
-        end
-
-      {:ok, data, meta}
-    end
+    {:ok,
+     %{
+       "id" => Utils.generate_activity_id(),
+       "actor" => actor.ap_id,
+       "object" => object_id,
+       "to" => to,
+       "type" => "Delete"
+     }, []}
   end
 
   def create(actor, object, recipients) do
@@ -247,10 +233,20 @@ defmodule Pleroma.Web.ActivityPub.Builder do
       }
       |> add_in_reply_to(draft.in_reply_to)
       |> add_quote(draft.quote_post)
+      |> Map.put(
+        "interactionPolicy",
+        Pleroma.Web.ActivityPub.QuotePolicy.build(
+          draft.user,
+          draft.params[:quote_approval_policy] || default_quote_policy(draft.visibility)
+        )
+      )
       |> Map.merge(draft.extra)
 
     {:ok, data, []}
   end
+
+  defp default_quote_policy(visibility) when visibility in ["direct", "private"], do: "nobody"
+  defp default_quote_policy(_visibility), do: "public"
 
   defp add_in_reply_to(object, nil), do: object
 
@@ -266,10 +262,62 @@ defmodule Pleroma.Web.ActivityPub.Builder do
 
   defp add_quote(object, quote_post) do
     with %Object{} = quote_object <- Object.normalize(quote_post, fetch: false) do
-      Map.put(object, "quoteUrl", quote_object.data["id"])
+      object
+      |> Map.put("quote", quote_object.data["id"])
+      |> Map.put("quoteUrl", quote_object.data["id"])
     else
       _ -> object
     end
+  end
+
+  def quote_request(actor, quote_object, quoted_object) do
+    {:ok,
+     %{
+       "id" => Utils.generate_activity_id(),
+       "type" => "QuoteRequest",
+       "actor" => actor.ap_id,
+       "object" => quoted_object.data["id"],
+       "instrument" => quote_object.data["id"],
+       "to" => [quoted_object.data["actor"]],
+       "cc" => []
+     }, []}
+  end
+
+  def accept_quote_request(actor, request, authorization) do
+    {:ok,
+     %{
+       "id" => Utils.generate_activity_id(),
+       "type" => "Accept",
+       "actor" => actor.ap_id,
+       "object" => request.data["id"],
+       "result" => authorization,
+       "to" => [request.data["actor"]],
+       "cc" => []
+     }, []}
+  end
+
+  def reject_quote_request(actor, request) do
+    {:ok,
+     %{
+       "id" => Utils.generate_activity_id(),
+       "type" => "Reject",
+       "actor" => actor.ap_id,
+       "object" => request.data["id"],
+       "to" => [request.data["actor"]],
+       "cc" => []
+     }, []}
+  end
+
+  def delete_quote_authorization(actor, authorization, quote_actor) do
+    {:ok,
+     %{
+       "id" => Utils.generate_activity_id(),
+       "type" => "Delete",
+       "actor" => actor.ap_id,
+       "object" => authorization,
+       "to" => [quote_actor],
+       "cc" => []
+     }, []}
   end
 
   def chat_message(actor, recipient, content, opts \\ []) do
@@ -487,14 +535,20 @@ defmodule Pleroma.Web.ActivityPub.Builder do
 
   @spec object_action(User.t(), Object.t()) :: {:ok, map(), keyword()}
   defp object_action(actor, object) do
-    object_actor = User.get_cached_by_ap_id(object.data["actor"])
+    object_actor_id =
+      object.data["actor"] ||
+        object.data
+        |> CustomObject.authorities()
+        |> List.first()
+
+    object_actor = User.get_cached_by_ap_id(object_actor_id)
 
     # Address the actor of the object, and our actor's follower collection if the post is public.
     to =
       if Visibility.is_public?(object) do
-        [actor.follower_address, object.data["actor"]]
+        [actor.follower_address, object_actor_id]
       else
-        [object.data["actor"]]
+        [object_actor_id]
       end
       |> ap_id_list()
 
@@ -512,39 +566,9 @@ defmodule Pleroma.Web.ActivityPub.Builder do
        "object" => object.data["id"],
        "to" => to,
        "cc" => cc,
-       "context" => object.data["context"]
+       "context" => object.data["context"] || object.data["conversation"] || object.data["id"]
      }, []}
   end
-
-  defp undo_object(%Activity{data: %{"type" => type, "audience" => audience} = data})
-       when type in ["Like", "Dislike"] and audience not in [nil, []] do
-    data
-  end
-
-  defp undo_object(%Activity{} = activity), do: activity.data["id"]
-
-  defp maybe_put_audience(data, %Activity{data: %{"audience" => audience}})
-       when audience not in [nil, []] do
-    Map.put(data, "audience", audience)
-  end
-
-  defp maybe_put_audience(data, _activity), do: data
-
-  defp maybe_put_delete_group_context(data, %Object{data: %{"audience" => audience}})
-       when audience not in [nil, []] do
-    group_cc =
-      data
-      |> Map.get("cc")
-      |> ap_id_list()
-      |> Kernel.++(ap_id_list(audience))
-      |> Enum.uniq()
-
-    data
-    |> Map.put("audience", audience)
-    |> Map.put("cc", group_cc)
-  end
-
-  defp maybe_put_delete_group_context(data, _object), do: data
 
   defp ap_id_list(values) when is_list(values) do
     Enum.filter(values, &is_binary/1)
@@ -593,6 +617,13 @@ defmodule Pleroma.Web.ActivityPub.Builder do
         |> Map.put("participationMessage", participation_message)
 
       {:ok, data, meta}
+    end
+  end
+
+  @spec leave(User.t(), Object.t()) :: {:ok, map(), keyword()}
+  def leave(actor, object) do
+    with {:ok, data, meta} <- object_action(actor, object) do
+      {:ok, Map.put(data, "type", "Leave"), meta}
     end
   end
 

@@ -2,7 +2,6 @@
     "@context": [
         "https://www.w3.org/ns/activitystreams",
         "https://w3id.org/security/v1",
-        "https://purl.archive.org/socialweb/webfinger",
         {
             "Emoji": "toot:Emoji",
             "Hashtag": "as:Hashtag",
@@ -18,6 +17,8 @@
             "ostatus": "http://ostatus.org#",
             "schema": "http://schema.org#",
             "toot": "http://joinmastodon.org/ns#",
+            "webfinger": "https://purl.archive.org/socialweb/webfinger#webfinger",
+            "gts": "https://gotosocial.org/ns#",
             "fedibird": "http://fedibird.com/ns#",
             "misskey": "https://misskey-hub.net/ns#",
             "value": "schema:value",
@@ -31,6 +32,40 @@
             },
             "quoteUrl": "as:quoteUrl",
             "quoteUri": "fedibird:quoteUri",
+            "quote": {
+                "@id": "https://w3id.org/fep/044f#quote",
+                "@type": "@id"
+            },
+            "quoteAuthorization": {
+                "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+                "@type": "@id"
+            },
+            "QuoteRequest": "https://w3id.org/fep/044f#QuoteRequest",
+            "QuoteAuthorization": "https://w3id.org/fep/044f#QuoteAuthorization",
+            "interactionPolicy": {
+                "@id": "gts:interactionPolicy",
+                "@type": "@id"
+            },
+            "canQuote": {
+                "@id": "gts:canQuote",
+                "@type": "@id"
+            },
+            "automaticApproval": {
+                "@id": "gts:automaticApproval",
+                "@type": "@id"
+            },
+            "manualApproval": {
+                "@id": "gts:manualApproval",
+                "@type": "@id"
+            },
+            "interactingObject": {
+                "@id": "gts:interactingObject",
+                "@type": "@id"
+            },
+            "interactionTarget": {
+                "@id": "gts:interactionTarget",
+                "@type": "@id"
+            },
             "_misskey_quote": "misskey:_misskey_quote",
             "_misskey_summary": "misskey:_misskey_summary",
             "_misskey_reaction": "misskey:_misskey_reaction",

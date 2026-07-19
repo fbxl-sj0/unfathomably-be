@@ -133,6 +133,7 @@ defmodule Pleroma.Web.RichMedia.Card do
     with {_, true} <- {:config, @config_impl.get([:rich_media, :enabled])},
          %Object{} = object <- Object.normalize(activity, fetch: false),
          false <- sensitive?(object),
+         true <- preview_candidate?(object),
          url when not is_nil(url) <- HTML.extract_first_external_url_from_object(object) do
       case get_by_url(url) do
         # Cache hit
@@ -157,10 +158,14 @@ defmodule Pleroma.Web.RichMedia.Card do
   def get_by_activity(activity, opts) do
     with %Object{} = object <- Object.normalize(activity, fetch: false),
          false <- sensitive?(object),
+         true <- preview_candidate?(object),
          {_, nil} <- {:cached, get_cached_url(object, activity.id)} do
       nil
     else
       true ->
+        nil
+
+      false ->
         nil
 
       {:cached, url} ->
@@ -189,6 +194,24 @@ defmodule Pleroma.Web.RichMedia.Card do
 
   defp sensitive?(%Object{data: data}) when is_map(data) do
     data["sensitive"] == true || nsfw_tag?(data["tag"])
+  end
+
+  defp preview_candidate?(%Object{data: data}) when is_map(data) do
+    not has_attachments?(data) and not has_quote?(data)
+  end
+
+  defp has_attachments?(%{"attachment" => attachments}) when is_list(attachments),
+    do: attachments != []
+
+  defp has_attachments?(_), do: false
+
+  defp has_quote?(data) do
+    Enum.any?(["quoteUrl", "quoteUri", "_misskey_quote"], fn key ->
+      case Map.get(data, key) do
+        value when is_binary(value) -> String.trim(value) != ""
+        _ -> false
+      end
+    end)
   end
 
   defp nsfw_tag?(tags) when is_list(tags), do: Enum.any?(tags, &nsfw_tag?/1)

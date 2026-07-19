@@ -8,10 +8,10 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   alias Pleroma.Activity
   alias Pleroma.Activity.Queries
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
-  alias Pleroma.GroupMembership
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   import Ecto.Changeset
@@ -29,12 +29,11 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     end
 
     field(:deleted_activity_id, ObjectValidators.ObjectID)
-    field(:summary, :string)
   end
 
   def cast_data(data) do
     %__MODULE__{}
-    |> cast(data, __schema__(:fields), empty_values: [])
+    |> cast(data, __schema__(:fields))
   end
 
   def add_deleted_activity_id(cng) do
@@ -65,8 +64,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     |> validate_required([:id, :type, :actor, :to, :cc, :object])
     |> validate_inclusion(:type, ["Delete"])
     |> validate_delete_actor(:actor)
-    |> validate_delete_rights()
+    |> CommonValidations.validate_modification_rights(:messages_delete)
     |> validate_delete_target()
+    |> validate_custom_object_authority()
     |> add_deleted_activity_id()
   end
 
@@ -132,7 +132,11 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
         %{state: :live_object, object_id: object_id, object: object}
 
       %Object{} = object ->
-        %{state: :invalid_type, object_id: object_id, object: object}
+        if CustomObject.custom_object?(object.data) do
+          %{state: :live_object, object_id: object_id, object: object}
+        else
+          %{state: :invalid_type, object_id: object_id, object: object}
+        end
 
       nil ->
         case get_create_by_object_ap_id(object_id) do
@@ -192,34 +196,26 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     end
   end
 
-  defp validate_delete_rights(cng) do
-    actor = User.get_cached_by_ap_id(get_field(cng, :actor))
+  # Same-domain authority is a compatibility rule for legacy status objects.
+  # Unknown vocabularies use the object's explicit authority fields instead;
+  # otherwise one actor on a multi-user domain could delete another actor's
+  # books, tickets, collections, or process objects.
+  defp validate_custom_object_authority(cng) do
+    actor = get_field(cng, :actor)
 
-    if group_manager_delete?(actor, cng) do
-      cng
+    with object_id when is_binary(object_id) <- object_id(get_field(cng, :object)),
+         %Object{} = object <- Object.get_cached_by_ap_id(object_id),
+         true <- CustomObject.custom_object?(object.data),
+         false <- CustomObject.authorized?(object.data, actor, :delete) do
+      add_error(cng, :actor, "is not an authority for this object")
     else
-      CommonValidations.validate_modification_rights(cng, :messages_delete)
+      _ -> cng
     end
   end
 
-  defp group_manager_delete?(%User{} = actor, cng) do
-    cng
-    |> addressed_group_ap_ids()
-    |> Enum.any?(fn group_ap_id ->
-      case User.get_cached_by_ap_id(group_ap_id) do
-        %User{actor_type: "Group", local: true} = group -> GroupMembership.manager?(actor, group)
-        _ -> false
-      end
-    end)
-  end
-
-  defp group_manager_delete?(_actor, _cng), do: false
-
-  defp addressed_group_ap_ids(cng) do
-    [:audience, :to, :cc]
-    |> Enum.flat_map(fn field -> ap_id_list(get_field(cng, field)) end)
-    |> Enum.uniq()
-  end
+  defp object_id(value) when is_binary(value), do: value
+  defp object_id(%{"id" => id}) when is_binary(id), do: id
+  defp object_id(_value), do: nil
 
   defp validate_delete_actor(cng, field_name) do
     validate_change(cng, field_name, fn field_name, actor ->
@@ -229,8 +225,4 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
       end
     end)
   end
-
-  defp ap_id_list(values) when is_list(values), do: Enum.filter(values, &is_binary/1)
-  defp ap_id_list(value) when is_binary(value), do: [value]
-  defp ap_id_list(_), do: []
 end

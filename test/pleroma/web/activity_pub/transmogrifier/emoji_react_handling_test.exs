@@ -236,6 +236,33 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.EmojiReactHandlingTest do
     refute Enum.any?(object.data["reactions"], fn [emoji | _] -> emoji == thumbs_down end)
   end
 
+  test "it sends local downvotes as Dislike and embeds Dislike in their Undo" do
+    author = insert(:user)
+    voter = insert(:user)
+    {:ok, post} = CommonAPI.post(author, %{status: "hello"})
+
+    assert {:ok, %Activity{} = dislike} = CommonAPI.dislike(post.id, voter)
+    assert dislike.data["type"] == "EmojiReact"
+    assert dislike.data["content"] == "👎"
+    assert dislike.data["_pleroma_reaction_type"] == "Dislike"
+
+    assert {:ok, outgoing} = Transmogrifier.prepare_outgoing(dislike.data)
+    assert outgoing["type"] == "Dislike"
+    refute Map.has_key?(outgoing, "content")
+    refute Map.has_key?(outgoing, "_misskey_reaction")
+    refute Map.has_key?(outgoing, "_pleroma_reaction_type")
+
+    {:ok, undo_data, _meta} = Pleroma.Web.ActivityPub.Builder.undo(voter, dislike)
+    assert {:ok, outgoing_undo} = Transmogrifier.prepare_outgoing(undo_data)
+    assert outgoing_undo["type"] == "Undo"
+    assert outgoing_undo["object"]["type"] == "Dislike"
+    refute Map.has_key?(outgoing_undo["object"], "content")
+
+    assert {:ok, %Activity{data: %{"type" => "Undo"}}} = CommonAPI.undislike(post.id, voter)
+    object = Object.get_by_ap_id(post.data["object"])
+    assert object.data["reaction_count"] == 0
+  end
+
   test "it works for incoming custom emoji reactions" do
     user = insert(:user)
     other_user = insert(:user, local: false)

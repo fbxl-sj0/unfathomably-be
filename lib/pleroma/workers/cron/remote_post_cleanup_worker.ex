@@ -33,11 +33,13 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
 
   @default_max_age_days 365
   @default_batch_size 50
-  @default_candidate_scan_limit 1_000
+  @default_candidate_scan_limit 250
   @default_max_scan_pages 10
   @default_query_timeout_ms 60_000
   @default_remote_actor_max_age_days 730
   @default_remote_actor_batch_size 50
+  @max_batch_size 500
+  @max_candidate_scan_limit 500
   @seconds_per_day 86_400
   @prunable_object_types ~w(Note Article Page Question Event Audio Video)
 
@@ -65,7 +67,7 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
           count =
             object_ids
             |> objects_by_ids()
-            |> Enum.reduce(0, &prune_object/2)
+            |> Enum.reduce(0, &safely_prune_object/2)
 
           if count > 0 do
             prune_unused_hashtags()
@@ -89,6 +91,21 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
     end
 
     count
+  end
+
+  defp safely_prune_object(object, count) do
+    prune_object(object, count)
+  rescue
+    error ->
+      Logger.warning("Remote post cleanup skipped object #{object.id}: #{Exception.message(error)}")
+      count
+  catch
+    kind, reason ->
+      Logger.warning(
+        "Remote post cleanup skipped object #{object.id}: #{inspect({kind, reason})}"
+      )
+
+      count
   end
 
   defp prune_object(%Object{} = object, count) do
@@ -146,16 +163,17 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
          batch_size,
          keep_threads?,
          keep_direct?,
-         after_id,
+         after_cursor,
          objects,
          scanned_count,
          pages_left
        ) do
-    case candidate_object_ids(cutoff, after_id) do
+    case candidate_object_rows(cutoff, after_cursor) do
       {:ok, []} ->
         {:ok, Enum.reverse(objects), scanned_count}
 
-      {:ok, object_ids} ->
+      {:ok, object_rows} ->
+        object_ids = Enum.map(object_rows, &elem(&1, 0))
         remaining_count = batch_size - length(objects)
 
         page_result =
@@ -172,7 +190,7 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
               batch_size,
               keep_threads?,
               keep_direct?,
-              List.last(object_ids),
+              List.last(object_rows),
               Enum.reverse(page_object_ids) ++ objects,
               scanned_count + length(object_ids),
               pages_left - 1
@@ -187,10 +205,10 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
     end
   end
 
-  defp candidate_object_ids(cutoff, after_id) do
+  defp candidate_object_rows(cutoff, after_cursor) do
     query =
       Object
-      |> maybe_after_object_id(after_id)
+      |> maybe_after_object_cursor(after_cursor)
 
     query
     |> where([object], object.inserted_at < ^cutoff)
@@ -199,16 +217,21 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
       [object],
       fragment("?->>'type' = ANY (?::text[])", object.data, ^@prunable_object_types)
     )
-    |> order_by([object], asc: object.id)
+    |> order_by([object], asc: object.updated_at, asc: object.id)
     |> limit(^candidate_scan_limit())
-    |> select([object], object.id)
+    |> select([object], {object.id, object.updated_at})
     |> safe_repo_all()
   end
 
-  defp maybe_after_object_id(query, nil), do: query
+  defp maybe_after_object_cursor(query, nil), do: query
 
-  defp maybe_after_object_id(query, after_id) do
-    where(query, [object], object.id > ^after_id)
+  defp maybe_after_object_cursor(query, {after_id, after_updated_at}) do
+    where(
+      query,
+      [object],
+      object.updated_at > ^after_updated_at or
+        (object.updated_at == ^after_updated_at and object.id > ^after_id)
+    )
   end
 
   defp candidates_query(object_ids, cutoff, batch_size, keep_threads?, keep_direct?) do
@@ -662,11 +685,13 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
   defp batch_size do
     config_integer(:batch_size, @default_batch_size)
     |> max(1)
+    |> min(@max_batch_size)
   end
 
   defp candidate_scan_limit do
     config_integer(:candidate_scan_limit, @default_candidate_scan_limit)
     |> max(batch_size())
+    |> min(@max_candidate_scan_limit)
   end
 
   defp max_scan_pages do

@@ -120,7 +120,8 @@ defmodule Pleroma.Instances.Health do
       backoff_until: iso8601(metadata_value(instance, :backoff_until)),
       probe_due: Instance.backoff_due?(instance),
       redirect_target: metadata_value(instance, :redirect_target),
-      gone_at: iso8601(metadata_value(instance, :gone_at))
+      gone_at: iso8601(metadata_value(instance, :gone_at)),
+      delivery_endpoints: metadata_value(instance, :delivery_endpoints) || []
     }
   end
 

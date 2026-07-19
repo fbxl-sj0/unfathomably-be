@@ -123,8 +123,13 @@ defmodule Pleroma.Web.OAuth.Token do
   end
 
   def delete_user_tokens(%User{id: user_id}) do
-    Query.get_by_user(user_id)
-    |> Repo.delete_all()
+    query = Query.get_by_user(user_id)
+
+    query
+    |> Repo.all()
+    |> Enum.each(&Pleroma.Web.Streamer.close_streams_by_oauth_token/1)
+
+    Repo.delete_all(query)
   end
 
   def delete_user_token(%User{id: user_id}, token_id) do

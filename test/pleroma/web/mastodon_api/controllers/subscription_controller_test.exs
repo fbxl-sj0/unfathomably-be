@@ -83,6 +83,20 @@ defmodule Pleroma.Web.MastodonAPI.SubscriptionControllerTest do
   end
 
   describe "creates push subscription" do
+    test "accepts a subscription without an optional alert policy", %{conn: conn} do
+      result =
+        conn
+        |> post("/api/v1/push/subscription", %{
+          "subscription" => Map.put(@sub, "expirationTime", nil)
+        })
+        |> json_response_and_validate_schema(200)
+
+      [subscription] = Pleroma.Repo.all(Subscription)
+
+      assert result["alerts"] == %{}
+      assert subscription.data == %{"alerts" => %{}}
+    end
+
     test "ignores unsupported types", %{conn: conn} do
       result =
         conn

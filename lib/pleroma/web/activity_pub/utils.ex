@@ -14,8 +14,9 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
-  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.Addressing
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.AdminAPI.AccountView
   alias Pleroma.Web.Endpoint
@@ -112,7 +113,8 @@ defmodule Pleroma.Web.ActivityPub.Utils do
        )
        when is_binary(recipient_ap_id) and is_binary(in_reply_to) do
     with %Object{data: data} <- Object.normalize(in_reply_to, fetch: false) do
-      get_ap_id(data["actor"]) == recipient_ap_id || get_ap_id(data["attributedTo"]) == recipient_ap_id
+      get_ap_id(data["actor"]) == recipient_ap_id ||
+        get_ap_id(data["attributedTo"]) == recipient_ap_id
     else
       _ -> false
     end
@@ -158,22 +160,28 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   end
 
   def make_json_ld_header(data \\ %{}) do
-    %{
-      "@context" => [
-        "https://www.w3.org/ns/activitystreams",
-        "#{Endpoint.url()}/schemas/litepub-0.1.jsonld",
-        %{
-          "@language" => get_language(data)
-        }
-      ]
-    }
+    context = [
+      "https://www.w3.org/ns/activitystreams",
+      "#{Endpoint.url()}/schemas/litepub-0.1.jsonld"
+    ]
+
+    # A default "und" language makes some JSON-LD processors compact scalar
+    # content into contentMap. Only advertise a language when the object has one,
+    # so peers that implement scalar content alone do not lose the post body.
+    context =
+      case get_language(data) do
+        language when not_empty_string(language) -> context ++ [%{"@language" => language}]
+        _ -> context
+      end
+
+    %{"@context" => context}
   end
 
   defp get_language(%{"language" => language}) when not_empty_string(language) do
     language
   end
 
-  defp get_language(_), do: "und"
+  defp get_language(_), do: nil
 
   def make_date do
     DateTime.utc_now() |> DateTime.to_iso8601()
@@ -880,7 +888,11 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   end
 
   defp build_flag_object(%Object{} = object) do
-    actor = User.get_by_ap_id(object.data["actor"])
+    actor =
+      object.data
+      |> CustomObject.authorities()
+      |> Enum.find_value(&User.get_by_ap_id/1)
+
     build_flag_object_with_actor_and_id(object, actor, object.data["id"])
   end
 
@@ -905,7 +917,7 @@ defmodule Pleroma.Web.ActivityPub.Utils do
 
   defp build_flag_object(_), do: []
 
-  defp build_flag_object_with_actor_and_id(%Object{data: data}, actor, id) do
+  defp build_flag_object_with_actor_and_id(%Object{data: data}, %User{} = actor, id) do
     %{
       "type" => "Note",
       "id" => id,
@@ -916,6 +928,15 @@ defmodule Pleroma.Web.ActivityPub.Utils do
           "show.json",
           %{user: actor, skip_visibility_check: true}
         )
+    }
+  end
+
+  defp build_flag_object_with_actor_and_id(%Object{data: data}, _actor, id) do
+    %{
+      "type" => data["type"] || "Object",
+      "id" => id,
+      "content" => data["content"],
+      "published" => data["published"]
     }
   end
 

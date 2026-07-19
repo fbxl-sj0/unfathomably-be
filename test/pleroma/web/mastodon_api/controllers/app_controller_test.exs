@@ -3,7 +3,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.AppControllerTest do
-  use Pleroma.Web.ConnCase, async: true
+  # VAPID configuration is application-global. Running these response-shape
+  # assertions beside tests that temporarily clear it makes the expected and
+  # rendered payload observe different process-global states.
+  use Pleroma.Web.ConnCase, async: false
 
   alias Pleroma.Repo
   alias Pleroma.Web.OAuth.App

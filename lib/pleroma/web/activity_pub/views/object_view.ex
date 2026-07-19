@@ -80,7 +80,63 @@ defmodule Pleroma.Web.ActivityPub.ObjectView do
     end
   end
 
+  def render("context.json", %{conn: conn, context: context, activities: activities}) do
+    first = context_page(conn, context, activities, %{"page" => true})
+
+    Pleroma.Web.ActivityPub.Utils.make_json_ld_header()
+    |> Map.merge(%{
+      "id" => context,
+      "type" => "Collection",
+      "first" => first
+    })
+  end
+
+  def render("context_items.json", %{
+        conn: conn,
+        context: context,
+        activities: activities,
+        page: true
+      }) do
+    context_page(conn, context, activities, %{})
+    |> Map.merge(Pleroma.Web.ActivityPub.Utils.make_json_ld_header())
+  end
+
+  def render("context_items.json", %{conn: conn, context: context, activities: activities}) do
+    first = context_page(conn, context, activities, %{"page" => true})
+
+    Pleroma.Web.ActivityPub.Utils.make_json_ld_header()
+    |> Map.merge(%{
+      "id" => context <> "/items",
+      "type" => "Collection",
+      "first" => first
+    })
+  end
+
   defp map_reply_collection_items(items), do: Enum.map(items, fn %{ap_id: ap_id} -> ap_id end)
+
+  defp context_page(conn, context, activities, extra_params) do
+    items =
+      Enum.flat_map(activities, fn activity ->
+        case Object.normalize(activity, fetch: false) do
+          %Object{data: %{"id" => id}} when is_binary(id) -> [id]
+          _ -> []
+        end
+      end)
+
+    pagination = ControllerHelper.get_pagination_fields(conn, activities, extra_params, :desc)
+
+    %{
+      "id" => Phoenix.Controller.current_url(conn, extra_params),
+      "type" => "CollectionPage",
+      "partOf" => context <> "/items",
+      "items" => items
+    }
+    |> Map.merge(pagination)
+    |> maybe_omit_context_next(items)
+  end
+
+  defp maybe_omit_context_next(page, items) when length(items) < 40, do: Map.delete(page, "next")
+  defp maybe_omit_context_next(page, _items), do: page
 
   defp reply_collection_first_pagination(items, %{conn: %Plug.Conn{} = conn}) do
     pagination = ControllerHelper.get_pagination_fields(conn, items, %{"page" => true}, :asc)

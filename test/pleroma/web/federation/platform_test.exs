@@ -26,6 +26,7 @@ defmodule Pleroma.Web.Federation.PlatformTest do
   alias Pleroma.Web.Federation.Platform
 
   @platform_cases [
+    {"ActivityPods", :coordination},
     {"Funkwhale", :audio},
     {"WordPress", :longform},
     {"WriteFreely", :longform},
@@ -37,10 +38,20 @@ defmodule Pleroma.Web.Federation.PlatformTest do
     {"Owncast", :video},
     {"Misskey", :microblog},
     {"Sharkey", :microblog},
+    {"NeoDB", :culture},
     {"BookWyrm", :books},
+    {"ForgeFed", :development},
+    {"Bonfire ValueFlows", :coordination},
+    {"CommonsPub", :publishing},
+    {"ZenPub", :publishing},
+    {"Vervis", :development},
     {"Postmarks", :bookmarks},
     {"wafrn", :microblog},
+    {"Wanderer", :routes},
+    {"XWiki", :publishing},
+    {"Flohmarkt", :marketplace},
     {"Castopod", :audio},
+    {"Castling.club", :games},
     {"Lemmy", :groups},
     {"Lotide", :groups},
     {"Local", :local},
@@ -49,6 +60,7 @@ defmodule Pleroma.Web.Federation.PlatformTest do
     {"Discourse", :groups},
     {"Mbin", :groups},
     {"Mobilizon", :events},
+    {"Mutual Aid", :marketplace},
     {"NodeBB", :groups},
     {"PieFed", :groups},
     {"FediGroups", :groups},
@@ -117,12 +129,58 @@ defmodule Pleroma.Web.Federation.PlatformTest do
              Platform.classify(payload)
   end
 
+  test "classifies bounded native presentation metadata" do
+    payload = %{
+      "pleroma" => %{
+        "native" => %{
+          "fields" => %{"platform" => "flohmarkt"}
+        }
+      }
+    }
+
+    assert %{platform: "flohmarkt", family: :marketplace, confidence: :software} =
+             Platform.classify(payload)
+  end
+
   test "falls back to ActivityPub object type when software is unknown" do
     assert %{platform: "activitypub-audio", family: :audio, confidence: :object} =
              Platform.classify(%{"type" => "Audio"})
 
     assert %{platform: "activitypub-group", family: :groups, confidence: :object} =
              Platform.classify(%{"object" => %{"type" => "Group"}})
+
+    assert %{platform: "bookwyrm", family: :books, confidence: :object} =
+             Platform.classify(%{"type" => "Review"})
+
+    assert %{platform: "bookwyrm", family: :books, confidence: :object} =
+             Platform.classify(%{"type" => "Work"})
+
+    assert %{platform: "forgefed", family: :development, confidence: :object} =
+             Platform.classify(%{"type" => "Ticket"})
+
+    assert %{platform: "activitypub-document", family: :publishing, confidence: :object} =
+             Platform.classify(%{"type" => "Document"})
+
+    assert %{
+             platform: "bonfire_valueflows",
+             family: :coordination,
+             confidence: :object
+           } = Platform.classify(%{"type" => "ValueFlows:EconomicEvent"})
+
+    assert %{platform: "forgefed", family: :development, confidence: :object} =
+             Platform.classify(%{"type" => "Proposal"})
+
+    assert %{platform: "bonfire_valueflows", family: :coordination, confidence: :object} =
+             Platform.classify(%{"type" => "ValueFlows:Proposal"})
+
+    assert %{platform: "activitypods", family: :coordination, confidence: :object} =
+             Platform.classify(%{"type" => "pair:Project"})
+
+    assert %{platform: "mutual_aid", family: :marketplace, confidence: :object} =
+             Platform.classify(%{"type" => "maid:Offer"})
+
+    assert %{platform: "mutual_aid", family: :marketplace, confidence: :object} =
+             Platform.classify(%{"type" => "https://mutual-aid.app/ns/core#Request"})
   end
 
   test "keeps unknown input safe and generic" do

@@ -59,7 +59,11 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AttachmentValidator do
   end
 
   def fix_media_type(data) do
-    Map.put_new(data, "mediaType", data["mimeType"] || "application/octet-stream")
+    Map.put(
+      data,
+      "mediaType",
+      data["mediaType"] || data["mimeType"] || "application/octet-stream"
+    )
   end
 
   defp handle_href(href, mediaType, data) do

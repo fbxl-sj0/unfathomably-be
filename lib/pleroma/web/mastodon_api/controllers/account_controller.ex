@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.MastodonAPI.AccountController do
   use Pleroma.Web, :controller
 
+  alias Pleroma.FederationStatus
   alias Pleroma.Maps
   alias Pleroma.User
   alias Pleroma.UserNote
@@ -106,6 +107,10 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   defp embed_relationships?(params), do: ControllerHelper.embed_relationships?(params)
 
   defp json_response(conn, status, json), do: ControllerHelper.json_response(conn, status, json)
+
+  defp body_param(params, key) when is_map(params) do
+    Map.get(params, key) || Map.get(params, Atom.to_string(key))
+  end
 
   @doc "POST /api/v1/accounts"
   def create(%{assigns: %{app: app}, body_params: params} = conn, _params) do
@@ -247,8 +252,11 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
          {:ok, _update, _} <-
            Pipeline.common_pipeline(update_data,
              local: true,
-             user_update_changeset: changeset
+             user_update_changeset: changeset,
+             do_not_federate: true
            ) do
+      Pleroma.Workers.ProfileUpdateWorker.enqueue(user.id)
+
       render(conn, "show.json",
         user: unpersisted_user,
         for: unpersisted_user,
@@ -418,10 +426,15 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   end
 
   def follow(%{body_params: params, assigns: %{user: follower, account: followed}} = conn, _) do
-    with {:ok, follower} <- MastodonAPI.follow(follower, followed, params) do
+    with :ok <- ensure_federation_follow_allowed(followed),
+         {:ok, follower} <- MastodonAPI.follow(follower, followed, params) do
       render(conn, "relationship.json", user: follower, target: followed)
     else
-      {:error, message} -> json_response(conn, :forbidden, %{error: message})
+      {:error, {:federation_blocked, message}} ->
+        json_response(conn, :forbidden, %{error: message})
+
+      {:error, message} ->
+        json_response(conn, :forbidden, %{error: message})
     end
   end
 
@@ -478,20 +491,11 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
 
   @doc "POST /api/v1/accounts/:id/note"
   def note(
-        %{assigns: %{user: noter, account: target}, body_params: %{comment: comment}} = conn,
+        %{assigns: %{user: noter, account: target}, body_params: body_params} = conn,
         _params
       ) do
-    create_note(conn, noter, target, comment)
-  end
+    comment = body_param(body_params, :comment)
 
-  def note(
-        %{assigns: %{user: noter, account: target}, body_params: %{"comment" => comment}} = conn,
-        _params
-      ) do
-    create_note(conn, noter, target, comment)
-  end
-
-  defp create_note(conn, noter, target, comment) do
     with {:ok, _user_note} <- UserNote.create(noter, target, comment) do
       render(conn, "relationship.json", user: noter, target: target)
     end
@@ -546,15 +550,9 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   end
 
   @doc "POST /api/v1/follows"
-  def follow_by_uri(%{body_params: %{uri: uri}} = conn, _) do
-    follow_by_uri_target(conn, uri)
-  end
+  def follow_by_uri(%{body_params: body_params} = conn, _) do
+    uri = body_param(body_params, :uri)
 
-  def follow_by_uri(%{body_params: %{"uri" => uri}} = conn, _) do
-    follow_by_uri_target(conn, uri)
-  end
-
-  defp follow_by_uri_target(conn, uri) do
     case User.get_cached_by_nickname(uri) do
       %User{} = user ->
         conn
@@ -603,13 +601,13 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
 
   @doc "GET /api/v1/accounts/lookup"
   def lookup(conn, %{acct: nickname} = _params) do
-    reading_user = Map.get(conn.assigns, :user)
+    for_user = conn.assigns[:user]
 
     with %User{} = user <- lookup_user(nickname),
-         :visible <- User.visible_for(user, reading_user) do
+         :visible <- User.visible_for(user, for_user) do
       render(conn, "show.json",
         user: user,
-        skip_visibility_check: true
+        for: for_user
       )
     else
       error -> user_visibility_error(conn, error)
@@ -646,6 +644,14 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
 
   defp strip_acct_scheme("acct:" <> nickname), do: nickname
   defp strip_acct_scheme(nickname), do: nickname
+
+  defp ensure_federation_follow_allowed(%User{} = followed) do
+    if FederationStatus.defederated?(followed) do
+      {:error, {:federation_blocked, FederationStatus.message(followed)}}
+    else
+      :ok
+    end
+  end
 
   @doc "GET /api/v1/endorsements"
   def own_endorsements(%{assigns: %{user: user}} = conn, params) do

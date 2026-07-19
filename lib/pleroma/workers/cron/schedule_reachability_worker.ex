@@ -39,11 +39,23 @@ defmodule Pleroma.Workers.Cron.ScheduleReachabilityWorker do
   end
 
   def schedule_reachability_checks do
-    jobs =
+    hosts =
       Instances.get_consistently_unreachable()
-      |> Enum.map(fn {host, _unreachable_since} ->
-        ReachabilityWorker.new(%{"domain" => host})
-      end)
+      |> Enum.map(&elem(&1, 0))
+
+    existing_hosts =
+      Oban.Job
+      |> where([job], job.worker == "Pleroma.Workers.ReachabilityWorker")
+      |> where([job], job.state in ["available", "executing", "scheduled", "retryable"])
+      |> where([job], job.args["domain"] in ^hosts)
+      |> select([job], job.args["domain"])
+      |> Repo.all()
+      |> MapSet.new()
+
+    jobs =
+      hosts
+      |> Enum.reject(&MapSet.member?(existing_hosts, &1))
+      |> Enum.map(&ReachabilityWorker.new(%{"domain" => &1}))
 
     insert_all(jobs)
     length(jobs)
@@ -80,8 +92,6 @@ defmodule Pleroma.Workers.Cron.ScheduleReachabilityWorker do
   defp insert_all([]), do: :ok
 
   defp insert_all(jobs) do
-    Repo.transaction(fn ->
-      Enum.each(jobs, &Oban.insert/1)
-    end)
+    Oban.insert_all(jobs)
   end
 end

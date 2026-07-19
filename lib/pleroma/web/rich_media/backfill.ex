@@ -43,7 +43,10 @@ defmodule Pleroma.Web.RichMedia.Backfill do
       {:ok, ttl} when is_number(ttl) ->
         timestamp = DateTime.from_unix!(ttl)
 
-        RichMediaWorker.new(%{"op" => "expire", "url" => url}, scheduled_at: timestamp)
+        RichMediaWorker.new(%{"op" => "expire", "url" => url},
+          scheduled_at: timestamp,
+          unique: [period: :infinity, keys: [:op, :url]]
+        )
         |> Oban.insert()
 
       _ ->

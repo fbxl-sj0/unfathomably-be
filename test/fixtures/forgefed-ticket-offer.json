@@ -1,0 +1,26 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://forgefed.org/ns"
+  ],
+  "id": "https://forge.example/luke/outbox/02Ljp",
+  "type": "Offer",
+  "actor": "https://forge.example/luke",
+  "to": [
+    "https://dev.example/aviva/game-of-life",
+    "https://dev.example/aviva/game-of-life/team",
+    "https://dev.example/aviva/game-of-life/followers"
+  ],
+  "object": {
+    "type": "Ticket",
+    "attributedTo": "https://forge.example/luke",
+    "summary": "Test test test",
+    "content": "<p>Just testing</p>",
+    "mediaType": "text/html",
+    "source": {
+      "mediaType": "text/markdown; variant=Commonmark",
+      "content": "Just testing"
+    }
+  },
+  "target": "https://dev.example/aviva/game-of-life"
+}

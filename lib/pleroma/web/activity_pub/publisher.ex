@@ -10,9 +10,11 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   alias Pleroma.Delivery
   alias Pleroma.HTTP
   alias Pleroma.Instances
+  alias Pleroma.Instances.Instance
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.Relay
   alias Pleroma.Web.ActivityPub.Transmogrifier
 
@@ -38,6 +40,8 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     410 => :gone,
     501 => :not_implemented
   }
+
+  @delivery_error_body_limit 2_048
 
   @doc """
   Determine if an activity can be represented by running it through Transmogrifier.
@@ -65,6 +69,7 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     Logger.debug("Federating #{id} to #{inbox}")
 
     with {:ok, uri, path} <- signature_uri(inbox) do
+      json = prepare_delivery_json(json, inbox)
       digest = "SHA-256=" <> (:crypto.hash(:sha256, json) |> Base.encode64())
 
       date = Pleroma.Signature.signed_date()
@@ -79,25 +84,20 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
         })
 
       with {:ok, %{status: code}} = result when code in 200..299 <-
-             HTTP.post(
-               inbox,
-               json,
-               [
-                 {"Content-Type", "application/activity+json"},
-                 {"Date", date},
-                 {"signature", signature},
-                 {"digest", digest}
-               ]
-             ) do
+             post_with_signature_fallback(inbox, json, actor, date, signature, digest) do
         if not Map.has_key?(params, :unreachable_since) || params[:unreachable_since] do
-          Instances.set_reachable(inbox)
+          Instances.record_delivery_success(inbox, source: "publisher")
         end
 
         result
       else
         {_post_result, %{status: code} = response} ->
           Logger.metadata(activity: id, inbox: inbox, status: code)
-          Logger.debug("Publisher failed to inbox #{inbox} with status #{code}")
+
+          Logger.debug(fn ->
+            "Publisher failed to inbox #{inbox} with status #{code}: " <>
+              delivery_error_body(response)
+          end)
 
           case Map.fetch(@terminal_delivery_statuses, code) do
             {:ok, reason} ->
@@ -123,7 +123,7 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
           if known_unreachable?(params) do
             {:cancel, :unreachable_host}
           else
-            Instances.set_unreachable(inbox)
+            Instances.record_delivery_failure(inbox, e, source: "publisher")
             {:error, e}
           end
       end
@@ -155,6 +155,78 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     {:cancel, :bad_request}
   end
 
+  defp prepare_delivery_json(json, inbox) do
+    with {:ok,
+          %{"type" => "Delete", "object" => %{"id" => object_id, "type" => "Tombstone"}} =
+            data}
+         when is_binary(object_id) <- Jason.decode(json),
+         true <- ibis_delivery?(inbox) do
+      data
+      |> Map.put("object", object_id)
+      |> Jason.encode!()
+    else
+      _ -> json
+    end
+  end
+
+  defp ibis_delivery?(inbox) do
+    with %URI{host: host} = uri when is_binary(host) <- URI.parse(inbox),
+         metadata when is_map(metadata) <- Instance.get_or_update_metadata(uri),
+         software_name when is_binary(software_name) <-
+           Map.get(metadata, :software_name) || Map.get(metadata, "software_name") do
+      String.downcase(String.trim(software_name)) == "ibis"
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
+  defp post_with_signature_fallback(inbox, json, actor, date, signature, digest) do
+    legacy_result =
+      HTTP.post(
+        inbox,
+        json,
+        [
+          {"Content-Type", "application/activity+json"},
+          {"Date", date},
+          {"signature", signature},
+          {"digest", digest}
+        ]
+      )
+
+    case legacy_result do
+      {:ok, %{status: status}} when status in [400, 401] ->
+        content_digest = Pleroma.HTTP.MessageSignatures.content_digest(json)
+
+        signed_headers = %{
+          "content-digest" => content_digest
+        }
+
+        case Pleroma.Signature.sign_rfc9421(actor, "POST", inbox, signed_headers) do
+          {:ok, signature_headers} ->
+            HTTP.post(
+              inbox,
+              json,
+              [
+                {"Content-Type", "application/activity+json"},
+                {"Content-Digest", content_digest},
+                {"Date", date}
+                | signature_headers
+              ]
+            )
+
+          _ ->
+            legacy_result
+        end
+
+      _ ->
+        legacy_result
+    end
+  end
+
   defp signature_uri(inbox) when is_binary(inbox) do
     uri = URI.parse(inbox)
 
@@ -172,8 +244,17 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
   defp signature_uri(_), do: {:error, :bad_request}
 
-  defp known_unreachable?(%{unreachable_since: unreachable_since}) when unreachable_since in [nil, false],
-    do: false
+  defp delivery_error_body(%{body: body}) when is_binary(body) do
+    body
+    |> String.slice(0, @delivery_error_body_limit)
+    |> inspect()
+  end
+
+  defp delivery_error_body(_response), do: "no response body"
+
+  defp known_unreachable?(%{unreachable_since: unreachable_since})
+       when unreachable_since in [nil, false],
+       do: false
 
   defp known_unreachable?(%{unreachable_since: _unreachable_since}), do: true
   defp known_unreachable?(_params), do: false
@@ -385,6 +466,8 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
     {:ok, data} = Transmogrifier.prepare_outgoing(activity.data)
     {actor, activity, data} = maybe_replace_actor(actor, activity, data)
+    activity = delivery_activity(activity, data)
+
     json =
       data
       |> Map.put_new("cc", [])
@@ -425,6 +508,25 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     :ok
   end
 
+  defp delivery_activity(%Activity{} = activity, data) do
+    # Transmogrifier may translate both an object's identifier and its audience
+    # for a native remote representation. Inbox selection must use that same
+    # representation or one signed activity can be delivered through recipients
+    # that are absent from its wire payload. Preserve already-resolved database
+    # recipients when the translation did not alter the audience.
+    {original_recipients, _to, _cc} = ActivityPub.get_recipients(activity.data)
+    {prepared_recipients, _to, _cc} = ActivityPub.get_recipients(data)
+
+    recipients =
+      if MapSet.equal?(MapSet.new(original_recipients), MapSet.new(prepared_recipients)) do
+        activity.recipients
+      else
+        prepared_recipients
+      end
+
+    %Activity{activity | data: data, recipients: recipients}
+  end
+
   defp maybe_replace_actor(%User{} = actor, %Activity{} = activity, data) do
     if data["actor"] == actor.ap_id do
       {actor, activity, data}
@@ -462,4 +564,3 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
   defp uri_host(_), do: nil
 end
-

@@ -41,6 +41,64 @@ defmodule Pleroma.Web.ActivityPub.SideEffects.DeleteTest do
 
       refute User.get_cached_by_ap_id(user.ap_id).is_active
     end
+
+    test "a Manyfold model deletion removes its same-origin compatibility Note" do
+      resource_url = "https://manyfold.example/models/model-1"
+
+      model =
+        insert(:user,
+          local: false,
+          ap_id: "https://manyfold.example/federation/actors/model-1",
+          uri: resource_url,
+          actor_type: "Service",
+          actor_extensions: %{"f3di:concreteType" => "3DModel"}
+        )
+
+      creator =
+        insert(:user,
+          local: false,
+          ap_id: "https://manyfold.example/federation/actors/creator-1"
+        )
+
+      compatibility_note =
+        insert(:note,
+          user: creator,
+          data: %{
+            "id" => "https://manyfold.example/federation/published/comments/model-1",
+            "actor" => creator.ap_id,
+            "attributedTo" => creator.ap_id,
+            "context" => resource_url,
+            "url" => resource_url
+          }
+        )
+
+      cross_origin_note =
+        insert(:note,
+          user: insert(:user, local: false, ap_id: "https://other.example/users/creator"),
+          data: %{
+            "id" => "https://other.example/notes/model-1",
+            "actor" => "https://other.example/users/creator",
+            "attributedTo" => "https://other.example/users/creator",
+            "context" => resource_url,
+            "url" => resource_url
+          }
+        )
+
+      {:ok, delete_data, _meta} = Builder.delete(model, model.ap_id)
+      {:ok, delete, _meta} = ActivityPub.persist(delete_data, local: false)
+
+      ActivityPubMock
+      |> expect(:stream_out, fn ^delete -> nil end)
+      |> expect(:stream_out_participations, fn %Object{id: id}, %User{id: creator_id} ->
+        assert id == compatibility_note.id
+        assert creator_id == creator.id
+      end)
+
+      assert {:ok, ^delete, _meta} = SideEffects.handle(delete)
+      assert Object.get_by_id(compatibility_note.id).data["type"] == "Tombstone"
+      assert Object.get_by_id(cross_origin_note.id).data["type"] == "Note"
+      refute User.get_cached_by_ap_id(model.ap_id).is_active
+    end
   end
 
   describe "object deletion" do
@@ -127,6 +185,16 @@ defmodule Pleroma.Web.ActivityPub.SideEffects.DeleteTest do
       object = Object.normalize(op.data["object"], fetch: false)
 
       assert object.data["repliesCount"] == 0
+    end
+
+    test "it treats deletion of an existing Tombstone as idempotent", %{
+      delete: delete,
+      object: object
+    } do
+      assert {:ok, tombstone, _activity} = Object.delete(object)
+      assert tombstone.data["type"] == "Tombstone"
+
+      assert {:ok, ^delete, _meta} = SideEffects.handle(delete)
     end
 
     test "it logs issues with objects deletion", %{

@@ -372,4 +372,56 @@ defmodule Pleroma.Web.PleromaAPI.EmojiReactionControllerTest do
 
     assert represented_user["id"] == other_user.id
   end
+
+  test "Friendica-compatible dislike endpoints use native ActivityPub Dislike", %{conn: conn} do
+    author = insert(:user)
+    voter = insert(:user)
+    token = insert(:oauth_token, user: voter, scopes: ["read:statuses", "write:statuses"])
+    {:ok, activity} = CommonAPI.post(author, %{status: "Vote on this"})
+
+    result =
+      conn
+      |> assign(:user, voter)
+      |> assign(:token, token)
+      |> post("/api/friendica/statuses/#{activity.id}/dislike")
+      |> json_response_and_validate_schema(200)
+
+    assert result["disliked"] == true
+    assert result["dislikes_count"] == 1
+
+    assert [%{"name" => "👎", "count" => 1, "me" => true}] =
+             Enum.map(
+               result["pleroma"]["emoji_reactions"],
+               &Map.take(&1, ["name", "count", "me"])
+             )
+
+    # Repeated requests are idempotent and cannot inflate the vote count.
+    repeated =
+      conn
+      |> assign(:user, voter)
+      |> assign(:token, token)
+      |> post("/api/friendica/statuses/#{activity.id}/dislike")
+      |> json_response_and_validate_schema(200)
+
+    assert repeated["dislikes_count"] == 1
+
+    assert [%{"id" => voter_id}] =
+             conn
+             |> assign(:user, voter)
+             |> assign(:token, token)
+             |> get("/api/friendica/statuses/#{activity.id}/disliked_by")
+             |> json_response_and_validate_schema(200)
+
+    assert voter_id == voter.id
+
+    result =
+      conn
+      |> assign(:user, voter)
+      |> assign(:token, token)
+      |> post("/api/friendica/statuses/#{activity.id}/undislike")
+      |> json_response_and_validate_schema(200)
+
+    assert result["disliked"] == false
+    assert result["dislikes_count"] == 0
+  end
 end

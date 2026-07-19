@@ -919,7 +919,7 @@ defmodule Pleroma.Web.StreamerTest do
         })
 
       assert_receive {:render_with_user, _, _, ^create_activity, _}
-      assert_receive {:text, received_event}
+      assert_receive {:text, received_event}, 1_000
 
       assert %{"event" => "conversation", "payload" => received_payload} =
                Jason.decode!(received_event)
@@ -943,12 +943,12 @@ defmodule Pleroma.Web.StreamerTest do
 
       create_activity_id = create_activity.id
       assert_receive {:render_with_user, _, _, ^create_activity, _}
-      assert_receive {:text, received_conversation1}
+      assert_receive {:text, received_conversation1}, 1_000
       assert %{"event" => "conversation", "payload" => _} = Jason.decode!(received_conversation1)
 
       {:ok, _} = CommonAPI.delete(create_activity_id, another_user)
 
-      assert_receive {:text, received_event}
+      assert_receive {:text, received_event}, 1_000
 
       assert %{"event" => "delete", "payload" => ^create_activity_id} =
                Jason.decode!(received_event)
@@ -1198,6 +1198,64 @@ defmodule Pleroma.Web.StreamerTest do
 
       Streamer.stream("source:#{source.id}", activity)
       assert_receive {:render_with_user, Pleroma.Web.StreamerView, "update.json", ^activity, _}
+    end
+
+    test "keeps replies off the followed-groups aggregate stream" do
+      follower = insert(:user)
+
+      group =
+        insert(:user,
+          local: false,
+          actor_type: "Group",
+          ap_id: "https://groups.example/c/printing",
+          nickname: "printing@groups.example"
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          ap_id: "https://groups.example/u/alice",
+          nickname: "alice@groups.example"
+        )
+
+      {:ok, _, _} = User.follow(follower, group, :follow_accept)
+
+      reply =
+        insert(:note,
+          user: author,
+          data: %{
+            "actor" => author.ap_id,
+            "attributedTo" => author.ap_id,
+            "inReplyTo" => "https://groups.example/post/parent",
+            "to" => ["https://www.w3.org/ns/activitystreams#Public", group.ap_id],
+            "cc" => []
+          }
+        )
+
+      activity =
+        insert(:note_activity,
+          user: author,
+          note: reply,
+          recipients: ["https://www.w3.org/ns/activitystreams#Public", group.ap_id]
+        )
+
+      {:ok, _} =
+        Streamer.get_topic_and_add_socket(
+          "user:groups",
+          follower,
+          insert(:oauth_token, user: follower)
+        )
+
+      Streamer.stream("group:#{group.id}", activity)
+      refute_receive {:render_with_user, Pleroma.Web.StreamerView, "update.json", ^activity, _}
+
+      {:ok, _} = Streamer.get_topic_and_add_socket("group:#{group.id}", nil, nil)
+
+      Streamer.stream("group:#{group.id}", activity)
+      assert_receive {:text, payload}
+
+      assert %{"event" => "update", "stream" => ["group", group_id]} = Jason.decode!(payload)
+      assert group_id == group.id
     end
 
     test "rejects blank and oversized group and source stream identifiers" do

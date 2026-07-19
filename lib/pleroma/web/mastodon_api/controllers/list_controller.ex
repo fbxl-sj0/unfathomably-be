@@ -28,6 +28,8 @@ defmodule Pleroma.Web.MastodonAPI.ListController do
 
   # POST /api/v1/lists
   def create(%{assigns: %{user: user}, body_params: params} = conn, _) do
+    params = stringify_keys(params)
+
     with {:ok, %Pleroma.List{} = list} <- Pleroma.List.create(params, user) do
       render(conn, "show.json", list: list)
     end
@@ -40,6 +42,8 @@ defmodule Pleroma.Web.MastodonAPI.ListController do
 
   # PUT /api/v1/lists/:id
   def update(%{assigns: %{list: list}, body_params: params} = conn, _) do
+    params = stringify_keys(params)
+
     with {:ok, list} <- Pleroma.List.update(list, params) do
       render(conn, "show.json", list: list)
     end
@@ -88,6 +92,10 @@ defmodule Pleroma.Web.MastodonAPI.ListController do
 
   def remove_from_list(%{body_params: params} = conn, _) do
     remove_from_list(%{conn | params: params}, %{})
+  end
+
+  defp stringify_keys(params) do
+    Map.new(params, fn {key, value} -> {to_string(key), value} end)
   end
 
   defp list_by_id_and_user(%{assigns: %{user: user}, params: %{id: id}} = conn, _) do

@@ -395,13 +395,33 @@ defmodule Pleroma.Web.Streamer do
     push_to_socket(topic, item)
   end
 
-  defp stream_followed_target(user_stream, target_id, item) when is_binary(target_id) do
-    target_id
-    |> local_follower_ids()
-    |> Enum.each(fn user_id ->
-      push_to_socket("#{user_stream}:#{user_id}", item)
-    end)
+  defp stream_followed_target(user_stream, target_id, %Activity{} = item)
+       when is_binary(target_id) do
+    if aggregate_target_item?(item) do
+      target_id
+      |> local_follower_ids()
+      |> Enum.each(fn user_id ->
+        push_to_socket("#{user_stream}:#{user_id}", item)
+      end)
+    end
   end
+
+  # Aggregate group and source feeds mirror their REST timelines, which contain
+  # discussion roots rather than every reply in the target. Other activity
+  # types still pass through so deletes and status lifecycle events retain their
+  # existing streaming behavior.
+  defp aggregate_target_item?(%Activity{data: %{"type" => type}} = item)
+       when type in ["Create", "Announce"] do
+    case Object.normalize(item, fetch: false) do
+      %Object{data: data} when is_map(data) ->
+        Map.get(data, "inReplyTo") in [nil, "", []]
+
+      _ ->
+        false
+    end
+  end
+
+  defp aggregate_target_item?(%Activity{}), do: true
 
   defp local_follower_ids(target_id) do
     FollowingRelationship
@@ -486,6 +506,14 @@ defmodule Pleroma.Web.Streamer do
 
   def close_streams_by_oauth_token(oauth_token) do
     do_close_streams_by_oauth_token(oauth_token)
+  end
+
+  def close_streams_by_user(%User{id: user_id}) do
+    Token.Query.get_by_user(user_id)
+    |> Repo.all()
+    |> Enum.each(&do_close_streams_by_oauth_token/1)
+
+    :ok
   end
 
   defp register_socket(topic, oauth_token) do

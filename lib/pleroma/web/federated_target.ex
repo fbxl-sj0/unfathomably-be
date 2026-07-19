@@ -77,10 +77,15 @@ defmodule Pleroma.Web.FederatedTarget do
     "Audio",
     "Video",
     "Image",
-    "Event"
+    "Event",
+    "Comment",
+    "Quotation",
+    "Rating",
+    "Review"
   ]
   @default_limit 40
   @max_limit 80
+  @catalog_window_limit 240
   @max_target_identifier_bytes 2048
   @source_item_title_limit 240
   @source_item_summary_limit 1_000
@@ -222,6 +227,34 @@ defmodule Pleroma.Web.FederatedTarget do
   def search_groups(params), do: search_targets(:group, params)
   def search_sources(params), do: search_targets(:source, params)
 
+  def search_catalog(params) do
+    limit = limit_param(params)
+    offset = offset_param(params)
+    window_limit = min(offset + limit, @catalog_window_limit)
+
+    lookup_params =
+      params
+      |> Map.put("limit", window_limit)
+      |> Map.put("offset", 0)
+
+    group_targets =
+      :group
+      |> search_targets(lookup_params)
+      |> Enum.map(&{:group, &1})
+
+    source_targets =
+      :source
+      |> search_targets(lookup_params)
+      |> Enum.map(&{:source, &1})
+
+    [group_targets, source_targets]
+    |> List.flatten()
+    |> Enum.uniq_by(fn {_kind, user} -> user.id end)
+    |> Enum.sort_by(fn {_kind, user} -> target_search_sort_key(user) end)
+    |> Enum.drop(offset)
+    |> Enum.take(limit)
+  end
+
   def resolve_group(identifier) do
     with {:ok, identifier} <- normalize_identifier(identifier),
          false <- unsafe_remote_identifier?(identifier) do
@@ -360,8 +393,9 @@ defmodule Pleroma.Web.FederatedTarget do
       rss_source?(user) ->
         "rss_feed"
 
-      nodeinfo_platform in ["wordpress", "writefreely", "postmarks"] or
+      nodeinfo_platform in ["wordpress", "writefreely", "postmarks", "xwiki"] or
         String.contains?(path, "wp-json") or String.contains?(path, "/api/collections/") or
+        String.contains?(path, "/xwiki/activitypub/") or
           (is_nil(nodeinfo_platform) and
              (String.contains?(host, "wordpress") or String.contains?(host, "writefreely") or
                 String.contains?(host, "postmarks"))) ->
@@ -612,6 +646,9 @@ defmodule Pleroma.Web.FederatedTarget do
       String.contains?(host, "writefreely") or String.contains?(paths, "/api/collections/") ->
         "writefreely"
 
+      String.contains?(paths, "/xwiki/activitypub/") ->
+        "xwiki"
+
       String.contains?(host, "postmarks") ->
         "postmarks"
 
@@ -780,7 +817,7 @@ defmodule Pleroma.Web.FederatedTarget do
        do: ["follow relay", "receive boosts", "public posts"]
 
   defp source_capability_labels(_kind, platform)
-       when platform in ["wordpress", "writefreely", "postmarks"],
+       when platform in ["wordpress", "writefreely", "postmarks", "xwiki"],
        do: ["follow author", "read posts", "send replies"]
 
   defp source_capability_labels(_kind, "flipboard"), do: ["follow magazine", "read articles"]
@@ -894,16 +931,12 @@ defmodule Pleroma.Web.FederatedTarget do
   defp path(_), do: nil
 
   defp list_targets(kind, %User{} = user, params) do
-    if followed_scope?(params) do
-      followed_targets(kind, user, params)
-    else
-      case search_param(params) do
-        "" ->
-          followed_targets(kind, user, params)
+    case search_param(params) do
+      "" ->
+        followed_targets(kind, user, params)
 
-        _ ->
-          search_targets(kind, params)
-      end
+      _ ->
+        search_targets(kind, params)
     end
   end
 
@@ -913,29 +946,11 @@ defmodule Pleroma.Web.FederatedTarget do
     user
     |> FollowingRelationship.following_query()
     |> filter_followed_kind(kind)
-    |> filter_followed_search(search_param(params))
     |> order_by([r, _u], desc: r.updated_at)
     |> select([_r, u], u)
     |> offset(^offset_param(params))
     |> limit(^limit_param(params))
     |> Repo.all()
-  end
-
-  defp filter_followed_search(query, ""), do: query
-
-  defp filter_followed_search(query, search) do
-    term = "%#{search}%"
-
-    where(
-      query,
-      [_r, u],
-      ilike(u.nickname, ^term) or ilike(u.name, ^term) or ilike(u.ap_id, ^term) or
-        ilike(u.uri, ^term)
-    )
-  end
-
-  defp followed_scope?(params) do
-    param(params, :scope) in ["followed", :followed]
   end
 
   defp filter_followed_kind(query, :group) do
@@ -3886,12 +3901,9 @@ defmodule Pleroma.Web.FederatedTarget do
   defp webfinger_updates_link(_), do: nil
 
   defp owncast_fetch_json(%User{} = source, path) do
-    headers = [{"accept", "application/json"}]
-
     with url when is_binary(url) <- owncast_api_url(source, path),
          true <- safe_fetch_url?(url),
-         {:ok, %{status: status, body: body}} when status in 200..299 <- HTTP.get(url, headers),
-         {:ok, %{} = data} <- decode_source_items_body(body) do
+         {:ok, %{} = data} <- source_items_unsigned_fetch(url) do
       mark_source_items_fetch_reachable(url)
       {:ok, data}
     else
@@ -3951,6 +3963,7 @@ defmodule Pleroma.Web.FederatedTarget do
       %{
         "id" => actor_id <> "#owncast-stream-status",
         "type" => "StreamStatus",
+        "to" => Pleroma.Constants.as_public(),
         "name" => title,
         "content" => content,
         "url" => owncast_stream_urls(source),
@@ -4131,6 +4144,7 @@ defmodule Pleroma.Web.FederatedTarget do
       event_start: nil,
       location: nil,
       comments_count: nil,
+      native: nil,
       render_hint: source_item_render_hint(source_context.platform.platform_family),
       source_kind: source_context.source_kind,
       source_kind_label: source_context.source_kind_label,
@@ -4140,51 +4154,88 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp render_source_item(%{} = item, source_context, reading_user, opts) do
-    url = source_item_best_url(item)
-    media = source_item_media(item)
-    summary = source_item_summary(item)
-    platform = source_item_platform(item, source_context.platform)
-    comments_count = source_item_comments_count(item)
+    if source_item_public_preview?(item) do
+      url = source_item_best_url(item)
+      media = source_item_media(item)
+      summary = source_item_summary(item)
+      platform = source_item_platform(item, source_context.platform)
+      comments_count = source_item_comments_count(item)
 
-    %{
-      id: source_item_id(item, url),
-      type: item["type"] || "Object",
-      title: source_item_title(item, summary, url),
-      summary: summary,
-      url: url,
-      media_url: media[:href],
-      media_type: media[:media_type],
-      attributed_to: source_item_attributed_to(item["attributedTo"]),
-      published: item["published"],
-      thumbnail_url: source_item_thumbnail(item, media),
-      duration: source_item_duration(item),
-      media_bitrate: source_item_media_bitrate(item, media),
-      media_size: source_item_media_size(item, media),
-      album: source_item_album(item),
-      album_url: source_item_album_url(item),
-      artists: source_item_artists(item),
-      license: source_item_license(item),
-      copyright: source_item_copyright(item),
-      disc: source_item_disc(item),
-      position: source_item_position(item),
-      musicbrainz_id: source_item_musicbrainz_id(item),
-      musicbrainz_url: source_item_musicbrainz_url(item),
-      event_start: source_item_event_start(item),
-      location: source_item_location(item),
-      comments_count: comments_count,
-      render_hint: source_item_render_hint(platform.platform_family),
-      source_kind: source_context.source_kind,
-      source_kind_label: source_context.source_kind_label,
-      capabilities: source_context.capabilities
-    }
-    |> Map.merge(platform)
-    |> maybe_put(
-      :status,
-      source_item_status(item, source_context, reading_user, comments_count, opts)
-    )
+      %{
+        id: source_item_id(item, url),
+        type: item["type"] || "Object",
+        title: source_item_title(item, summary, url),
+        summary: summary,
+        url: url,
+        media_url: media[:href],
+        media_type: media[:media_type],
+        attributed_to: source_item_attributed_to(item["attributedTo"]),
+        published: item["published"],
+        thumbnail_url: source_item_thumbnail(item, media),
+        duration: source_item_duration(item),
+        media_bitrate: source_item_media_bitrate(item, media),
+        media_size: source_item_media_size(item, media),
+        album: source_item_album(item),
+        album_url: source_item_album_url(item),
+        artists: source_item_artists(item),
+        license: source_item_license(item),
+        copyright: source_item_copyright(item),
+        disc: source_item_disc(item),
+        position: source_item_position(item),
+        musicbrainz_id: source_item_musicbrainz_id(item),
+        musicbrainz_url: source_item_musicbrainz_url(item),
+        event_start: source_item_event_start(item),
+        location: source_item_location(item),
+        comments_count: comments_count,
+        native: source_item_native_presentation(item),
+        render_hint: source_item_render_hint(platform.platform_family),
+        source_kind: source_context.source_kind,
+        source_kind_label: source_context.source_kind_label,
+        capabilities: source_context.capabilities
+      }
+      |> Map.merge(platform)
+      |> maybe_put(
+        :status,
+        source_item_status(item, source_context, reading_user, comments_count, opts)
+      )
+    end
   end
 
   defp render_source_item(_, _, _, _), do: nil
+
+  defp source_item_native_presentation(item) do
+    Pleroma.Web.ActivityPub.CustomActivity.presentation(item) ||
+      Pleroma.Web.ActivityPub.CustomObject.presentation(item)
+  end
+
+  defp source_item_public_preview?(item) do
+    addresses =
+      [item["to"], item["cc"], item["audience"]]
+      |> Enum.flat_map(&source_item_address_ids/1)
+      |> Enum.map(&normalize_source_item_public_address/1)
+      |> Enum.reject(&is_nil/1)
+
+    cond do
+      Pleroma.Constants.as_public() in addresses -> true
+      addresses != [] -> false
+      source_item_native_presentation(item) != nil -> false
+      true -> true
+    end
+  end
+
+  defp source_item_address_ids(value) when is_binary(value), do: [value]
+  defp source_item_address_ids(%{"id" => id}) when is_binary(id), do: [id]
+
+  defp source_item_address_ids(values) when is_list(values) do
+    Enum.flat_map(values, &source_item_address_ids/1)
+  end
+
+  defp source_item_address_ids(_value), do: []
+
+  defp normalize_source_item_public_address(value) when value in ["Public", "as:Public"],
+    do: Pleroma.Constants.as_public()
+
+  defp normalize_source_item_public_address(value), do: value
 
   defp source_item_status(
          %{} = item,
@@ -4502,10 +4553,24 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_item_render_hint("longform"), do: %{layout: "article", primary_action: "read"}
   defp source_item_render_hint("microblog"), do: %{layout: "status", primary_action: "reply"}
   defp source_item_render_hint("photo"), do: %{layout: "gallery", primary_action: "view"}
+  defp source_item_render_hint("games"), do: %{layout: "game", primary_action: "open"}
+  defp source_item_render_hint("marketplace"), do: %{layout: "listing", primary_action: "open"}
+  defp source_item_render_hint("culture"), do: %{layout: "catalog", primary_action: "open"}
   defp source_item_render_hint("books"), do: %{layout: "book", primary_action: "open"}
   defp source_item_render_hint("bookmarks"), do: %{layout: "link", primary_action: "open"}
   defp source_item_render_hint("groups"), do: %{layout: "community", primary_action: "join"}
   defp source_item_render_hint("events"), do: %{layout: "event", primary_action: "rsvp"}
+
+  defp source_item_render_hint("development"),
+    do: %{layout: "development", primary_action: "open"}
+
+  defp source_item_render_hint("coordination"),
+    do: %{layout: "coordination", primary_action: "open"}
+
+  defp source_item_render_hint("publishing"),
+    do: %{layout: "resource", primary_action: "open"}
+
+  defp source_item_render_hint("routes"), do: %{layout: "route", primary_action: "open"}
   defp source_item_render_hint("local"), do: %{layout: "community", primary_action: "open"}
   defp source_item_render_hint(_), do: %{layout: "generic", primary_action: "open"}
 

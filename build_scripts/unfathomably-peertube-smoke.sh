@@ -17,9 +17,10 @@
 #   * boot an unmodified PeerTube image with PostgreSQL, Redis, and nginx
 #   * advertise HTTPS actor URLs through disposable local TLS proxies
 #   * create a PeerTube channel and upload a small local video
-#   * exercise channel follow, video resolution, like, unlike, comment,
-#     comment delete, video delete, and follow cleanup paths
-#   * record PeerTube stock limitations around non-video group posts
+#   * exercise channel follow, video resolution, like, unlike, dislike,
+#     comment, comment delete, video delete, and follow cleanup paths
+#   * record PeerTube stock limitations around local-video rates and
+#     non-video group posts
 #   * fail loudly if either server logs obvious 500/crash output
 #
 # This file intentionally does NOT contain:
@@ -82,6 +83,9 @@ PEERTUBE_NGINX_CONF="$WORK_DIR/peertube-nginx/default.conf"
 PEERTUBE_CERT_DIR="$WORK_DIR/peertube-certs"
 PEERTUBE_DATA_DIR="$WORK_DIR/peertube-data"
 PEERTUBE_CONFIG_DIR="$WORK_DIR/peertube-config"
+SMOKE_CA_DIR="$WORK_DIR/smoke-ca"
+SMOKE_CA_KEY="$SMOKE_CA_DIR/ca.key"
+SMOKE_CA_CERT="$SMOKE_CA_DIR/ca.crt"
 
 log() {
     printf '\n==> %s\n' "$*"
@@ -314,6 +318,7 @@ peertube_request() {
     local token="$3"
     local expected="$4"
     local body="${5:-}"
+    local accept="${6:-application/json}"
 
     local tmp code
     tmp="$(mktemp)"
@@ -323,6 +328,7 @@ peertube_request() {
         -X "$method"
         -H "Host: $PEERTUBE_HOST"
         -H "Content-Type: application/json"
+        -H "Accept: $accept"
         -o "$tmp"
         -w "%{http_code}"
     )
@@ -497,10 +503,19 @@ poll_peertube_json_assert() {
     local attempts="${7:-$POLL_ATTEMPTS}"
     local delay="${8:-2}"
     local body="${9:-}"
+    local accept="${10:-application/json}"
     local result=""
 
     for _ in $(seq 1 "$attempts"); do
-        result="$(peertube_request "$method" "$path" "$token" "$expected" "$body" || true)"
+        result="$(
+            peertube_request \
+                "$method" \
+                "$path" \
+                "$token" \
+                "$expected" \
+                "$body" \
+                "$accept" || true
+        )"
 
         if [ -n "$result" ] && json_matches "$result" "$expr" >/dev/null 2>&1; then
             printf '%s\n' "$result"
@@ -681,21 +696,61 @@ PY
     fail "$message"
 }
 
-write_tls_cert() {
-    local host="$1"
-    local key="$2"
-    local cert="$3"
+write_smoke_ca() {
+    if ! command -v openssl >/dev/null 2>&1; then
+        fail "openssl is required to create the PeerTube smoke certificate authority"
+    fi
+
+    mkdir -p "$SMOKE_CA_DIR"
 
     openssl req \
         -x509 \
         -nodes \
         -newkey rsa:2048 \
+        -keyout "$SMOKE_CA_KEY" \
+        -out "$SMOKE_CA_CERT" \
+        -days 2 \
+        -subj "/CN=Unfathomably PeerTube Smoke CA" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        >/dev/null 2>&1
+}
+
+write_tls_cert() {
+    local host="$1"
+    local key="$2"
+    local cert="$3"
+    local request="${cert}.csr"
+    local extensions="${cert}.ext"
+
+    openssl req \
+        -nodes \
+        -newkey rsa:2048 \
         -keyout "$key" \
+        -out "$request" \
+        -subj "/CN=$host" \
+        >/dev/null 2>&1
+
+    cat >"$extensions" <<EOF
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:$host
+EOF
+
+    openssl x509 \
+        -req \
+        -in "$request" \
+        -CA "$SMOKE_CA_CERT" \
+        -CAkey "$SMOKE_CA_KEY" \
+        -set_serial "0x$(random_hex 16)" \
         -out "$cert" \
         -days 2 \
-        -subj "/CN=$host" \
-        -addext "subjectAltName=DNS:$host" \
+        -sha256 \
+        -extfile "$extensions" \
         >/dev/null 2>&1
+
+    rm -f "$request" "$extensions"
 }
 
 write_be_secret() {
@@ -1042,10 +1097,12 @@ start_be() {
         -e MIX_ENV=dev \
         -e MIX_HOME=/tmp/mix \
         -e HEX_HOME=/tmp/hex \
+        -e SSL_CERT_FILE=/tmp/peertube-smoke-ca-bundle.crt \
         -v "$BE_ROOT:/work" \
         -v "$BE_SECRET:/work/config/dev.secret.exs:ro" \
+        -v "$SMOKE_CA_CERT:/usr/local/share/ca-certificates/unfathomably-smoke-ca.crt:ro" \
         "$IMAGE" \
-        bash -lc 'set -euo pipefail; cd /work; git config --global --add safe.directory /work >/dev/null 2>&1 || true; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; exec mix phx.server' \
+        bash -lc 'set -euo pipefail; update-ca-certificates >/dev/null; cat /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/unfathomably-smoke-ca.crt >"$SSL_CERT_FILE"; cd /work; git config --global --add safe.directory /work >/dev/null 2>&1 || true; mix local.hex --force >/dev/null; mix local.rebar --force >/dev/null; mix deps.get >/dev/null; exec mix phx.server' \
         >/dev/null
 }
 
@@ -1068,11 +1125,11 @@ start_peertube() {
         --network "$NETWORK" \
         --network-alias "$PEERTUBE_APP_HOST" \
         --env-file "$PEERTUBE_ENV" \
-        -e NODE_EXTRA_CA_CERTS=/certs/unfathomably-be-smoke.crt \
-        -e SSL_CERT_FILE=/certs/unfathomably-be-smoke.crt \
+        -e NODE_EXTRA_CA_CERTS=/certs/unfathomably-smoke-ca.crt \
+        -e SSL_CERT_FILE=/certs/unfathomably-smoke-ca.crt \
         -v "$PEERTUBE_DATA_DIR:/data" \
         -v "$PEERTUBE_CONFIG_DIR:/config" \
-        -v "$BE_CERT_DIR/be.crt:/certs/unfathomably-be-smoke.crt:ro" \
+        -v "$SMOKE_CA_CERT:/certs/unfathomably-smoke-ca.crt:ro" \
         "$PEERTUBE_IMAGE" >/dev/null
 
     docker run -d \
@@ -1133,6 +1190,7 @@ cleanup
 log "Preparing smoke working directories and configs"
 mkdir -p "$WORK_DIR"
 write_be_secret
+write_smoke_ca
 write_be_proxy_config
 write_peertube_files
 
@@ -1253,6 +1311,86 @@ poll_peertube_json_assert GET \
     'int(data.get("likes") or 0) == 0' \
     "PeerTube sees Unfathomably unlike on video" >/dev/null
 
+log "Testing native PeerTube video dislikes"
+BE_DISLIKE_PEERTUBE="$(
+    http_form POST \
+        "$BE_BASE/api/friendica/statuses/$BE_VIEW_OF_PEERTUBE_VIDEO_ID/dislike" \
+        "$ALICE_TOKEN" \
+        200
+)"
+json_assert "$BE_DISLIKE_PEERTUBE" 'data.get("disliked") is True and int(data.get("dislikes_count") or 0) >= 1' \
+    "Unfathomably could not dislike PeerTube video"
+poll_peertube_json_assert GET \
+    "/api/v1/videos/$PEERTUBE_VIDEO_UUID" \
+    "$PEERTUBE_TOKEN" \
+    200 \
+    'int(data.get("dislikes") or 0) >= 1' \
+    "PeerTube sees Unfathomably dislike on video" >/dev/null
+
+BE_UNDISLIKE_PEERTUBE="$(
+    http_form POST \
+        "$BE_BASE/api/friendica/statuses/$BE_VIEW_OF_PEERTUBE_VIDEO_ID/undislike" \
+        "$ALICE_TOKEN" \
+        200
+)"
+json_assert "$BE_UNDISLIKE_PEERTUBE" 'data.get("disliked") is False and int(data.get("dislikes_count") or 0) == 0' \
+    "Unfathomably could not remove dislike from PeerTube video"
+poll_peertube_json_assert GET \
+    "/api/v1/videos/$PEERTUBE_VIDEO_UUID" \
+    "$PEERTUBE_TOKEN" \
+    200 \
+    'int(data.get("dislikes") or 0) == 0' \
+    "PeerTube sees Unfathomably remove dislike from video" >/dev/null
+
+peertube_request PUT \
+    "/api/v1/videos/$PEERTUBE_VIDEO_UUID/rate" \
+    "$PEERTUBE_TOKEN" \
+    204 \
+    '{"rating":"dislike"}' >/dev/null
+poll_peertube_json_assert GET \
+    "/videos/watch/$PEERTUBE_VIDEO_UUID/dislikes" \
+    "$PEERTUBE_TOKEN" \
+    200 \
+    'int(data.get("totalItems") or 0) >= 1' \
+    "PeerTube exposes its local dislike in the video dislike collection" \
+    "$POLL_ATTEMPTS" \
+    2 \
+    "" \
+    "application/activity+json" >/dev/null
+
+# PeerTube deliberately does not send an individual Dislike activity when a
+# local user rates a local video.  server/core/lib/activitypub/video-rates.ts
+# calls federateVideoIfNeeded() for this case, which broadcasts the Video
+# aggregate instead.  Unfathomably must not invent a remote voter from that
+# aggregate collection.
+BE_AFTER_PEERTUBE_LOCAL_DISLIKE="$(
+    http_form GET \
+        "$BE_BASE/api/v1/statuses/$BE_VIEW_OF_PEERTUBE_VIDEO_ID" \
+        "$ALICE_TOKEN" \
+        200
+)"
+json_assert "$BE_AFTER_PEERTUBE_LOCAL_DISLIKE" \
+    'int(data.get("dislikes_count") or 0) == 0 and data.get("disliked") is False' \
+    "Unfathomably invented an individual voter from PeerTube's aggregate dislike collection"
+
+# PeerTube removes an existing rate with the explicit "none" value. Repeating
+# the active rating is a no-op in stock PeerTube and must not be called an Undo.
+peertube_request PUT \
+    "/api/v1/videos/$PEERTUBE_VIDEO_UUID/rate" \
+    "$PEERTUBE_TOKEN" \
+    204 \
+    '{"rating":"none"}' >/dev/null
+poll_peertube_json_assert GET \
+    "/videos/watch/$PEERTUBE_VIDEO_UUID/dislikes" \
+    "$PEERTUBE_TOKEN" \
+    200 \
+    'int(data.get("totalItems") or 0) == 0' \
+    "PeerTube removes its local dislike from the video dislike collection" \
+    "$POLL_ATTEMPTS" \
+    2 \
+    "" \
+    "application/activity+json" >/dev/null
+
 log "Testing Unfathomably comment delivery into PeerTube"
 BE_REPLY_TEXT="Unfathomably comment to PeerTube $(basename "$WORK_DIR")"
 BE_REPLY="$(
@@ -1349,17 +1487,17 @@ cat <<EOF
 Unfathomably/PeerTube federation smoke test passed.
 
 Covered:
-  * clean stock PeerTube Docker boot with PostgreSQL, Redis, and HTTPS proxy
-  * HTTPS-advertised Unfathomably actor URLs through a disposable proxy
-  * Unfathomably follow of a PeerTube channel Group actor
-  * PeerTube video upload and Unfathomably video resolution
-  * Unfathomably like and unlike of PeerTube video
-  * Unfathomably comment delivery to PeerTube and comment delete cleanup
-  * PeerTube comment delivery to Unfathomably and comment delete cleanup
-  * PeerTube video delete propagation to Unfathomably
-  * PeerTube stock limitation reporting for non-video text Group post import
-  * Unfathomably unfollow of the PeerTube channel actor
-  * basic log scan for 500/crash output
+  * supported: clean stock PeerTube Docker boot with PostgreSQL, Redis, and HTTPS proxy
+  * supported: HTTPS-advertised Unfathomably actor URLs through a disposable proxy
+  * supported: Unfathomably follow and unfollow of a PeerTube channel Group actor
+  * supported: PeerTube video upload, Unfathomably video resolution, and video Delete propagation
+  * supported: Unfathomably Like, Undo Like, Dislike, and Undo Dislike on a PeerTube video
+  * supported: PeerTube local dislike and removal through its ActivityPub video rate collection
+  * supported: comments and comment Deletes in both directions
+  * not_supported: stock PeerTube does not emit an individual Dislike or Undo Dislike when a local user rates a local video; it broadcasts only the Video aggregate
+  * not_supported: stock PeerTube has no text group-post surface for a followed non-PeerTube Group actor
+  * not_supported: stock PeerTube has no durable signal that a remote server defederated it
+  * supported: basic log scan for 500/crash output
 
 Run with KEEP_SMOKE=1 to leave both servers available for manual browser/API work.
 EOF

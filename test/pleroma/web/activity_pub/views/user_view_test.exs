@@ -34,6 +34,57 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
     refute Map.has_key?(result, "_misskey_summary")
   end
 
+  test "the LitePub context defines WebFinger without a remote context dependency" do
+    %{"@context" => context} =
+      "priv/static/schemas/litepub-0.1.jsonld"
+      |> File.read!()
+      |> Jason.decode!()
+
+    refute "https://purl.archive.org/socialweb/webfinger" in context
+
+    assert Enum.any?(context, fn
+             %{"webfinger" => "https://purl.archive.org/socialweb/webfinger#webfinger"} -> true
+             _ -> false
+           end)
+
+    assert MIME.from_path("litepub-0.1.jsonld") == "application/ld+json"
+  end
+
+  test "round trips a multi-valued ForgeFed actor type" do
+    actor_types = ["Repository", "TicketTracker", "PatchTracker"]
+    user = insert(:user, local: false, actor_type: "Repository", actor_types: actor_types)
+
+    assert %{"type" => ^actor_types} = UserView.render("user.json", %{user: user})
+  end
+
+  test "round trips Manyfold actor extensions without replacing normalized fields" do
+    actor_extensions = %{
+      "@context" => %{"f3di" => "http://purl.org/f3di/ns#"},
+      "content" => "Native model notes",
+      "f3di:concreteType" => "3DModel",
+      "attachment" => [
+        %{"type" => "Link", "href" => "https://example.org/model", "name" => "Model"}
+      ]
+    }
+
+    user =
+      insert(:user,
+        local: false,
+        actor_type: "Service",
+        actor_types: ["Service"],
+        actor_extensions: actor_extensions,
+        name: "Normalized model name"
+      )
+
+    result = UserView.render("user.json", %{user: user})
+
+    assert result["type"] == "Service"
+    assert result["name"] == "Normalized model name"
+    assert result["f3di:concreteType"] == "3DModel"
+    assert result["content"] == "Native model notes"
+    assert Enum.any?(result["attachment"], &(&1["type"] == "Link"))
+  end
+
   test "Renders profile fields" do
     fields = [
       %{"name" => "foo", "value" => "bar"}

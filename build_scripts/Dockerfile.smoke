@@ -1,0 +1,64 @@
+# Project: Unfathomably federation smoke tests
+# ------------------------------------------------------------
+#
+# File: Dockerfile.smoke
+#
+# Purpose:
+#
+#   Provide the disposable Elixir/Erlang build environment used by every
+#   federation adapter when it migrates and starts Unfathomably from source.
+#
+# Responsibilities:
+#
+#   * pin the shared smoke runtime to Elixir 1.20 and Erlang/OTP 28
+#   * install the native build and media libraries required by Mix dependencies
+#   * install Hex and Rebar once so individual adapters only fetch project deps
+#
+# This file intentionally does NOT contain:
+#
+#   * Unfathomably source code or compiled application artifacts
+#   * peer-specific packages
+#   * production release configuration
+
+FROM elixir:1.20.1-otp-28
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        autoconf \
+        automake \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        ffmpeg \
+        file \
+        git \
+        imagemagick \
+        libimage-exiftool-perl \
+        libmagic-dev \
+        libncurses-dev \
+        libpng-dev \
+        libsctp-dev \
+        libssh-dev \
+        libssl-dev \
+        libvips-dev \
+        libxml2-utils \
+        m4 \
+        openssl \
+        pkg-config \
+        postgresql-client \
+        unzip \
+        unixodbc-dev \
+        xz-utils \
+        zip \
+    && rm -rf /var/lib/apt/lists/* \
+    && mix local.hex --force \
+    && mix local.rebar --force
+
+WORKDIR /work
+
+# end of Dockerfile.smoke

@@ -33,6 +33,7 @@ defmodule Pleroma.User do
   alias Pleroma.User.HashtagFollow
   alias Pleroma.UserRelationship
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Utils
@@ -153,6 +154,8 @@ defmodule Pleroma.User do
     field(:allow_following_move, :boolean, default: true)
     field(:skip_thread_containment, :boolean, default: false)
     field(:actor_type, :string, default: "Person")
+    field(:actor_types, {:array, :string}, default: [])
+    field(:actor_extensions, :map, default: %{})
     field(:also_known_as, {:array, ObjectValidators.ObjectID}, default: [])
     field(:inbox, :string)
     field(:shared_inbox, :string)
@@ -499,7 +502,7 @@ defmodule Pleroma.User do
       |> Map.put_new(:last_refreshed_at, NaiveDateTime.utc_now())
       |> truncate_if_exists(:name, name_limit)
       |> truncate_if_exists(:bio, bio_limit)
-      |> maybe_update_remote_fields(struct, fields_limit)
+      |> maybe_update_remote_fields(fields_limit)
       |> truncate_fields_param()
       |> fix_follower_address()
 
@@ -542,6 +545,8 @@ defmodule Pleroma.User do
         :posting_restricted_to_mods,
         :invisible,
         :actor_type,
+        :actor_types,
+        :actor_extensions,
         :also_known_as,
         :accepts_chat_messages,
         :pinned_objects,
@@ -559,6 +564,9 @@ defmodule Pleroma.User do
     |> validate_length(:bio, max: bio_limit)
     |> validate_length(:name, max: name_limit)
     |> validate_length(:location, max: location_limit)
+    |> validate_length(:actor_types, max: 32)
+    |> validate_change(:actor_types, &validate_actor_type_values/2)
+    |> validate_change(:actor_extensions, &validate_actor_extension_values/2)
     |> validate_fields(true)
     |> maybe_update_image_description(:avatar, avatar_description)
     |> maybe_update_image_description(:banner, header_description)
@@ -566,13 +574,25 @@ defmodule Pleroma.User do
     |> validate_non_local()
   end
 
-  defp maybe_update_remote_fields(%{fields: fields} = params, %User{} = user, fields_limit)
-       when is_list(fields) and fields_limit > 0 and length(fields) > fields_limit do
-    Map.put(params, :fields, user.fields || [])
+  defp validate_actor_type_values(:actor_types, actor_types) do
+    if Enum.all?(actor_types, &(is_binary(&1) and byte_size(&1) <= 512)) do
+      []
+    else
+      [actor_types: "must contain strings no longer than 512 bytes"]
+    end
   end
 
-  defp maybe_update_remote_fields(params, _user, _fields_limit),
-    do: Map.put_new(params, :fields, [])
+  defp validate_actor_extension_values(:actor_extensions, actor_extensions) do
+    if ActorExtensions.valid?(actor_extensions) do
+      []
+    else
+      [actor_extensions: "must be a bounded JSON object"]
+    end
+  end
+
+  defp maybe_update_remote_fields(params, fields_limit) do
+    Map.update(params, :fields, [], &Enum.take(&1, fields_limit))
+  end
 
   defp maybe_preserve_previous_public_key(changeset, %User{public_key: old_public_key})
        when is_binary(old_public_key) do
@@ -1661,7 +1681,7 @@ defmodule Pleroma.User do
   end
 
   defp log_follow_information_refresh_error(ap_id, reason) do
-    message = "Follower/Following counter update for #{ap_id} failed.\n#{inspect(reason)}"
+    message = "Follower/Following counter update for #{ap_id} failed: #{inspect(reason)}"
 
     if expected_remote_collection_unavailable?(reason) do
       Logger.debug(message)
@@ -1705,11 +1725,10 @@ defmodule Pleroma.User do
   def update_follower_count(%User{} = user) do
     if user.local or !Config.get([:instance, :external_user_synchronization]) do
       follower_count = FollowingRelationship.follower_count(user)
-      user = Repo.get(__MODULE__, user.id) || user
 
       user
       |> follow_information_changeset(%{follower_count: follower_count})
-      |> update_and_set_cache()
+      |> update_and_set_cache
     else
       {:ok, maybe_fetch_follow_information(user)}
     end
@@ -1726,7 +1745,6 @@ defmodule Pleroma.User do
 
   def update_following_count(%User{local: true} = user) do
     following_count = FollowingRelationship.following_count(user)
-    user = Repo.get(__MODULE__, user.id) || user
 
     user
     |> follow_information_changeset(%{following_count: following_count})
@@ -1842,24 +1860,6 @@ defmodule Pleroma.User do
   end
 
   def block(%User{} = blocker, %User{} = blocked) do
-    block(blocker, blocked, %{})
-  end
-
-  # helper to handle the block given only an actor's AP id
-  def block(%User{} = blocker, %{ap_id: ap_id}) do
-    block(blocker, get_cached_by_ap_id(ap_id))
-  end
-
-  def block(%User{} = blocker, %User{} = blocked, params) do
-    duration = Map.get(params, :duration, 0)
-
-    expires_at =
-      if duration > 0 do
-        DateTime.utc_now()
-        |> DateTime.add(duration)
-        |> DateTime.truncate(:second)
-      end
-
     # sever any follow relationships to prevent leaks per activitypub (Pleroma issue #213)
     blocker =
       if following?(blocker, blocked) do
@@ -1889,7 +1889,12 @@ defmodule Pleroma.User do
 
     {:ok, blocker} = update_follower_count(blocker)
     {:ok, blocker, _} = Participation.mark_all_as_read(blocker, blocked)
-    add_to_block(blocker, blocked, expires_at)
+    add_to_block(blocker, blocked)
+  end
+
+  # helper to handle the block given only an actor's AP id
+  def block(%User{} = blocker, %{ap_id: ap_id}) do
+    block(blocker, get_cached_by_ap_id(ap_id))
   end
 
   def unblock(%User{} = blocker, %User{} = blocked) do
@@ -2054,6 +2059,10 @@ defmodule Pleroma.User do
   @spec set_activation(User.t(), boolean()) :: {:ok, User.t()} | {:error, Ecto.Changeset.t()}
   def set_activation(%User{} = user, status) do
     with {:ok, user} <- set_activation_status(user, status) do
+      if not status do
+        Pleroma.Web.Streamer.close_streams_by_user(user)
+      end
+
       user
       |> get_followers()
       |> Enum.filter(& &1.local)
@@ -2392,10 +2401,10 @@ defmodule Pleroma.User do
 
         %User{} = user ->
           if needs_update?(user) do
-            maybe_refresh_stale_user(user, ap_id)
-          else
-            nil
+            Pleroma.Workers.UserRefreshWorker.enqueue("refresh", %{"ap_id" => ap_id})
           end
+
+          nil
       end
 
     case {cached_user, maybe_fetched_user} do
@@ -2411,27 +2420,6 @@ defmodule Pleroma.User do
   end
 
   def get_or_fetch_by_ap_id(_), do: {:error, :not_found}
-
-  defp maybe_refresh_stale_user(%User{} = user, ap_id) do
-    if remote_actor_needs_immediate_refresh?(user) do
-      fetch_by_ap_id(ap_id)
-    else
-      Pleroma.Workers.UserRefreshWorker.enqueue("refresh", %{"ap_id" => ap_id},
-        unique: [period: 300, fields: [:args, :queue]]
-      )
-
-      nil
-    end
-  end
-
-  defp remote_actor_needs_immediate_refresh?(%User{local: true}), do: false
-
-  defp remote_actor_needs_immediate_refresh?(%User{} = user) do
-    Enum.any?(
-      [user.inbox, user.follower_address, user.following_address, user.public_key],
-      &is_nil/1
-    )
-  end
 
   @doc """
   Creates an internal service actor by URI if missing.
@@ -3111,10 +3099,10 @@ defmodule Pleroma.User do
     set_domain_blocks(user, List.delete(user.domain_blocks, domain_blocked))
   end
 
-  @spec add_to_block(User.t(), User.t(), DateTime.t() | nil) ::
+  @spec add_to_block(User.t(), User.t()) ::
           {:ok, UserRelationship.t()} | {:error, Ecto.Changeset.t()}
-  defp add_to_block(%User{} = user, %User{} = blocked, expires_at) do
-    with {:ok, relationship} <- UserRelationship.create_block(user, blocked, expires_at) do
+  defp add_to_block(%User{} = user, %User{} = blocked) do
+    with {:ok, relationship} <- UserRelationship.create_block(user, blocked) do
       @cachex.del(:user_cache, "blocked_users_ap_ids:#{user.ap_id}")
       {:ok, relationship}
     end

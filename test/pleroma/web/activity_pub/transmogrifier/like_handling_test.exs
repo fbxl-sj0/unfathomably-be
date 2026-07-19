@@ -58,6 +58,50 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.LikeHandlingTest do
     assert {:error, _} = Transmogrifier.handle_incoming(data)
   end
 
+  test "it derives context for a Like unwrapped from a group Announce" do
+    user = insert(:user)
+    liker = insert(:user, local: false)
+
+    group =
+      insert(:user,
+        actor_type: "Group",
+        local: false,
+        ap_id: "https://lemmy.example/c/community",
+        follower_address: "https://lemmy.example/c/community/followers"
+      )
+
+    {:ok, activity} = CommonAPI.post(user, %{status: "hello"})
+    object = Object.normalize(activity)
+
+    object =
+      object
+      |> Ecto.Changeset.change(data: Map.delete(object.data, "context"))
+      |> Pleroma.Repo.update!()
+
+    like = %{
+      "id" => "https://remote.example/activities/like/1",
+      "actor" => liker.ap_id,
+      "object" => object.data["id"],
+      "audience" => group.ap_id,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.ap_id],
+      "type" => "Like"
+    }
+
+    announce = %{
+      "id" => "https://lemmy.example/activities/announce/like/1",
+      "actor" => group.ap_id,
+      "object" => like,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address],
+      "type" => "Announce"
+    }
+
+    assert {:ok, %Activity{data: data}} = Transmogrifier.handle_incoming(announce)
+    assert data["context"] == object.data["id"]
+    assert data["audience"] == [group.ap_id]
+  end
+
   test "it hydrates an unknown reply thread before applying a late remote like" do
     author =
       insert(:user,

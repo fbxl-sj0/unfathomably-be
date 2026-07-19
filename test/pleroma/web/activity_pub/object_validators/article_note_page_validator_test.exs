@@ -41,6 +41,15 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest 
       %{valid?: false} = ArticleNotePageValidator.cast_and_validate(note)
     end
 
+    test "a note with a language descriptor validates", %{note: note} do
+      note = Map.put(note, "language", %{"identifier" => "en", "name" => "English"})
+
+      changeset = ArticleNotePageValidator.cast_and_validate(note)
+
+      assert changeset.valid?
+      assert changeset.changes.language == "en"
+    end
+
     test "a note from factory validates" do
       note = insert(:note)
       %{valid?: true} = ArticleNotePageValidator.cast_and_validate(note.data)

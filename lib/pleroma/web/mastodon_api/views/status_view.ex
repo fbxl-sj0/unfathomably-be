@@ -13,10 +13,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   alias Pleroma.HTML
   alias Pleroma.Maps
   alias Pleroma.Object
+  alias Pleroma.QuoteAuthorization
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.UserRelationship
   alias Pleroma.Web.ActivityPub.Addressing
+  alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.CommonAPI.Utils
   alias Pleroma.Web.FederatedTarget
@@ -71,7 +73,9 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     |> Enum.map(fn
       %{data: %{"type" => "Create"}} = activity ->
         object = Object.normalize(activity, fetch: false)
-        object && object.data["quoteUrl"] != "" && object.data["quoteUrl"]
+
+        object && QuoteAuthorization.visible_state?(object.data) &&
+          object.data["quoteUrl"] != "" && object.data["quoteUrl"]
 
       _ ->
         nil
@@ -234,15 +238,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     replied_to_activities = get_replied_to_activities(activities)
     quoted_activities = get_quoted_activities(activities)
 
-    parent_activities =
-      activities
-      |> Enum.filter(&(&1.data["type"] == "Announce" && &1.data["object"]))
-      |> Enum.map(&Object.normalize(&1, fetch: false).data["id"])
-      |> Activity.create_by_object_ap_id()
-      |> Activity.with_preloaded_object(:left)
-      |> Activity.with_preloaded_bookmark(reading_user)
-      |> Activity.with_set_thread_muted_field(reading_user)
-      |> Repo.all()
+    parent_activities = announce_parent_activities(activities, reading_user)
 
     relationships_opt =
       cond do
@@ -291,11 +287,9 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
           object.data["id"]
         )
       else
-        Activity.create_by_object_ap_id(object.data["id"])
-        |> Activity.with_preloaded_bookmark(opts[:for])
-        |> Activity.with_set_thread_muted_field(opts[:for])
-        |> Ecto.Query.first()
-        |> Repo.one()
+        object.data["id"]
+        |> load_announce_parent_activities(opts[:for])
+        |> List.first()
       end
 
     reblog_rendering_opts = Map.put(opts, :activity, reblogged_parent_activity)
@@ -349,6 +343,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       group: reblogged[:group] || status_group(activity, object, opts),
       pleroma: %{
         local: activity.local,
+        native: get_in(reblogged, [:pleroma, :native]),
         comments_enabled: object.data["commentsEnabled"] != false,
         pinned_at: pinned_at,
         bookmark_folder: bookmark_folder
@@ -385,6 +380,60 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   def render("context.json", opts), do: render_context(opts)
 
   def render("translation.json", opts), do: render_translation(opts)
+
+  defp announce_parent_activities(activities, reading_user) do
+    activities
+    |> Enum.filter(&(&1.data["type"] == "Announce" && &1.data["object"]))
+    |> Enum.map(&Object.normalize(&1, fetch: false).data["id"])
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+    |> load_announce_parent_activities(reading_user)
+  end
+
+  defp load_announce_parent_activities([], _reading_user), do: []
+
+  defp load_announce_parent_activities(object_id, reading_user) when is_binary(object_id) do
+    load_announce_parent_activities([object_id], reading_user)
+  end
+
+  defp load_announce_parent_activities(object_ids, reading_user) do
+    create_activities =
+      load_announce_parent_activities_by_type(object_ids, "Create", reading_user)
+
+    create_object_ids =
+      create_activities
+      |> Enum.map(&announce_parent_object_id/1)
+      |> MapSet.new()
+
+    missing_object_ids = Enum.reject(object_ids, &MapSet.member?(create_object_ids, &1))
+
+    update_activities =
+      missing_object_ids
+      |> load_announce_parent_activities_by_type("Update", reading_user)
+      |> Enum.sort_by(& &1.id, :desc)
+      |> Enum.uniq_by(&announce_parent_object_id/1)
+
+    create_activities ++ update_activities
+  end
+
+  defp load_announce_parent_activities_by_type([], _type, _reading_user), do: []
+
+  defp load_announce_parent_activities_by_type(object_ids, type, reading_user) do
+    object_ids
+    |> Activity.Queries.by_object_id()
+    |> Activity.Queries.by_type(type)
+    |> Activity.with_preloaded_object(:left)
+    |> Activity.with_preloaded_bookmark(reading_user)
+    |> Activity.with_set_thread_muted_field(reading_user)
+    |> Repo.all()
+  end
+
+  defp announce_parent_object_id(%Activity{} = activity) do
+    case Object.normalize(activity, fetch: false) do
+      %Object{data: %{"id" => id}} -> id
+      _ -> nil
+    end
+  end
 
   defp render_status_with_object(activity, %Object{} = object, opts) do
     actor = object.data["actor"] || activity.actor
@@ -546,6 +595,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       |> Stream.reject(&(&1.count == 0))
       |> Enum.to_list()
 
+    dislike = Enum.find(emoji_reactions, &(&1.name == "👎"))
+
     # Status muted state (would do 1 request per status unless user mutes are preloaded)
     muted =
       thread_muted? ||
@@ -579,8 +630,10 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       reblogs_count: announcement_count,
       replies_count: replies_count(object),
       favourites_count: like_count,
+      dislikes_count: (dislike && dislike.count) || 0,
       reblogged: reblogged?(activity, opts[:for]),
       favourited: present?(favorited),
+      disliked: (dislike && dislike.me) || false,
       bookmarked: present?(bookmarked),
       muted: muted,
       pinned: pinned?,
@@ -605,6 +658,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
         quote_id: quote_id,
         quote_url: object.data["quoteUrl"],
         quote_visible: visible_for_user?(quote_activity, opts[:for]),
+        quote_state: object.data["quoteState"],
+        quote_authorization: object.data["quoteAuthorization"],
+        quote_approval_required: object.data["quoteState"] == "pending",
+        quote_manageable: QuoteAuthorization.manageable?(object, opts[:for]),
+        quote_allowed: Pleroma.Web.ActivityPub.QuotePolicy.allowed?(object, opts[:for]),
+        interaction_policy: object.data["interactionPolicy"],
         comments_enabled: object.data["commentsEnabled"] != false,
         content: %{"text/plain" => content_plaintext},
         spoiler_text: %{"text/plain" => summary},
@@ -617,7 +676,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
         bookmark_folder: bookmark_folder,
         content_type: opts[:with_source] && (object.data["content_type"] || "text/plain"),
         quotes_count: object.data["quotesCount"] || 0,
-        event: build_event(object.data, opts[:for], attachments)
+        event: build_event(object.data, opts[:for], attachments),
+        native: CustomObject.presentation(object.data)
       }
     }
   end
@@ -919,7 +979,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   def get_quote(activity, %{quoted_activities: quoted_activities}) do
     object = Object.normalize(activity, fetch: false)
 
-    with nil <- quoted_activities[object.data["quoteUrl"]] do
+    with true <- QuoteAuthorization.visible_state?(object.data),
+         nil <- quoted_activities[object.data["quoteUrl"]] do
       # For when a quote post is inside an Announce
       Activity.get_create_by_object_ap_id_with_object(object.data["quoteUrl"])
     end
@@ -928,7 +989,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   def get_quote(%{data: %{"object" => _object}} = activity, _) do
     object = Object.normalize(activity, fetch: false)
 
-    if object.data["quoteUrl"] && object.data["quoteUrl"] != "" do
+    if QuoteAuthorization.visible_state?(object.data) && object.data["quoteUrl"] &&
+         object.data["quoteUrl"] != "" do
       Activity.get_create_by_object_ap_id(object.data["quoteUrl"])
     else
       nil

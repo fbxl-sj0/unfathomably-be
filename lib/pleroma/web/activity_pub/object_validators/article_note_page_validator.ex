@@ -118,6 +118,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
   defp uri_port(%URI{port: nil, scheme: scheme}), do: URI.default_port(scheme)
   defp uri_port(%URI{port: port}), do: port
 
+  defp fix_quote_url(%{"quote" => %{"id" => quote_url}} = data) when is_binary(quote_url) do
+    data
+    |> Map.put("quote", quote_url)
+    |> Map.put_new("quoteUrl", quote_url)
+  end
+
   defp fix_quote_url(%{"quoteUrl" => _quote_url} = data), do: data
 
   # Fedibird
@@ -293,7 +299,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator do
 
   defp validate_data(data_cng) do
     data_cng
-    |> validate_inclusion(:type, ["Article", "Note", "Page"])
+    |> validate_inclusion(:type, ["Article", "Document", "Note", "Page"])
     |> validate_required([:id, :actor, :attributedTo, :type, :context])
     |> CommonValidations.validate_any_presence([:cc, :to])
     |> CommonValidations.validate_fields_match([:actor, :attributedTo])

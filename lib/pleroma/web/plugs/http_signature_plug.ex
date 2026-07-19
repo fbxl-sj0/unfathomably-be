@@ -28,6 +28,7 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlug do
     if get_format(conn) in ["json", "activity+json"] do
       conn
       |> maybe_assign_valid_signature()
+      |> maybe_reject_signature_error()
       |> maybe_assign_actor_id()
       |> maybe_require_signature()
       |> maybe_filter_requests()
@@ -38,14 +39,21 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlug do
 
   defp maybe_assign_valid_signature(conn) do
     if has_signature_header?(conn) do
-      # we replace the digest header with the one we computed in DigestPlug
-      conn =
-        case conn do
-          %{assigns: %{digest: digest}} = conn -> put_req_header(conn, "digest", digest)
-          conn -> conn
-        end
+      # Replace wire digest values only after DigestPlug proved they describe
+      # the parsed body. This gives both signature formats the same body view.
+      conn = put_computed_digests(conn)
 
-      assign(conn, :valid_signature, Signature.validate_signature(conn))
+      case Signature.validate_signature_result(conn) do
+        :ok ->
+          conn
+          |> assign(:valid_signature, true)
+          |> assign(:signature_error, nil)
+
+        {:error, reason} ->
+          conn
+          |> assign(:valid_signature, false)
+          |> assign(:signature_error, reason)
+      end
     else
       Logger.debug("No signature header!")
       conn
@@ -68,11 +76,49 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlug do
 
   defp maybe_assign_actor_id(conn), do: conn
 
+  defp maybe_reject_signature_error(%{halted: true} = conn), do: conn
+
+  defp maybe_reject_signature_error(%{assigns: %{signature_error: :key_unavailable}} = conn) do
+    conn
+    |> put_status(:service_unavailable)
+    |> text("Signing key temporarily unavailable")
+    |> halt()
+  end
+
+  defp maybe_reject_signature_error(
+         %{assigns: %{signature_error: reason}} = conn
+       )
+       when reason not in [nil, :invalid_signature] do
+    conn
+    |> put_status(:bad_request)
+    |> text("Malformed HTTP Signature")
+    |> halt()
+  end
+
+  defp maybe_reject_signature_error(conn), do: conn
+
   defp has_signature_header?(conn) do
     conn |> get_req_header("signature") |> Enum.at(0, false)
   end
 
+  defp put_computed_digests(conn) do
+    conn =
+      case conn do
+        %{assigns: %{digest: digest}} -> put_req_header(conn, "digest", digest)
+        _ -> conn
+      end
+
+    case conn do
+      %{assigns: %{content_digest: digest, content_digest_valid: true}} ->
+        put_req_header(conn, "content-digest", digest)
+
+      _ ->
+        conn
+    end
+  end
+
   defp maybe_require_signature(%{assigns: %{valid_signature: true}} = conn), do: conn
+  defp maybe_require_signature(%{halted: true} = conn), do: conn
 
   defp maybe_require_signature(%{remote_ip: remote_ip} = conn) do
     if Pleroma.Config.get([:activitypub, :authorized_fetch_mode], false) do
@@ -122,12 +168,10 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlug do
     |> MRF.subdomains_regex()
   end
 
-  defp uri_host(uri) do
-    if is_binary(uri) do
-      uri
-      |> URI.parse()
-      |> Map.get(:host)
-    end
+  defp uri_host(uri) when is_binary(uri) do
+    uri
+    |> URI.parse()
+    |> Map.get(:host)
   rescue
     URI.Error -> nil
   end

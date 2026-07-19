@@ -39,6 +39,7 @@ defmodule Pleroma.Instances.Instance do
       field(:backoff_until, :utc_datetime)
       field(:redirect_target, :string)
       field(:gone_at, :utc_datetime)
+      field(:delivery_endpoints, {:array, :map}, default: [])
     end
 
     field(:metadata_updated_at, :utc_datetime)
@@ -69,7 +70,8 @@ defmodule Pleroma.Instances.Instance do
       :last_status,
       :backoff_until,
       :redirect_target,
-      :gone_at
+      :gone_at,
+      :delivery_endpoints
     ])
   end
 
@@ -272,6 +274,22 @@ defmodule Pleroma.Instances.Instance do
 
   def record_gone(_, _), do: {:error, nil}
 
+  def record_delivery_success(url, opts \\ [])
+
+  def record_delivery_success(url, opts) when is_binary(url) do
+    update_delivery_health(url, :success, nil, opts)
+  end
+
+  def record_delivery_success(_, _), do: {:error, nil}
+
+  def record_delivery_failure(url, reason \\ :failure, opts \\ [])
+
+  def record_delivery_failure(url, reason, opts) when is_binary(url) do
+    update_delivery_health(url, :failure, reason, opts)
+  end
+
+  def record_delivery_failure(_, _, _), do: {:error, nil}
+
   def set_unreachable(url_or_host, unreachable_since \\ nil)
 
   def set_unreachable(url_or_host, unreachable_since) when is_binary(url_or_host) do
@@ -393,6 +411,113 @@ defmodule Pleroma.Instances.Instance do
     end
   end
 
+  defp update_delivery_health(url, outcome, reason, opts) do
+    with endpoint when is_binary(endpoint) <- normalize_endpoint(url) do
+      update_instance_health(url, opts, fn instance, now ->
+        endpoint_history =
+          instance
+          |> metadata_value(:delivery_endpoints)
+          |> update_endpoint_history(endpoint, outcome, reason, now, opts)
+
+        host_changes = delivery_host_changes(instance, outcome, reason, now, opts)
+
+        Map.update!(host_changes, :metadata, fn metadata ->
+          Map.put(metadata, :delivery_endpoints, endpoint_history)
+        end)
+      end)
+    else
+      _ -> {:error, nil}
+    end
+  end
+
+  defp delivery_host_changes(instance, :success, _reason, now, opts) do
+    %{
+      unreachable_since: nil,
+      metadata:
+        merge_metadata(instance, %{
+          failure_count: 0,
+          last_success_at: now,
+          last_status: metadata_status(opts, "reachable"),
+          backoff_until: nil,
+          gone_at: nil
+        })
+    }
+  end
+
+  defp delivery_host_changes(instance, :failure, reason, now, opts) do
+    failure_count = metadata_integer(instance, :failure_count) + 1
+
+    %{
+      unreachable_since: instance.unreachable_since || DateTime.to_naive(now),
+      metadata:
+        merge_metadata(instance, %{
+          failure_count: failure_count,
+          last_failure_at: now,
+          last_failure_reason: metadata_reason(reason, opts),
+          last_status: metadata_status(opts, "unreachable"),
+          backoff_until: backoff_until(now, failure_count)
+        })
+    }
+  end
+
+  defp update_endpoint_history(history, endpoint, outcome, reason, now, opts) do
+    history = if is_list(history), do: history, else: []
+    previous = Enum.find(history, &(Map.get(&1, "url") == endpoint)) || %{}
+    failure_count = endpoint_failure_count(previous, outcome)
+
+    entry =
+      previous
+      |> Map.merge(%{
+        "url" => endpoint,
+        "failure_count" => failure_count,
+        "last_status" => metadata_status(opts, Atom.to_string(outcome))
+      })
+      |> put_endpoint_outcome(outcome, reason, now, failure_count, opts)
+
+    [entry | Enum.reject(history, &(Map.get(&1, "url") == endpoint))]
+    |> Enum.take(32)
+  end
+
+  defp endpoint_failure_count(_previous, :success), do: 0
+
+  defp endpoint_failure_count(previous, :failure) do
+    case Map.get(previous, "failure_count") do
+      count when is_integer(count) and count >= 0 -> count + 1
+      _ -> 1
+    end
+  end
+
+  defp put_endpoint_outcome(entry, :success, _reason, now, _failure_count, _opts) do
+    entry
+    |> Map.put("last_success_at", DateTime.to_iso8601(now))
+    |> Map.put("backoff_until", nil)
+  end
+
+  defp put_endpoint_outcome(entry, :failure, reason, now, failure_count, opts) do
+    entry
+    |> Map.put("last_failure_at", DateTime.to_iso8601(now))
+    |> Map.put("last_failure_reason", metadata_reason(reason, opts))
+    |> Map.put("backoff_until", DateTime.to_iso8601(backoff_until(now, failure_count)))
+  end
+
+  defp normalize_endpoint(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} = uri
+      when scheme in ["http", "https"] and is_binary(host) ->
+        uri
+        |> Map.put(:scheme, String.downcase(scheme))
+        |> Map.put(:host, String.downcase(host))
+        |> Map.put(:query, nil)
+        |> Map.put(:fragment, nil)
+        |> to_string()
+
+      _ ->
+        nil
+    end
+  rescue
+    URI.Error -> nil
+  end
+
   defp insert_or_update(%Ecto.Changeset{data: %Instance{id: nil}} = changeset) do
     case Repo.insert(changeset, on_conflict: :nothing) do
       {:ok, %Instance{id: nil}} ->
@@ -489,9 +614,13 @@ defmodule Pleroma.Instances.Instance do
 
     [source, reason]
     |> Enum.reject(&is_nil/1)
-    |> Enum.map(&to_string/1)
+    |> Enum.map(&metadata_reason_part/1)
     |> Enum.join(":")
   end
+
+  defp metadata_reason_part(value) when is_binary(value), do: value
+  defp metadata_reason_part(value) when is_atom(value) or is_number(value), do: to_string(value)
+  defp metadata_reason_part(value), do: inspect(value)
 
   defp backoff_until(now, failure_count) do
     minutes =

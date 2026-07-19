@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.EventHandlingTest do
@@ -45,6 +45,16 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.EventHandlingTest do
   end
 
   test "Gancio Event object with a string place address" do
+    # This test verifies Event normalization. Streaming is a separate concern,
+    # and the real streamer performs cache lookups from its own process, outside
+    # this test's database sandbox ownership.
+    clear_config(
+      [:side_effects, :ap_streamer],
+      Pleroma.Web.ActivityPub.ActivityPubMock
+    )
+
+    Mox.stub(Pleroma.Web.ActivityPub.ActivityPubMock, :stream_out, fn _ -> :ok end)
+
     actor_url = "https://gancio.example/federation/u/gancio"
     event_url = "https://gancio.example/federation/m/6777"
 
@@ -78,6 +88,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.EventHandlingTest do
       "type" => "Event",
       "name" => "Stanze Fredde Fest 3",
       "url" => "https://gancio.example/event/stanze-fredde-fest-3",
+      "eventStatus" => "EventScheduled",
       "startTime" => "2026-11-21T17:00:00.000+01:00",
       "location" => [
         %{
@@ -99,7 +110,17 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.EventHandlingTest do
       "to" => [Pleroma.Constants.as_public()],
       "cc" => [actor_url <> "/followers"],
       "content" => "<p>Stanze Fredde e un'etichetta indipendente.</p>",
-      "summary" => "<p>El Paso Occupato, sabato 21 novembre alle ore 17:00 CET</p>"
+      "summary" => "<p>El Paso Occupato, sabato 21 novembre alle ore 17:00 CET</p>",
+      "tag" => [
+        %{
+          "type" => "Hashtag",
+          "name" => "gancio-smoke",
+          "href" => "https://gancio.example/tag/gancio-smoke"
+        }
+      ],
+      "interactionPolicy" => %{
+        "canQuote" => %{"automaticApproval" => Pleroma.Constants.as_public()}
+      }
     }
 
     Tesla.Mock.mock(fn

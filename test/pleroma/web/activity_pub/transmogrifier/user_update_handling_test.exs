@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.UserUpdateHandlingTest do
   use Pleroma.DataCase
 
+  require Pleroma.Constants
+
   alias Pleroma.Activity
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Transmogrifier
@@ -119,8 +121,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.UserUpdateHandlingTest do
     user = User.get_cached_by_ap_id(user.ap_id)
 
     assert user.fields == [
-             %{"name" => "foo", "value" => "updated"},
-             %{"name" => "foo1", "value" => "updated"}
+             %{"name" => "foo", "value" => "bar"},
+             %{"name" => "foo11", "value" => "bar11"}
            ]
 
     update_data =
@@ -196,5 +198,79 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.UserUpdateHandlingTest do
 
     user = User.get_cached_by_ap_id(user.ap_id)
     assert user.is_locked == true
+  end
+
+  test "it resolves a self-referential linked actor Update once" do
+    actor = "https://manyfold.example/federation/actors/model"
+
+    user =
+      insert(:user,
+        local: false,
+        ap_id: actor,
+        actor_type: "Service",
+        name: "Original model name"
+      )
+
+    actor_document = %{
+      "@context" => "https://www.w3.org/ns/activitystreams",
+      "id" => actor,
+      "type" => "Service",
+      "preferredUsername" => "model",
+      "name" => "Updated model name",
+      "inbox" => actor <> "/inbox",
+      "outbox" => actor <> "/outbox",
+      "followers" => actor <> "/followers",
+      "following" => actor <> "/following",
+      "f3di:concreteType" => "3DModel"
+    }
+
+    Tesla.Mock.mock(fn %{method: :get, url: ^actor} ->
+      %Tesla.Env{
+        status: 200,
+        body: Jason.encode!(actor_document),
+        headers: [{"content-type", "application/activity+json"}]
+      }
+    end)
+
+    update = %{
+      "@context" => "https://www.w3.org/ns/activitystreams",
+      "id" => actor <> "/activities/update-1",
+      "type" => "Update",
+      "actor" => actor,
+      "object" => actor,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [actor <> "/followers"]
+    }
+
+    assert {:ok, %Activity{data: %{"object" => %{"id" => ^actor}}}} =
+             Transmogrifier.handle_incoming(update)
+
+    assert User.get_cached_by_ap_id(user.ap_id).name == "Updated model name"
+
+    assert {:ok, %Activity{data: %{"id" => update_id}}} =
+             Transmogrifier.handle_incoming(update)
+
+    assert update_id == update["id"]
+  end
+
+  test "it does not dereference a linked Update outside the actor authority" do
+    actor = insert(:user, local: false).ap_id
+
+    Tesla.Mock.mock(fn _env ->
+      flunk("unauthorized linked Update attempted a network fetch")
+    end)
+
+    update = %{
+      "@context" => "https://www.w3.org/ns/activitystreams",
+      "id" => actor <> "/activities/update-other",
+      "type" => "Update",
+      "actor" => actor,
+      "object" => "https://unrelated.example/objects/1",
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => []
+    }
+
+    assert {:error, {:validate, {:error, %Ecto.Changeset{}}}} =
+             Transmogrifier.handle_incoming(update)
   end
 end

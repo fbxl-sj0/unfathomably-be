@@ -11,7 +11,22 @@ defmodule Pleroma.Object.Containment do
   Object containment is an important step in validating remote objects to prevent
   spoofing, therefore removal of object containment functions is NOT recommended.
   """
-  @actor_types ["Application", "Group", "Organization", "Person", "Service"]
+  @actor_types [
+    "Application",
+    "Factory",
+    "Group",
+    "Organization",
+    "PatchTracker",
+    "Person",
+    "Project",
+    "ReleaseTracker",
+    "Repository",
+    "Roadmap",
+    "Service",
+    "Team",
+    "TicketTracker",
+    "Workflow"
+  ]
   @preferred_array_actor_types ["Application", "Person", "Service"]
 
   def get_actor(%{"actor" => actor}) when is_binary(actor) do

@@ -7,11 +7,13 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
 
   @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
 
+  alias Pleroma.FederationStatus
   alias Pleroma.FollowingRelationship
   alias Pleroma.User
   alias Pleroma.UserNote
   alias Pleroma.UserRelationship
   alias Pleroma.Utils.URIEncoding
+  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.CommonAPI.Utils
   alias Pleroma.Web.MastodonAPI.AccountView
   alias Pleroma.Web.MediaProxy
@@ -131,6 +133,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
         &User.mutes?(&1, &2)
       )
 
+    federation = FederationStatus.for_user(target)
+
     # NOTE: adjust UserRelationship.view_relationships_option/2 on new relation-related flags
     relationship = %{
       id: to_string(target.id),
@@ -160,6 +164,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
       notifying: subscribing,
       requested: requested,
       domain_blocking: User.blocks_domain?(reading_user, target),
+      federation: federation,
+      federation_blocked: FederationStatus.defederated?(federation),
       showing_reblogs:
         not UserRelationship.exists?(
           user_relationships,
@@ -259,6 +265,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
 
     relationship = rendered_relationship(user, opts)
     favicon = rendered_favicon(user)
+    federation = FederationStatus.for_user(user)
+    native = ActorExtensions.presentation(user.actor_extensions, user.ap_id)
 
     %{
       id: to_string(user.id),
@@ -287,7 +295,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
         fields: user.raw_fields,
         pleroma: %{
           discoverable: user.is_discoverable,
-          actor_type: user.actor_type
+          actor_type: user.actor_type,
+          actor_types: user.actor_types
         }
       },
       last_status_at: Utils.to_masto_date(user.last_status_at, nil),
@@ -297,6 +306,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
       fqn: User.full_nickname(user),
       pleroma: %{
         ap_id: user.ap_id,
+        actor_types: user.actor_types,
         also_known_as: user.also_known_as,
         is_confirmed: user.is_confirmed,
         is_suggested: user.is_suggested,
@@ -311,11 +321,13 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
         background_image: MediaProxy.url(image_url(user.background)),
         accepts_chat_messages: user.accepts_chat_messages,
         favicon: favicon,
+        federation: federation,
         location: user.location,
         avatar_description: avatar_description,
         header_description: header_description
       }
     }
+    |> maybe_put_native(native)
     |> maybe_put_role(user, opts[:for])
     |> maybe_put_privileges(user, opts[:for])
     |> maybe_put_settings(user, opts[:for], opts)
@@ -331,6 +343,12 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
     |> maybe_put_mute_expires_at(user, opts[:for], opts, relationship)
     |> maybe_put_block_expires_at(user, opts[:for], opts, relationship)
     |> maybe_show_birthday(user, opts[:for])
+  end
+
+  defp maybe_put_native(account, nil), do: account
+
+  defp maybe_put_native(%{pleroma: pleroma} = account, native) do
+    %{account | pleroma: Map.put(pleroma, :native, native)}
   end
 
   defp rendered_following_count(user, self) do

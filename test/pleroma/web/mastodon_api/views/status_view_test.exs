@@ -287,7 +287,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
     finger_url =
       "https://localhost/.well-known/webfinger?resource=acct:#{user.nickname}@localhost"
 
-    Tesla.Mock.mock_global(fn
+    Tesla.Mock.mock(fn
       %{method: :get, url: "http://localhost/.well-known/host-meta"} ->
         %Tesla.Env{status: 404, body: ""}
 
@@ -372,9 +372,11 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       reblogs_count: 0,
       replies_count: 0,
       favourites_count: 0,
+      dislikes_count: 0,
       reblogged: false,
       bookmarked: false,
       favourited: false,
+      disliked: false,
       muted: false,
       pinned: false,
       sensitive: false,
@@ -403,6 +405,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       quotes_count: 0,
       pleroma: %{
         local: true,
+        native: nil,
         conversation_id: convo_id,
         context: object_data["context"],
         in_reply_to_account_acct: nil,
@@ -410,6 +413,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
         quote_id: nil,
         quote_url: nil,
         quote_visible: false,
+        quote_state: nil,
+        quote_authorization: nil,
+        quote_approval_required: false,
+        quote_manageable: false,
+        quote_allowed: true,
+        interaction_policy: nil,
         content: %{"text/plain" => HTML.strip_tags(object_data["content"])},
         spoiler_text: %{"text/plain" => HTML.strip_tags(object_data["summary"])},
         expires_at: nil,
@@ -891,7 +900,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       object_tags = [
         "fediverse",
         "mastodon",
-        "opensource",
+        "nextcloud",
         %{
           "href" => "https://kawen.space/users/lain",
           "name" => "@lain@kawen.space",
@@ -902,7 +911,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       assert StatusView.build_tags(object_tags) == [
                %{name: "fediverse", url: "http://localhost:4001/tag/fediverse"},
                %{name: "mastodon", url: "http://localhost:4001/tag/mastodon"},
-               %{name: "opensource", url: "http://localhost:4001/tag/opensource"}
+               %{name: "nextcloud", url: "http://localhost:4001/tag/nextcloud"}
              ]
     end
   end

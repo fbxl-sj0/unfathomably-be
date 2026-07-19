@@ -48,7 +48,6 @@ sudo apt install -y \
   libncurses-dev \
   libssl-dev \
   libssh-dev \
-  libvips-dev \
   libxml2-utils \
   m4 \
   nginx \
@@ -388,6 +387,8 @@ After=network.target postgresql.service
 Wants=postgresql.service
 
 [Service]
+# Federation and media bursts can exceed systemd's 1,024 descriptor default.
+LimitNOFILE=65536
 Type=simple
 User=pleroma
 Group=pleroma

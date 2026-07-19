@@ -4,6 +4,7 @@
 
 defmodule Pleroma.Web.Plugs.MappedSignatureToIdentityPlug do
   alias Pleroma.Helpers.AuthHelper
+  alias Pleroma.Helpers.UriHelper
   alias Pleroma.Signature
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Utils
@@ -20,7 +21,7 @@ defmodule Pleroma.Web.Plugs.MappedSignatureToIdentityPlug do
     with key_actor_id when is_binary(key_actor_id) <- key_actor_id_from_conn(conn),
          actor_id <- Utils.get_ap_id(actor),
          {:user, %User{} = user} <- {:user, user_from_key_actor_id(key_actor_id)},
-         {:user_match, true} <- {:user_match, user.ap_id == actor_id} do
+         {:user_match, true} <- {:user_match, UriHelper.equivalent?(user.ap_id, actor_id)} do
       conn
       |> assign(:user, user)
       |> AuthHelper.skip_oauth()

@@ -5,7 +5,195 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+
+### Added
+- Added authenticated Worlds object authoring for books, software tickets,
+  3D models, marketplace offers, games, routes, culture, coordination, and
+  publishing through fixed server-side ActivityPub templates. Locally authored
+  resource and process objects can participate in the Worlds timeline without
+  allowing remote objects to opt themselves into ordinary timelines.
+
+## [3.4.0] - 2026-07-19
+
+### Security
+- Rate-limited authenticated combined group/feed target discovery so explicit
+  remote handle and URL resolution cannot be used to generate abusive lookup
+  traffic toward another federated server.
+
+### Added
+- Added bounded native ActivityPub support for BookWyrm catalog activity,
+  ForgeFed development objects, ActivityPods projects, Manyfold models,
+  Flohmarkt listings, Castling games, Wanderer routes, NeoDB catalog entries,
+  Bonfire ValueFlows, Mutual Aid, and ZenPub/CommonsPub resources, including
+  actor extension metadata that the frontend can present safely.
+- Expanded the checked-in wide federation suite to 39 peer-specific adapters.
+  The suite now runs the shared moderation and defederation contract and records
+  bidirectional follow, group, post, reply, reaction, deletion, blocking, and
+  moderation capabilities without treating untested behavior as success.
+- Added Friendica-compatible dislike APIs and native ActivityPub Dislike
+  federation for peers that expose downvotes.
+
+### Changed
+- Updated every currently resolvable Hex dependency, including security-fix
+  releases for Mint, Plug, Phoenix, Phoenix LiveView, and Postgrex; kept
+  Hackney at 4.6.0 because later releases currently conflict with
+  WebTransport's h2 requirement.
+- Made the wide federation lane build its checked-in Elixir 1.20 and OTP 28
+  test image automatically before starting disposable peers.
+
 ### Fixed
+- Completed the federation-status OpenAPI schema used by account responses and
+  removed an unreachable duplicate federated-target renderer so clean
+  production builds include the expanded federation interfaces.
+- Serialized concurrent ActivityPub object mutations so Updates, Likes,
+  reactions, and their Undo activities cannot overwrite each other's object
+  aggregates, and made reaction aggregate failures reach the receiver retry
+  path instead of returning a false success.
+- Fixed native Funkwhale Track Listen rendering and scrobble metadata, Owncast
+  StreamStatus public-audience classification, linked non-actor Updates and
+  Answers, and client-to-server Create validation for embedded Notes.
+- Accepted ActivityPub signature actor identifiers that differ only by an
+  explicit default HTTP or HTTPS port, and classified XWiki actors as publishing
+  sources when NodeInfo is unavailable.
+- Fixed upload metadata and blurhash analysis on Windows hosts and executable
+  paths containing spaces.
+- Fixed thread-aware remote fetches whose successful resolver result was a bare
+  object, and made federation churn classification ignore unrelated structs
+  instead of attempting to enumerate them as validation error containers.
+- Restored the combined group/source discovery endpoint used by the frontend,
+  including authenticated mixed-result rendering, ranking, deduplication, and
+  pagination through the existing federated target catalog.
+
+## [3.3.1] - 2026-07-17
+
+### Fixed
+- Accepted ActivityPub Link attachments whose remote `mediaType` is explicitly
+  null by applying the existing safe octet-stream fallback instead of rejecting
+  the entire containing post.
+- Stopped remote-object fetch jobs from retrying and becoming discarded when
+  validation already proves that the cached remote author is deactivated.
+- Treated duplicate incoming federation deliveries as idempotent receiver
+  success instead of cancelled Oban failures, including duplicate Likes caught
+  during object-action validation, keeping routine peer retries out of the
+  actionable federation-failure signal.
+- Fixed incoming reactions and likes against temporarily unavailable remote
+  objects so real fetch failures reach the bounded receiver retry path instead
+  of being erased and misclassified as permanent missing-object validation
+  failures, and derived stable thread context for Likes wrapped by Lemmy group
+  Announces whose target objects omit their own explicit context.
+- Added fail-closed support for public inbox-forwarded Mastodon Create
+  activities carrying legacy `RsaSignature2017` envelopes. Cross-actor HTTP
+  deliveries now fetch and process the canonical HTTPS origin activity only
+  after strict actor, object, audience, forwarder, freshness, and origin checks;
+  destructive and private activities remain rejected.
+- Fixed reverse-proxy 500 responses when remote media servers return
+  nonstandard HTTP status codes by safely mapping unknown codes to 502.
+- Fixed reverse-proxy transport failures so upstream timeouts return 504,
+  other upstream failures return 502, and routine timeout families no longer
+  emit misleading application-error logs.
+- Made transient remote object, reply-collection, and actor refresh failures
+  retry with bounded backoff while deterministic missing, forbidden, deleted,
+  and unsupported actor refreshes cancel without becoming discarded jobs.
+- Capped remote-post janitor batch and candidate-page sizes so oversized legacy
+  ConfigDB values cannot hold a PostgreSQL connection until its query timeout.
+- Completed Mastodon-derived follow-request pagination and stale remote-poll
+  refresh support so production builds do not retain controller calls to
+  missing data-layer helpers.
+- Corrected the quote lifecycle integration by using the real remote-object
+  fetcher, delivering authorization revocations to the quoting actor, keeping
+  local lifecycle bookkeeping off the ActivityPub wire, and accepting both
+  keyword and map options in FEP-7888 context pagination.
+- Added the FEP-044f and GoToSocial JSON-LD vocabulary mappings used by quote
+  requests, quote authorizations, and interaction policies, and documented the
+  corresponding Mastodon API status fields in OpenAPI.
+- Added full quote interaction-policy handling with automatic, manual, denied,
+  accepted, rejected, and revoked states; federated QuoteRequest and
+  QuoteAuthorization verification; count-safe lifecycle transitions; and
+  authenticated approval and revocation endpoints.
+- Added FEP-7888 conversation context collections for local ActivityPub posts,
+  including visibility-aware URI-only pages with bounded keyset pagination.
+- Reduced avoidable federation work by rejecting rich previews before fetches
+  for posts that already carry media or quotes, coalescing rapid local profile
+  edits into one latest-state ActivityPub Update, and bulk-scheduling only
+  remote-host probes that do not already have incomplete jobs.
+- Added bounded per-inbox delivery histories to federation health metadata so
+  administrators can distinguish a failing shared inbox or endpoint from a
+  host-wide outage while retaining existing host-level backoff behavior.
+- Preserved structured HTTP-signature failures so malformed RFC 9421 requests
+  return client errors while temporary remote key failures return a retryable
+  service-unavailable response, and re-signed authenticated object fetches after
+  redirects instead of replaying signatures bound to the previous URI.
+- Hardened incoming Updates by importing recent actor-matching objects when an
+  Update legitimately races ahead of its Create while rejecting stale unknown
+  objects and retaining the existing newer-edit protection.
+- Closed active WebSocket and EventSource streams when local accounts are
+  deactivated or their OAuth tokens are revoked, and refused new authenticated
+  streams for inactive accounts.
+- Normalized keyword moderation matching with Unicode NFKC and case folding so
+  visually equivalent text cannot bypass string-based rejection or delisting.
+- Isolated Oban janitor steps and per-object cleanup so one malformed row,
+  timeout, or database failure is reported without abandoning unrelated cleanup
+  work in the same run.
+- Serialized concurrent idempotent API requests across connected BE nodes,
+  scoped replay caches by authenticated user and endpoint, and added bounded
+  lock waits with process-failure cleanup.
+- Added incoming RFC 9421 HTTP Message Signature verification with RFC 9530
+  body digests, replay-window enforcement, actor key refresh/history fallback,
+  and outgoing ActivityPub retry after legacy signature rejection.
+- Rejected ambiguous duplicate parameters in legacy HTTP Signature headers
+  before actor key resolution or verification, and normalized language-tagged
+  descriptions on incoming ActivityStreams media attachments.
+- Connected the bundled backend-maintenance AdminFE to the maintained
+  Unfathomably operations dashboard, corrected its stale development-doc link,
+  and made future AdminFE installs default to the official stable branch.
+- Fixed list create and update requests that combine replies policy with
+  OpenAPI-cast title or exclusivity fields so mixed map keys cannot reach Ecto.
+- Fixed dotted remote `/users/:nickname` browser routes so domain suffixes are
+  not mistaken for unsupported response formats.
+- Fixed `/users/:nickname/statuses/:id` compatibility routes so StaticFE uses
+  the supplied status ID instead of falling through to an action-clause error.
+- Restored the federation-status service and controller to the canonical BE
+  distribution so federation-policy checks and their frontend surfaces no
+  longer fail with an undefined-controller HTTP 500.
+- Fixed extensionless browser tag URLs so they load the frontend, and hardened
+  tagged Atom and RSS feeds so titled or malformed federated objects without
+  text content render safely instead of raising from feed helpers.
+- Fixed Mastodon status context requests for missing statuses so they return a
+  normal 404 response instead of falling through to an HTTP 500.
+- Reworked remote post and group discussion janitors to scan bounded,
+  index-backed stale-object windows before applying expensive preservation
+  checks, preventing daily cleanup queries from timing out on large databases.
+- Made incoming federation processing timeouts configurable with a longer
+  default so deep but valid remote reply chains can finish atomically instead
+  of repeatedly rolling back at the historical 30-second boundary.
+- Rejected malformed UTF-8 request paths before routing and made empty legacy
+  remote-interaction requests return a client error instead of endpoint 500s.
+- Filtered remote `alsoKnownAs` values through the local ActivityPub ObjectID
+  type so cross-protocol aliases cannot prevent an otherwise valid actor
+  profile from refreshing.
+- Included suspended Oban jobs in RichMedia uniqueness so temporarily paused
+  work cannot admit duplicate preview jobs.
+- Accepted Lemmy- and PeerTube-style language descriptor objects on incoming
+  posts, and ignored PeerTube video likes collection URLs that are not local
+  interaction-ID lists.
+- Made repeated Deletes that reference an already stored Tombstone idempotent
+  instead of reporting the Tombstone's intentionally absent actor as an error.
+- Accepted web-push subscription payloads without an optional alert policy,
+  storing an empty policy instead of returning HTTP 500.
+- Deduplicated RichMedia backfills across stream variants of the same activity
+  and retained terminal outcomes for the same 15-minute window as the negative
+  cache, preventing paired fetches for deterministic failures.
+- Kept replies out of followed group and source aggregate streams so live
+  WebSocket updates match the discussion-root-only REST feeds without removing
+  replies from each group or source's own stream.
+- Raised the systemd file-descriptor limit for source and release installs so
+  short federation or media bursts cannot exhaust Cowboy acceptors and cascade
+  into database checkout timeouts.
+- Reworked remote-host database lookups around a matching host-and-id index,
+  including a true loose-index peer scan, so reachability probes and instance
+  statistics do not repeatedly scan the full remote-user table.
+- Kept expected HTTP pool client `:normal` and `:shutdown` exits at debug level
+  while preserving warnings for abnormal exits and request timeouts.
 - Completed the frontend list workflow by wiring exclusive lists through
   create/edit state, clarifying member management, fixing the list editor close
   action, preventing blank member searches, and making list member additions
@@ -42,6 +230,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fixed OpenTranslate-backed status translation for remote posts whose detected
   source language is not directly advertised by the provider by retrying those
   concrete source-code failures with provider auto-detection.
+- Fixed Lemmy-family Create activities that carry the same recipients as their
+  embedded object but partition the community differently between `to` and
+  `cc`, preventing valid posts from being discarded as addressing mismatches.
+- Removed duplicate network fetches during remote reply ancestry hydration by
+  passing already-contained payloads through the normal object pipeline, and
+  stopped an initial transport failure from being retried immediately.
+- Deduplicated remote actor refreshes across completed and terminal Oban states
+  for the existing cooldown window, preventing bursts of stale or unreachable
+  actor events from launching several identical refreshes.
 - Accepted valid empty ActivityStreams featured collection pages and
   `items`-based Collection pages without treating them as malformed remote
   responses.

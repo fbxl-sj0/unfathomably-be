@@ -266,6 +266,43 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       assert user.is_indexable == false
     end
 
+    test "retains every ForgeFed actor type and selects a stable primary type" do
+      actor_id = "https://forge.example/projects/alpha"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^actor_id} ->
+          %Tesla.Env{
+            status: 200,
+            body: File.read!("test/fixtures/forgefed-repository-actor.json"),
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      assert {:ok, user} = ActivityPub.make_user_from_ap_id(actor_id)
+      assert user.actor_type == "Repository"
+      assert user.actor_types == ["Repository", "TicketTracker", "PatchTracker"]
+    end
+
+    test "retains the native Manyfold type and bounded actor vocabulary" do
+      actor_id = "https://manyfold.example/models/model-123"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^actor_id} ->
+          %Tesla.Env{
+            status: 200,
+            body: File.read!("test/fixtures/manyfold-model-actor.json"),
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      assert {:ok, user} = ActivityPub.make_user_from_ap_id(actor_id)
+      assert user.actor_type == "Service"
+      assert user.actor_types == ["Service"]
+      assert user.actor_extensions["f3di:concreteType"] == "3DModel"
+      assert user.actor_extensions["spdx:license"]["spdx:licenseId"] == "MIT"
+      refute Map.has_key?(user.actor_extensions, "publicKey")
+    end
+
     test "imports NodeBB-style actor custom fields" do
       user_id = "https://forums.example.org/uid/7"
 
@@ -534,6 +571,33 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       {:ok, user} = ActivityPub.make_user_from_ap_id(user_id)
 
       assert user.also_known_as == [old_identity, clone_identity, second_clone]
+    end
+
+    test "drops remote aliases that cannot be stored as ActivityPub object IDs" do
+      user_id = "https://example.com/users/cross-protocol"
+      valid_alias = "https://example.net/users/old-identity"
+
+      user_data =
+        "test/fixtures/users_mock/user.json"
+        |> File.read!()
+        |> String.replace("{{nickname}}", "cross-protocol")
+        |> Jason.decode!()
+        |> Map.delete("featured")
+        |> Map.put("alsoKnownAs", [valid_alias, "at://did:plc:example"])
+        |> Jason.encode!()
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^user_id} ->
+          %Tesla.Env{
+            status: 200,
+            body: user_data,
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      {:ok, user} = ActivityPub.make_user_from_ap_id(user_id)
+
+      assert user.also_known_as == [valid_alias]
     end
 
     test "stores Misskey source profile text separately from the HTML summary" do
@@ -2094,7 +2158,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
         "content" => content,
         "published" => activity_with_object.object.data["published"],
         "actor" =>
-          AccountView.render("show.json", %{user: target_account, skip_visibility_check: true})
+          "show.json"
+          |> AccountView.render(%{user: target_account, skip_visibility_check: true})
+          |> Jason.encode!()
+          |> Jason.decode!()
       }
 
       assert %Activity{

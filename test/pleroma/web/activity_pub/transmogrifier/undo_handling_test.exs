@@ -6,6 +6,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.UndoHandlingTest do
   use Pleroma.DataCase, async: true
 
   alias Pleroma.Activity
+  alias Pleroma.GroupMembership
   alias Pleroma.Object
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Transmogrifier
@@ -214,6 +215,30 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.UndoHandlingTest do
     assert data["actor"] == "http://mastodon.example.org/users/admin"
 
     refute User.following?(User.get_cached_by_ap_id(data["actor"]), user)
+  end
+
+  test "an incoming group unfollow removes the mirrored membership" do
+    group = insert(:user, actor_type: "Group", local: true)
+
+    follow_data =
+      File.read!("test/fixtures/mastodon-follow-activity.json")
+      |> Jason.decode!()
+      |> Map.put("object", group.ap_id)
+
+    follower = insert(:user, ap_id: follow_data["actor"], local: false)
+
+    {:ok, %Activity{local: false}} = Transmogrifier.handle_incoming(follow_data)
+    assert %GroupMembership{state: "active"} = GroupMembership.get(group, follower)
+
+    undo_data =
+      File.read!("test/fixtures/mastodon-unfollow-activity.json")
+      |> Jason.decode!()
+      |> Map.put("object", follow_data)
+
+    assert {:ok, %Activity{data: %{"type" => "Undo"}}} =
+             Transmogrifier.handle_incoming(undo_data)
+
+    refute GroupMembership.get(group, follower)
   end
 
   test "it works for incoming unblocks with an existing block" do

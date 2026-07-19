@@ -73,5 +73,27 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonValidationsTest do
         assert :ok = ObjectValidator.fetch_actor_and_object(data)
       end
     end
+
+    test "returns transient remote target failures to the receiver worker" do
+      actor =
+        insert(:user,
+          local: false,
+          ap_id: "https://mostr.example/users/alice",
+          follower_address: "https://mostr.example/users/alice/followers"
+        )
+
+      object_id = "https://mostr.example/objects/temporarily-unavailable"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^object_id} -> {:error, :recv_response_timeout}
+      end)
+
+      assert {:error, :recv_response_timeout} =
+               ObjectValidator.fetch_actor_and_object(%{
+                 "type" => "EmojiReact",
+                 "actor" => actor.ap_id,
+                 "object" => object_id
+               })
+    end
   end
 end

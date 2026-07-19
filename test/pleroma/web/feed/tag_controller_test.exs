@@ -14,6 +14,16 @@ defmodule Pleroma.Web.Feed.TagControllerTest do
 
   setup do: clear_config([:feed])
 
+  test "renders the frontend for an extensionless browser tag route", %{conn: conn} do
+    conn =
+      conn
+      |> put_req_header("accept", "text/html")
+      |> get("/tags/pleromaart")
+
+    assert get_resp_header(conn, "content-type") == ["text/html; charset=utf-8"]
+    response(conn, 200)
+  end
+
   test "gets a feed (ATOM)", %{conn: conn} do
     clear_config(
       [:feed, :post_title],
@@ -78,6 +88,30 @@ defmodule Pleroma.Web.Feed.TagControllerTest do
     assert xpath(xml, ~x"//feed/entry/title/text()"l) == [
              ~c"yeah #PleromaArt"
            ]
+  end
+
+  test "renders tagged objects without content", %{conn: conn} do
+    user = insert(:user)
+    {:ok, activity} = CommonAPI.post(user, %{status: "Tagged object #NoContent"})
+    object = Object.normalize(activity, fetch: false)
+
+    object
+    |> Ecto.Changeset.change(
+      data:
+        object.data
+        |> Map.delete("content")
+        |> Map.put("name", "A titled federated object")
+    )
+    |> Pleroma.Repo.update!()
+
+    response =
+      conn
+      |> put_req_header("accept", "application/atom+xml")
+      |> get(tag_feed_path(conn, :feed, "nocontent.atom"))
+      |> response(200)
+
+    xml = parse(response)
+    assert xpath(xml, ~x"//feed/entry/title/text()"s) == "A titled federated object"
   end
 
   test "gets a feed (RSS)", %{conn: conn} do

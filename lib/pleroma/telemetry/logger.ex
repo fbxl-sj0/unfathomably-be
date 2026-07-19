@@ -65,15 +65,18 @@ defmodule Pleroma.Telemetry.Logger do
     end)
   end
 
+  # Gun clients commonly stop with :normal or :shutdown when a request finishes
+  # or its caller cancels it. Keep those lifecycle events available for
+  # diagnostics without allowing them to obscure abnormal pool failures.
   def handle_event(
         [:pleroma, :connection_pool, :client, :dead],
         %{client_pid: client_pid, reason: reason},
         %{key: key},
-        _
+        _config
       )
       when reason in [:normal, :shutdown] do
     Logger.debug(fn ->
-      "Pool worker for #{key}: Client #{inspect(client_pid)} exited before releasing the connection with #{inspect(reason)}"
+      "Pool worker for #{key}: Client #{inspect(client_pid)} exited with #{inspect(reason)}"
     end)
   end
 

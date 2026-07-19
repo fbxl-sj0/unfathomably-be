@@ -1,0 +1,40 @@
+/*
+  Project: Unfathomably AdminFE
+  File: unfathomably-admin.css
+
+  Purpose:
+    Keep the legacy backend-maintenance AdminFE connected to the maintained
+    Unfathomably operations dashboard.
+
+  This file intentionally does not restyle the bundled AdminFE application.
+*/
+
+.unfathomably-admin-link {
+  position: fixed;
+  top: 14px;
+  right: 20px;
+  z-index: 2000;
+  border-radius: 4px;
+  background: #263445;
+  color: #fff;
+  font: 500 13px/1.2 sans-serif;
+  padding: 9px 12px;
+  text-decoration: none;
+}
+
+.unfathomably-admin-link:focus,
+.unfathomably-admin-link:hover {
+  background: #1f2d3d;
+  text-decoration: underline;
+}
+
+@media (max-width: 720px) {
+  .unfathomably-admin-link {
+    top: 10px;
+    right: 10px;
+    max-width: 180px;
+    text-align: center;
+  }
+}
+
+/* end of unfathomably-admin.css */

@@ -1114,7 +1114,7 @@ if poll_hubzilla_like_count "$HUBZILLA_TO_BE_MID" 'count >= 1'; then
     hubzilla_cron 8
     poll_hubzilla_like_count "$HUBZILLA_TO_BE_MID" 'count == 0' ||
         fail "Hubzilla did not see Unfathomably unlike on Hubzilla post"
-    HUBZILLA_LIKE_SUMMARY="* Unfathomably like and unlike on Hubzilla content"
+    HUBZILLA_LIKE_SUMMARY="* supported: Unfathomably like and unlike on Hubzilla content"
 else
     printf '%s\n' \
         "not_supported: stock Hubzilla did not materialize a remote ActivityPub Like in the local item table during the smoke window"
@@ -1137,7 +1137,7 @@ if HUBZILLA_VIEW_OF_BE_REPLY="$(try_poll_hubzilla_item_by_text "$BE_REPLY_TEXT")
     hubzilla_cron 10
     poll_hubzilla_item_deleted "$HUBZILLA_VIEW_OF_BE_REPLY_ID" \
         "Hubzilla did not mark the deleted Unfathomably reply as deleted"
-    BE_REPLY_SUMMARY="* Unfathomably reply and reply-delete on Hubzilla content"
+    BE_REPLY_SUMMARY="* supported: Unfathomably reply and reply Delete on Hubzilla content"
 else
     printf '%s\n' \
         "not_supported: stock Hubzilla accepted the remote reply activity but did not materialize an Unfathomably reply under Hubzilla-authored content in the smoke-observable item table"
@@ -1170,7 +1170,7 @@ if HUBZILLA_REPLY_ROW="$(try_poll_hubzilla_item_by_text "$HUBZILLA_REPLY_TEXT")"
     HUBZILLA_REPLY_MID="$(printf '%s\n' "$HUBZILLA_REPLY_ROW" | cut -f2)"
     hubzilla_cron 10
     resolve_be_context_status_id "$BE_TO_HUBZILLA_POST_ID" "$HUBZILLA_REPLY_MID" "$ALICE_TOKEN" "Unfathomably did not receive Hubzilla reply" >/dev/null
-    HUBZILLA_REPLY_SUMMARY="* Hubzilla reply and reply-delete on Unfathomably content"
+    HUBZILLA_REPLY_SUMMARY="* supported: Hubzilla reply and reply Delete on Unfathomably content"
 else
     printf '%s\n' \
         "not_supported: stock Hubzilla returned no stored reply for its authenticated item/update call against the imported Unfathomably object"
@@ -1189,7 +1189,7 @@ if hubzilla_like_path "$HUBZILLA_VIEW_OF_BE_POST_ID" like; then
         hubzilla_cron 10
         poll_be_status_count "$BE_TO_HUBZILLA_POST_ID" 'int(data.get("favourites_count") or 0) == 0' \
             "Unfathomably did not see Hubzilla unlike on Unfathomably post"
-        HUBZILLA_REMOTE_LIKE_SUMMARY="* Hubzilla like and unlike on Unfathomably content"
+        HUBZILLA_REMOTE_LIKE_SUMMARY="* supported: Hubzilla like and unlike on Unfathomably content"
     else
         HUBZILLA_REMOTE_LIKE_SUMMARY="* not_supported: stock Hubzilla accepted the local like action but did not federate Like to Unfathomably during the smoke window"
     fi
@@ -1206,7 +1206,7 @@ fi
 http_form DELETE "$BE_BASE/api/v1/statuses/$BE_TO_HUBZILLA_POST_ID" "$ALICE_TOKEN" 200 >/dev/null
 hubzilla_cron 12
 if try_poll_hubzilla_item_deleted "$HUBZILLA_VIEW_OF_BE_POST_ID"; then
-    HUBZILLA_DELETE_SUMMARY="* Unfathomably top-level post delete delivery into Hubzilla"
+    HUBZILLA_DELETE_SUMMARY="* supported: Unfathomably top-level post Delete delivery into Hubzilla"
 else
     printf '%s\n' \
         "not_supported: stock Hubzilla accepted the Delete inbox delivery but did not mark the imported Unfathomably top-level post deleted in the smoke-observable item table"
@@ -1230,16 +1230,16 @@ done
 cat <<EOF
 
 Hubzilla bidirectional smoke passed:
-* Unfathomably follow of a Hubzilla forum Group actor
-* Hubzilla follow of an Unfathomably group through Hubzilla's Connect helper
-* Hubzilla top-level group mention delivery into Unfathomably
+* supported: Unfathomably follow of a Hubzilla forum Group actor
+* supported: Hubzilla follow of an Unfathomably group through Hubzilla's Connect helper
+* supported: Hubzilla top-level group mention delivery into Unfathomably
 $HUBZILLA_LIKE_SUMMARY
 $BE_REPLY_SUMMARY
-* Unfathomably top-level group post delivery into Hubzilla
+* supported: Unfathomably top-level group post delivery into Hubzilla
 $HUBZILLA_REPLY_SUMMARY
 $HUBZILLA_REMOTE_LIKE_SUMMARY
 $HUBZILLA_DELETE_SUMMARY
-* Unfathomably unfollow cleanup of the Hubzilla forum actor
+* supported: Unfathomably unfollow cleanup of the Hubzilla forum actor
 * not_supported: Hubzilla unfollow from CLI/API was not available in the stock harness surface
 EOF
 

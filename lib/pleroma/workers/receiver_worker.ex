@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Workers.ReceiverWorker do
+  alias Pleroma.Config
   alias Pleroma.Web.Federation.Churn
   alias Pleroma.Web.Federator
   alias Pleroma.Workers.SignatureRetryWorker
@@ -57,9 +58,17 @@ defmodule Pleroma.Workers.ReceiverWorker do
   end
 
   @impl Oban.Worker
-  def timeout(%_{args: %{"timeout" => timeout}}), do: timeout
+  def timeout(%_{args: %{"timeout" => timeout}}) when is_integer(timeout) and timeout > 0,
+    do: timeout
 
-  def timeout(_job), do: :timer.seconds(30)
+  def timeout(_job), do: configured_timeout()
+
+  defp configured_timeout do
+    case Config.get([__MODULE__, :timeout_ms], :timer.seconds(90)) do
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _ -> :timer.seconds(90)
+    end
+  end
 
   defp process_errors({:error, {:transmogrifier, {:error, reason}}}),
     do: process_errors({:error, reason})
@@ -89,17 +98,17 @@ defmodule Pleroma.Workers.ReceiverWorker do
       {:error, {:user_active, false} = reason} ->
         {:cancel, reason}
 
-      {:error, {:validate, {:error, _changeset} = reason}} ->
-        {:cancel, reason}
+      {:error, {:validate, {:error, %Ecto.Changeset{} = changeset}}} ->
+        process_validation_changeset(changeset)
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        {:cancel, {:error, changeset}}
+        process_validation_changeset(changeset)
 
       {:error, :origin_containment_failed} ->
         {:cancel, :origin_containment_failed}
 
       {:error, :already_present} ->
-        {:cancel, :already_present}
+        {:ok, :already_present}
 
       {:error, {:http, status}} when status in [400, 401, 403, 404, 405, 406, 410, 501] ->
         {:cancel, {:http, status}}
@@ -149,5 +158,21 @@ defmodule Pleroma.Workers.ReceiverWorker do
       e ->
         {:error, e}
     end
+  end
+
+  defp process_validation_changeset(%Ecto.Changeset{} = changeset) do
+    if duplicate_like_changeset?(changeset) do
+      {:ok, :already_present}
+    else
+      {:cancel, {:error, changeset}}
+    end
+  end
+
+  defp duplicate_like_changeset?(%Ecto.Changeset{errors: errors}) do
+    MapSet.new(errors) ==
+      MapSet.new([
+        actor: {"already liked this object", []},
+        object: {"already liked by this actor", []}
+      ])
   end
 end

@@ -219,13 +219,17 @@ defmodule Pleroma.Web.MastodonAPI.WebsocketPlug do
   defp eventsource_loop(conn, state) do
     receive do
       {:render_with_user, view, template, item, topic} ->
-        user = %User{} = User.get_cached_by_ap_id(state.user.ap_id)
+        case User.get_cached_by_ap_id(state.user.ap_id) do
+          %User{is_active: true} = user ->
+            if Streamer.filtered_by_user?(user, item) do
+              eventsource_loop(conn, %{state | user: user})
+            else
+              text = view.render(template, item, user, topic)
+              eventsource_send(conn, text, %{state | user: user})
+            end
 
-        if Streamer.filtered_by_user?(user, item) do
-          eventsource_loop(conn, %{state | user: user})
-        else
-          text = view.render(template, item, user, topic)
-          eventsource_send(conn, text, %{state | user: user})
+          _ ->
+            conn
         end
 
       {:text, text} ->

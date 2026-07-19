@@ -66,6 +66,71 @@ defmodule Pleroma.GroupMembership do
     upsert(group, account, %{role: "owner", state: "active"})
   end
 
+  @doc """
+  Checks whether an incoming ActivityPub Follow may create a group membership.
+
+  Group bans are local policy and must not be overwritten merely because the
+  banned account sends another Follow. Person actors and remote groups do not
+  use this table, so validation is a no-op for them.
+  """
+  def validate_federated_follow(%User{} = group, %User{} = account) do
+    if local_group?(group) and banned?(group, account) do
+      {:error, :banned}
+    else
+      :ok
+    end
+  end
+
+  @doc """
+  Mirrors an ActivityPub Follow into the explicit local group membership table.
+
+  The generic following relationship remains the federated compatibility
+  layer. This function records the policy state needed by group APIs while
+  preserving manager roles and refusing to replace a ban.
+  """
+  def sync_federated_follow(%User{} = group, %User{} = account, state)
+      when state in ["active", "pending"] do
+    if local_group?(group) do
+      case get(group, account) do
+        %__MODULE__{state: "banned"} ->
+          {:error, :banned}
+
+        %__MODULE__{role: role} when role in @manager_roles ->
+          upsert(group, account, %{role: role, state: "active"})
+
+        _membership ->
+          upsert(group, account, %{role: "user", state: state})
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  def sync_federated_follow(%User{}, %User{}, _state), do: {:error, :invalid_membership_state}
+
+  @doc """
+  Removes the ordinary membership mirrored from an ActivityPub Follow.
+
+  Repeated Undo or Reject deliveries are harmless. Manager roles and bans are
+  explicit local policy records and therefore survive a remote unfollow.
+  """
+  def sync_federated_unfollow(%User{} = group, %User{} = account) do
+    if local_group?(group) do
+      case get(group, account) do
+        %__MODULE__{role: "user", state: state} when state in ["active", "pending"] ->
+          delete_membership(group, account)
+
+        %__MODULE__{} = membership ->
+          {:ok, membership}
+
+        nil ->
+          {:ok, nil}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
   def join(%User{} = account, %User{} = group) do
     cond do
       not local_group?(group) ->
@@ -165,6 +230,7 @@ defmodule Pleroma.GroupMembership do
       |> Enum.reject(&protected_from?(actor, group, &1))
       |> Enum.map(fn account ->
         CommonAPI.unfollow(account, group)
+        maybe_federate_group_block(group, account)
         {:ok, membership} = upsert(group, account, %{role: "user", state: "banned"})
         membership
       end)
@@ -174,7 +240,11 @@ defmodule Pleroma.GroupMembership do
 
   def unban(%User{} = actor, %User{} = group, accounts) when is_list(accounts) do
     with :ok <- require_manager(actor, group) do
-      Enum.each(accounts, &delete_membership(group, &1))
+      Enum.each(accounts, fn account ->
+        delete_membership(group, account)
+        maybe_federate_group_unblock(group, account)
+      end)
+
       :ok
     end
   end
@@ -376,6 +446,37 @@ defmodule Pleroma.GroupMembership do
   end
 
   defp maybe_notify_join_accept(_group, _account, _join_activity, _state), do: :ok
+
+  defp maybe_federate_group_block(%User{} = group, %User{} = account) do
+    case CommonAPI.block(group, account) do
+      {:ok, _activity} ->
+        :ok
+
+      {:error, error} ->
+        Logger.warning(
+          "Could not federate local group block #{group.ap_id} -> #{account.ap_id}: #{inspect(error)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_federate_group_unblock(%User{} = group, %User{} = account) do
+    case CommonAPI.unblock(group, account) do
+      {:ok, _activity} ->
+        :ok
+
+      {:error, :not_blocking} ->
+        :ok
+
+      {:error, error} ->
+        Logger.warning(
+          "Could not federate local group unblock #{group.ap_id} -> #{account.ap_id}: #{inspect(error)}"
+        )
+
+        :ok
+    end
+  end
 end
 
 # end of lib/pleroma/group_membership.ex

@@ -9,8 +9,11 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AudioHandlingTest do
   alias Pleroma.Activity
   alias Pleroma.Object
   alias Pleroma.Web.ActivityPub.Transmogrifier
+  alias Pleroma.Web.CommonAPI
 
   import Pleroma.Factory
+
+  require Pleroma.Constants
 
   test "it works for incoming listens" do
     _user = insert(:user, ap_id: "http://mastodon.example.org/users/admin")
@@ -83,5 +86,61 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AudioHandlingTest do
                ]
              }
            ]
+  end
+
+  test "it accepts a Funkwhale Listen that references a Track" do
+    actor = "https://audio.example/users/listener"
+    track_ap_id = "https://audio.example/federation/music/tracks/123"
+    _user = insert(:user, ap_id: actor)
+
+    {:ok, _track} =
+      Object.create(%{
+        "actor" => "https://audio.example/federation/actors/service",
+        "id" => track_ap_id,
+        "name" => "Referenced Funkwhale track",
+        "to" => [Pleroma.Constants.as_public()],
+        "type" => "Audio"
+      })
+
+    data = %{
+      "actor" => actor,
+      "cc" => [],
+      "id" => "https://audio.example/users/listener/listenings/456",
+      "object" => track_ap_id,
+      "to" => [Pleroma.Constants.as_public()],
+      "type" => "Listen"
+    }
+
+    assert {:ok, %Activity{local: false} = activity} =
+             Transmogrifier.handle_incoming(data)
+
+    assert activity.data["object"] == track_ap_id
+    assert Object.normalize(activity, fetch: false).data["name"] == "Referenced Funkwhale track"
+  end
+
+  test "it prepares a federated-track scrobble as a Funkwhale Track Listen" do
+    user = insert(:user)
+    track_ap_id = "https://audio.example/federation/music/tracks/789"
+
+    {:ok, _track} =
+      Object.create(%{
+        "actor" => "https://audio.example/federation/actors/service",
+        "id" => track_ap_id,
+        "name" => "Outgoing Funkwhale track",
+        "to" => [Pleroma.Constants.as_public()],
+        "type" => "Audio"
+      })
+
+    assert {:ok, activity} =
+             CommonAPI.listen(user, %{
+               title: "Outgoing Funkwhale track",
+               track_ap_id: track_ap_id
+             })
+
+    assert activity.data["object"] == track_ap_id
+
+    assert {:ok, outgoing} = Transmogrifier.prepare_outgoing(activity.data)
+    assert outgoing["object"] == %{"id" => track_ap_id, "type" => "Track"}
+    refute Map.has_key?(outgoing, "_pleroma_listen_track_ap_id")
   end
 end

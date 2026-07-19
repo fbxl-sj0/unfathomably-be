@@ -7,9 +7,12 @@ defmodule Pleroma.Web.PleromaAPI.ScrobbleControllerTest do
 
   alias Pleroma.Web.CommonAPI
 
+  require Pleroma.Constants
+  alias Pleroma.Object
+
   describe "POST /api/v1/pleroma/scrobble" do
     test "works correctly" do
-      %{conn: conn} = oauth_access(["write:scrobbles"])
+      %{conn: conn} = oauth_access(["write"])
 
       conn =
         conn
@@ -24,11 +27,38 @@ defmodule Pleroma.Web.PleromaAPI.ScrobbleControllerTest do
 
       assert %{"title" => "lain radio episode 1"} = json_response_and_validate_schema(conn, 200)
     end
+
+    test "can reference an existing federated Track" do
+      %{conn: conn} = oauth_access(["write"])
+      track_ap_id = "https://audio.example/federation/music/tracks/123"
+
+      {:ok, _track} =
+        Object.create(%{
+          "actor" => "https://audio.example/federation/actors/service",
+          "id" => track_ap_id,
+          "name" => "Funkwhale API track",
+          "to" => [Pleroma.Constants.as_public()],
+          "type" => "Audio"
+        })
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/api/v1/pleroma/scrobble", %{
+          "title" => "Funkwhale API track",
+          "track_ap_id" => track_ap_id
+        })
+
+      assert %{
+               "externalLink" => ^track_ap_id,
+               "title" => "Funkwhale API track"
+             } = json_response_and_validate_schema(conn, 200)
+    end
   end
 
   describe "GET /api/v1/pleroma/accounts/:id/scrobbles" do
     test "works correctly" do
-      %{user: user, conn: conn} = oauth_access(["read:scrobbles"])
+      %{user: user, conn: conn} = oauth_access(["read"])
 
       {:ok, _activity} =
         CommonAPI.listen(user, %{

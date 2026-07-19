@@ -124,6 +124,31 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
     end
   end
 
+  test "cancels fetches whose validated author is deactivated" do
+    actor = insert(:user, local: false, is_active: false)
+
+    changeset =
+      {%{}, %{actor: :string}}
+      |> Ecto.Changeset.change(actor: actor.ap_id)
+      |> Ecto.Changeset.add_error(:actor, "user is deactivated")
+
+    result =
+      {:error,
+       {:transmogrifier, {:error, {:validate, {:error, changeset}}}}}
+
+    with_mock Fetcher, fetch_object_from_id: fn _, _ -> result end do
+      assert {:cancel, {:remote_actor_deactivated, actor_id}} =
+               RemoteFetcherWorker.perform(%Oban.Job{
+                 args: %{
+                   "op" => "fetch_remote",
+                   "id" => "https://remote.example/objects/deactivated-author"
+                 }
+               })
+
+      assert actor_id == actor.ap_id
+    end
+  end
+
   test "uses the thread resolver for thread-aware fetch jobs" do
     with_mock RemoteReplies,
       fetch_thread_from_reply: fn id, opts ->
@@ -223,6 +248,22 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
 
     assert %Object{data: %{"inReplyTo" => ^root_id}} = Object.get_by_ap_id(parent_id)
     assert %Object{data: %{"inReplyTo" => ^parent_id}} = Object.get_by_ap_id(leaf_id)
+  end
+
+  test "accepts a bare object from a successful thread-aware fetch" do
+    job = %Oban.Job{
+      args: %{
+        "op" => "fetch_remote",
+        "id" => "https://remote.example/objects/bare-result",
+        "thread" => true,
+        "depth" => 2
+      }
+    }
+
+    with_mock RemoteReplies,
+      fetch_thread_from_reply: fn _id, _depth -> %Object{} end do
+      assert :ok = RemoteFetcherWorker.perform(job)
+    end
   end
 
   defp activitypub_json(data) do

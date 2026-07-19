@@ -36,6 +36,15 @@ defmodule Pleroma.Web.StaticFE.StaticFEControllerTest do
       assert html_response(conn, 200) =~ user.nickname
     end
 
+    test "remote compatibility status route falls back to the frontend", %{conn: conn} do
+      user = insert(:user, local: false, nickname: "remote@social.example")
+      {:ok, activity} = CommonAPI.post(user, %{status: "Remote post"})
+
+      conn = get(conn, "/users/#{user.nickname}/statuses/#{activity.id}")
+
+      assert html_response(conn, 200) =~ "</html>"
+    end
+
     test "profile app subroutes fall back to the frontend app", %{conn: conn, user: user} do
       for tab <- ~w(with_replies followers following media favorites pins) do
         conn = get(conn, "/@#{user.nickname}/#{tab}")

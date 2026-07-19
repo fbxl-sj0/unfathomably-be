@@ -57,7 +57,7 @@ defmodule Pleroma.Upload.Filter.AnalyzeMetadata do
       with {:ok, blurhash} <- :eblurhash.magick(file) do
         blurhash
       else
-        _ -> nil
+        _ -> get_blurhash_with_commands(file)
       end
     rescue
       e in ErlangError ->
@@ -68,6 +68,66 @@ defmodule Pleroma.Upload.Filter.AnalyzeMetadata do
         Logger.warning("#{__MODULE__}: blurhash metadata failed: #{inspect({kind, reason})}")
         nil
     end
+  end
+
+  # eblurhash shells out with POSIX single-quote escaping. That is correct on
+  # Unix, but cmd.exe treats those quotes as filename characters. System.cmd/3
+  # keeps each filename as a separate argument and also handles paths with
+  # spaces on Windows.
+  defp get_blurhash_with_commands(file) do
+    with convert when is_binary(convert) <-
+           System.find_executable("magick") || System.find_executable("convert"),
+         identify when is_binary(identify) <- System.find_executable("identify"),
+         encoder when is_binary(encoder) <- blurhash_executable() do
+      thumbnail =
+        Path.join(
+          System.tmp_dir!(),
+          "unfathomably-blurhash-#{System.unique_integer([:positive])}.gif"
+        )
+
+      try do
+        with {_output, 0} <-
+               System.cmd(convert, [
+                 file,
+                 "-quantize",
+                 "YUV",
+                 "+dither",
+                 "-colors",
+                 "256",
+                 "-thumbnail",
+                 "20x20",
+                 thumbnail
+               ]),
+             {dimensions, 0} <- System.cmd(identify, ["-format", "%w %h", thumbnail]),
+             [width, height] <-
+               dimensions |> String.split() |> Enum.map(&String.to_integer/1),
+             maximum when maximum > 0 <- max(width, height),
+             x_components <- max(round(width * 5 / maximum), 1),
+             y_components <- max(round(height * 5 / maximum), 1),
+             {blurhash, 0} <-
+               System.cmd(encoder, [
+                 Integer.to_string(x_components),
+                 Integer.to_string(y_components),
+                 thumbnail
+               ]),
+             blurhash when blurhash != "" <- String.trim(blurhash) do
+          blurhash
+        else
+          _ -> nil
+        end
+      after
+        File.rm(thumbnail)
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp blurhash_executable do
+    base = :eblurhash |> :code.priv_dir() |> List.to_string() |> Path.join("blurhash")
+
+    [base, base <> ".exe"]
+    |> Enum.find(&File.regular?/1)
   end
 
   defp media_dimensions(file) do

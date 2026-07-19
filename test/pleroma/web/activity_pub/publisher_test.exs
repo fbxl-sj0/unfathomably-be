@@ -12,7 +12,9 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
 
   alias Pleroma.Activity
   alias Pleroma.Instances
+  alias Pleroma.Instances.Instance
   alias Pleroma.Object
+  alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Publisher
   alias Pleroma.Web.CommonAPI
 
@@ -139,6 +141,75 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
   end
 
   describe "publish_one/1" do
+    test "uses an object ID for Delete delivery to Ibis" do
+      inbox = "https://ibis.example/inbox"
+      parent = self()
+
+      insert(:instance,
+        host: "ibis.example",
+        metadata: %Instance.Pleroma.Instances.Metadata{
+          software_name: "ibis",
+          software_version: "0.3.3"
+        },
+        metadata_updated_at: NaiveDateTime.utc_now()
+      )
+
+      mock(fn %{method: :post, url: ^inbox, body: body} ->
+        send(parent, {:ibis_delete_body, Jason.decode!(body)})
+        {:ok, %Tesla.Env{status: 200, body: "accepted"}}
+      end)
+
+      actor = insert(:user)
+      object_id = "https://local.example/objects/deleted-note"
+
+      json =
+        Jason.encode!(%{
+          "@context" => "https://www.w3.org/ns/activitystreams",
+          "actor" => actor.ap_id,
+          "id" => "#{actor.ap_id}/activities/delete-note",
+          "object" => %{
+            "deleted" => "2026-07-18T00:00:00Z",
+            "formerType" => "Note",
+            "id" => object_id,
+            "type" => "Tombstone"
+          },
+          "to" => ["https://ibis.example/"],
+          "type" => "Delete"
+        })
+
+      assert {:ok, %{status: 200}} =
+               Publisher.publish_one(%{inbox: inbox, json: json, actor: actor, id: 1})
+
+      assert_receive {:ibis_delete_body, %{"object" => ^object_id, "type" => "Delete"}}
+    end
+
+    test "retries rejected legacy delivery with an RFC 9421 signature" do
+      actor = insert(:user)
+      inbox = "http://rfc9421.site/users/alice/inbox"
+      parent = self()
+
+      mock(fn %{method: :post, url: ^inbox, headers: headers} ->
+        if Enum.any?(headers, fn {name, _value} ->
+             String.downcase(to_string(name)) == "signature-input"
+           end) do
+          send(parent, {:rfc9421_headers, headers})
+          {:ok, %Tesla.Env{status: 200, body: "accepted"}}
+        else
+          {:ok, %Tesla.Env{status: 401, body: "use RFC 9421"}}
+        end
+      end)
+
+      assert {:ok, %{status: 200}} =
+               Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 1})
+
+      assert_receive {:rfc9421_headers, headers}
+
+      assert Enum.any?(headers, fn {name, value} ->
+               String.downcase(to_string(name)) == "content-digest" and
+                 String.starts_with?(value, "sha-256=:")
+             end)
+    end
+
     test "publish to url with with different ports" do
       inbox80 = "http://42.site/users/nick1/inbox"
       inbox42 = "http://42.site:42/users/nick1/inbox"
@@ -172,7 +243,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                })
     end
 
-    test_with_mock "calls `Instances.set_reachable` on successful federation if `unreachable_since` is not specified",
+    test_with_mock "records successful federation if `unreachable_since` is not specified",
                    Instances,
                    [:passthrough],
                    [] do
@@ -180,10 +251,10 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       inbox = "http://200.site/users/nick1/inbox"
 
       assert {:ok, _} = Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 1})
-      assert called(Instances.set_reachable(inbox))
+      assert called(Instances.record_delivery_success(inbox, source: "publisher"))
     end
 
-    test_with_mock "calls `Instances.set_reachable` on successful federation if `unreachable_since` is set",
+    test_with_mock "records successful federation if `unreachable_since` is set",
                    Instances,
                    [:passthrough],
                    [] do
@@ -199,7 +270,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                  unreachable_since: NaiveDateTime.utc_now()
                })
 
-      assert called(Instances.set_reachable(inbox))
+      assert called(Instances.record_delivery_success(inbox, source: "publisher"))
     end
 
     test_with_mock "does NOT call `Instances.set_reachable` on successful federation if `unreachable_since` is nil",
@@ -336,7 +407,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       assert called(Instances.set_unreachable(inbox))
     end
 
-    test_with_mock "it calls `Instances.set_unreachable` on target inbox on request error of any kind",
+    test_with_mock "records a target inbox request error",
                    Instances,
                    [:passthrough],
                    [] do
@@ -348,7 +419,13 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                         Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 1})
              end) =~ "connrefused"
 
-      assert called(Instances.set_unreachable(inbox))
+      assert called(
+               Instances.record_delivery_failure(
+                 inbox,
+                 {:error, :connrefused},
+                 source: "publisher"
+               )
+             )
     end
 
     test_with_mock "does NOT call `Instances.set_unreachable` if target is reachable",
@@ -386,6 +463,96 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
   end
 
   describe "publish/2" do
+    test_with_mock "uses a prepared native resource audience for inbox selection",
+                   Pleroma.Web.Federator.Publisher,
+                   [:passthrough],
+                   [] do
+      resource_url = "https://manyfold.example/models/model-1"
+      model_actor = "https://manyfold.example/federation/actors/model-1"
+      creator_actor = "https://manyfold.example/federation/actors/creator-1"
+      note_id = "https://manyfold.example/federation/published/comments/model-1"
+
+      model =
+        insert(:user,
+          local: false,
+          ap_id: model_actor,
+          uri: resource_url,
+          inbox: model_actor <> "/inbox",
+          actor_type: "Service",
+          actor_extensions: %{"f3di:concreteType" => "3DModel"}
+        )
+
+      creator =
+        insert(:user,
+          local: false,
+          ap_id: creator_actor,
+          inbox: creator_actor <> "/inbox"
+        )
+
+      insert(:note,
+        user: creator,
+        data: %{
+          "id" => note_id,
+          "actor" => creator_actor,
+          "attributedTo" => creator_actor,
+          "context" => resource_url,
+          "url" => resource_url
+        }
+      )
+
+      follower =
+        insert(:user,
+          local: false,
+          inbox: "https://manyfold.example/federation/actors/follower/inbox"
+        )
+
+      actor = insert(:user)
+      {:ok, _follower, actor} = User.follow(follower, actor)
+
+      like = %Activity{
+        actor: actor.ap_id,
+        recipients: [creator_actor, actor.follower_address, @as_public],
+        data: %{
+          "id" => Pleroma.Web.ActivityPub.Utils.generate_activity_id(),
+          "type" => "Like",
+          "actor" => actor.ap_id,
+          "object" => note_id,
+          "to" => [creator_actor, actor.follower_address],
+          "cc" => [@as_public]
+        }
+      }
+
+      assert Publisher.publish(actor, like) == :ok
+
+      assert called(
+               Pleroma.Web.Federator.Publisher.enqueue_one(
+                 Publisher,
+                 %{
+                   inbox: model.inbox,
+                   actor_id: actor.id,
+                   id: like.data["id"]
+                 },
+                 :_
+               )
+             )
+
+      refute called(
+               Pleroma.Web.Federator.Publisher.enqueue_one(
+                 Publisher,
+                 %{inbox: creator.inbox, actor_id: actor.id, id: like.data["id"]},
+                 :_
+               )
+             )
+
+      refute called(
+               Pleroma.Web.Federator.Publisher.enqueue_one(
+                 Publisher,
+                 %{inbox: follower.inbox, actor_id: actor.id, id: like.data["id"]},
+                 :_
+               )
+             )
+    end
+
     test_with_mock "doesn't publish a non-public activity to quarantined instances.",
                    Pleroma.Web.Federator.Publisher,
                    [:passthrough],

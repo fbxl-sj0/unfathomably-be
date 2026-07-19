@@ -29,6 +29,20 @@ defmodule Pleroma.Web.MastodonAPI.ListControllerTest do
              |> json_response_and_validate_schema(:ok)
   end
 
+  test "creating a list accepts replies policy with cast body fields" do
+    %{conn: conn} = oauth_access(["write:lists"])
+
+    assert %{"title" => "cuties", "exclusive" => false} =
+             conn
+             |> put_req_header("content-type", "application/json")
+             |> post("/api/v1/lists", %{
+               "title" => "cuties",
+               "exclusive" => false,
+               "replies_policy" => "list"
+             })
+             |> json_response_and_validate_schema(:ok)
+  end
+
   test "renders error for invalid params" do
     %{conn: conn} = oauth_access(["write:lists"])
 

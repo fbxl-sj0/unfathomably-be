@@ -1,0 +1,65 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://purl.archive.org/miscellany",
+    {
+      "f3di": "http://purl.org/f3di/ns#",
+      "spdx": "http://spdx.org/rdf/terms#"
+    }
+  ],
+  "id": "https://manyfold.example/models/model-123",
+  "type": "Service",
+  "preferredUsername": "model-123",
+  "name": "Calibration Cube",
+  "summary": "A small calibration model.",
+  "content": "Print at 0.2 mm layer height.",
+  "f3di:concreteType": "3DModel",
+  "attributedTo": {
+    "@id": "https://manyfold.example/creators/example-maker",
+    "type": "Person",
+    "name": "Example Maker",
+    "f3di:concreteType": "Creator"
+  },
+  "context": [
+    {
+      "@id": "https://manyfold.example/collections/calibration",
+      "type": "Group",
+      "name": "Calibration",
+      "f3di:concreteType": "Collection"
+    }
+  ],
+  "attachment": [
+    {
+      "type": "Link",
+      "href": "https://example.org/calibration-cube",
+      "name": "Project page"
+    }
+  ],
+  "spdx:license": {
+    "@id": "http://spdx.org/licenses/MIT",
+    "spdx:licenseId": "MIT"
+  },
+  "preview": {
+    "type": "Image",
+    "mediaType": "image/png",
+    "url": "https://manyfold.example/models/model-123/preview.png"
+  },
+  "likes": {
+    "id": "https://manyfold.example/models/model-123#likes",
+    "type": "Collection",
+    "totalItems": 2
+  },
+  "sensitive": false,
+  "indexable": true,
+  "discoverable": true,
+  "inbox": "https://manyfold.example/models/model-123/inbox",
+  "outbox": "https://manyfold.example/models/model-123/outbox",
+  "followers": "https://manyfold.example/models/model-123/followers",
+  "following": "https://manyfold.example/models/model-123/following",
+  "url": "https://manyfold.example/models/model-123",
+  "publicKey": {
+    "id": "https://manyfold.example/models/model-123#main-key",
+    "owner": "https://manyfold.example/models/model-123",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuFixtureOnlyNotForSignatures\n-----END PUBLIC KEY-----\n"
+  }
+}

@@ -28,6 +28,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
     field(:context, :string)
     field(:content, :string)
     field(:_misskey_reaction, :string)
+    field(:_pleroma_reaction_type, :string)
   end
 
   def cast_and_validate(data) do
@@ -129,6 +130,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
   defp validate_data(data_cng) do
     data_cng
     |> validate_inclusion(:type, ["EmojiReact"])
+    |> validate_inclusion(:_pleroma_reaction_type, ["Dislike"], allow_nil: true)
     |> validate_required([:id, :type, :object, :actor, :context, :to, :cc, :content])
     |> CommonValidations.validate_actor_presence()
     |> CommonValidations.validate_object_presence()

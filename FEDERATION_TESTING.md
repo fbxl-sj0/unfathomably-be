@@ -17,7 +17,36 @@ classification, source item normalization, and local group creation.
 
 `build_scripts/unfathomably-wide-federation-smoke.sh`
 
-Runs the broad group/forum/channel compatibility lane for PeerTube, NodeBB, Discourse, FediGroups, Hubzilla, and Friendica. The script records a full bidirectional capability matrix for every platform row. Public-target checks can prove local discovery, follow, hydration, like/unlike, optional reply/delete, and follow cleanup; reverse-direction group follow, remote posting, remote comments, remote reactions, remote deletes, and modlog checks must either pass through a local peer/adapter or be recorded as unsupported/not_tested.
+Runs the broad compatibility lane across 25 disposable peer adapters: Discourse,
+FediGroups, Friendica, Funkwhale, Gancio, GoToSocial, Hubzilla, Iceshrimp,
+Lemmy, Mastodon, Mbin, Misskey, Mitra, Mobilizon, NodeBB, Owncast, PeerTube,
+PieFed, Pixelfed, Postmarks, Sharkey, snac, wafrn, WordPress, and WriteFreely.
+The default local list is the 11 newest adapters; set
+`FEDERATION_WIDE_LOCAL_PLATFORMS` or use `--local-platforms` to select any
+combination from the complete set. The runner builds the checked-in
+`unfathomably-elixir-smoke:otp28` image automatically before local peers run,
+so a separate unpublished image-preparation step is not required. A custom
+prebuilt image can still be selected with `UNFATHOMABLY_SMOKE_IMAGE` or
+`SMOKE_IMAGE`.
+
+Each peer records its supported and explicitly unsupported behavior in the
+same capability matrix. Public-target checks can prove local discovery,
+follow, hydration, like/unlike, optional reply/delete, and follow cleanup;
+reverse-direction group follow, remote posting, remote comments, remote
+reactions, remote deletes, moderation, and modlog checks must either pass
+through a local peer adapter or be recorded as unsupported/not_tested.
+
+`build_scripts/unfathomably-federation-safety-smoke.sh`
+
+Runs the shared moderation and defederation safety contract before the expensive
+platform matrix. This lane proves that known local defederation policy is
+visible through `/api/v1/federation/status`, that account and source follows
+return a clear policy reason instead of a generic failure, that local group
+bans expose `blocked_by`, `can_follow`, `can_post`, and a moderation message to
+clients, that local group bans federate an ActivityPub `Block`, and that the
+frontend renders disabled blocked/federation controls for groups and feeds.
+The peer-specific Docker lanes still prove platform behavior; this shared lane
+keeps the safety UX contract consistent across all of them.
 
 `build_scripts/unfathomably-nodebb-smoke.sh`
 
@@ -35,10 +64,13 @@ remote deletes in the smoke path.
 Runs a local stock PeerTube peer against a disposable HTTPS-advertised
 Unfathomably instance. The lane follows PeerTube's native channel/video model:
 PeerTube channels are ActivityPub `Group` actors, uploaded videos are resolved
-by Unfathomably, likes/unlikes federate back to PeerTube, comments federate in
-both directions, comment deletes are cleaned up, and PeerTube video deletes are
-observed by Unfathomably. The harness records stock PeerTube limitations around
-non-video text group-post import rather than patching PeerTube.
+by Unfathomably, likes/unlikes and dislikes/undislikes federate back to
+PeerTube, comments federate in both directions, comment deletes are cleaned up,
+and PeerTube video deletes are observed by Unfathomably. Stock PeerTube keeps a
+local user's rate on a local video in its aggregate video rate collection and
+broadcasts a `Video` update rather than an individual `Dislike` or
+`Undo Dislike`. The harness records that reverse per-user limitation, along
+with non-video text group-post import, rather than patching PeerTube.
 
 `build_scripts/unfathomably-friendica-smoke.sh`
 
@@ -68,6 +100,61 @@ Unfathomably ActivityPub objects, Hubzilla likes of imported Unfathomably
 content do not federate back during the smoke window, remote Deletes are
 accepted but do not mark imported Unfathomably rows deleted, and no stock
 CLI/API unfollow helper was available for the reverse Hubzilla connection.
+
+`build_scripts/unfathomably-gotosocial-smoke.sh`
+
+Runs a local stock GoToSocial peer against a disposable Unfathomably instance.
+The lane follows GoToSocial's native account-style federation model: accounts
+resolve and follow in both directions, posts and replies flow both ways,
+likes/unlikes are observed by the origin server, top-level deletes are checked
+from both sides, and unfollow cleanup runs at the end. The harness also probes
+whether stock GoToSocial can import an Unfathomably `Group` actor as a
+followable account. If it cannot, the result is recorded as an explicit stock
+limitation instead of being confused with untested group coverage.
+
+`build_scripts/unfathomably-misskey-smoke.sh`
+
+Runs a local stock Misskey peer against a disposable Unfathomably instance. The
+lane follows Misskey's native account-and-note model: accounts resolve and
+follow in both directions, notes and replies flow both ways, favourites,
+emoji reactions, unreactions, top-level deletes, and unfollow cleanup are
+checked from both sides. It also covers Misskey-specific federation behavior:
+`_misskey_summary` profile text imports, `_misskey_reaction` emoji reactions,
+and `_misskey_quote` / `quoteUrl` quote notes must surface through the
+Unfathomably API fields consumed by the frontend. Stock Misskey does not expose
+forum-style ActivityPub `Group` actor behavior, so that family is recorded as
+not supported rather than treated as a failed group lane.
+
+`build_scripts/unfathomably-pixelfed-smoke.sh`
+
+Runs a local stock Pixelfed peer built from the official Pixelfed source
+Dockerfile against a disposable Unfathomably instance. The lane follows
+Pixelfed's photo-oriented account model: accounts resolve and follow in both
+directions, image posts flow both ways, remote media attachments remain visible
+through each Mastodon-compatible API, replies flow both ways, favourites are
+observed by the origin server, local unfavourite cleanup is checked,
+Pixelfed-origin deletes are observed by Unfathomably, and unfollow cleanup runs
+at the end. Stock Pixelfed may accept remote Undo Like and Delete inbox
+deliveries without decrementing the remote status favourite counter or hiding
+imported Unfathomably statuses, so those edges are recorded as explicit
+capability probes instead of being treated as silent coverage. The harness also
+probes whether stock Pixelfed can import an Unfathomably `Group` actor as a
+followable account and records the result explicitly.
+
+`build_scripts/unfathomably-funkwhale-smoke.sh`
+
+Runs a local stock Funkwhale peer against a disposable HTTPS-advertised
+Unfathomably instance. The lane follows Funkwhale's native music model:
+Funkwhale boots with PostgreSQL, Redis, Celery, and a protected-media nginx
+proxy, publishes a public library and tagged audio upload, and Unfathomably
+resolves the resulting ActivityPub audio object. Favourites and unfavourites
+are checked locally and as outbound Funkwhale inbox deliveries, while stock
+Funkwhale remote `TrackFavorite` materialization is reported explicitly as a
+capability probe. Funkwhale audio delete behavior is likewise reported as a
+capability probe because stock upload deletion can leave the ActivityPub track
+object visible. Funkwhale's stock behavior around generic account follows and
+forum-style `Group` actors is reported explicitly instead of being treated as
+silent group coverage.
 
 ## What this is meant to catch
 
@@ -103,7 +190,7 @@ the platform families we care about most:
 
 * audio: Funkwhale
 * longform: WordPress, WriteFreely
-* microblog: GoToSocial, snac, Misskey, Sharkey, Iceshrimp, Mitra, wafrn
+* microblog: snac, Misskey, Sharkey, Iceshrimp, Mitra, wafrn
 * photo: Pixelfed
 * video: PeerTube, Owncast
 * books: BookWyrm
@@ -137,14 +224,14 @@ NodeBB lanes where the peer platform exposes the needed capability:
   passed.
 - Both sides unfollow at cleanup.
 
-Example remote run on a smoke host:
+Example remote run on the `.99` smoke host:
 
 ```sh
 docker rm -f uf-discourse-330a-discourse-proxy uf-discourse-330a-discourse \
   uf-discourse-330a-be-proxy uf-discourse-330a-be \
   uf-discourse-330a-be-a uf-discourse-330a-be-b uf-discourse-330a-be-db >/dev/null 2>&1 || true
 docker network rm uf-discourse-330a-net >/dev/null 2>&1 || true
-cd /srv/unfathomably-smoke/work/pleroma
+cd /home/jkfirth/unfathomably-smoke/work/pleroma
 SMOKE_PREFIX=uf-discourse-330a SMOKE_POLL_ATTEMPTS=120 \
   bash build_scripts/unfathomably-discourse-smoke.sh
 ```
@@ -181,5 +268,47 @@ inbox deliveries without exposing matching item-table state, and the stock
 authenticated API cannot drive every browser-visible operation for imported
 ActivityPub content. Those cases are reported as `not_supported`, not as
 Unfathomably failures.
+
+## Peer-specific feature audit
+
+This table is the selection record for the stock peers in the automated smoke
+matrix. A feature is promoted into Unfathomably only when it has a useful
+client-facing meaning outside the originating server. Stock limitations remain
+explicit adapter results rather than being hidden as generic success.
+
+| Peer | Distinctive federation surface | Acceptance decision |
+| --- | --- | --- |
+| Discourse | Category actors, topics, and category-targeted replies | Keep the category/topic model in the adapter. Unfathomably renders the category as a group and tests topics, replies, reactions, deletes, and follow cleanup in both supported directions. |
+| FediGroups | Hashtag-driven group bot that announces matching posts | Keep bot-specific commands in the adapter. Test group discovery, mention/hashtag announcement, follow cleanup, and every upstream unsupported operation explicitly. |
+| Friendica | Forum actors plus native `Dislike` and `Undo Dislike` | Promote dislikes to a first-class status action. Test counts, attribution, undo, forum posts, replies, deletes, and follows in both directions. |
+| Funkwhale | `Library`, `Track`, `Audio`, `Listen`, and track favorites | Promote federated Track listens through the existing scrobble API and native audio source-item UI. Test real Track listens in both directions, plus audio rendering and favorite probes. |
+| Gancio | Event-first federation with `Place` location data | Preserve Event and Place metadata in the shared event UI. Test event creation, location rendering, comments, deletes, and moderation boundaries. |
+| GoToSocial | Strict account-oriented ActivityPub and conservative object validation | Use it as the strict microblog compatibility lane. Its behavior does not require a separate product feature; test ordinary lifecycle and safe Group rejection. |
+| Hubzilla | Nomadic identities, channel aliases, and forum channels | Preserve aliases and forum attribution. Keep channel-management quirks in the adapter while testing the supported group lifecycle. |
+| Iceshrimp.NET | Misskey-family quote and emoji-reaction extensions | Reuse the quote and emoji-reaction UI. Test `_misskey_quote`, profile summary, reaction, undo, and ordinary lifecycle; do not expose server-specific client APIs. |
+| Lemmy | Community actors, threaded posts/comments, upvotes, and downvotes | Promote native downvotes as status dislikes. Test group lifecycle, comments, deletes, votes, downvotes, and undo in both directions. |
+| Mastodon | De facto Mastodon API, `Question` polls, and poll votes | Retain the existing poll composer/results UI. Test poll rendering and actual remote votes in both directions in addition to the account/status baseline. |
+| MBin | Magazines, article threads, boosts/favorites, and native article downvotes | Promote downvotes through status dislikes, respecting MBin's deliberate ban on post downvotes. Test Unfathomably `Dislike` and `Undo Dislike` on MBin article comments. Record that stock MBin stores its own article-comment downvotes locally but does not federate `Dislike` or `Undo Dislike` to the remote author. |
+| Misskey | `_misskey_summary`, `_misskey_reaction`, `_misskey_quote`, and polls | Reuse profile summary, emoji reaction, quote, and poll UI. Test all four surfaces and poll votes in both directions. |
+| Mitra | Subscription/payment metadata layered onto microblog ActivityPub | Keep payment and chain-specific state out of the generic status model until a stable portable consumer exists. Test profiles, posts, reactions, moderation, and lifecycle without inventing wallet UX. |
+| Mobilizon | Groups, Events, Places, event comments, and RSVP `Join`/`Leave` | Reuse the existing event card and RSVP controls. Test Join, Accept, Leave, event comments, deletes, group follows, and reports across the boundary. |
+| NodeBB | Forum category actors, topics, and NodeBB profile fields | Treat categories as groups and topics as threaded status roots. Keep NodeBB-only administration outside the product UI. |
+| Owncast | `Service` actor and live-stream lifecycle/preview metadata | Render a native live-stream preview and retain Service actor identity. Treat transient `Offer`, `View`, and `Leave` receipts as lifecycle signals, not posts. |
+| PeerTube | Channel groups, `Video`, comments, and video `Dislike` | Reuse media cards and status dislikes. Test Unfathomably `Dislike`/`Undo Dislike`, comments, comment deletes, video delete, and channel follow behavior. Stock PeerTube exposes local-user rates on local videos through aggregate ActivityPub collections and broadcasts a `Video` update rather than sending an individual `Dislike`/`Undo Dislike`, so the reverse per-user action is explicitly unsupported. |
+| PieFed | Community actors, threaded content, and signed vote activities | Promote native downvotes as status dislikes. Test group posts, comments, deletes, votes, downvotes, and undo in both directions. Current PieFed main stores new downvotes with zero effect. It removes Unfathomably's voter row after `Undo Dislike` but leaves its aggregate counter stale; for its own downvote, `score: 0` cannot reverse the row and queues another `Dislike` instead of `Undo`. The adapter proves row removal in the first direction and duplicate idempotency in the second while reporting both stock-peer defects explicitly. |
+| Pixelfed | Photo-first posts and media-centric profiles | Reuse the attachment/gallery UI and verify real image attachment federation in both directions. Keep Pixelfed collections outside scope until they have portable wire semantics. |
+| Postmarks | Bookmark-oriented ActivityPub objects and collections | Preserve bookmark source metadata and render bookmark cards. Test bookmark creation, hydration, deletion, and supported follow/moderation behavior. |
+| Sharkey | Misskey-compatible quotes, reactions, profile summary, and polls | Run the shared Misskey-family harness against the stock Sharkey image, including poll votes and quote/reaction cleanup. |
+| snac | Small, deliberately minimal ActivityPub implementation | Use it as the minimal-protocol interoperability lane. No snac-only product feature is needed; strict ordinary lifecycle behavior is the value. |
+| wafrn | Rich emoji reactions and quote-style posts in a microblog UI | Reuse the generic emoji-reaction and quote UI. Keep WAFRN-only presentation metadata in source previews unless another peer consumes it. |
+| WordPress | Long-form `Article` objects, canonical links, and site authorship | Render Article source cards with canonical links and preserve long-form content. Test article discovery, comments, deletes, follows, and moderation boundaries. |
+| WriteFreely | Blog `Article` objects and collection/outbox feeds | Reuse Article/source-card UX and preserve canonical author/blog links. Test article hydration, replies, deletes, follow cleanup, and explicit unsupported actions. |
+
+The cross-peer baseline remains bidirectional follow and unfollow where the
+peer supports Person actors, group follow and group unfollow where it exposes
+Group actors, post/comment creation and deletion, reaction and undo, account
+blocking in both directions, moderation reports/actions, and a visible local
+defederation reason. Each adapter must print `supported`, `not_supported`, or
+fail; silence is never coverage.
 
 # end of FEDERATION_TESTING.md

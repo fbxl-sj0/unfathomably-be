@@ -1173,6 +1173,10 @@ bash build_scripts/two-instance-federation-smoke.sh >/tmp/unfathomably-nodebb-bo
     fail "Unfathomably bootstrap smoke failed"
 }
 
+# NodeBB-specific checks use instance A after the two-instance baseline. Stop
+# instance B before NodeBB starts so its Node process has predictable memory.
+docker stop -t 15 "$BE_PREFIX-b" >/dev/null 2>&1 || true
+
 log "Starting NodeBB"
 start_nodebb
 
@@ -1334,7 +1338,7 @@ else
 fi
 
 log "Deleting posts and unfollowing groups"
-nodebb_json DELETE "/api/v3/posts/$NODEBB_TOPIC_PID" 200 >/dev/null
+nodebb_json DELETE "/api/v3/topics/$NODEBB_TOPIC_ID" 200 >/dev/null
 poll_nodebb_post_absent_or_deleted \
     "/api/v3/posts/$NODEBB_TOPIC_PID" \
     "NodeBB locally deletes its topic main post"
@@ -1369,15 +1373,15 @@ cat <<EOF
 Unfathomably/NodeBB federation smoke test passed.
 
 Covered:
-  * clean NodeBB Docker boot with Redis and internal proxy
-  * Unfathomably follow of a NodeBB category actor
-  * official NodeBB Group-follow limitation recorded without patching NodeBB
-  * NodeBB-to-Unfathomably category topic, like, unlike, reply, reply delete
-  * NodeBB remote Group-post import limitation recorded without patching NodeBB
-  * NodeBB API delete federation limitation recorded without patching NodeBB
-  * local NodeBB delete and Unfathomably-to-NodeBB delete propagation checks
-  * Unfathomably unfollow of a NodeBB category actor
-  * basic log scan for 500/crash output
+  * supported: clean NodeBB Docker boot with Redis and internal proxy
+  * supported: Unfathomably follow of a NodeBB category actor
+  * not_supported: stock NodeBB categories do not follow remote ActivityPub Group actors
+  * supported: NodeBB-to-Unfathomably category topic, like, unlike, reply, and reply Delete
+  * not_supported: stock NodeBB redirects remote Group posts to their origin instead of importing them locally
+  * not_supported: stock NodeBB API-driven deletes do not federate a remote Delete in this harness
+  * supported: local NodeBB delete and Unfathomably-to-NodeBB Delete propagation checks
+  * supported: Unfathomably unfollow of a NodeBB category actor
+  * supported: basic log scan for 500/crash output
 
 Run with KEEP_SMOKE=1 to leave both servers available for manual browser/API work.
 EOF

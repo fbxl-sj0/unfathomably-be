@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.FollowHandlingTest do
   use Pleroma.DataCase
   alias Pleroma.Activity
+  alias Pleroma.GroupMembership
   alias Pleroma.Notification
   alias Pleroma.Repo
   alias Pleroma.User
@@ -62,6 +63,53 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.FollowHandlingTest do
 
       [notification] = Notification.for_user(user)
       assert notification.type == "follow"
+    end
+
+    test "an incoming Follow creates an active membership for an unlocked local group" do
+      group = insert(:user, actor_type: "Group", local: true)
+
+      data =
+        File.read!("test/fixtures/mastodon-follow-activity.json")
+        |> Jason.decode!()
+        |> Map.put("object", group.ap_id)
+
+      {:ok, %Activity{data: %{"state" => "accept"}}} =
+        Transmogrifier.handle_incoming(data)
+
+      follower = User.get_cached_by_ap_id(data["actor"])
+
+      assert %GroupMembership{role: "user", state: "active"} =
+               GroupMembership.get(group, follower)
+    end
+
+    test "a locked local group membership follows approval and rejection" do
+      group = insert(:user, actor_type: "Group", local: true, is_locked: true)
+
+      data =
+        File.read!("test/fixtures/mastodon-follow-activity.json")
+        |> Jason.decode!()
+        |> Map.put("object", group.ap_id)
+
+      {:ok, %Activity{data: %{"state" => "pending"}}} =
+        Transmogrifier.handle_incoming(data)
+
+      follower = User.get_cached_by_ap_id(data["actor"])
+
+      assert %GroupMembership{role: "user", state: "pending"} =
+               GroupMembership.get(group, follower)
+
+      assert {:ok, ^follower} = Pleroma.Web.CommonAPI.accept_follow_request(follower, group)
+
+      assert %GroupMembership{role: "user", state: "active"} =
+               GroupMembership.get(group, follower)
+
+      second_data =
+        data
+        |> Map.put("id", data["id"] <> "/second")
+
+      {:ok, %Activity{}} = Transmogrifier.handle_incoming(second_data)
+      assert {:ok, ^follower} = Pleroma.Web.CommonAPI.reject_follow_request(follower, group)
+      refute GroupMembership.get(group, follower)
     end
 
     test "with locked accounts, it does create a Follow, but not an Accept" do

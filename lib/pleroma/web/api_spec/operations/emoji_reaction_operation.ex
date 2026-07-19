@@ -77,6 +77,45 @@ defmodule Pleroma.Web.ApiSpec.EmojiReactionOperation do
     }
   end
 
+  def dislike_operation do
+    dislike_change_operation("Dislike a status", "EmojiReactionController.dislike")
+  end
+
+  def undislike_operation do
+    dislike_change_operation(
+      "Remove a dislike from a status",
+      "EmojiReactionController.undislike"
+    )
+  end
+
+  def disliked_by_operation do
+    %Operation{
+      tags: ["Emoji reactions"],
+      summary: "View accounts that disliked a status",
+      parameters: [Operation.parameter(:id, :path, FlakeID, "Status ID", required: true)],
+      security: [%{"oAuth" => ["read:statuses"]}],
+      operationId: "EmojiReactionController.disliked_by",
+      responses: %{
+        200 =>
+          Operation.response("Accounts", "application/json", %Schema{type: :array, items: Account})
+      }
+    }
+  end
+
+  defp dislike_change_operation(summary, operation_id) do
+    %Operation{
+      tags: ["Emoji reactions"],
+      summary: summary,
+      parameters: [Operation.parameter(:id, :path, FlakeID, "Status ID", required: true)],
+      security: [%{"oAuth" => ["write:statuses"]}],
+      operationId: operation_id,
+      responses: %{
+        200 => Operation.response("Status", "application/json", Status),
+        400 => Operation.response("Bad Request", "application/json", ApiError)
+      }
+    }
+  end
+
   defp array_of_reactions_response do
     Operation.response("Array of Emoji reactions", "application/json", %Schema{
       type: :array,

@@ -170,7 +170,8 @@ defmodule Pleroma.Web.ApiSpec.TimelineOperation do
       ],
       operationId: "TimelineController.list",
       responses: %{
-        200 => Operation.response("Array of Status", "application/json", array_of_statuses())
+        200 => Operation.response("Array of Status", "application/json", array_of_statuses()),
+        404 => Operation.response("Not Found", "application/json", ApiError)
       }
     }
   end

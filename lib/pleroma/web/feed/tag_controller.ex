@@ -9,7 +9,19 @@ defmodule Pleroma.Web.Feed.TagController do
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.Feed.FeedView
 
+  def feed(conn, %{"tag" => raw_tag} = params) do
+    if frontend_request?(conn, raw_tag) do
+      Pleroma.Web.Fallback.RedirectController.redirector(conn, nil)
+    else
+      render_public_feed(conn, params)
+    end
+  end
+
   def feed(conn, params) do
+    render_public_feed(conn, params)
+  end
+
+  defp render_public_feed(conn, params) do
     if Config.get!([:instance, :public]) do
       render_feed(conn, params)
     else
@@ -45,4 +57,18 @@ defmodule Pleroma.Web.Feed.TagController do
         {"atom", raw_tag}
     end
   end
+
+  defp frontend_request?(conn, raw_tag) when is_binary(raw_tag) do
+    extensionless =
+      not String.ends_with?(String.downcase(raw_tag), [".atom", ".rss"])
+
+    accepts_html =
+      conn
+      |> get_req_header("accept")
+      |> Enum.any?(fn accept -> String.contains?(String.downcase(accept), "text/html") end)
+
+    extensionless and accepts_html
+  end
+
+  defp frontend_request?(_conn, _raw_tag), do: false
 end

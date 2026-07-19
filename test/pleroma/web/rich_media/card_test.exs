@@ -60,6 +60,22 @@ defmodule Pleroma.Web.RichMedia.CardTest do
     assert %Card{url_hash: ^url_hash, fields: _} = Card.get_by_activity(activity)
   end
 
+  test "deduplicates stream variants of the same activity backfill" do
+    url = "https://example.com/ogp"
+    activity_id = "rich-media-activity"
+
+    assert is_nil(Card.get_or_backfill_by_url(url, activity_id: activity_id))
+
+    assert is_nil(
+             Card.get_or_backfill_by_url(url,
+               activity_id: activity_id,
+               opts: %{stream: false}
+             )
+           )
+
+    assert [_job] = all_enqueued(worker: RichMediaWorker)
+  end
+
   test "recrawls URLs on status edits/updates" do
     original_url = "https://google.com/"
     original_url_hash = Card.url_to_hash(original_url)

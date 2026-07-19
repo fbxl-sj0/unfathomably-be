@@ -7,9 +7,9 @@ defmodule Pleroma.Web.MastodonAPI.UpdateCredentialsTest do
   alias Pleroma.User
 
   use Pleroma.Web.ConnCase
+  use Oban.Testing, repo: Pleroma.Repo
 
   import ExUnit.CaptureLog
-  import Mock
   import Pleroma.Factory
 
   describe "updating credentials" do
@@ -58,29 +58,26 @@ defmodule Pleroma.Web.MastodonAPI.UpdateCredentialsTest do
 
       clear_config([:instance, :federating], true)
 
-      with_mock Pleroma.Web.Federator,
-        publish: fn _activity -> :ok end do
-        res_conn =
-          conn
-          |> assign(:user, user)
-          |> patch("/api/v1/accounts/update_credentials", %{
-            "pleroma_settings_store" => %{
-              soapbox_fe: %{
-                themeMode: "blub"
-              }
+      res_conn =
+        conn
+        |> assign(:user, user)
+        |> patch("/api/v1/accounts/update_credentials", %{
+          "pleroma_settings_store" => %{
+            soapbox_fe: %{
+              themeMode: "blub"
             }
-          })
+          }
+        })
 
-        assert user_data = json_response_and_validate_schema(res_conn, 200)
+      assert user_data = json_response_and_validate_schema(res_conn, 200)
 
-        assert user_data["pleroma"]["settings_store"] ==
-                 %{
-                   "pleroma_fe" => %{"theme" => "bla"},
-                   "soapbox_fe" => %{"themeMode" => "blub"}
-                 }
+      assert user_data["pleroma"]["settings_store"] ==
+               %{
+                 "pleroma_fe" => %{"theme" => "bla"},
+                 "soapbox_fe" => %{"themeMode" => "blub"}
+               }
 
-        assert_called(Pleroma.Web.Federator.publish(:_))
-      end
+      assert_enqueued(worker: Pleroma.Workers.ProfileUpdateWorker, args: %{user_id: user.id})
     end
 
     test "updates the user's bio", %{conn: conn} do

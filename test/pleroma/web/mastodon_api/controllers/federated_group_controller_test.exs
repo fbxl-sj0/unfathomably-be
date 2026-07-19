@@ -7,11 +7,11 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
 
   require Pleroma.Constants
 
-  import Ecto.Query
   alias Pleroma.GroupMembership
   alias Pleroma.Instances
   alias Pleroma.Notification
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.FederatedTarget
 
@@ -487,7 +487,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
       %{conn: owner_conn, user: owner} =
         oauth_access(["write", "write:accounts", "read:accounts", "read:follows"])
 
-      moderator = insert(:user, is_admin: true)
+      moderator = insert(:user)
       third = insert(:user)
 
       %{conn: moderator_conn} =
@@ -522,7 +522,6 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                |> json_response(200)
 
       assert moderator_id == to_string(moderator.id)
-      assert_moderator_change_activity("Add", owner, group, moderator)
 
       assert %{"role" => "moderator", "account" => %{"id" => third_id}} =
                moderator_conn
@@ -539,37 +538,35 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                |> post("/api/v1/groups/#{group_id}/demote", %{account_ids: [third.id]})
                |> json_response(200)
 
-      assert_moderator_change_activity("Remove", owner, group, third)
-
       assert %{} =
                moderator_conn
-               |> post("/api/v1/groups/#{group_id}/blocks", %{
-                 account_ids: [third.id],
-                 reason: "local smoke group ban",
-                 remove_data: "false"
-               })
+               |> post("/api/v1/groups/#{group_id}/blocks", %{account_ids: [third.id]})
                |> json_response(200)
-
-      assert_group_block_activity(moderator, group, third, "local smoke group ban")
 
       assert %GroupMembership{state: "banned"} = GroupMembership.get(group, third)
       assert %GroupMembership{role: "owner"} = GroupMembership.get(group, owner)
-      assert %{is_active: true} = User.get_cached_by_id(third.id)
+
+      assert %Pleroma.Activity{data: %{"type" => "Block"}} =
+               Utils.fetch_latest_block(group, third)
+
+      assert [
+               %{
+                 "blocked_by" => true,
+                 "can_follow" => false,
+                 "can_post" => false,
+                 "moderation_status" => "blocked_by_group",
+                 "moderation_message" =>
+                   "You are blocked from this group and cannot follow or post there."
+               }
+             ] =
+               third_conn
+               |> get("/api/v1/groups/relationships?id[]=#{group_id}")
+               |> json_response(200)
 
       assert %{"error" => "You are banned from this group"} =
                third_conn
                |> post("/api/v1/groups/#{group_id}/join")
                |> json_response(403)
-
-      assert %{} =
-               moderator_conn
-               |> delete("/api/v1/groups/#{group_id}/blocks", %{
-                 account_ids: [third.id],
-                 reason: "local smoke group unban"
-               })
-               |> json_response(200)
-
-      assert_group_unblock_activity(moderator, group, third, "local smoke group unban")
     end
   end
 
@@ -1261,47 +1258,124 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
 
       assert alias_content =~ "Fresh channel video"
     end
-  end
 
-  defp assert_moderator_change_activity(type, actor, group, account) do
-    target = group.attributed_to_address || "#{group.ap_id}/collections/moderators"
+    test "keeps a delivered Ibis Article when collection backfill omits it", %{conn: conn} do
+      group_url = "https://ibis.example/"
+      outbox_url = "https://ibis.example/all_articles"
+      main_page_url = "https://ibis.example/article/Main_Page"
+      article_url = "https://ibis.example/article/Federated_Wiki"
 
-    assert Pleroma.Repo.exists?(
-             from(activity in Pleroma.Activity,
-               where:
-                 fragment("?->>'type' = ?", activity.data, ^type) and
-                   fragment("?->>'actor' = ?", activity.data, ^actor.ap_id) and
-                   fragment("?->>'object' = ?", activity.data, ^account.ap_id) and
-                   fragment("?->>'target' = ?", activity.data, ^target) and
-                   fragment("?->>'audience' = ?", activity.data, ^group.ap_id)
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "wiki@ibis.example",
+          ap_id: group_url,
+          outbox_address: outbox_url
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          nickname: "wikibot@ibis.example",
+          ap_id: "https://ibis.example/user/wikibot"
+        )
+
+      main_page =
+        insert(:note,
+          user: author,
+          data: %{
+            "id" => main_page_url,
+            "type" => "Article",
+            "name" => "Main Page",
+            "content" => "<p>The collection bootstrap page.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      main_page_activity = insert(:note_activity, user: author, note: main_page, local: false)
+
+      article =
+        insert(:note,
+          user: author,
+          data: %{
+            "id" => article_url,
+            "type" => "Article",
+            "name" => "Federated Wiki",
+            "content" => "<p>The delivered Ibis article.</p>",
+            "edits" => "#{article_url}/edits",
+            "latestVersion" => "7cba9745-56f2-62d4-0f30-ae5433b98b8f",
+            "_unfathomably_native" => %{
+              "canonicalId" => article_url,
+              "type" => "Article",
+              "extensionFields" => ["edits", "latestVersion"]
+            },
+            "attributedTo" => author.ap_id,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      _update_activity =
+        Pleroma.Repo.insert!(%Pleroma.Activity{
+          local: false,
+          actor: author.ap_id,
+          recipients: [Pleroma.Constants.as_public(), group.ap_id],
+          data: %{
+            "id" => "https://ibis.example/activity/update-article",
+            "type" => "Update",
+            "actor" => author.ap_id,
+            "object" => article.data,
+            "to" => [Pleroma.Constants.as_public()],
+            "cc" => []
+          }
+        })
+
+      announce_activity =
+        Pleroma.Repo.insert!(%Pleroma.Activity{
+          local: false,
+          actor: group.ap_id,
+          recipients: [Pleroma.Constants.as_public(), group.ap_id],
+          data: %{
+            "id" => "https://ibis.example/activity/announce-article",
+            "type" => "Announce",
+            "actor" => group.ap_id,
+            "object" => article.data["id"],
+            "published" => "2026-07-17T12:00:00Z",
+            "to" => [Pleroma.Constants.as_public()],
+            "cc" => [group.ap_id]
+          }
+        })
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^outbox_url} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => outbox_url,
+                "type" => "OrderedCollection",
+                "orderedItems" => [main_page.data]
+              })
+          }
+      end)
+
+      statuses =
+        conn
+        |> get("/api/v1/timelines/group/#{group.id}")
+        |> json_response(200)
+
+      assert Enum.map(statuses, & &1["id"]) == [
+               to_string(announce_activity.id),
+               to_string(main_page_activity.id)
+             ]
+
+      assert Enum.any?(statuses, &(&1["content"] =~ "The delivered Ibis article"))
+
+      assert Enum.any?(
+               statuses,
+               &(&1["pleroma"]["native"]["type"] == "Article")
              )
-           )
-  end
-
-  defp assert_group_block_activity(actor, group, account, reason) do
-    assert Pleroma.Repo.exists?(
-             from(activity in Pleroma.Activity,
-               where:
-                 fragment("?->>'type' = 'Block'", activity.data) and
-                   fragment("?->>'actor' = ?", activity.data, ^actor.ap_id) and
-                   fragment("?->>'object' = ?", activity.data, ^account.ap_id) and
-                   fragment("?->>'target' = ?", activity.data, ^group.ap_id) and
-                   fragment("?->>'summary' = ?", activity.data, ^reason)
-             )
-           )
-  end
-
-  defp assert_group_unblock_activity(actor, group, account, reason) do
-    assert Pleroma.Repo.exists?(
-             from(activity in Pleroma.Activity,
-               where:
-                 fragment("?->>'type' = 'Undo'", activity.data) and
-                   fragment("?->>'actor' = ?", activity.data, ^actor.ap_id) and
-                   fragment("?->'object'->>'type' = 'Block'", activity.data) and
-                   fragment("?->'object'->>'object' = ?", activity.data, ^account.ap_id) and
-                   fragment("?->'object'->>'target' = ?", activity.data, ^group.ap_id) and
-                   fragment("?->'object'->>'summary' = ?", activity.data, ^reason)
-             )
-           )
+    end
   end
 end

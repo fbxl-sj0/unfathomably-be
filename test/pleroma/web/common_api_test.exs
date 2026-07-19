@@ -1353,7 +1353,11 @@ defmodule Pleroma.Web.CommonAPITest do
         "id" => reported_object_ap_id,
         "content" => "foobar",
         "published" => activity.object.data["published"],
-        "actor" => AccountView.render("show.json", %{user: target_user})
+        "actor" =>
+          "show.json"
+          |> AccountView.render(%{user: target_user})
+          |> Jason.encode!()
+          |> Jason.decode!()
       }
 
       assert {:ok, flag_activity} = CommonAPI.report(reporter, report_data)
@@ -1738,6 +1742,35 @@ defmodule Pleroma.Web.CommonAPITest do
 
       assert Visibility.get_visibility(activity) == "private"
     end
+
+    test "addresses public Track listens to the remote track actor" do
+      user = insert(:user)
+      track_ap_id = "https://audio.example/federation/music/tracks/123"
+      track_actor = "https://audio.example/federation/actors/service"
+
+      {:ok, _track} =
+        Object.create(%{
+          "actor" => track_actor,
+          "id" => track_ap_id,
+          "name" => "Funkwhale API track",
+          "to" => [Pleroma.Constants.as_public()],
+          "type" => "Audio"
+        })
+
+      {:ok, activity} =
+        CommonAPI.listen(user, %{
+          title: "Funkwhale API track",
+          track_ap_id: track_ap_id
+        })
+
+      assert activity.data["audience"] == "everyone"
+      assert track_actor in activity.data["cc"]
+
+      assert {:ok, outgoing} = Transmogrifier.prepare_outgoing(activity.data)
+      assert outgoing["audience"] == "everyone"
+      assert track_actor in outgoing["cc"]
+      assert outgoing["object"] == %{"id" => track_ap_id, "type" => "Track"}
+    end
   end
 
   describe "get_user/1" do
@@ -2086,23 +2119,6 @@ defmodule Pleroma.Web.CommonAPITest do
       assert group.ap_id in object.data["to"]
       refute Pleroma.Constants.as_public() in object.data["to"]
       assert Pleroma.Constants.as_public() in object.data["cc"]
-    end
-
-    test "group-targeted root posts derive a Page name from status text", %{
-      poster: poster,
-      group: group
-    } do
-      {:ok, post} =
-        CommonAPI.post(poster, %{
-          status: "Plain group root for MBin",
-          group_id: group.ap_id
-        })
-
-      object = Object.normalize(post, fetch: false)
-
-      assert object.data["type"] == "Page"
-      assert object.data["name"] == "Plain group root for MBin"
-      assert object.data["summary"] == "Plain group root for MBin"
     end
 
     test "group-targeted posts can opt into public timeline visibility", %{

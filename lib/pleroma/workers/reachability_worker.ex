@@ -49,10 +49,10 @@ defmodule Pleroma.Workers.ReachabilityWorker do
     Oban.Job
     |> where([j], j.worker == "Pleroma.Workers.ReachabilityWorker")
     |> where([j], j.args["domain"] == ^host)
-    |> Repo.delete_all()
+    |> Oban.cancel_all_jobs()
   end
 
-  def delete_jobs_for_host(_), do: {0, nil}
+  def delete_jobs_for_host(_), do: {:ok, 0}
 
   defp normalize_domain(domain) do
     domain =
@@ -132,7 +132,10 @@ defmodule Pleroma.Workers.ReachabilityWorker do
     User
     |> where([u], u.local == false)
     |> where([u], not is_nil(u.nickname))
-    |> where([u], fragment("lower(split_part(?, '@', 2))", u.nickname) == ^normalized_domain)
+    |> where(
+      [u],
+      fragment("lower(split_part(?::text, '@', 2))", u.nickname) == ^normalized_domain
+    )
     |> order_by([u], asc: u.id)
     |> limit(1)
     |> select([u], u.nickname)

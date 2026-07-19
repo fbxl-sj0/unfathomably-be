@@ -38,6 +38,17 @@ defmodule Pleroma.Web.Plugs.MappedSignatureToIdentityPlugTest do
     refute is_nil(conn.assigns.user)
   end
 
+  test "it maps an identity when the payload spells the default HTTP port explicitly" do
+    conn =
+      build_conn(:post, "/doesntmattter", %{
+        "actor" => "http://mastodon.example.org:80/users/admin"
+      })
+      |> set_signature("http://mastodon.example.org/users/admin")
+      |> MappedSignatureToIdentityPlug.call(%{})
+
+    refute is_nil(conn.assigns.user)
+  end
+
   test "it considers a mapped identity to be invalid when it mismatches a payload" do
     conn =
       build_conn(:post, "/doesntmattter", %{"actor" => "http://mastodon.example.org/users/admin"})

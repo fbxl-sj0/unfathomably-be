@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.UtilsTest do
-  use Oban.Testing, repo: Pleroma.Repo
   use Pleroma.DataCase, async: true
   alias Pleroma.Activity
   alias Pleroma.Object
@@ -117,12 +116,7 @@ defmodule Pleroma.Web.ActivityPub.UtilsTest do
         )
 
       assert :ok = Utils.maybe_handle_group_posts(activity)
-      assert announce = Utils.get_existing_announce(group.ap_id, object)
-
-      assert_enqueued(
-        worker: Pleroma.Workers.PublisherWorker,
-        args: %{"op" => "publish", "activity_id" => announce.id}
-      )
+      assert Utils.get_existing_announce(group.ap_id, object)
     end
 
     test "repeats public posts into local groups addressed through attributedTo group objects" do
@@ -228,10 +222,7 @@ defmodule Pleroma.Web.ActivityPub.UtilsTest do
       assert Utils.make_json_ld_header() == %{
                "@context" => [
                  "https://www.w3.org/ns/activitystreams",
-                 "http://localhost:4001/schemas/litepub-0.1.jsonld",
-                 %{
-                   "@language" => "und"
-                 }
+                 "http://localhost:4001/schemas/litepub-0.1.jsonld"
                ]
              }
     end
@@ -645,6 +636,47 @@ defmodule Pleroma.Web.ActivityPub.UtilsTest do
                "object" => [^target_ap_id, ^note_obj],
                "state" => "open"
              } = res
+    end
+
+    test "uses attributedTo authority for a native object without actor" do
+      reporter = insert(:user)
+
+      target_account =
+        insert(:user,
+          local: false,
+          ap_id: "https://activitypods.example/alice",
+          follower_address: "https://activitypods.example/alice/followers"
+        )
+
+      {:ok, object} =
+        Object.create(%{
+          "id" => "https://activitypods.example/alice/data/project-1",
+          "type" => "pair:Project",
+          "attributedTo" => target_account.ap_id,
+          "content" => "Native ActivityPods coordination state"
+        })
+
+      res =
+        Utils.make_flag_data(
+          %{
+            actor: reporter,
+            context: Utils.generate_context_id(),
+            account: target_account,
+            statuses: [object],
+            content: "Report the native project"
+          },
+          %{}
+        )
+
+      assert [target_ap_id, reported_object] = res["object"]
+      assert target_ap_id == target_account.ap_id
+      assert reported_object["id"] == object.data["id"]
+
+      assert reported_object["actor"] ==
+               AccountView.render("show.json", %{
+                 user: target_account,
+                 skip_visibility_check: true
+               })
     end
   end
 

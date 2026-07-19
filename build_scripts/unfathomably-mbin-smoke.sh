@@ -211,6 +211,25 @@ print(json.dumps({
 PY
 }
 
+json_article() {
+    local title="$1"
+    local body="$2"
+
+    TITLE="$title" BODY="$body" python3 - <<'PY'
+import json
+import os
+
+print(json.dumps({
+    "title": os.environ["TITLE"],
+    "body": os.environ["BODY"],
+    "tags": [],
+    "isOc": False,
+    "lang": "en",
+    "isAdult": False,
+}))
+PY
+}
+
 http_form() {
     local method="$1"
     local url="$2"
@@ -529,7 +548,7 @@ PY
 }
 
 mbin_token() {
-    local scopes client_json client_id client_secret jar headers login_page csrf code
+    local scopes client_json client_id client_secret jar headers body login_page csrf code
     local auth_query auth_url location consent_url consent_page consent_csrf auth_code token_json
 
     scopes="read magazine:subscribe post:create post:delete post:vote post_comment:create post_comment:delete post_comment:vote entry:create entry:delete entry:vote entry_comment:create entry_comment:delete entry_comment:vote"
@@ -543,6 +562,7 @@ mbin_token() {
 
     jar="$(mktemp)"
     headers="$(mktemp)"
+    body="$(mktemp)"
 
     login_page="$(curl -fsS "${MBIN_CURL_CONNECT_TO[@]}" -c "$jar" -b "$jar" "$MBIN_URL/login")"
     csrf="$(html_hidden_value "$login_page" "_csrf_token")" || fail "Could not read MBin login CSRF token"
@@ -557,13 +577,13 @@ mbin_token() {
             --data-urlencode "_csrf_token=$csrf" \
             --data-urlencode "_remember_me=on"
     )" || {
-        rm -f "$jar" "$headers"
+        rm -f "$jar" "$headers" "$body"
         fail "MBin login request failed"
     }
     case "$code" in
         200|302|303) ;;
         *)
-            rm -f "$jar" "$headers"
+            rm -f "$jar" "$headers" "$body"
             fail "MBin login returned HTTP $code"
             ;;
     esac
@@ -571,23 +591,39 @@ mbin_token() {
     auth_query="$(mbin_auth_query "$client_id" "$scopes")"
     auth_url="$MBIN_URL/authorize?$auth_query"
     code="$(
-        curl -sS -D "$headers" -o /dev/null -w "%{http_code}" \
+        curl -sS -D "$headers" -o "$body" -w "%{http_code}" \
             "${MBIN_CURL_CONNECT_TO[@]}" \
             -c "$jar" -b "$jar" "$auth_url"
     )" || {
-        rm -f "$jar" "$headers"
+        rm -f "$jar" "$headers" "$body"
         fail "MBin authorization request failed"
     }
-    location="$(header_location "$headers")"
-    [ -n "$location" ] || {
-        rm -f "$jar" "$headers"
-        fail "MBin authorization did not redirect to consent"
-    }
 
-    consent_url="$(absolute_mbin_url "$location")"
-    consent_page="$(curl -fsS "${MBIN_CURL_CONNECT_TO[@]}" -c "$jar" -b "$jar" "$consent_url")"
+    case "$code" in
+        200)
+            # Current MBin renders the consent form directly at /authorize.
+            consent_url="$auth_url"
+            consent_page="$(cat "$body")"
+            ;;
+        302|303|307|308)
+            # Redirecting releases use both ordinary and method-preserving
+            # status codes when moving authorization to the consent route.
+            location="$(header_location "$headers")"
+            [ -n "$location" ] || {
+                rm -f "$jar" "$headers" "$body"
+                fail "MBin authorization redirect did not identify a consent page"
+            }
+            consent_url="$(absolute_mbin_url "$location")"
+            consent_page="$(curl -fsS "${MBIN_CURL_CONNECT_TO[@]}" -c "$jar" -b "$jar" "$consent_url")"
+            ;;
+        *)
+            rm -f "$jar" "$headers" "$body"
+            fail "MBin authorization returned HTTP $code"
+            ;;
+    esac
+
     consent_csrf="$(html_hidden_value "$consent_page" "_csrf_token")" || {
-        rm -f "$jar" "$headers"
+        rm -f "$jar" "$headers" "$body"
         fail "Could not read MBin consent CSRF token"
     }
 
@@ -599,20 +635,20 @@ mbin_token() {
             --data-urlencode "_csrf_token=$consent_csrf" \
             --data-urlencode "consent=yes"
     )" || {
-        rm -f "$jar" "$headers"
+        rm -f "$jar" "$headers" "$body"
         fail "MBin consent request failed"
     }
     case "$code" in
-        302|303) ;;
+        302|303|307|308) ;;
         *)
-            rm -f "$jar" "$headers"
+            rm -f "$jar" "$headers" "$body"
             fail "MBin consent returned HTTP $code"
             ;;
     esac
 
     location="$(header_location "$headers")"
     [ -n "$location" ] || {
-        rm -f "$jar" "$headers"
+        rm -f "$jar" "$headers" "$body"
         fail "MBin consent did not redirect back to authorization"
     }
 
@@ -622,13 +658,13 @@ mbin_token() {
             "${MBIN_CURL_CONNECT_TO[@]}" \
             -c "$jar" -b "$jar" "$auth_url"
     )" || {
-        rm -f "$jar" "$headers"
+        rm -f "$jar" "$headers" "$body"
         fail "MBin authorization-code redirect request failed"
     }
     location="$(header_location "$headers")"
     auth_code="$(query_param "$location" code)"
     [ -n "$auth_code" ] || {
-        rm -f "$jar" "$headers"
+        rm -f "$jar" "$headers" "$body"
         fail "MBin authorization flow did not return a code"
     }
 
@@ -641,7 +677,7 @@ mbin_token() {
             "redirect_uri=https://localhost:3001"
     )"
 
-    rm -f "$jar" "$headers"
+    rm -f "$jar" "$headers" "$body"
     json_get "$token_json" access_token
 }
 
@@ -896,6 +932,12 @@ mbin_local_post_ap_id() {
     printf 'http://%s/m/%s/p/%s/-\n' "$MBIN_HOST" "$(urlpath "$MBIN_MAGAZINE_NAME")" "$post_id"
 }
 
+mbin_local_entry_ap_id() {
+    local entry_id="$1"
+
+    printf 'http://%s/m/%s/t/%s/-\n' "$MBIN_HOST" "$(urlpath "$MBIN_MAGAZINE_NAME")" "$entry_id"
+}
+
 mbin_comment_ap_id() {
     local content_type="$1"
     local content_id="$2"
@@ -934,6 +976,19 @@ mbin_content_vote() {
         mbin_json PUT "/api/post/$id/vote/$choice" 200 '{}'
     else
         mbin_json PUT "/api/entry/$id/vote/$choice" 200 '{}'
+    fi
+}
+
+mbin_comment_vote() {
+    local comment_ref="$1"
+    local choice="$2"
+    local type="${comment_ref%%:*}"
+    local id="${comment_ref#*:}"
+
+    if [ "$type" = "post_comment" ]; then
+        mbin_json PUT "/api/post-comments/$id/vote/$choice" 200 '{}'
+    else
+        mbin_json PUT "/api/comments/$id/vote/$choice" 200 '{}'
     fi
 }
 
@@ -1021,6 +1076,34 @@ PY
 
     printf '%s\n' "$result" >&2
     fail "$message"
+}
+
+poll_mbin_dislikes() {
+    local content_type="$1"
+    local content_id="$2"
+    local expected="$3"
+    local message="$4"
+    local table result
+
+    case "$content_type" in
+        entry|entry_comment|post|post_comment)
+            table="$content_type"
+            ;;
+        *)
+            fail "Unsupported MBin content type for dislike assertion: $content_type"
+            ;;
+    esac
+
+    for _ in $(seq 1 90); do
+        result="$(mbin_sql "select coalesce(ap_dislike_count, down_votes) from $table where id = $content_id;" || true)"
+        if [ "$result" = "$expected" ]; then
+            return 0
+        fi
+
+        sleep 2
+    done
+
+    fail "$message: expected $expected dislikes, saw ${result:-no row}"
 }
 
 poll_mbin_visibility_deleted() {
@@ -1688,6 +1771,10 @@ bash build_scripts/two-instance-federation-smoke.sh >/tmp/unfathomably-mbin-boot
     fail "Unfathomably bootstrap smoke failed"
 }
 
+# The baseline needs instance B, but all MBin-specific checks use instance A.
+# Stop the unused server before a cold MBin image build to avoid swap pressure.
+docker stop -t 15 "$BE_PREFIX-b" >/dev/null 2>&1 || true
+
 log "Starting MBin"
 ensure_mbin_image
 start_mbin
@@ -1893,6 +1980,113 @@ poll_be_object_unliked \
     "$MBIN_ACTOR_AP_ID" \
     "Unfathomably sees MBin unlike on Unfathomably post"
 
+log "Testing MBin article-comment downvotes in supported directions"
+MBIN_DISLIKE_ARTICLE_TITLE="MBin dislike article $(basename "$WORK_DIR")"
+MBIN_DISLIKE_ARTICLE_BODY="MBin article for native Dislike coverage $(basename "$WORK_DIR")"
+MBIN_DISLIKE_ARTICLE="$(
+    mbin_json POST "/api/magazine/$MBIN_MAGAZINE_ID/article" 201 \
+        "$(json_article "$MBIN_DISLIKE_ARTICLE_TITLE" "$MBIN_DISLIKE_ARTICLE_BODY")"
+)"
+MBIN_DISLIKE_ARTICLE_ID="$(json_get "$MBIN_DISLIKE_ARTICLE" entryId)"
+MBIN_DISLIKE_ARTICLE_AP_ID="$(json_get "$MBIN_DISLIKE_ARTICLE" apId || true)"
+if [ -z "$MBIN_DISLIKE_ARTICLE_AP_ID" ]; then
+    MBIN_DISLIKE_ARTICLE_AP_ID="$(mbin_local_entry_ap_id "$MBIN_DISLIKE_ARTICLE_ID")"
+fi
+run_mbin_queue_until
+BE_VIEW_OF_MBIN_DISLIKE_ARTICLE_ID="$(
+    resolve_be_status_id \
+        "$MBIN_DISLIKE_ARTICLE_AP_ID" \
+        "$ALICE_TOKEN" \
+        "Unfathomably resolves MBin article for dislike coverage"
+)"
+
+BE_DISLIKE_REPLY_TEXT="Unfathomably article reply for MBin downvote $(basename "$WORK_DIR")"
+BE_DISLIKE_REPLY="$(
+    http_form POST "$BASE_URL/api/v1/statuses" "$ALICE_TOKEN" 200 \
+        "status=$BE_DISLIKE_REPLY_TEXT" \
+        "in_reply_to_id=$BE_VIEW_OF_MBIN_DISLIKE_ARTICLE_ID"
+)"
+BE_DISLIKE_REPLY_ID="$(json_get "$BE_DISLIKE_REPLY" id)"
+BE_DISLIKE_REPLY_AP_ID="$(json_get "$BE_DISLIKE_REPLY" uri)"
+run_mbin_queue_until
+MBIN_VIEW_OF_BE_DISLIKE_REPLY="$(
+    poll_mbin_comment_by_ap_id \
+        "$BE_DISLIKE_REPLY_AP_ID" \
+        "MBin receives Unfathomably reply under MBin article"
+)"
+if [ "${MBIN_VIEW_OF_BE_DISLIKE_REPLY%%:*}" != "entry_comment" ]; then
+    fail "MBin imported an article reply as ${MBIN_VIEW_OF_BE_DISLIKE_REPLY%%:*}, not entry_comment"
+fi
+
+MBIN_DISLIKE_BE_REPLY="$(mbin_comment_vote "$MBIN_VIEW_OF_BE_DISLIKE_REPLY" -1)"
+json_assert "$MBIN_DISLIKE_BE_REPLY" 'data.get("userVote") == -1 and int(data.get("dv") or 0) >= 1' \
+    "MBin could not downvote Unfathomably article reply"
+# Stock MBin records this vote but does not enqueue an outbound Dislike.  Its
+# vote subscriber only asks FavouriteManager to remove an existing favourite,
+# so a fresh downvote has no ActivityPub delivery path to wait for here.
+run_mbin_queue_until
+BE_VIEW_AFTER_MBIN_DOWNVOTE="$(
+    http_form GET \
+        "$BASE_URL/api/v1/statuses/$BE_DISLIKE_REPLY_ID" \
+        "$ALICE_TOKEN" \
+        200
+)"
+json_assert "$BE_VIEW_AFTER_MBIN_DOWNVOTE" 'int(data.get("dislikes_count") or 0) == 0' \
+    "Stock MBin unexpectedly federated its local article-comment downvote"
+
+MBIN_UNDISLIKE_BE_REPLY="$(mbin_comment_vote "$MBIN_VIEW_OF_BE_DISLIKE_REPLY" 0)"
+json_assert "$MBIN_UNDISLIKE_BE_REPLY" 'data.get("userVote") == 0 and int(data.get("dv") or 0) == 0' \
+    "MBin could not remove downvote from Unfathomably article reply"
+
+MBIN_DISLIKE_COMMENT_TEXT="MBin article comment for Unfathomably dislike $(basename "$WORK_DIR")"
+MBIN_DISLIKE_COMMENT="$(
+    mbin_content_comment "entry:$MBIN_DISLIKE_ARTICLE_ID" "$MBIN_DISLIKE_COMMENT_TEXT"
+)"
+MBIN_DISLIKE_COMMENT_ID="$(json_get "$MBIN_DISLIKE_COMMENT" commentId)"
+MBIN_DISLIKE_COMMENT_AP_ID="$(json_get "$MBIN_DISLIKE_COMMENT" apId || true)"
+if [ -z "$MBIN_DISLIKE_COMMENT_AP_ID" ]; then
+    MBIN_DISLIKE_COMMENT_AP_ID="$(
+        mbin_comment_ap_id entry "$MBIN_DISLIKE_ARTICLE_ID" "$MBIN_DISLIKE_COMMENT_ID"
+    )"
+fi
+run_mbin_queue_until
+BE_VIEW_OF_MBIN_DISLIKE_COMMENT_ID="$(
+    resolve_be_context_status_id \
+        "$BE_VIEW_OF_MBIN_DISLIKE_ARTICLE_ID" \
+        "$MBIN_DISLIKE_COMMENT_AP_ID" \
+        "$ALICE_TOKEN" \
+        "Unfathomably receives MBin article comment for dislike coverage"
+)"
+
+BE_DISLIKE_MBIN_COMMENT="$(
+    http_form POST \
+        "$BASE_URL/api/friendica/statuses/$BE_VIEW_OF_MBIN_DISLIKE_COMMENT_ID/dislike" \
+        "$ALICE_TOKEN" \
+        200
+)"
+json_assert "$BE_DISLIKE_MBIN_COMMENT" 'data.get("disliked") is True and int(data.get("dislikes_count") or 0) >= 1' \
+    "Unfathomably could not dislike MBin article comment"
+run_mbin_queue_until
+poll_mbin_dislikes entry_comment "$MBIN_DISLIKE_COMMENT_ID" 1 \
+    "MBin sees Unfathomably dislike on MBin article comment"
+
+BE_UNDISLIKE_MBIN_COMMENT="$(
+    http_form POST \
+        "$BASE_URL/api/friendica/statuses/$BE_VIEW_OF_MBIN_DISLIKE_COMMENT_ID/undislike" \
+        "$ALICE_TOKEN" \
+        200
+)"
+json_assert "$BE_UNDISLIKE_MBIN_COMMENT" 'data.get("disliked") is False and int(data.get("dislikes_count") or 0) == 0' \
+    "Unfathomably could not remove dislike from MBin article comment"
+run_mbin_queue_until
+poll_mbin_dislikes entry_comment "$MBIN_DISLIKE_COMMENT_ID" 0 \
+    "MBin sees Unfathomably remove dislike from MBin article comment"
+
+mbin_delete_comment "entry_comment:$MBIN_DISLIKE_COMMENT_ID" >/dev/null
+http_form DELETE "$BASE_URL/api/v1/statuses/$BE_DISLIKE_REPLY_ID" "$ALICE_TOKEN" 200 >/dev/null
+mbin_json DELETE "/api/entry/$MBIN_DISLIKE_ARTICLE_ID" 204 '{}' >/dev/null
+run_mbin_queue_until
+
 log "Deleting posts and unfollowing groups"
 mbin_json DELETE "/api/post/$MBIN_POST_ID" 204 '{}' >/dev/null
 run_mbin_queue_until
@@ -1941,14 +2135,16 @@ cat <<EOF
 Unfathomably/MBin federation smoke test passed.
 
 Covered:
-  * clean MBin Docker boot with PostgreSQL, Redis, RabbitMQ, and messenger
-  * Unfathomably follow of an MBin magazine
-  * MBin follow of an Unfathomably group
-  * MBin-to-Unfathomably group post, like, unlike, reply, reply delete
-  * Unfathomably-to-MBin group post, like, unlike, reply, reply delete
-  * post deletion propagation both directions
-  * group unfollow both directions
-  * basic log scan for 500/crash output
+  * supported: clean MBin Docker boot with PostgreSQL, Redis, RabbitMQ, and messenger
+  * supported: Unfathomably follow of an MBin magazine
+  * supported: MBin follow of an Unfathomably group
+  * supported: MBin-to-Unfathomably group post, like, unlike, reply, reply Delete
+  * supported: Unfathomably-to-MBin group post, like, unlike, reply, reply Delete
+  * supported: Unfathomably Dislike and Undo Dislike on an MBin article comment
+  * not_supported: stock MBin records local article-comment downvotes but does not federate Dislike or Undo Dislike to the remote author
+  * supported: post deletion propagation both directions
+  * supported: group unfollow both directions
+  * supported: basic log scan for 500/crash output
 
 Run with KEEP_SMOKE=1 to leave both servers available for manual browser/API work.
 EOF
