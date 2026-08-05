@@ -429,6 +429,37 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
     }
   end
 
+  def context_ancestors_operation do
+    paginated_context_operation(
+      "Status ancestors",
+      "View a bounded page of statuses before this status in its thread",
+      "StatusController.context_ancestors"
+    )
+  end
+
+  def context_descendants_operation do
+    paginated_context_operation(
+      "Status descendants",
+      "View a bounded page of statuses after this status in its thread",
+      "StatusController.context_descendants"
+    )
+  end
+
+  defp paginated_context_operation(summary, description, operation_id) do
+    %Operation{
+      tags: ["Retrieve status information"],
+      summary: summary,
+      description: description,
+      operationId: operation_id,
+      security: [%{"oAuth" => ["read:statuses"]}],
+      parameters: [id_param() | pagination_params()],
+      responses: %{
+        200 => Operation.response("Array of Status", "application/json", array_of_statuses()),
+        404 => Operation.response("Not Found", "application/json", ApiError)
+      }
+    }
+  end
+
   def translate_operation do
     %Operation{
       tags: ["Retrieve status information"],

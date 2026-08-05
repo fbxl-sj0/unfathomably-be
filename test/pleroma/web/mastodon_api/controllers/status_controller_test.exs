@@ -2230,6 +2230,50 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
            } = response
   end
 
+  test "context ancestors and descendants are bounded and paginate away from the status" do
+    user = insert(:user)
+
+    {:ok, %{id: id1}} = CommonAPI.post(user, %{status: "1"})
+    {:ok, %{id: id2}} = CommonAPI.post(user, %{status: "2", in_reply_to_status_id: id1})
+    {:ok, %{id: id3}} = CommonAPI.post(user, %{status: "3", in_reply_to_status_id: id2})
+    {:ok, %{id: id4}} = CommonAPI.post(user, %{status: "4", in_reply_to_status_id: id3})
+    {:ok, %{id: id5}} = CommonAPI.post(user, %{status: "5", in_reply_to_status_id: id4})
+    {:ok, %{id: id6}} = CommonAPI.post(user, %{status: "6", in_reply_to_status_id: id5})
+    {:ok, %{id: id7}} = CommonAPI.post(user, %{status: "7", in_reply_to_status_id: id6})
+
+    ancestors_conn =
+      build_conn()
+      |> get("/api/v1/statuses/#{id4}/context/ancestors?limit=2")
+
+    assert [%{"id" => ^id2}, %{"id" => ^id3}] =
+             json_response_and_validate_schema(ancestors_conn, :ok)
+
+    assert [ancestor_links] = get_resp_header(ancestors_conn, "link")
+    assert ancestor_links =~ "/context/ancestors"
+    assert ancestor_links =~ "max_id=#{id2}"
+
+    assert [%{"id" => ^id1}] =
+             build_conn()
+             |> get("/api/v1/statuses/#{id4}/context/ancestors?limit=2&max_id=#{id2}")
+             |> json_response_and_validate_schema(:ok)
+
+    descendants_conn =
+      build_conn()
+      |> get("/api/v1/statuses/#{id4}/context/descendants?limit=2")
+
+    assert [%{"id" => ^id5}, %{"id" => ^id6}] =
+             json_response_and_validate_schema(descendants_conn, :ok)
+
+    assert [descendant_links] = get_resp_header(descendants_conn, "link")
+    assert descendant_links =~ "/context/descendants"
+    assert descendant_links =~ "min_id=#{id6}"
+
+    assert [%{"id" => ^id7}] =
+             build_conn()
+             |> get("/api/v1/statuses/#{id4}/context/descendants?limit=2&min_id=#{id6}")
+             |> json_response_and_validate_schema(:ok)
+  end
+
   test "context returns not found for a missing status" do
     build_conn()
     |> get("/api/v1/statuses/#{Ecto.UUID.generate()}/context")

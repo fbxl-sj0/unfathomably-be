@@ -38,13 +38,18 @@ defmodule Pleroma.Web.ControllerHelper do
 
   defp param_to_integer(_, default), do: default
 
-  def add_link_headers(conn, entries, extra_params \\ %{})
+  def add_link_headers(conn, entries, extra_params \\ %{}, order \\ :desc)
 
-  def add_link_headers(%{assigns: %{skip_link_headers: true}} = conn, _entries, _extra_params),
-    do: conn
+  def add_link_headers(
+        %{assigns: %{skip_link_headers: true}} = conn,
+        _entries,
+        _extra_params,
+        _order
+      ),
+      do: conn
 
-  def add_link_headers(conn, entries, extra_params) do
-    case get_pagination_fields(conn, entries, extra_params) do
+  def add_link_headers(conn, entries, extra_params, order) do
+    case get_pagination_fields(conn, entries, extra_params, order) do
       %{"next" => next_url, "prev" => prev_url} ->
         put_resp_header(conn, "link", "<#{next_url}>; rel=\"next\", <#{prev_url}>; rel=\"prev\"")
 

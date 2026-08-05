@@ -41,6 +41,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
            :show,
            :card,
            :context,
+           :context_ancestors,
+           :context_descendants,
            :show_history,
            :show_source,
            :translate,
@@ -543,6 +545,58 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
     else
       nil -> {:error, :not_found}
     end
+  end
+
+  @doc "GET /api/v1/statuses/:id/context/ancestors"
+  def context_ancestors(%{assigns: %{user: user}} = conn, %{id: id} = params) do
+    with %Activity{} = activity <- Activity.get_by_id(id) do
+      activities =
+        activity.data["context"]
+        |> ActivityPub.fetch_activities_for_context_collection(
+          context_page_params(params, activity, user, :ancestors)
+        )
+
+      conn
+      |> ControllerHelper.add_link_headers(activities, %{}, :asc)
+      |> render("index.json", activities: activities, for: user, as: :activity)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  @doc "GET /api/v1/statuses/:id/context/descendants"
+  def context_descendants(%{assigns: %{user: user}} = conn, %{id: id} = params) do
+    with %Activity{} = activity <- Activity.get_by_id(id) do
+      activities =
+        activity.data["context"]
+        |> ActivityPub.fetch_activities_for_context_collection(
+          context_page_params(params, activity, user, :descendants)
+        )
+
+      conn
+      |> ControllerHelper.add_link_headers(activities, %{}, :asc)
+      |> render("index.json", activities: activities, for: user, as: :activity)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp context_page_params(params, activity, user, :ancestors) do
+    params
+    |> Map.put_new(:max_id, activity.id)
+    |> Map.put(:order_asc, true)
+    |> Map.put(:blocking_user, user)
+    |> Map.put(:user, user)
+    |> Map.put(:exclude_id, activity.id)
+  end
+
+  defp context_page_params(params, activity, user, :descendants) do
+    params
+    |> Map.put_new(:min_id, activity.id)
+    |> Map.put(:order_asc, true)
+    |> Map.put(:blocking_user, user)
+    |> Map.put(:user, user)
+    |> Map.put(:exclude_id, activity.id)
   end
 
   @doc "POST /api/v1/statuses/:id/translate"

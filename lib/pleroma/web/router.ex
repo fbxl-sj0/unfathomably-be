@@ -1015,6 +1015,8 @@ defmodule Pleroma.Web.Router do
 
     get("/statuses", StatusController, :index)
     get("/statuses/:id", StatusController, :show)
+    get("/statuses/:id/context/ancestors", StatusController, :context_ancestors)
+    get("/statuses/:id/context/descendants", StatusController, :context_descendants)
     get("/statuses/:id/context", StatusController, :context)
     get("/statuses/:id/card", StatusController, :card)
     get("/statuses/:id/favourited_by", StatusController, :favourited_by)

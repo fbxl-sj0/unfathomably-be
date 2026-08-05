@@ -646,6 +646,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
     context
     |> fetch_activities_for_context_query(opts)
+    |> exclude(:order_by)
     |> Pagination.fetch_paginated(Map.put_new(opts, :limit, 40), :keyset)
   end
 
