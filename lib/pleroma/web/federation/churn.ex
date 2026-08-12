@@ -28,6 +28,45 @@ defmodule Pleroma.Web.Federation.Churn do
     :missing_signature_retry_metadata
   ]
 
+  @terminal_transport_errors [
+    :econnrefused,
+    :ehostunreach,
+    :enetunreach,
+    :nxdomain,
+    :unreachable_host
+  ]
+
+  @terminal_tls_alerts [
+    :bad_certificate,
+    :certificate_expired,
+    :handshake_failure,
+    :unknown_ca,
+    :unrecognized_name
+  ]
+
+  @doc """
+  Identifies transport failures that cannot improve during an immediate retry.
+
+  A later refresh may probe the actor again after DNS, routing, or TLS
+  configuration changes. This classification only prevents one Oban job from
+  repeating the same deterministic request during its short retry window.
+  Timeouts, connection resets, and HTTP 5xx responses intentionally remain
+  transient.
+  """
+  @spec terminal_transport_error?(term()) :: boolean()
+  def terminal_transport_error?({:error, reason}), do: terminal_transport_error?(reason)
+
+  def terminal_transport_error?({:tls_alert, {reason, _message}})
+      when reason in @terminal_tls_alerts,
+      do: true
+
+  def terminal_transport_error?({reason, _detail})
+      when reason in @terminal_transport_errors or reason in @terminal_tls_alerts,
+      do: true
+
+  def terminal_transport_error?({_context, reason}), do: terminal_transport_error?(reason)
+  def terminal_transport_error?(reason), do: reason in @terminal_transport_errors
+
   @type signature_retry_category ::
           :forwarded_download_activity
           | :forwarded_view_activity

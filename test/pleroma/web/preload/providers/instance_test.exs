@@ -18,11 +18,8 @@ defmodule Pleroma.Web.Preload.Providers.InstanceTest do
     assert String.equivalent?(description, "Pleroma: An efficient and flexible fediverse server")
   end
 
-  test "it renders the panel", %{"/instance/panel.html" => panel} do
-    assert String.contains?(
-             panel,
-             "<p>Welcome to <a href=\"https://pleroma.social\" target=\"_blank\">Pleroma!</a></p>"
-           )
+  test "it omits the panel when the instance does not install one", terms do
+    refute Map.has_key?(terms, "/instance/panel.html")
   end
 
   test "it works with overrides" do
@@ -50,7 +47,7 @@ defmodule Pleroma.Web.Preload.Providers.InstanceTest do
     "/api/pleroma/frontend_configurations" => fe_configs
   } do
     assert %{
-             pleroma_fe: %{background: "/images/city.jpg", logo: "/static/logo.svg"}
+             pleroma_fe: %{background: "/images/city.jpg", logo: "/favicon.png"}
            } = fe_configs
   end
 end

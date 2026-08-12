@@ -167,7 +167,8 @@ defmodule Pleroma.Activity.Ir.Topics do
     []
   end
 
-  defp item_creation_tags(tags, object, %{data: %{"type" => "Create"}} = activity) do
+  defp item_creation_tags(tags, object, %{data: %{"type" => type}} = activity)
+       when type in ["Create", "Listen"] do
     tags ++
       remote_topics(activity) ++ hashtags_to_topics(object) ++ attachment_topics(object, activity)
   end

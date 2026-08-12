@@ -36,7 +36,8 @@ defmodule Pleroma.Web.MastodonAPI.ScheduledActivityViewTest do
         "sensitive" => true,
         "spoiler_text" => "spoiler",
         "visibility" => "unlisted",
-        "in_reply_to_id" => to_string(activity.id)
+        "in_reply_to_id" => to_string(activity.id),
+        "quoted_status_id" => to_string(activity.id)
       },
       scheduled_at: scheduled_at
     }
@@ -54,6 +55,8 @@ defmodule Pleroma.Web.MastodonAPI.ScheduledActivityViewTest do
         in_reply_to_id: to_string(activity.id),
         media_ids: [upload.id],
         poll: nil,
+        quote_id: to_string(activity.id),
+        quoted_status_id: to_string(activity.id),
         scheduled_at: nil,
         sensitive: true,
         spoiler_text: "spoiler",

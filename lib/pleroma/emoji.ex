@@ -72,6 +72,33 @@ defmodule Pleroma.Emoji do
     :ets.tab2list(@ets)
   end
 
+  @doc "Returns whether an emoji entry can produce a usable client media URL."
+  @spec renderable?({String.t(), t()}) :: boolean()
+  def renderable?({_shortcode, %__MODULE__{file: file}}), do: renderable_file?(file)
+  def renderable?(_entry), do: false
+
+  defp renderable_file?(file) when is_binary(file) do
+    case String.trim(file) do
+      "" ->
+        false
+
+      "http" <> _ = url ->
+        case URI.parse(url) do
+          %URI{scheme: scheme, host: host, userinfo: nil}
+          when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+            true
+
+          _ ->
+            false
+        end
+
+      _local_path ->
+        true
+    end
+  end
+
+  defp renderable_file?(_file), do: false
+
   @doc "Clear out old emojis"
   def clear_all, do: :ets.delete_all_objects(@ets)
 

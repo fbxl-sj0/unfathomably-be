@@ -70,7 +70,7 @@ defmodule Pleroma.Web.Plugs.FrontendStaticPlugTest do
       Pleroma.Web.MediaProxy.encode_url("https://pbs.twimg.com/media/Ek7w8WPVcAApOvN.jpg:large")
 
     with_mock Pleroma.ReverseProxy,
-      call: fn _conn, _url, _opts -> %Plug.Conn{status: :success} end do
+      media_call: fn _conn, _url, _opts -> %Plug.Conn{status: :success} end do
       assert %Plug.Conn{status: :success} = get(conn, url)
     end
   end
@@ -99,7 +99,9 @@ defmodule Pleroma.Web.Plugs.FrontendStaticPlugTest do
       "relay",
       "internal",
       ".well-known",
+      "activitypub",
       "nodeinfo",
+      "fasp",
       "manifest.json",
       "auth",
       "proxy",

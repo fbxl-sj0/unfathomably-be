@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
-  use Pleroma.DataCase
+  use Pleroma.DataCase, async: false
 
   alias Pleroma.Config
   alias Pleroma.Emoji
+  alias Pleroma.Workers.StealEmojiWorker
   alias Pleroma.Web.ActivityPub.MRF.StealEmojiPolicy
 
   setup do
@@ -61,12 +62,24 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
 
     assert {:ok, _message} = StealEmojiPolicy.filter(message)
 
+    assert_enqueued(worker: StealEmojiWorker, args: emoji_job_args())
+    assert :ok = perform_job(StealEmojiWorker, emoji_job_args())
+
     assert "firedfox" in installed()
     assert File.exists?(path)
 
     assert path
            |> Path.join("firedfox.png")
            |> File.exists?()
+  end
+
+  test "repeated deliveries enqueue one incomplete installation", %{message: message} do
+    clear_config(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
+
+    assert {:ok, _message} = StealEmojiPolicy.filter(message)
+    assert {:ok, _message} = StealEmojiPolicy.filter(message)
+
+    assert length(all_enqueued(worker: StealEmojiWorker)) == 1
   end
 
   test "reject regex shortcode", %{message: message} do
@@ -79,6 +92,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
     )
 
     assert {:ok, _message} = StealEmojiPolicy.filter(message)
+
+    assert :discard = perform_job(StealEmojiWorker, emoji_job_args())
 
     refute "firedfox" in installed()
   end
@@ -146,11 +161,25 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
 
     clear_config(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
 
-    ExUnit.CaptureLog.capture_log(fn ->
-      assert {:ok, _message} = StealEmojiPolicy.filter(message)
-    end) =~ "MRF.StealEmojiPolicy: Failed to fetch https://example.org/emoji/firedfox.png"
+    assert {:ok, _message} = StealEmojiPolicy.filter(message)
+    assert :discard = perform_job(StealEmojiWorker, emoji_job_args())
 
     refute "firedfox" in installed()
+  end
+
+  test "worker revalidates the source host before fetching" do
+    Tesla.Mock.mock(fn _env -> flunk("a removed allowlist host must not be fetched") end)
+    clear_config(:mrf_steal_emoji, hosts: [])
+
+    assert :discard = perform_job(StealEmojiWorker, emoji_job_args())
+  end
+
+  defp emoji_job_args do
+    %{
+      "shortcode" => "firedfox",
+      "url" => "https://example.org/emoji/firedfox.png",
+      "source_host" => "example.org"
+    }
   end
 
   defp installed, do: Emoji.get_all() |> Enum.map(fn {k, _} -> k end)

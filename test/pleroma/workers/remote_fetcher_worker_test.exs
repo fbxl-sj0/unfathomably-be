@@ -133,8 +133,7 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
       |> Ecto.Changeset.add_error(:actor, "user is deactivated")
 
     result =
-      {:error,
-       {:transmogrifier, {:error, {:validate, {:error, changeset}}}}}
+      {:error, {:transmogrifier, {:error, {:validate, {:error, changeset}}}}}
 
     with_mock Fetcher, fetch_object_from_id: fn _, _ -> result end do
       assert {:cancel, {:remote_actor_deactivated, actor_id}} =
@@ -146,6 +145,26 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
                })
 
       assert actor_id == actor.ap_id
+    end
+  end
+
+  test "cancels deterministic remote object validation failures" do
+    changeset =
+      {%{}, %{name: :string}}
+      |> Ecto.Changeset.change()
+      |> Ecto.Changeset.add_error(:name, "can't be blank", validation: :required)
+
+    result =
+      {:error, {:transmogrifier, {:error, {:validate, {:error, changeset}}}}}
+
+    with_mock Fetcher, fetch_object_from_id: fn _, _ -> result end do
+      assert {:cancel, :remote_object_validation_failed} =
+               RemoteFetcherWorker.perform(%Oban.Job{
+                 args: %{
+                   "op" => "fetch_remote",
+                   "id" => "https://remote.example/objects/invalid-poll"
+                 }
+               })
     end
   end
 

@@ -85,9 +85,15 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
       assert_received {:fetch_object_from_id, @reply_1, reply_1_opts}
       assert_received {:fetch_object_from_id, @reply_2, reply_2_opts}
       assert reply_1_opts[:depth] == 1
-      assert reply_1_opts[:prefetched_data]["id"] == @reply_1
+
+      assert {:ok, %{"id" => @reply_1}} =
+               Fetcher.prefetched_object_data(reply_1_opts[:prefetched_object])
+
       assert reply_2_opts[:depth] == 1
-      assert reply_2_opts[:prefetched_data]["id"] == @reply_2
+
+      assert {:ok, %{"id" => @reply_2}} =
+               Fetcher.prefetched_object_data(reply_2_opts[:prefetched_object])
+
       refute_received {:fetch_object_from_id, @object_id, _}
 
       object = Object.get_by_ap_id(@object_id)
@@ -112,6 +118,81 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
 
       assert_received {:discovery_fetch, @reply_1}
       refute_received {:persistence_fetch, @reply_1, _}
+    end
+  end
+
+  test "does not refetch pages when a remote collection closes a cycle" do
+    test_pid = self()
+
+    user =
+      insert(:user,
+        local: false,
+        ap_id: @actor,
+        follower_address: @actor <> "/followers"
+      )
+
+    object =
+      insert(:note,
+        user: user,
+        data: %{
+          "id" => @object_id,
+          "type" => "Note",
+          "actor" => @actor,
+          "attributedTo" => @actor,
+          "context" => @context_id,
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => []
+        }
+      )
+
+    with_mock Fetcher,
+      fetch_and_contain_remote_object_from_id: fn
+        @object_id ->
+          {:error, :not_found}
+
+        @context_id ->
+          send(test_pid, {:collection_fetch, @context_id})
+
+          {:ok,
+           %{
+             "id" => @context_id,
+             "type" => "OrderedCollection",
+             "orderedItems" => [@reply_1],
+             "next" => @next_page_id
+           }}
+
+        @next_page_id ->
+          send(test_pid, {:collection_fetch, @next_page_id})
+
+          {:ok,
+           %{
+             "id" => @next_page_id,
+             "type" => "OrderedCollectionPage",
+             "orderedItems" => [%{"id" => @reply_2}],
+             "next" => @context_id
+           }}
+
+        reply_id when reply_id in [@reply_1, @reply_2] ->
+          {:ok,
+           %{
+             "id" => reply_id,
+             "type" => "Note",
+             "actor" => @actor,
+             "attributedTo" => @actor,
+             "context" => @context_id,
+             "to" => [Pleroma.Constants.as_public()],
+             "cc" => []
+           }}
+      end,
+      fetch_object_from_id: fn id, _opts ->
+        {:ok, %Object{data: %{"id" => id}}}
+      end do
+      assert :ok = RemoteReplies.fetch_for_object(object)
+
+      assert_received {:collection_fetch, @context_id}
+      assert_received {:collection_fetch, @next_page_id}
+      refute_received {:collection_fetch, @context_id}
+      refute_received {:collection_fetch, @next_page_id}
     end
   end
 end

@@ -30,6 +30,33 @@ defmodule Pleroma.Web.ActivityPub.ActorExtensionsTest do
     refute Map.has_key?(extensions, "inbox")
   end
 
+  test "does not retain identity statements outside the verified proof pipeline", %{
+    actor: actor
+  } do
+    unverified_statement = %{
+      "type" => "VerifiableIdentityStatement",
+      "subject" => "did:key:z6Mkinvalid",
+      "alsoKnownAs" => actor["id"]
+    }
+
+    actor =
+      Map.update(
+        actor,
+        "attachment",
+        [unverified_statement],
+        &[unverified_statement | List.wrap(&1)]
+      )
+
+    extensions = ActorExtensions.extract(actor)
+
+    refute Enum.any?(
+             List.wrap(extensions["attachment"]),
+             &(&1["type"] == "VerifiableIdentityStatement")
+           )
+
+    assert Enum.any?(List.wrap(extensions["attachment"]), &(&1["type"] == "Link"))
+  end
+
   test "merges extension collections while normalized actor fields remain authoritative", %{
     actor: source_actor
   } do
@@ -76,6 +103,19 @@ defmodule Pleroma.Web.ActivityPub.ActorExtensionsTest do
     clear_config([:activitypub, :custom_object_max_bytes], 64)
 
     refute ActorExtensions.valid?(%{"f3di:concreteType" => String.duplicate("x", 128)})
+  end
+
+  test "normalizes explicit unauthenticated web visibility preferences" do
+    assert ActorExtensions.unauthenticated_web_visibility(%{}) == nil
+
+    assert ActorExtensions.unauthenticated_web_visibility(%{
+             "hidesToPublicFromUnauthedWeb" => true,
+             "hidesCcPublicFromUnauthedWeb" => false
+           }) == %{public: false, unlisted: true}
+
+    assert ActorExtensions.unauthenticated_web_visibility(%{
+             "hidesCcPublicFromUnauthedWeb" => true
+           }) == %{public: true, unlisted: false}
   end
 end
 

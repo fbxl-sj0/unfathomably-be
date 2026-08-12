@@ -5,7 +5,10 @@
 defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   use Pleroma.Web, :controller
 
+  import Ecto.Query
+
   alias Pleroma.Activity
+  alias Pleroma.Nostr.Identity
   alias Pleroma.Object.Fetcher
   alias Pleroma.Pagination
   alias Pleroma.Repo
@@ -20,15 +23,55 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
 
   @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
   @default_remote_group_backfill_limit 20
+  @nostr_thread_parent_limit 40
+  @public_group_catalog_limit 200
   @remote_group_backfill_limit 40
   @remote_group_backfill_timeout 20_000
   @remote_group_backfill_cache :remote_group_backfill_cache
 
   plug(OAuthScopesPlug, %{scopes: ["read:statuses"], fallback: :proceed_unauthenticated})
 
-  defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
+  defp add_link_headers(conn, entries, extra_params \\ %{}),
+    do: ControllerHelper.add_link_headers(conn, entries, extra_params)
 
   @doc "GET /api/v1/timelines/groups"
+  def index(conn, %{"discover" => discover} = params)
+      when discover in [true, "true", "1", 1] do
+    user = conn.assigns[:user]
+
+    activity_params =
+      params
+      |> pagination_params()
+      |> maybe_put_discussion_roots_only()
+      |> Map.put(:type, ["Create", "Announce"])
+      |> Map.put(:blocking_user, user)
+      |> Map.put(:muting_user, user)
+      |> Map.put(:reply_filtering_user, user)
+      |> Map.put(:announce_filtering_user, user)
+
+    group_ap_ids =
+      @public_group_catalog_limit
+      |> FederatedTarget.public_native_groups()
+      |> Enum.reject(&(FederatedTarget.group_kind(&1) == "collection"))
+      |> Enum.map(& &1.ap_id)
+
+    activities =
+      group_ap_ids
+      |> ActivityPub.fetch_activities_query(activity_params)
+      |> Pagination.fetch_paginated(activity_params)
+      |> unique_group_activities()
+
+    conn
+    |> put_view(StatusView)
+    |> add_link_headers(activities, %{"discover" => "true"})
+    |> render("index.json",
+      activities: activities,
+      for: user,
+      as: :activity,
+      with_muted: Map.get(activity_params, :with_muted, false)
+    )
+  end
+
   def index(%{assigns: %{user: %User{} = user}} = conn, params) do
     activity_params =
       params
@@ -79,15 +122,18 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
         |> Map.put(:reply_filtering_user, user)
         |> Map.put(:announce_filtering_user, user)
 
-      activities =
+      page_activities =
         group
         |> fetch_group_activities(activity_params)
         |> maybe_backfill_remote_group(group, activity_params)
         |> unique_group_activities()
 
+      activities =
+        maybe_include_nostr_thread_parents(page_activities, group, activity_params)
+
       conn
       |> put_view(StatusView)
-      |> add_link_headers(activities)
+      |> add_link_headers(page_activities)
       |> render("index.json",
         activities: activities,
         for: user,
@@ -121,7 +167,9 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
 
   defp maybe_put_discussion_roots_only(%{with_replies: with_replies} = params)
        when with_replies in [true, "true", "1", 1] do
-    Map.delete(params, :with_replies)
+    params
+    |> Map.delete(:with_replies)
+    |> Map.put(:include_thread_parents, true)
   end
 
   defp maybe_put_discussion_roots_only(params) do
@@ -151,10 +199,198 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupTimelineController do
   defp group_activity_recipients(_group), do: []
 
   defp fetch_group_activities(%User{} = group, activity_params) do
-    group
-    |> group_activity_recipients()
-    |> ActivityPub.fetch_activities_query(activity_params)
-    |> Pagination.fetch_paginated(activity_params)
+    query =
+      group
+      |> group_activity_recipients()
+      |> ActivityPub.fetch_activities_query(activity_params)
+
+    if Identity.nostr_group?(group) and not pinned_timeline?(activity_params) do
+      fetch_nostr_group_activities(query, activity_params)
+    else
+      Pagination.fetch_paginated(query, activity_params)
+    end
+  end
+
+  # Nostr history commonly arrives as a bounded backfill. Its local activity
+  # IDs therefore describe ingestion order, not the event chronology users
+  # expect. Keep Mastodon-compatible activity IDs as cursors, but translate
+  # each cursor to the joined object's published time before applying limits.
+  defp fetch_nostr_group_activities(query, activity_params) do
+    pagination_params =
+      activity_params
+      |> Map.drop([:max_id, :min_id, :since_id])
+      |> Map.put(:skip_order, true)
+
+    query
+    |> where([activity], fragment("?->>'type'", activity.data) == "Create")
+    |> exclude(:order_by)
+    |> apply_nostr_group_cursor(:max_id, activity_params, :older)
+    |> apply_nostr_group_cursor(:min_id, activity_params, :newer)
+    |> apply_nostr_group_cursor(:since_id, activity_params, :newer)
+    |> order_by(
+      [activity, object: object],
+      desc:
+        fragment(
+          "COALESCE(NULLIF(?->>'published', '')::timestamptz, ?)",
+          object.data,
+          activity.inserted_at
+        ),
+      desc: activity.id
+    )
+    |> Pagination.fetch_paginated(pagination_params)
+  end
+
+  # A chronological Nostr page can start in the middle of an active kind-9
+  # conversation. Include a bounded ancestor closure so the frontend can draw
+  # that conversation as a thread. The parent query reuses every visibility,
+  # recipient, block, mute, and filtering restriction from the timeline query.
+  # Link headers continue to use page_activities, keeping pagination cursors
+  # independent from these additional context rows.
+  defp maybe_include_nostr_thread_parents(
+         activities,
+         %User{} = group,
+         %{include_thread_parents: true} = activity_params
+       ) do
+    if Identity.nostr_group?(group) do
+      query =
+        group
+        |> group_activity_recipients()
+        |> ActivityPub.fetch_activities_query(activity_params)
+
+      seen_object_ids =
+        activities
+        |> Enum.map(&group_activity_object_id/1)
+        |> Enum.filter(&is_binary/1)
+        |> MapSet.new()
+
+      include_nostr_thread_parents(
+        activities,
+        query,
+        seen_object_ids,
+        @nostr_thread_parent_limit
+      )
+    else
+      activities
+    end
+  end
+
+  defp maybe_include_nostr_thread_parents(activities, _group, _activity_params), do: activities
+
+  defp include_nostr_thread_parents(activities, _query, _seen_object_ids, remaining)
+       when remaining <= 0,
+       do: activities
+
+  defp include_nostr_thread_parents(activities, query, seen_object_ids, remaining) do
+    parent_object_ids =
+      activities
+      |> Enum.flat_map(fn
+        %Activity{object: %{data: %{"inReplyTo" => parent_id}}} when is_binary(parent_id) ->
+          [parent_id]
+
+        _activity ->
+          []
+      end)
+      |> Enum.reject(&MapSet.member?(seen_object_ids, &1))
+      |> Enum.uniq()
+      |> Enum.take(remaining)
+
+    parent_activities = fetch_nostr_thread_parent_activities(query, parent_object_ids)
+
+    case parent_activities do
+      [] ->
+        activities
+
+      parents ->
+        next_seen_object_ids =
+          Enum.reduce(parents, seen_object_ids, fn parent, seen ->
+            case group_activity_object_id(parent) do
+              object_id when is_binary(object_id) -> MapSet.put(seen, object_id)
+              _object_id -> seen
+            end
+          end)
+
+        include_nostr_thread_parents(
+          activities ++ parents,
+          query,
+          next_seen_object_ids,
+          remaining - length(parents)
+        )
+    end
+  end
+
+  defp fetch_nostr_thread_parent_activities(_query, []), do: []
+
+  defp fetch_nostr_thread_parent_activities(query, parent_object_ids) do
+    query
+    |> exclude(:order_by)
+    |> where(
+      [_activity, object],
+      fragment("?->>'id'", object.data) in ^parent_object_ids
+    )
+    |> Repo.all()
+    |> unique_group_activities()
+  end
+
+  defp apply_nostr_group_cursor(query, key, params, direction) do
+    with id when is_binary(id) and id != "" <- Map.get(params, key),
+         %Activity{} = activity <- activity_with_object(id),
+         {:ok, published} <- activity_published_at(activity) do
+      restrict_nostr_group_cursor(query, activity.id, published, direction)
+    else
+      _ -> query
+    end
+  end
+
+  defp activity_with_object(id) do
+    Activity.get_by_id_with_object(id)
+  end
+
+  defp activity_published_at(%Activity{object: %{data: %{"published" => published}}})
+       when is_binary(published) do
+    case DateTime.from_iso8601(published) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      _ -> {:error, :invalid_published_at}
+    end
+  end
+
+  defp activity_published_at(%Activity{inserted_at: %NaiveDateTime{} = inserted_at}) do
+    DateTime.from_naive(inserted_at, "Etc/UTC")
+  end
+
+  defp activity_published_at(_activity), do: {:error, :missing_published_at}
+
+  defp restrict_nostr_group_cursor(query, cursor_id, published, :older) do
+    where(
+      query,
+      [activity, object: object],
+      fragment(
+        "COALESCE(NULLIF(?->>'published', '')::timestamptz, ?)",
+        object.data,
+        activity.inserted_at
+      ) < ^published or
+        (fragment(
+           "COALESCE(NULLIF(?->>'published', '')::timestamptz, ?)",
+           object.data,
+           activity.inserted_at
+         ) == ^published and activity.id < ^cursor_id)
+    )
+  end
+
+  defp restrict_nostr_group_cursor(query, cursor_id, published, :newer) do
+    where(
+      query,
+      [activity, object: object],
+      fragment(
+        "COALESCE(NULLIF(?->>'published', '')::timestamptz, ?)",
+        object.data,
+        activity.inserted_at
+      ) > ^published or
+        (fragment(
+           "COALESCE(NULLIF(?->>'published', '')::timestamptz, ?)",
+           object.data,
+           activity.inserted_at
+         ) == ^published and activity.id > ^cursor_id)
+    )
   end
 
   defp unique_group_activities(activities) when is_list(activities) do

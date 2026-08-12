@@ -178,6 +178,25 @@ defmodule Pleroma.QuoteAuthorization do
     end
   end
 
+  @doc "Rechecks a remote quote when an implicit object update adds authorization."
+  def reconcile_implicit_update(%Object{} = old_object, %{} = updated_data) do
+    authorization = updated_data["quoteAuthorization"]
+
+    with %__MODULE__{state: state} = record <- get_by_quote_object(old_object),
+         true <- state in ~w[pending rejected],
+         quote_url when is_binary(quote_url) <- old_object.data["quoteUrl"],
+         ^quote_url <- updated_data["quoteUrl"],
+         authorization when is_binary(authorization) <- authorization,
+         true <- record.authorization_ap_id != authorization do
+      _ = QuoteAuthorizationWorker.enqueue(old_object.id, authorization)
+      :ok
+    else
+      _ -> :ok
+    end
+  end
+
+  def reconcile_implicit_update(_old_object, _updated_data), do: :ok
+
   def revoke_from_document(%{
         "attributedTo" => actor,
         "interactingObject" => quote_ap_id,
@@ -228,6 +247,7 @@ defmodule Pleroma.QuoteAuthorization do
       record = Repo.one!(from(q in __MODULE__, where: q.id == ^record.id, lock: "FOR UPDATE"))
       quote_object = Repo.get!(Object, record.quote_object_id)
       quoted_object = Repo.get!(Object, record.quoted_object_id)
+      previous_state = record.state
 
       adjust_count(quoted_object.data["id"], record.state, state)
 
@@ -236,17 +256,50 @@ defmodule Pleroma.QuoteAuthorization do
         |> maybe_put(:authorization_ap_id, authorization)
 
       record = record |> changeset(attrs) |> Repo.update!()
-      put_object_state(quote_object, record)
+      {put_object_state(quote_object, record), previous_state}
     end)
     |> case do
-      {:ok, object} -> {:ok, object}
-      {:error, error} -> {:error, error}
+      {:ok, {object, previous_state}} ->
+        stream_state_change(object, previous_state, state)
+        {:ok, object}
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 
+  defp stream_state_change(%Object{} = object, previous_state, state)
+       when previous_state != state do
+    case Activity.get_create_by_object_ap_id_with_object(object.data["id"]) do
+      %Activity{} = create_activity ->
+        update_activity = %Activity{
+          actor: create_activity.actor,
+          recipients: create_activity.recipients,
+          object: object,
+          data: %{
+            "id" => "#{object.data["id"]}#quote-state-#{state}",
+            "type" => "Update",
+            "actor" => create_activity.actor,
+            "object" => object.data["id"],
+            "to" => List.wrap(object.data["to"]),
+            "cc" => List.wrap(object.data["cc"])
+          }
+        }
+
+        Pleroma.Web.ActivityPub.ActivityPub.stream_out(update_activity)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp stream_state_change(_object, _previous_state, _state), do: :ok
+
   def authorization_document(%Object{} = quote_object) do
     with %__MODULE__{state: "accepted"} = record <- get_by_quote_object(quote_object),
-         %Object{} = quoted_object <- Repo.get(Object, record.quoted_object_id) do
+         true <- live_object?(quote_object),
+         %Object{} = quoted_object <- Repo.get(Object, record.quoted_object_id),
+         true <- live_object?(quoted_object) do
       {:ok,
        %{
          "id" => authorization_uri(quote_object),
@@ -255,6 +308,16 @@ defmodule Pleroma.QuoteAuthorization do
          "interactingObject" => quote_object.data["id"],
          "interactionTarget" => quoted_object.data["id"]
        }}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc "Returns an authorization document only when the requester may see it."
+  def authorization_document_for_requester(%Object{} = quote_object, requester) do
+    with true <- authorization_visible_to?(quote_object, requester),
+         {:ok, document} <- authorization_document(quote_object) do
+      {:ok, document}
     else
       _ -> {:error, :not_found}
     end
@@ -366,6 +429,38 @@ defmodule Pleroma.QuoteAuthorization do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  @doc "Returns true only when a quote authorization is accepted, live, and fully public."
+  def cacheable_document?(id) do
+    with %Object{} = quote_object <- Object.get_by_id(id),
+         {:ok, _document} <- authorization_document(quote_object),
+         %__MODULE__{} = record <- get_by_quote_object(quote_object),
+         %Object{} = quoted_object <- Repo.get(Object, record.quoted_object_id),
+         true <- Pleroma.Web.ActivityPub.Visibility.is_public?(quote_object),
+         true <- Pleroma.Web.ActivityPub.Visibility.is_public?(quoted_object) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp authorization_visible_to?(%Object{} = quote_object, requester) do
+    with %__MODULE__{} = record <- get_by_quote_object(quote_object),
+         %Object{} = quoted_object <- Repo.get(Object, record.quoted_object_id) do
+      public? =
+        Pleroma.Web.ActivityPub.Visibility.is_public?(quote_object) and
+          Pleroma.Web.ActivityPub.Visibility.is_public?(quoted_object)
+
+      requester_id = if match?(%User{}, requester), do: requester.ap_id
+
+      public? or requester_id in [record.quote_actor, record.quoted_actor]
+    else
+      _ -> false
+    end
+  end
+
+  defp live_object?(%Object{data: %{"type" => "Tombstone"}}), do: false
+  defp live_object?(%Object{}), do: true
 end
 
 # end of quote_authorization.ex

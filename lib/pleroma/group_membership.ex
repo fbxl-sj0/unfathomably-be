@@ -109,6 +109,26 @@ defmodule Pleroma.GroupMembership do
   def sync_federated_follow(%User{}, %User{}, _state), do: {:error, :invalid_membership_state}
 
   @doc """
+  Synchronizes one account from a trusted external group directory snapshot.
+
+  Directory membership is presentation state rather than an ActivityPub Follow.
+  It must not clear a local ban, and it deliberately avoids creating federation
+  activities while a protocol adapter refreshes a remote member list.
+  """
+  def sync_directory_member(%User{} = group, %User{} = account, role)
+      when role in @roles do
+    case get(group, account) do
+      %__MODULE__{state: "banned"} = membership ->
+        {:ok, membership}
+
+      _membership ->
+        upsert(group, account, %{role: role, state: "active"})
+    end
+  end
+
+  def sync_directory_member(%User{}, %User{}, _role), do: {:error, :unsupported_role}
+
+  @doc """
   Removes the ordinary membership mirrored from an ActivityPub Follow.
 
   Repeated Undo or Reject deliveries are harmless. Manager roles and bans are

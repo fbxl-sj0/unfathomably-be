@@ -60,10 +60,11 @@ defmodule Pleroma.Web.ActivityPub.Visibility do
   def is_list?(%{data: %{"listMessage" => _}}), do: true
   def is_list?(_), do: false
 
-  @spec visible_for_user?(Object.t() | Activity.t() | nil, User.t() | nil) :: boolean()
+  @spec visible_for_user?(Object.t() | Activity.t() | false | nil, User.t() | nil) :: boolean()
   def visible_for_user?(%Object{data: %{"type" => "Tombstone"}}, _), do: false
   def visible_for_user?(%Activity{actor: ap_id}, %User{ap_id: ap_id}), do: true
   def visible_for_user?(%Object{data: %{"actor" => ap_id}}, %User{ap_id: ap_id}), do: true
+  def visible_for_user?(false, _), do: false
   def visible_for_user?(nil, _), do: false
   def visible_for_user?(%Activity{data: %{"listMessage" => _}}, nil), do: false
 
@@ -96,7 +97,43 @@ defmodule Pleroma.Web.ActivityPub.Visibility do
 
   def visible_for_user?(%{__struct__: module} = message, user)
       when module in [Activity, Object] do
-    x = [user.ap_id | User.following(user)]
+    visible_for_user_with_following?(message, user, User.following(user))
+  end
+
+  @spec visible_for_user?(
+          Object.t() | Activity.t() | false | nil,
+          User.t() | nil,
+          [String.t()] | nil
+        ) :: boolean()
+  def visible_for_user?(%Activity{actor: ap_id}, %User{ap_id: ap_id}, _following), do: true
+
+  def visible_for_user?(
+        %Object{data: %{"actor" => ap_id}},
+        %User{ap_id: ap_id},
+        _following
+      ),
+      do: true
+
+  def visible_for_user?(
+        %Activity{data: %{"listMessage" => _}} = activity,
+        %User{} = user,
+        _following
+      ),
+      do: visible_for_user?(activity, user)
+
+  def visible_for_user?(
+        %{__struct__: module} = message,
+        %User{} = user,
+        following
+      )
+      when module in [Activity, Object] and is_list(following) do
+    visible_for_user_with_following?(message, user, following)
+  end
+
+  def visible_for_user?(message, user, _following), do: visible_for_user?(message, user)
+
+  defp visible_for_user_with_following?(message, user, following) do
+    x = [user.ap_id | following]
 
     y =
       [message.data["actor"]] ++ field_list(message.data, "to") ++ field_list(message.data, "cc")

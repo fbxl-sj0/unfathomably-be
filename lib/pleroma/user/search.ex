@@ -4,10 +4,16 @@
 
 defmodule Pleroma.User.Search do
   alias Pleroma.EctoType.ActivityPub.ObjectValidators.Uri, as: UriType
+  alias Pleroma.FASP.AccountSearch
   alias Pleroma.Instances
   alias Pleroma.Instances.Instance
+  alias Pleroma.Nostr.Entity, as: NostrEntity
+  alias Pleroma.Nostr.Protocol, as: NostrProtocol
+  alias Pleroma.Nostr.Search, as: NostrSearch
   alias Pleroma.Pagination
+  alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.FederatedTarget
 
   import Ecto.Query
 
@@ -28,11 +34,27 @@ defmodule Pleroma.User.Search do
     # If this returns anything, it should bounce to the top
     maybe_resolved = maybe_resolve(resolve, for_user, query_string)
 
+    fasp_user_ids =
+      maybe_search_fasp(query_string, for_user, following, offset, result_limit)
+
+    remote_nostr_user_ids =
+      maybe_search_remote_nostr(
+        query_string,
+        for_user,
+        following,
+        offset,
+        result_limit
+      )
+
     top_user_ids =
-      []
+      query_string
+      |> maybe_search_nostr(result_limit)
+      |> Kernel.++(remote_nostr_user_ids)
+      |> Kernel.++(fasp_user_ids)
       |> maybe_add_resolved(maybe_resolved)
       |> maybe_add_ap_id_match(query_string)
       |> maybe_add_uri_match(query_string)
+      |> Enum.uniq()
 
     results =
       query_string
@@ -41,6 +63,151 @@ defmodule Pleroma.User.Search do
 
     results
   end
+
+  defp maybe_search_fasp(query, %User{}, false, 0, limit)
+       when is_binary(query) and byte_size(query) >= 2 do
+    if String.starts_with?(query, ["http://", "https://"]) do
+      []
+    else
+      AccountSearch.user_ids(query, limit)
+    end
+  end
+
+  defp maybe_search_fasp(_query, _for_user, _following, _offset, _limit), do: []
+
+  defp maybe_search_remote_nostr(query, %User{}, false, 0, limit)
+       when is_binary(query) and is_integer(limit) and limit > 0 do
+    NostrSearch.profile_user_ids(query, limit)
+  end
+
+  defp maybe_search_remote_nostr(_query, _for_user, _following, _offset, _limit), do: []
+
+  defp maybe_search_nostr(query, limit)
+       when is_binary(query) and byte_size(query) >= 2 and is_integer(limit) and limit > 0 do
+    limit = min(limit, @limit)
+    pattern = nostr_search_pattern(query)
+
+    direct_ids =
+      case nostr_pubkey(query) do
+        pubkey when is_binary(pubkey) ->
+          NostrEntity
+          |> where([entity], entity.kind == "mirror_profile" and entity.pubkey == ^pubkey)
+          |> select([entity], entity.user_id)
+          |> limit(1)
+          |> Repo.all()
+
+        _ ->
+          []
+      end
+
+    metadata_ids =
+      NostrEntity
+      |> where([entity], entity.kind == "mirror_profile")
+      |> where(
+        [entity],
+        fragment("lower(coalesce(?->>'name', '')) LIKE ?", entity.metadata, ^pattern) or
+          fragment(
+            "lower(coalesce(?->>'display_name', '')) LIKE ?",
+            entity.metadata,
+            ^pattern
+          ) or
+          fragment("lower(coalesce(?->>'username', '')) LIKE ?", entity.metadata, ^pattern) or
+          fragment("lower(coalesce(?->>'displayName', '')) LIKE ?", entity.metadata, ^pattern) or
+          fragment("lower(coalesce(?->>'nip05', '')) LIKE ?", entity.metadata, ^pattern)
+      )
+      |> select([entity], entity.user_id)
+      |> limit(^limit)
+      |> Repo.all()
+
+    event_ids =
+      NostrEntity
+      |> join(:inner, [entity], event in "nostr_events",
+        on: field(event, :pubkey) == entity.pubkey
+      )
+      |> where([entity, event], entity.kind == "mirror_profile" and field(event, :kind) == 0)
+      |> where(
+        [_entity, event],
+        fragment("lower(coalesce(?->>'content', '')) LIKE ?", field(event, :data), ^pattern)
+      )
+      |> select([entity, _event], entity.user_id)
+      |> distinct(true)
+      |> limit(^limit)
+      |> Repo.all()
+
+    (direct_ids ++ metadata_ids ++ event_ids)
+    |> Enum.uniq()
+    |> Enum.take(limit)
+  end
+
+  defp maybe_search_nostr(_query, _limit), do: []
+
+  defp nostr_search_pattern(query) do
+    query =
+      query
+      |> String.downcase()
+      |> String.replace("\\", "\\\\")
+      |> String.replace("%", "\\%")
+      |> String.replace("_", "\\_")
+
+    "%#{query}%"
+  end
+
+  defp nostr_pubkey(query) do
+    case NostrProtocol.decode_identifier(query) do
+      {:ok, %{type: :profile, pubkey: pubkey}} when is_binary(pubkey) ->
+        pubkey
+
+      _ ->
+        mostr_pubkey(query)
+    end
+  end
+
+  defp mostr_pubkey(query) do
+    query = String.trim_leading(query, "@")
+
+    case String.split(query, "@", parts: 2) do
+      [pubkey, host] ->
+        if valid_nostr_pubkey?(pubkey) and allowed_mostr_host?(host),
+          do: String.downcase(pubkey)
+
+      _ ->
+        mostr_url_pubkey(query)
+    end
+  end
+
+  defp mostr_url_pubkey(query) do
+    with %URI{scheme: scheme, host: host, path: path} <- URI.parse(query),
+         true <- scheme in ["http", "https"],
+         true <- allowed_mostr_host?(host),
+         [pubkey] <-
+           Regex.run(~r|/users/([0-9a-fA-F]{64})(?:/)?\z|, path, capture: :all_but_first),
+         true <- valid_nostr_pubkey?(pubkey) do
+      String.downcase(pubkey)
+    else
+      _ -> nil
+    end
+  rescue
+    URI.Error -> nil
+  end
+
+  defp allowed_mostr_host?(host) when is_binary(host) do
+    host = String.downcase(host)
+
+    Pleroma.Config.get([Pleroma.Nostr, :mostr_hosts], ["mostr.pub"])
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
+    |> Enum.any?(fn configured_host ->
+      configured_host = String.downcase(configured_host)
+      host == configured_host or String.ends_with?(host, "." <> configured_host)
+    end)
+  end
+
+  defp allowed_mostr_host?(_host), do: false
+
+  defp valid_nostr_pubkey?(pubkey) when is_binary(pubkey),
+    do: Regex.match?(~r/^[0-9a-fA-F]{64}$/, pubkey)
+
+  defp valid_nostr_pubkey?(_pubkey), do: false
 
   defp maybe_add_resolved(list, {:ok, %User{} = user}) do
     [user.id | list]
@@ -106,8 +273,7 @@ defmodule Pleroma.User.Search do
     |> filter_internal_users()
     |> filter_blocked_domains(for_user)
     |> filter_unreachable_users()
-    |> fts_search(query_string)
-    |> select_top_users(top_user_ids)
+    |> fts_search(query_string, top_user_ids)
     |> trigram_rank(query_string)
     |> boost_search_rank(for_user, top_user_ids)
     |> subquery()
@@ -117,13 +283,7 @@ defmodule Pleroma.User.Search do
     |> filter_deactivated_users()
   end
 
-  defp select_top_users(query, top_user_ids) do
-    from(u in query,
-      or_where: u.id in ^top_user_ids
-    )
-  end
-
-  defp fts_search(query, query_string) do
+  defp fts_search(query, query_string, top_user_ids) do
     query_string = to_tsquery(query_string)
 
     from(
@@ -140,7 +300,7 @@ defmodule Pleroma.User.Search do
           u.nickname,
           u.name,
           ^query_string
-        )
+        ) or u.id in ^top_user_ids
     )
   end
 
@@ -229,9 +389,9 @@ defmodule Pleroma.User.Search do
   defp maybe_resolve(true, user, query) do
     case {limit(), user} do
       {:all, _} -> :noop
-      {:unauthenticated, %User{}} -> User.get_or_fetch(query)
+      {:unauthenticated, %User{}} -> FederatedTarget.resolve_target(query)
       {:unauthenticated, _} -> :noop
-      {false, _} -> User.get_or_fetch(query)
+      {false, _} -> FederatedTarget.resolve_target(query)
     end
   end
 

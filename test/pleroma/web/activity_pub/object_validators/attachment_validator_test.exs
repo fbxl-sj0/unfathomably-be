@@ -178,6 +178,43 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AttachmentValidatorTest do
       assert attachment.mediaType == "image/jpeg"
     end
 
+    test "filters malformed and unsafe URL alternatives without losing valid media" do
+      attachment = %{
+        "type" => "Document",
+        "mediaType" => "image/jpeg",
+        "url" => [
+          nil,
+          "not a link object",
+          %{"type" => "Link", "href" => "javascript:alert(1)", "mediaType" => "image/jpeg"},
+          %{
+            "type" => "Link",
+            "href" => "https://media.example/images/1.jpg",
+            "mediaType" => "image/jpeg"
+          }
+        ]
+      }
+
+      assert {:ok, attachment} =
+               attachment
+               |> AttachmentValidator.cast_and_validate()
+               |> Ecto.Changeset.apply_action(:insert)
+
+      assert [%{href: "https://media.example/images/1.jpg"}] = attachment.url
+    end
+
+    test "rejects attachments whose URL alternatives are all unsafe" do
+      attachment = %{
+        "type" => "Document",
+        "mediaType" => "image/jpeg",
+        "url" => [%{"href" => "data:image/png;base64,AAAA", "mediaType" => "image/png"}]
+      }
+
+      assert {:error, _changeset} =
+               attachment
+               |> AttachmentValidator.cast_and_validate()
+               |> Ecto.Changeset.apply_action(:insert)
+    end
+
     test "it transforms image dimentions to our internal format" do
       attachment = %{
         "type" => "Document",

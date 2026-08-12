@@ -28,10 +28,17 @@ defmodule Pleroma.MFA.Changeset do
     |> put_change(%Settings{settings | totp: %Settings.TOTP{}})
   end
 
-  def confirm_totp(%User{} = user) do
+  def confirm_totp(%User{} = user, backup_codes \\ nil) do
     %Settings{} = settings = MFA.fetch_settings(user)
     %Settings.TOTP{} = totp = settings.totp
     totp_settings = %Settings.TOTP{totp | confirmed: true}
+
+    settings =
+      if is_list(backup_codes) do
+        %Settings{settings | backup_codes: backup_codes}
+      else
+        settings
+      end
 
     user
     |> put_change(%Settings{settings | totp: totp_settings, enabled: true})

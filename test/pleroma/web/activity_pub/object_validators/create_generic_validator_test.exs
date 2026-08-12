@@ -72,6 +72,13 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidatorTest do
       follower_address: actor <> "/followers"
     )
 
+    insert(:user,
+      local: false,
+      ap_id: group,
+      actor_type: "Group",
+      follower_address: group <> "/followers"
+    )
+
     note = %{
       "id" => "https://lemmit.example/post/1",
       "type" => "Note",
@@ -148,6 +155,36 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidatorTest do
 
     assert validated.valid?
     assert Ecto.Changeset.get_field(validated, :cc) == object_data["cc"]
+  end
+
+  test "a remote Event cannot claim a cross-host or non-Group attribution" do
+    actor = "https://mobilizon.example/@organizer"
+    same_host_person = "https://mobilizon.example/@unrelated_person"
+    cross_host_group = "https://groups.example/@unrelated_group"
+
+    insert(:user, local: false, ap_id: actor)
+    insert(:user, local: false, ap_id: same_host_person, actor_type: "Person")
+    insert(:user, local: false, ap_id: cross_host_group, actor_type: "Group")
+
+    event = %{
+      "id" => "https://mobilizon.example/events/unsafe-attribution",
+      "type" => "Event",
+      "actor" => actor,
+      "to" => [Pleroma.Constants.as_public()],
+      "name" => "Unsafe event attribution",
+      "startTime" => "2026-11-21T17:00:00Z",
+      "context" => "https://mobilizon.example/events/unsafe-attribution"
+    }
+
+    for attributed_to <- [same_host_person, cross_host_group] do
+      assert {:error, changeset} =
+               event
+               |> Map.put("attributedTo", attributed_to)
+               |> ObjectValidator.cast_and_apply()
+
+      assert {:attributedTo, {_message, []}} =
+               List.keyfind(changeset.errors, :attributedTo, 0)
+    end
   end
 
   test "a public Create still rejects an added remote delivery recipient" do

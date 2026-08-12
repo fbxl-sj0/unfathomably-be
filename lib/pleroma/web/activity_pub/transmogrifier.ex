@@ -17,14 +17,16 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   alias Pleroma.Object.Fetcher
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
-  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.ActorExtensions
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.CustomActivity
   alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.ObjectValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator
+  alias Pleroma.Web.ActivityPub.ObjectValidators.TagValidator
   alias Pleroma.Web.ActivityPub.Pipeline
+  alias Pleroma.Web.ActivityPub.Type
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.FederatedTarget
@@ -36,6 +38,12 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   require Logger
   require Pleroma.Constants
 
+  @supported_types Pleroma.Constants.activity_types() ++
+                     Pleroma.Constants.status_object_types() ++
+                     Pleroma.Constants.upload_object_types() ++
+                     Pleroma.Constants.actor_types() ++ ["Event", "Place"]
+  @canonical_object_action_types ~w(Announce ChooseAnswer EmojiReact Like)
+
   @doc """
   Modifies an incoming AP object (mastodon format) to our internal format.
   """
@@ -44,9 +52,11 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     |> strip_internal_fields()
     |> fix_actor()
     |> fix_url()
+    |> fix_placeholder_title()
     |> fix_attachments()
     |> fix_context()
     |> fix_in_reply_to(options)
+    |> normalize_object_tags()
     |> fix_emoji()
     |> fix_tag()
     |> fix_content_map()
@@ -66,6 +76,20 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   def fix_summary(object), do: Map.put(object, "summary", "")
 
+  @doc """
+  Removes publisher sentinel text that represents an intentionally untitled
+  post rather than a title supplied by its author.
+
+  PieFed uses this exact value internally and may include it in federated Page
+  objects. Normalizing it at ingress keeps every API, feed, and frontend
+  presentation consistent while preserving all genuine ActivityStreams names.
+  """
+  def fix_placeholder_title(%{"name" => "(content in post body)"} = object) do
+    Map.delete(object, "name")
+  end
+
+  def fix_placeholder_title(object), do: object
+
   def fix_addressing_list(map, field) do
     addrs =
       map
@@ -83,28 +107,6 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   defp addressing_value("as:Public"), do: Pleroma.Constants.as_public()
   defp addressing_value(value) when is_binary(value), do: value
   defp addressing_value(_), do: nil
-
-  @doc """
-  Bovine compatibility.
-
-  Some producers emit the public ActivityStreams collection as "Public" or
-  "as:Public". Normalize it before validation and visibility processing.
-  """
-  def fix_addressing_public(map, field) do
-    Map.put(
-      map,
-      field,
-      map
-      |> Map.get(field, [])
-      |> List.wrap()
-      |> Enum.filter(&is_binary/1)
-      |> Enum.map(fn
-        "Public" -> Pleroma.Constants.as_public()
-        "as:Public" -> Pleroma.Constants.as_public()
-        x -> x
-      end)
-    )
-  end
 
   # if directMessage flag is set to true, leave the addressing alone
   def fix_explicit_addressing(%{"directMessage" => true} = object, _follower_collection),
@@ -183,10 +185,6 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     |> fix_addressing_list("cc")
     |> fix_addressing_list("bto")
     |> fix_addressing_list("bcc")
-    |> fix_addressing_public("to")
-    |> fix_addressing_public("cc")
-    |> fix_addressing_public("bto")
-    |> fix_addressing_public("bcc")
     |> fix_explicit_addressing(follower_collection)
     |> fix_implicit_addressing(follower_collection)
   end
@@ -206,6 +204,20 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   def fix_in_reply_to(object, options \\ [])
 
   def fix_in_reply_to(%{"inReplyTo" => in_reply_to} = object, options)
+      when is_list(in_reply_to) do
+    in_reply_to =
+      Enum.find_value(in_reply_to, fn
+        id when is_binary(id) -> id
+        %{"id" => id} when is_binary(id) -> id
+        _ -> nil
+      end)
+
+    object
+    |> Map.put("inReplyTo", in_reply_to)
+    |> fix_in_reply_to(options)
+  end
+
+  def fix_in_reply_to(%{"inReplyTo" => in_reply_to} = object, options)
       when not is_nil(in_reply_to) do
     in_reply_to_id = prepare_in_reply_to(in_reply_to)
     depth = (options[:depth] || 0) + 1
@@ -219,7 +231,10 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         |> Map.drop(["conversation", "inReplyToAtomUri"])
       else
         e ->
-          Logger.debug("Couldn't fetch #{inspect(in_reply_to_id)}, error: #{inspect(e)}")
+          Logger.debug(
+            "Couldn't fetch #{Pleroma.Helpers.UriHelper.log_safe_url(in_reply_to_id)}, error: #{Pleroma.Helpers.UriHelper.log_safe_text(e)}"
+          )
+
           object
       end
     else
@@ -229,24 +244,16 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   def fix_in_reply_to(object, _options), do: object
 
-  def fix_quote_url_and_maybe_fetch(object, options \\ []) do
-    quote_url =
-      case Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes.fix_quote_url(object) do
-        %{"quoteUrl" => quote_url} -> quote_url
-        _ -> nil
-      end
+  def fix_quote_url_and_maybe_fetch(object, _options \\ []) do
+    normalized_object =
+      Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes.fix_quote_url(object)
 
-    with {:quoting?, true} <- {:quoting?, not is_nil(quote_url)},
-         {:ok, quoted_object} <- get_obj_helper(quote_url, options),
+    with %{"quoteUrl" => quote_url} when is_binary(quote_url) <- normalized_object,
+         %Object{} = quoted_object <- Object.get_by_ap_id(quote_url),
          %Activity{} <- Activity.get_create_by_object_ap_id(quoted_object.data["id"]) do
-      Map.put(object, "quoteUrl", quoted_object.data["id"])
+      Map.put(normalized_object, "quoteUrl", quoted_object.data["id"])
     else
-      {:quoting?, _} ->
-        object
-
-      e ->
-        Logger.debug("Couldn't fetch #{inspect(quote_url)}, error: #{inspect(e)}")
-        object
+      _not_cached -> normalized_object
     end
   end
 
@@ -278,21 +285,38 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     is_binary(media_type) && media_type =~ Pleroma.Constants.mime_regex()
   end
 
+  defp valid_http_url?(href) when is_binary(href) do
+    match?({:ok, _}, ObjectValidators.Uri.cast(href))
+  end
+
+  defp valid_http_url?(_), do: false
+
   def fix_attachments(%{"attachment" => attachment} = object) when is_list(attachment) do
     attachments =
       Enum.map(attachment, fn
+        %{"href" => href} = data when is_binary(href) ->
+          if valid_http_url?(href) do
+            data
+            |> Map.take(~w(type href mediaType name summary hreflang rel))
+            |> Map.put("type", "Link")
+            |> Map.put("href", href)
+          end
+
         data when is_map(data) ->
           url =
             cond do
               is_list(data["url"]) -> List.first(data["url"])
               is_map(data["url"]) -> data["url"]
+              is_binary(data["url"]) -> data["url"]
               true -> nil
             end
 
+          url_data = if is_map(url), do: url, else: %{}
+
           media_type =
             cond do
-              is_map(url) && valid_media_type?(url["mediaType"]) ->
-                url["mediaType"]
+              valid_media_type?(url_data["mediaType"]) ->
+                url_data["mediaType"]
 
               valid_media_type?(data["mediaType"]) ->
                 data["mediaType"]
@@ -306,21 +330,22 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
           href =
             cond do
-              is_map(url) && is_binary(url["href"]) -> url["href"]
+              is_binary(url) -> url
+              is_binary(url_data["href"]) -> url_data["href"]
               is_binary(data["url"]) -> data["url"]
               is_binary(data["href"]) -> data["href"]
               true -> nil
             end
 
-          if href do
+          if href && valid_http_url?(href) do
             attachment_url =
               %{
                 "href" => href,
-                "type" => Map.get(url || %{}, "type", "Link")
+                "type" => Map.get(url_data, "type", "Link")
               }
               |> Maps.put_if_present("mediaType", media_type)
-              |> Maps.put_if_present("width", (url || %{})["width"] || data["width"])
-              |> Maps.put_if_present("height", (url || %{})["height"] || data["height"])
+              |> Maps.put_if_present("width", url_data["width"] || data["width"])
+              |> Maps.put_if_present("height", url_data["height"] || data["height"])
 
             %{
               "url" => [attachment_url],
@@ -389,14 +414,59 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   def fix_url(object), do: object
 
+  defp emoji_icon_url(icon) when is_binary(icon), do: icon
+  defp emoji_icon_url(%{"url" => url}) when is_binary(url), do: url
+  defp emoji_icon_url(%{"url" => %{"href" => href}}) when is_binary(href), do: href
+
+  defp emoji_icon_url(%{"url" => [first | _]}) do
+    cond do
+      is_binary(first) -> first
+      is_map(first) -> first["href"] || first["url"] || first["id"]
+      true -> nil
+    end
+  end
+
+  defp emoji_icon_url(%{"href" => href}) when is_binary(href), do: href
+  defp emoji_icon_url(_), do: nil
+
+  defp valid_emoji_icon_url(icon) do
+    case emoji_icon_url(icon) do
+      url when is_binary(url) -> if valid_http_url?(url), do: url
+      _ -> nil
+    end
+  end
+
+  defp normalize_object_tags(%{"tag" => tags} = object) when is_list(tags) do
+    normalized_tags =
+      tags
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&normalize_object_tag/1)
+
+    Map.put(object, "tag", normalized_tags)
+  end
+
+  defp normalize_object_tags(%{"tag" => tag} = object) when is_map(tag) do
+    Map.put(object, "tag", normalize_object_tag(tag))
+  end
+
+  defp normalize_object_tags(object), do: object
+
+  defp normalize_object_tag(tag) when is_map(tag), do: TagValidator.normalize(tag)
+  defp normalize_object_tag(tag), do: tag
+
   def fix_emoji(%{"tag" => tags} = object) when is_list(tags) do
     emoji =
       tags
-      |> Enum.filter(&valid_emoji_tag?/1)
+      |> Enum.filter(fn data ->
+        is_map(data) and data["type"] == "Emoji" and is_binary(data["name"]) and data["icon"]
+      end)
       |> Enum.reduce(%{}, fn data, mapping ->
         name = String.trim(data["name"], ":")
 
-        Map.put(mapping, name, data["icon"]["url"])
+        case valid_emoji_icon_url(data["icon"]) do
+          url when is_binary(url) -> Map.put(mapping, name, url)
+          _ -> mapping
+        end
       end)
 
     Map.put(object, "emoji", emoji)
@@ -406,23 +476,14 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       when is_binary(raw_name) do
     name = String.trim(raw_name, ":")
 
-    emoji =
-      if valid_emoji_tag?(tag) do
-        %{name => tag["icon"]["url"]}
-      else
-        %{}
-      end
-
-    Map.put(object, "emoji", emoji)
+    with url when is_binary(url) <- valid_emoji_icon_url(tag["icon"]) do
+      Map.put(object, "emoji", %{name => url})
+    else
+      _ -> object
+    end
   end
 
   def fix_emoji(object), do: object
-
-  defp valid_emoji_tag?(%{"type" => "Emoji", "name" => name, "icon" => %{"url" => url}})
-       when is_binary(name) and is_binary(url),
-       do: true
-
-  defp valid_emoji_tag?(_), do: false
 
   def fix_tag(%{"tag" => tag} = object) when is_list(tag) do
     tags =
@@ -540,6 +601,37 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
 
   def handle_incoming(data, options \\ [])
 
+  def handle_incoming(%{"type" => types} = data, options) when is_list(types) do
+    type = Type.first_known(types, @supported_types)
+
+    if type do
+      data
+      |> Map.put("type", type)
+      |> handle_incoming(options)
+    else
+      :error
+    end
+  end
+
+  # JSON-LD permits an embedded object's type to be an array. Normalize it
+  # before function-clause dispatch so a concrete Note, Event, or specialized
+  # object is not lost behind a generic Object or vocabulary-qualified type.
+  def handle_incoming(
+        %{"object" => %{"type" => types} = object} = data,
+        options
+      )
+      when is_list(types) do
+    case Type.first_known(types, @supported_types) do
+      type when is_binary(type) ->
+        data
+        |> Map.put("object", Map.put(object, "type", type))
+        |> handle_incoming(options)
+
+      _ ->
+        :error
+    end
+  end
+
   # Flag objects are placed ahead of the ID check because Mastodon 2.8 and earlier send them
   # with nil ID.
   def handle_incoming(%{"type" => "Flag", "object" => objects, "actor" => actor} = data, _options) do
@@ -645,7 +737,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         |> handle_incoming(options)
 
       _ ->
-        with :ok <- ObjectValidator.fetch_actor_and_object(data),
+        with {:ok, data} <- resolve_object_action_reference(data, options),
+             :ok <- ObjectValidator.fetch_actor_and_object(data),
              {:ok, activity, _meta} <-
                Pipeline.common_pipeline(data, local: false) do
           {:ok, activity}
@@ -685,25 +778,78 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
              "Add",
              "Remove",
              "Flag",
-             "Lock"
+             "Lock",
+             "ChooseAnswer"
            ] do
-    object = maybe_fix_embedded_group_create_addressing(announce, object)
-    object_id = embedded_ap_id(object["object"])
+    with {:ok, object} <-
+           Pleroma.Web.ActivityPub.GroupActivityVerifier.canonicalize(announce, object) do
+      object = maybe_fix_embedded_group_create_addressing(announce, object)
+      object_id = embedded_ap_id(object["object"])
 
-    initial_group_update? =
-      type == "Update" and is_binary(object_id) and is_nil(Object.get_by_ap_id(object_id))
+      existing_object = if is_binary(object_id), do: Object.get_by_ap_id(object_id)
 
-    case handle_incoming(object, options) do
-      {:ok, %Activity{} = activity} ->
-        maybe_preserve_initial_group_announce(
-          announce,
-          activity,
-          object_id,
-          initial_group_update?
-        )
+      group_announce_mode =
+        cond do
+          type == "Create" and match?(%Object{}, existing_object) -> :late_create
+          type == "Update" and is_binary(object_id) and is_nil(existing_object) -> :initial_update
+          true -> nil
+        end
 
-      result ->
-        result
+      case handle_incoming(object, options) do
+        {:ok, %Activity{} = activity} ->
+          maybe_preserve_group_announce(
+            announce,
+            activity,
+            object_id,
+            group_announce_mode
+          )
+
+        result ->
+          result
+      end
+    end
+  end
+
+  # PieFed uses PollVote as a compact wire format. Convert it to the standard
+  # Answer representation so the existing poll validation and side effects
+  # remain the only authority for accepting and recording a vote.
+  def handle_incoming(
+        %{
+          "id" => poll_vote_id,
+          "type" => "PollVote",
+          "actor" => actor,
+          "object" => poll_id,
+          "choice_text" => choice_text
+        } = data,
+        options
+      )
+      when is_binary(poll_vote_id) and is_binary(actor) and is_binary(poll_id) and
+             is_binary(choice_text) do
+    with %Object{data: %{"type" => "Question"} = poll} <-
+           Object.normalize(poll_id, fetch: false),
+         poll_actor when is_binary(poll_actor) <- poll["actor"] || poll["attributedTo"] do
+      recipients = [poll_actor]
+
+      answer = %{
+        "id" => poll_vote_id <> "/answer",
+        "type" => "Answer",
+        "actor" => actor,
+        "attributedTo" => actor,
+        "name" => choice_text,
+        "inReplyTo" => poll_id,
+        "context" => poll["context"],
+        "to" => [],
+        "cc" => recipients
+      }
+
+      data
+      |> Map.put("type", "Create")
+      |> Map.put("object", answer)
+      |> Map.put("to", [])
+      |> Map.put("cc", recipients)
+      |> handle_incoming(options)
+    else
+      _ -> :error
     end
   end
 
@@ -760,11 +906,12 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     options = Keyword.put(options, :local, false)
 
     with {:ok, %User{}} <- ObjectValidator.fetch_actor(data),
-         nil <- Activity.get_create_by_object_ap_id(obj_id),
+         :ok <- maybe_prepare_event_attribution(data["object"]),
+         :new <- existing_create_for_actor(obj_id, data),
          {:ok, activity, _} <- Pipeline.common_pipeline(data, options) do
       {:ok, activity}
     else
-      %Activity{} = activity -> {:ok, activity}
+      {:existing, %Activity{} = activity} -> {:ok, activity}
       e -> e
     end
   end
@@ -787,9 +934,11 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       options = Keyword.put(options, :local, false)
 
       with {:ok, %User{}} <- ObjectValidator.fetch_actor(data),
+           :new <- existing_create_for_actor(obj_id, data),
            {:ok, activity, _} <- Pipeline.common_pipeline(data, options) do
         {:ok, activity}
       else
+        {:existing, %Activity{} = activity} -> {:ok, activity}
         e -> e
       end
     else
@@ -804,19 +953,19 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     if CustomActivity.custom_activity?(object) do
       handle_incoming(object, options)
     else
-      handle_object_action(announce)
+      handle_object_action(announce, options)
     end
   end
 
   def handle_incoming(%{"type" => "Announce", "object" => object} = data, options)
       when is_binary(object) do
     prefetch_announced_object(object, options)
-    handle_object_action(data)
+    handle_object_action(data, options)
   end
 
-  def handle_incoming(%{"type" => type} = data, _options)
-      when type in ~w{Like EmojiReact Announce Add Remove Lock} do
-    handle_object_action(data)
+  def handle_incoming(%{"type" => type} = data, options)
+      when type in ~w{Like EmojiReact Announce Add Remove Lock ChooseAnswer} do
+    handle_object_action(data, options)
   end
 
   def handle_incoming(
@@ -1010,7 +1159,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       ) do
     with %User{} = origin_user <- User.get_cached_by_ap_id(origin_actor),
          {:ok, %User{} = target_user} <- User.get_or_fetch_by_ap_id(target_actor),
-         true <- origin_actor in target_user.also_known_as do
+         true <- origin_actor in List.wrap(target_user.also_known_as) do
       ActivityPub.move(origin_user, target_user, false)
     else
       _e -> :error
@@ -1022,6 +1171,26 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
   end
 
   def handle_incoming(_, _), do: :error
+
+  # Mobilizon signs group events as the organizing member while attributing
+  # the Event to the Group. Accept that useful distinction only inside one
+  # remote host and only after the attributed actor resolves as a Group. This
+  # avoids treating an arbitrary cross-host attribution as group authority.
+  defp maybe_prepare_event_attribution(%{
+         "type" => "Event",
+         "actor" => actor,
+         "attributedTo" => attributed_to
+       })
+       when is_binary(actor) and is_binary(attributed_to) and actor != attributed_to do
+    with :ok <- Containment.contain_origin(attributed_to, %{"actor" => actor}),
+         {:ok, %User{actor_type: "Group"}} <- User.get_or_fetch_by_ap_id(attributed_to) do
+      :ok
+    else
+      _ -> {:error, :invalid_event_attribution}
+    end
+  end
+
+  defp maybe_prepare_event_attribution(_object), do: :ok
 
   defp maybe_fix_custom_reply(object, options) do
     if CustomObject.timeline_object?(object) do
@@ -1053,8 +1222,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     end
   end
 
-  defp handle_object_action(data) do
-    with :ok <- ObjectValidator.fetch_actor_and_object(data),
+  defp handle_object_action(data, options \\ []) do
+    with {:ok, data} <- resolve_object_action_reference(data, options),
+         :ok <- ObjectValidator.fetch_actor_and_object(data),
          {:ok, activity, _meta} <-
            Pipeline.common_pipeline(data, local: false) do
       {:ok, activity}
@@ -1063,15 +1233,58 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     end
   end
 
-  defp maybe_preserve_initial_group_announce(
+  defp resolve_object_action_reference(
+         %{"type" => type, "object" => object_id} = data,
+         options
+       )
+       when type in @canonical_object_action_types and is_binary(object_id) do
+    case Object.get_cached_by_ap_id(object_id) do
+      %Object{} ->
+        {:ok, data}
+
+      nil ->
+        case Fetcher.resolve_object_reference(object_id, options) do
+          {:ok, %Object{data: %{"id" => canonical_id}}} when is_binary(canonical_id) ->
+            {:ok, Map.put(data, "object", canonical_id)}
+
+          {:error, _reason} = error ->
+            error
+
+          _ ->
+            {:error, :remote_object_unavailable}
+        end
+    end
+  end
+
+  defp resolve_object_action_reference(data, _options), do: {:ok, data}
+
+  defp existing_create_for_actor(object_id, data) do
+    case Activity.get_create_by_object_ap_id(object_id) do
+      nil ->
+        :new
+
+      %Activity{} = activity ->
+        incoming_actor = Containment.get_actor(data)
+        existing_actor = Containment.get_actor(activity.data)
+
+        if is_binary(incoming_actor) and incoming_actor == existing_actor do
+          {:existing, activity}
+        else
+          {:error, {:reject, :object_actor_mismatch}}
+        end
+    end
+  end
+
+  defp maybe_preserve_group_announce(
          announce,
          %Activity{} = activity,
          object_id,
-         true
+         mode
        ) do
     with %User{actor_type: "Group"} = group <- User.get_cached_by_ap_id(announce["actor"]),
          %Object{} = object <- Object.get_by_ap_id(object_id),
          true <- CustomObject.timeline_object?(object.data),
+         true <- group_announce_required?(mode, activity, group.ap_id),
          {:ok, %Activity{} = group_announce} <-
            announce
            |> Map.put("object", object_id)
@@ -1084,13 +1297,18 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     end
   end
 
-  defp maybe_preserve_initial_group_announce(
-         _announce,
-         %Activity{} = activity,
-         _object_id,
-         _initial_group_update?
-       ),
-       do: {:ok, activity}
+  # Some forum servers send the post's Create before the category Announce.
+  # Retain that late wrapper only when it adds group association; otherwise the
+  # first-contact Create and its wrapper would render as duplicate group posts.
+  defp group_announce_required?(:late_create, activity, group_ap_id) do
+    activity.data
+    |> embedded_recipient_set()
+    |> MapSet.member?(group_ap_id)
+    |> Kernel.not()
+  end
+
+  defp group_announce_required?(:initial_update, _activity, _group_ap_id), do: true
+  defp group_announce_required?(_mode, _activity, _group_ap_id), do: false
 
   defp maybe_fix_embedded_group_create_addressing(
          %{"actor" => group_ap_id},
@@ -1194,9 +1412,44 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     object
     |> Map.put("quoteUri", quote_url)
     |> Map.put("_misskey_quote", quote_url)
+    |> maybe_add_quote_fallback()
   end
 
   def set_quote_url(obj), do: obj
+
+  # Structured quote fields are authoritative for capable peers. A small
+  # visible link keeps the post meaningful when another implementation strips
+  # unknown quote properties. This is added only to the serialized local
+  # object, so the stored content and Unfathomably's own rich quote renderer do
+  # not show a duplicate link.
+  defp maybe_add_quote_fallback(%{"actor" => actor, "quoteUrl" => quote_url} = object)
+       when is_binary(actor) and is_binary(quote_url) do
+    with %Pleroma.User{local: true} <- Pleroma.User.get_cached_by_ap_id(actor),
+         %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) <-
+           URI.parse(quote_url),
+         content when is_binary(content) <- object["content"] || "" do
+      if String.contains?(content, quote_url) do
+        object
+      else
+        escaped_url =
+          quote_url
+          |> Phoenix.HTML.html_escape()
+          |> Phoenix.HTML.safe_to_string()
+
+        fallback =
+          ~s(<p class="quote-inline"><a href="#{escaped_url}" rel="nofollow noopener noreferrer">RE: #{escaped_url}</a></p>)
+
+        separator = if String.trim(content) == "", do: "", else: "\n"
+        Map.put(object, "content", content <> separator <> fallback)
+      end
+    else
+      _ -> object
+    end
+  rescue
+    URI.Error -> object
+  end
+
+  defp maybe_add_quote_fallback(object), do: object
 
   @doc """
   Inline first page of the `replies` collection,
@@ -1955,19 +2208,22 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     Map.put(object, "attachment", attachments)
   end
 
-  defp prepare_attachment(
-         %{"url" => [%{"mediaType" => media_type, "href" => href} = url | _]} = data
-       )
-       when is_binary(media_type) and is_binary(href) do
-    %{
-      "url" => href,
-      "mediaType" => media_type,
-      "name" => data["name"],
-      "type" => "Document"
-    }
-    |> Maps.put_if_present("width", url["width"])
-    |> Maps.put_if_present("height", url["height"])
-    |> Maps.put_if_present("blurhash", data["blurhash"])
+  defp prepare_attachment(%{"url" => [%{"href" => href} = url | _]} = data)
+       when is_binary(href) do
+    if valid_http_url?(href) do
+      media_type =
+        Enum.find([url["mediaType"], data["mediaType"]], &valid_media_type?/1)
+
+      %{
+        "url" => href,
+        "name" => data["name"],
+        "type" => "Document"
+      }
+      |> Maps.put_if_present("mediaType", media_type)
+      |> Maps.put_if_present("width", url["width"])
+      |> Maps.put_if_present("height", url["height"])
+      |> Maps.put_if_present("blurhash", data["blurhash"])
+    end
   end
 
   defp prepare_attachment(_), do: nil

@@ -19,9 +19,12 @@ defmodule Pleroma.Workers.ReachabilityWorker do
 
   import Ecto.Query
 
+  # Instance health already persists a bounded exponential backoff. Retrying
+  # this job would repeat both discovery probes and count one failed recovery
+  # sweep several times before the persistent backoff can take effect.
   use Oban.Worker,
     queue: "reachability",
-    max_attempts: 3,
+    max_attempts: 1,
     unique: [period: :infinity, states: :incomplete]
 
   @nodeinfo_headers [{"accept", "application/json"}]
@@ -34,7 +37,7 @@ defmodule Pleroma.Workers.ReachabilityWorker do
         :discard
 
       domain ->
-        if nodeinfo_reachable?(domain) or webfinger_reachable?(domain) do
+        if reachable?(domain) do
           Instances.record_success(domain, source: "reachability")
         else
           Instances.record_failure(domain, :probe_failed, source: "reachability")
@@ -73,15 +76,34 @@ defmodule Pleroma.Workers.ReachabilityWorker do
     _ -> nil
   end
 
-  defp nodeinfo_reachable?(domain) do
+  defp reachable?(domain) do
+    case nodeinfo_probe(domain) do
+      :reachable -> true
+      :webfinger -> webfinger_reachable?(domain)
+      :unreachable -> false
+    end
+  end
+
+  defp nodeinfo_probe(domain) do
     url = "https://#{domain}/.well-known/nodeinfo"
 
-    with {:ok, %{status: status, body: body}} when status in 200..299 <-
-           HTTP.get(url, @nodeinfo_headers, receive_timeout: :timer.seconds(5)),
-         {:ok, %{} = data} <- decode_json_body(body) do
-      nodeinfo_document?(data)
-    else
-      _ -> false
+    case HTTP.get(url, @nodeinfo_headers, receive_timeout: :timer.seconds(5)) do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        with {:ok, %{} = data} <- decode_json_body(body),
+             true <- nodeinfo_document?(data) do
+          :reachable
+        else
+          _ -> :webfinger
+        end
+
+      {:ok, _response} ->
+        :webfinger
+
+      {:error, _reason} ->
+        :unreachable
+
+      _ ->
+        :unreachable
     end
   end
 

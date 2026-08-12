@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.OAuth.AppTest do
   use Pleroma.DataCase, async: true
 
+  alias Pleroma.Repo
   alias Pleroma.Web.OAuth.App
   import Pleroma.Factory
 
@@ -52,6 +53,31 @@ defmodule Pleroma.Web.OAuth.AppTest do
     ]
 
     assert Enum.sort(App.get_user_apps(user)) == Enum.sort(apps)
+  end
+
+  describe "maybe_update_owner/1" do
+    test "assigns an app used by one account to that account" do
+      user = insert(:user)
+      app = insert(:oauth_app, user_id: nil)
+      token = insert(:oauth_token, app: app, user: user)
+
+      assert :ok = App.maybe_update_owner(token)
+      assert Repo.get(App, app.id).user_id == user.id
+    end
+
+    test "removes the owner when an app is shared by multiple accounts" do
+      first_user = insert(:user)
+      second_user = insert(:user)
+      app = insert(:oauth_app, user_id: nil)
+      first_token = insert(:oauth_token, app: app, user: first_user)
+      second_token = insert(:oauth_token, app: app, user: second_user)
+
+      assert :ok = App.maybe_update_owner(first_token)
+      assert Repo.get(App, app.id).user_id == nil
+
+      assert :ok = App.maybe_update_owner(second_token)
+      assert Repo.get(App, app.id).user_id == nil
+    end
   end
 
   test "removes orphaned apps" do

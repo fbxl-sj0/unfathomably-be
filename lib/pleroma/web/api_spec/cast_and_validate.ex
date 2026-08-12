@@ -126,8 +126,23 @@ defmodule Pleroma.Web.ApiSpec.CastAndValidate do
               Map.delete(params, to_string(name_atom))
 
             %{reason: :invalid_enum, name: nil, path: path, value: value}, params ->
-              path = path |> Enum.reverse() |> tl() |> Enum.reverse() |> list_items_to_string()
-              update_in(params, path, &List.delete(&1, value))
+              path =
+                path
+                |> Enum.reverse()
+                |> tl()
+                |> Enum.reverse()
+                |> list_items_to_string()
+
+              case path do
+                [] ->
+                  params
+
+                path ->
+                  update_in(params, path, fn
+                    values when is_list(values) -> List.delete(values, value)
+                    current_value -> current_value
+                  end)
+              end
 
             _, params ->
               params

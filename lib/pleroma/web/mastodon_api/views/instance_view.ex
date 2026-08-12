@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright Â© 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright (c) 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.MastodonAPI.InstanceView do
@@ -28,6 +28,7 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       description: Keyword.get(instance, :description),
       short_description: Keyword.get(instance, :short_description),
       version: "#{@mastodon_api_level} (compatible; #{Pleroma.Application.compat_version()})",
+      source_url: Pleroma.Application.repository(),
       email: Keyword.get(instance, :email),
       urls: %{
         streaming_api: Pleroma.Web.Endpoint.websocket_url()
@@ -53,6 +54,9 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       background_image: instance_asset_url(Keyword.get(instance, :background_image)),
       shout_limit: Config.get([:shout, :limit]),
       description_limit: Keyword.get(instance, :description_limit),
+      nostr: Pleroma.Nostr.instance_metadata(),
+      atproto: Pleroma.ATProto.instance_metadata(),
+      diaspora: Pleroma.Diaspora.instance_metadata(),
       unfathomably: unfathomably_configuration(),
       pleroma: pleroma_configuration(instance),
       soapbox: %{
@@ -90,6 +94,9 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       },
       rules: render(__MODULE__, "rules.json"),
       # Extra (not present in Mastodon):
+      nostr: Pleroma.Nostr.instance_metadata(),
+      atproto: Pleroma.ATProto.instance_metadata(),
+      diaspora: Pleroma.Diaspora.instance_metadata(),
       unfathomably: unfathomably_configuration(),
       pleroma: pleroma_configuration2(instance),
       soapbox: %{
@@ -168,6 +175,10 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       "pleroma_api",
       "mastodon_api",
       "mastodon_api_streaming",
+      if(Pleroma.Nostr.enabled?(), do: "nostr"),
+      if(Pleroma.Nostr.enabled?(), do: "nostr_groups"),
+      if(Pleroma.ATProto.enabled?(), do: "atproto"),
+      if(Pleroma.Diaspora.enabled?(), do: "diaspora"),
       "polls",
       "v2_suggestions",
       "pleroma_explicit_addressing",
@@ -345,7 +356,11 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
     |> Map.merge(%{
       urls: %{
         streaming: Pleroma.Web.Endpoint.websocket_url(),
-        status: Config.get([:instance, :status_page])
+        status: Config.get([:instance, :status_page]),
+        about: URI.merge(Pleroma.Web.Endpoint.url(), "/about") |> to_string(),
+        privacy_policy: nil,
+        terms_of_service:
+          URI.merge(Pleroma.Web.Endpoint.url(), "/static/terms-of-service.html") |> to_string()
       },
       translation: %{enabled: Pleroma.Language.Translation.configured?()},
       vapid: %{public_key: Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key)}

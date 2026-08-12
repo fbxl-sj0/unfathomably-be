@@ -12,7 +12,6 @@ defmodule Pleroma.FollowingRelationship do
   alias FlakeId.Ecto.CompatType
   alias Pleroma.FollowingRelationship.State
   alias Pleroma.Instances
-  alias Pleroma.Instances.Instance
   alias Pleroma.Pagination
   alias Pleroma.Repo
   alias Pleroma.User
@@ -99,6 +98,8 @@ defmodule Pleroma.FollowingRelationship do
   defp after_update(state, %User{} = follower, %User{} = following) do
     User.invalidate_cache(follower)
     User.invalidate_cache(following)
+    User.invalidate_following_cache(follower)
+    maybe_refresh_remote_instance(state, follower, following)
 
     with {:ok, following} <- User.update_follower_count(following),
          {:ok, follower} <- User.update_following_count(follower) do
@@ -111,6 +112,21 @@ defmodule Pleroma.FollowingRelationship do
       {:ok, follower, following}
     end
   end
+
+  defp maybe_refresh_remote_instance(
+         :follow_accept,
+         %User{local: false, ap_id: ap_id},
+         %User{local: true}
+       )
+       when is_binary(ap_id) do
+    # A remote actor following a local account is useful evidence that its
+    # origin is an active peer. Keep NodeInfo discovery off the follow request
+    # path; the worker and metadata helper coalesce repeated probes by host.
+    _ = Pleroma.Workers.InstanceMetadataWorker.enqueue(ap_id)
+    :ok
+  end
+
+  defp maybe_refresh_remote_instance(_state, _follower, _following), do: :ok
 
   def follower_count(%User{id: nil}), do: 0
 
@@ -302,14 +318,25 @@ defmodule Pleroma.FollowingRelationship do
   defp without_dormant_remote_user(query) do
     dormant_datetime_threshold = Instances.dormant_datetime_threshold()
 
+    # Treat only old unreachable hosts as dormant. Expressing this as an
+    # exclusion avoids joining the instances table once for every followed
+    # account while retaining local users, unknown hosts, and recent failures.
     query
-    |> join(:left, [r, u], i in Instance,
-      on: fragment("lower(?) = ap_id_host(?)", i.host, u.ap_id)
-    )
     |> where(
-      [r, u, i],
-      u.local == true or is_nil(i.unreachable_since) or
-        i.unreachable_since > ^dormant_datetime_threshold
+      [r, u],
+      u.local == true or
+        fragment(
+          """
+          NOT EXISTS (
+            SELECT 1
+            FROM instances AS dormant_instance
+            WHERE lower(dormant_instance.host) = ap_id_host(?)
+              AND dormant_instance.unreachable_since <= ?
+          )
+          """,
+          u.ap_id,
+          ^dormant_datetime_threshold
+        )
     )
   end
 

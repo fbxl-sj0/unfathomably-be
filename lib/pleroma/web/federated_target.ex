@@ -20,9 +20,9 @@ defmodule Pleroma.Web.FederatedTarget do
 
   alias Pleroma.Activity
   alias Pleroma.FollowingRelationship
+  alias Pleroma.FederatedTargetCuration
   alias Pleroma.GroupMembership
   alias Pleroma.HTTP
-  alias Pleroma.HTTP.AdapterHelper
   alias Pleroma.Instances
   alias Pleroma.Instances.Instance
   alias Pleroma.Notification
@@ -43,7 +43,7 @@ defmodule Pleroma.Web.FederatedTarget do
   @group_service_platform_fragments ["fedigroups", "gancio", "gup.pe", "buzzrelay", "tootgroup"]
   @feed_actor_types ["Application", "Service"]
   @feed_source_actor_regex "wp-json|wordpress|writefreely|postmarks|/api/collections/|/video-channels/|peertube|castopod|/federation/user/|/federation/music/libraries/|/music/libraries/|funkwhale|bookwyrm"
-  @feed_source_platform_regex "^(bookwyrm|castopod|funkwhale|gancio|mobilizon|owncast|peertube|pixelfed|postmarks|wordpress|wordpress event bridge|writefreely)$"
+  @feed_source_platform_regex "^(activitypods|bonfire valueflows|bookwyrm|castling|castopod|commonspub|forgefed|funkwhale|gancio|manyfold|mobilizon|mutual aid|neodb|owncast|peertube|pixelfed|postmarks|vervis|wanderer|wordpress|wordpress event bridge|writefreely|zenpub)$"
   @feed_microblog_platforms [
     "gotosocial",
     "iceshrimp",
@@ -53,6 +53,8 @@ defmodule Pleroma.Web.FederatedTarget do
     "snac",
     "wafrn"
   ]
+  @max_alternate_html_bytes 1_048_576
+  @max_alternate_url_bytes 2048
   @iceshrimp_instance_hosts ["torsi.ca", "tuit.fr", "yuustan.space", "iceshrimp.de"]
   @non_content_activity_types [
     "ApproveReply",
@@ -83,9 +85,53 @@ defmodule Pleroma.Web.FederatedTarget do
     "Rating",
     "Review"
   ]
+  @public_collection_source_item_types [
+    "Note",
+    "Article",
+    "Page",
+    "Question",
+    "Audio",
+    "Video",
+    "Image",
+    "Event",
+    "Group"
+  ]
+
+  # These platforms publish domain-specific objects from Person actors. They
+  # belong in Worlds discovery because following the actor is how a user opts
+  # into receiving that native material. Generic microblog Person actors stay
+  # out of this list, as do connector-managed marketplaces and platforms whose
+  # stock follow implementation is incomplete. Flohmarkt sellers are also
+  # intentionally excluded: listings need search and a direct conversation,
+  # not a subscription that implies a high-volume social feed.
+  @native_source_platforms ~w(
+    activitypods bonfire_valueflows castling forgefed gancio manyfold mobilizon mutual_aid
+    neodb postmarks vervis wanderer zenpub
+  )
+  @native_browse_families ~w(
+    audio books bookmarks coordination culture development events games longform marketplace
+    models photo publishing routes video groups
+  )
+  @native_browse_kind_families %{
+    "bookwyrm_reader" => "books",
+    "funkwhale_library" => "audio",
+    "development_source" => "development",
+    "game_source" => "games",
+    "event_source" => "events",
+    "coordination_source" => "coordination",
+    "model_source" => "models",
+    "catalog_source" => "culture",
+    "route_source" => "routes",
+    "valueflows_source" => "coordination",
+    "publication_source" => "publishing",
+    "photo_feed" => "photo",
+    "live_stream" => "video",
+    "ordered_collection" => "video"
+  }
   @default_limit 40
   @max_limit 80
   @catalog_window_limit 240
+  @public_group_catalog_window_limit 120
   @max_target_identifier_bytes 2048
   @source_item_title_limit 240
   @source_item_summary_limit 1_000
@@ -224,18 +270,97 @@ defmodule Pleroma.Web.FederatedTarget do
     |> Enum.filter(&rss_source?/1)
   end
 
+  @doc "Return whether an RSS source is followed by an active local user."
+  def followed_rss_source?(%User{id: source_id} = source) when not is_nil(source_id) do
+    rss_source?(source) and
+      FollowingRelationship
+      |> join(:inner, [relationship], follower in User,
+        on: relationship.follower_id == follower.id
+      )
+      |> where(
+        [relationship, follower],
+        relationship.following_id == ^source_id and
+          relationship.state == ^:follow_accept and
+          follower.local == true and
+          follower.is_active == true
+      )
+      |> Repo.exists?()
+  end
+
+  def followed_rss_source?(_source), do: false
+
   def search_groups(params), do: search_targets(:group, params)
   def search_sources(params), do: search_targets(:source, params)
 
   def search_catalog(params) do
+    case {native_catalog_mode?(params), search_param(params)} do
+      {true, ""} -> browse_native_catalog(params)
+      _ -> search_catalog_targets(params)
+    end
+  end
+
+  @doc "Return a bounded local projection of reachable public remote Group actors."
+  def public_native_groups(limit \\ @public_group_catalog_window_limit)
+
+  def public_native_groups(limit)
+      when is_integer(limit) and limit > 0 do
+    reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+    limit = min(limit, @public_group_catalog_window_limit)
+
+    known_groups =
+      from(u in User,
+        where: u.local == false,
+        where: u.actor_type == @group_actor_type,
+        where: u.is_active == true,
+        where: u.invisible == false,
+        where: fragment("? ~ ?", u.ap_id, "^https?://"),
+        where:
+          fragment(
+            """
+            not exists (
+              select 1 from instances i
+              where lower(i.host) = ap_id_host(?)
+                and i.unreachable_since <= ?
+            )
+            """,
+            u.ap_id,
+            ^reachability_datetime_threshold
+          ),
+        order_by: [desc: u.updated_at],
+        limit: ^limit
+      )
+      |> Repo.all()
+
+    [FederatedTargetCuration.active_targets(), known_groups]
+    |> List.flatten()
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.filter(&group?/1)
+    |> Enum.take(limit)
+  end
+
+  def public_native_groups(_limit), do: []
+
+  defp search_catalog_targets(params) do
     limit = limit_param(params)
     offset = offset_param(params)
-    window_limit = min(offset + limit, @catalog_window_limit)
+
+    # Native search classifies actors after loading them because source family
+    # can depend on cached actor metadata and platform information rather than
+    # one database column. Inspect the existing bounded catalog window before
+    # paginating so generic social actors cannot consume a page ahead of a
+    # matching specialized source.
+    window_limit =
+      if native_catalog_mode?(params) do
+        @catalog_window_limit
+      else
+        min(offset + limit, @catalog_window_limit)
+      end
 
     lookup_params =
       params
       |> Map.put("limit", window_limit)
       |> Map.put("offset", 0)
+      |> Map.put(:defer_interaction_sort, true)
 
     group_targets =
       :group
@@ -250,20 +375,308 @@ defmodule Pleroma.Web.FederatedTarget do
     [group_targets, source_targets]
     |> List.flatten()
     |> Enum.uniq_by(fn {_kind, user} -> user.id end)
-    |> Enum.sort_by(fn {_kind, user} -> target_search_sort_key(user) end)
+    |> preload_target_instance_metadata()
+    |> maybe_filter_native_catalog_targets(params)
+    |> sort_catalog_targets(params)
     |> Enum.drop(offset)
     |> Enum.take(limit)
   end
 
-  def resolve_group(identifier) do
-    with {:ok, identifier} <- normalize_identifier(identifier),
-         false <- unsafe_remote_identifier?(identifier) do
-      case resolve_kind(identifier, :group) do
-        {:ok, %User{} = group} -> {:ok, group}
-        _ -> resolve_group_actor(identifier)
-      end
+  defp sort_catalog_targets(targets, params) do
+    if native_catalog_mode?(params) do
+      curation_positions =
+        targets
+        |> Enum.map(fn {_kind, user} -> user end)
+        |> FederatedTargetCuration.active_positions()
+
+      Enum.sort_by(targets, &native_catalog_target_sort_key(&1, curation_positions))
     else
-      _ -> {:error, :not_found}
+      interaction_scores =
+        targets
+        |> Enum.map(fn {_kind, user} -> user end)
+        |> contact_interaction_scores()
+
+      Enum.sort_by(targets, fn {_kind, user} ->
+        target_search_sort_key(user, interaction_scores)
+      end)
+    end
+  end
+
+  defp maybe_filter_native_catalog_targets(targets, params) do
+    if native_catalog_mode?(params) do
+      family = native_browse_family(params)
+      Enum.filter(targets, &native_catalog_target?(&1, family))
+    else
+      targets
+    end
+  end
+
+  defp native_catalog_target?({:group, %User{} = user}, family) do
+    (is_nil(family) or family == "groups") and group?(user)
+  end
+
+  defp native_catalog_target?({:source, %User{} = user}, family) do
+    source_family = native_source_family(user)
+
+    source_family in @native_browse_families and
+      (is_nil(family) or source_family == family)
+  end
+
+  defp native_catalog_target?(_target, _family), do: false
+
+  # Browsing Worlds must not perform a remote lookup or expose every ordinary
+  # social account as a specialist. Work only from a bounded window of already
+  # known, reachable source actors and use the existing platform classifier to
+  # retain recognized native-object families.
+  defp browse_native_catalog(params) do
+    limit = limit_param(params)
+    offset = offset_param(params)
+    family = native_browse_family(params)
+
+    source_users =
+      if family == "groups" do
+        []
+      else
+        browse_native_sources(family)
+        |> Enum.map(&{:source, &1})
+      end
+
+    group_users =
+      if is_nil(family) or family == "groups" do
+        public_native_groups(@public_group_catalog_window_limit)
+        |> preload_instance_metadata()
+        |> Enum.map(&{:group, &1})
+      else
+        []
+      end
+
+    source_users
+    |> Kernel.++(group_users)
+    |> Enum.uniq_by(fn {_kind, user} -> user.id end)
+    |> then(fn targets ->
+      curation_positions =
+        targets
+        |> Enum.map(fn {_kind, user} -> user end)
+        |> FederatedTargetCuration.active_positions()
+
+      Enum.sort_by(targets, &native_catalog_target_sort_key(&1, curation_positions))
+    end)
+    |> Enum.drop(offset)
+    |> Enum.take(limit)
+  end
+
+  defp browse_native_sources(requested_family) do
+    @catalog_window_limit
+    |> native_source_catalog()
+    |> Enum.filter(&native_browse_source?(&1, requested_family))
+  end
+
+  @doc "Return a bounded local projection of recognized specialized source actors."
+  def native_source_catalog(limit \\ @catalog_window_limit)
+
+  def native_source_catalog(limit) when is_integer(limit) and limit > 0 do
+    limit = min(limit, @catalog_window_limit)
+
+    limit
+    |> native_source_catalog_candidates()
+    |> preload_instance_metadata()
+    |> Enum.filter(&native_browse_source?(&1, nil))
+  end
+
+  def native_source_catalog(_limit), do: []
+
+  # The general source query has to support many API surfaces and combines
+  # actor-shape and instance-software evidence with OR. For a bounded Worlds
+  # catalog that shape prevents PostgreSQL from choosing either useful access
+  # path. Query the two forms independently, then merge their small recent
+  # windows before structural classification.
+  defp native_source_catalog_candidates(limit) do
+    reachability_datetime_threshold = Instances.reachability_datetime_threshold()
+    rss_nickname = @rss_source_nickname_prefix <> "%"
+
+    actor_users =
+      reachability_datetime_threshold
+      |> native_source_catalog_base_query()
+      |> where(
+        [u, _instance],
+        u.actor_type in ^@feed_actor_types or ilike(u.nickname, ^rss_nickname) or
+          fragment(
+            "concat_ws(' ', ?, ?, ?, ?) ~* ?",
+            u.ap_id,
+            u.uri,
+            u.inbox,
+            u.shared_inbox,
+            ^@feed_source_actor_regex
+          )
+      )
+      |> order_by([u, _instance], desc: u.updated_at)
+      |> limit(^limit)
+      |> select([u, _instance], u)
+      |> Repo.all()
+
+    platform_users =
+      reachability_datetime_threshold
+      |> native_source_catalog_base_query()
+      |> where(
+        [_u, instance],
+        not is_nil(instance.id) and
+          fragment(
+            "lower(coalesce(?->>'software_name', '')) ~ ?",
+            instance.metadata,
+            ^@feed_source_platform_regex
+          )
+      )
+      |> order_by([u, _instance], desc: u.updated_at)
+      |> limit(^limit)
+      |> select([u, _instance], u)
+      |> Repo.all()
+
+    [actor_users, platform_users]
+    |> List.flatten()
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.sort_by(&native_browse_sort_key/1, :desc)
+    |> Enum.take(limit)
+  end
+
+  defp native_source_catalog_base_query(reachability_datetime_threshold) do
+    from(u in User,
+      left_join: instance in Instance,
+      on: fragment("lower(?)", instance.host) == fragment("ap_id_host(?)", u.ap_id),
+      where: u.local == false,
+      where: u.is_active == true,
+      where: u.invisible == false,
+      where: fragment("? ~ ?", u.ap_id, "^https?://"),
+      where:
+        not (u.actor_type == @group_actor_type or
+               (u.actor_type in ^@group_service_actor_types and
+                  fragment("? ~* ?", u.ap_id, ^@group_service_actor_regex))),
+      where:
+        is_nil(instance.unreachable_since) or
+          instance.unreachable_since > ^reachability_datetime_threshold
+    )
+  end
+
+  defp native_browse_sort_key(%User{} = user) do
+    {user.updated_at || ~N[1970-01-01 00:00:00], user.id}
+  end
+
+  defp native_catalog_target_sort_key({_kind, %User{} = user}, curation_positions) do
+    case Map.fetch(curation_positions, user.id) do
+      {:ok, position} ->
+        {0, position, 0, to_string(user.id)}
+
+      :error ->
+        {1, 0, -sortable_datetime(user.updated_at), to_string(user.id)}
+    end
+  end
+
+  # Native family classification uses cached NodeInfo software metadata. A
+  # browse window can contain actors from hundreds of hosts, so resolving that
+  # metadata one host at a time creates an avoidable query per candidate. Seed
+  # the existing request-local cache with one bounded query, including nil for
+  # hosts with no instance row, before classification begins.
+  defp preload_target_instance_metadata(targets) do
+    targets
+    |> Enum.map(fn {_kind, user} -> user end)
+    |> preload_instance_metadata()
+
+    targets
+  end
+
+  defp preload_instance_metadata(users) when is_list(users) do
+    cache_key = {__MODULE__, :instance_metadata_by_host}
+    cache = Process.get(cache_key, %{})
+
+    missing_hosts =
+      users
+      |> Enum.map(&host/1)
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&String.downcase/1)
+      |> Enum.uniq()
+      |> Enum.reject(&Map.has_key?(cache, &1))
+
+    if missing_hosts != [] do
+      metadata_by_host =
+        Instance
+        |> where([instance], fragment("lower(?)", instance.host) in ^missing_hosts)
+        |> Repo.all()
+        |> Map.new(fn instance ->
+          {String.downcase(instance.host), cached_instance_record_metadata(instance)}
+        end)
+
+      cache =
+        Enum.reduce(missing_hosts, cache, fn host, result ->
+          Map.put(result, host, Map.get(metadata_by_host, host))
+        end)
+
+      Process.put(cache_key, cache)
+    end
+
+    users
+  rescue
+    _ -> users
+  catch
+    _, _ -> users
+  end
+
+  defp native_catalog_mode?(params), do: param(params, :mode) == "native"
+
+  defp native_browse_family(params) do
+    case param(params, :family) do
+      family when family in @native_browse_families -> family
+      _ -> nil
+    end
+  end
+
+  @doc "Return the Worlds family for a recognized specialized source actor."
+  def native_source_family(%User{} = user) do
+    case Map.fetch(@native_browse_kind_families, source_kind(user)) do
+      {:ok, family} -> family
+      :error -> native_source_platform_family(user)
+    end
+  end
+
+  def native_source_family(_user), do: nil
+
+  # A platform family is useful for a publisher whose actor is the destination
+  # a person would actually follow, such as WriteFreely or a native platform
+  # that uses ordinary Person actors. Application and Service actors are often
+  # instance endpoints, however, so their host-level family must not turn an
+  # unrelated service into a Worlds community.
+  defp native_source_platform_family(%User{} = user) do
+    case source_profile(user) do
+      profile when profile in ["blog_publisher", "native_publisher"] ->
+        family = source_platform(user).platform_family |> to_string()
+
+        if family in @native_browse_families, do: family
+
+      _ ->
+        nil
+    end
+  end
+
+  defp native_browse_source?(%User{} = user, requested_family) do
+    family = native_source_family(user)
+
+    family in @native_browse_families and
+      (is_nil(requested_family) or family == requested_family)
+  end
+
+  def resolve_group(identifier) do
+    case Pleroma.Nostr.resolve(identifier, :group) do
+      {:ok, %User{} = group} ->
+        {:ok, group}
+
+      _ ->
+        with {:ok, identifier} <- normalize_identifier(identifier),
+             false <- unsafe_remote_identifier?(identifier) do
+          case resolve_kind(identifier, :group) do
+            {:ok, %User{} = group} -> {:ok, group}
+            _ -> resolve_group_actor(identifier)
+          end
+        else
+          _ -> {:error, :not_found}
+        end
     end
   end
 
@@ -303,25 +716,43 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   def resolve_target(identifier) when is_binary(identifier) do
-    with {:ok, identifier} <- normalize_identifier(identifier) do
-      cond do
-        url?(identifier) and safe_fetch_url?(identifier) ->
-          User.get_or_fetch_by_ap_id(identifier)
+    case Pleroma.Nostr.resolve(identifier, :any) do
+      {:ok, %User{} = user} ->
+        {:ok, user}
 
-        url?(identifier) ->
-          {:error, :not_found}
+      _ ->
+        case Pleroma.ATProto.resolve(identifier) do
+          {:ok, %User{} = user} ->
+            {:ok, user}
 
-        safe_webfinger_identifier?(identifier) ->
-          resolve_by_nickname(identifier)
+          _ ->
+            case Pleroma.Diaspora.resolve(identifier) do
+              {:ok, %User{} = user} ->
+                {:ok, user}
 
-        String.contains?(identifier, "@") ->
-          {:error, :not_found}
+              _ ->
+                with {:ok, identifier} <- normalize_identifier(identifier) do
+                  cond do
+                    url?(identifier) and safe_fetch_url?(identifier) ->
+                      User.get_or_fetch_by_ap_id(identifier)
 
-        true ->
-          resolve_by_id_or_nickname(identifier)
-      end
-    else
-      _ -> {:error, :not_found}
+                    url?(identifier) ->
+                      {:error, :not_found}
+
+                    safe_webfinger_identifier?(identifier) ->
+                      resolve_by_nickname(identifier)
+
+                    String.contains?(identifier, "@") ->
+                      {:error, :not_found}
+
+                    true ->
+                      resolve_by_id_or_nickname(identifier)
+                  end
+                else
+                  _ -> {:error, :not_found}
+                end
+            end
+        end
     end
   end
 
@@ -393,12 +824,14 @@ defmodule Pleroma.Web.FederatedTarget do
       rss_source?(user) ->
         "rss_feed"
 
-      nodeinfo_platform in ["wordpress", "writefreely", "postmarks", "xwiki"] or
+      nodeinfo_platform == "postmarks" ->
+        "native_publisher"
+
+      nodeinfo_platform in ["wordpress", "writefreely", "xwiki"] or
         String.contains?(path, "wp-json") or String.contains?(path, "/api/collections/") or
         String.contains?(path, "/xwiki/activitypub/") or
           (is_nil(nodeinfo_platform) and
-             (String.contains?(host, "wordpress") or String.contains?(host, "writefreely") or
-                String.contains?(host, "postmarks"))) ->
+             (String.contains?(host, "wordpress") or String.contains?(host, "writefreely"))) ->
         "blog_publisher"
 
       nodeinfo_platform in ["peertube", "owncast", "castopod"] or
@@ -417,6 +850,9 @@ defmodule Pleroma.Web.FederatedTarget do
       nodeinfo_platform == "pixelfed" or
           (is_nil(nodeinfo_platform) and String.contains?(host, "pixelfed")) ->
         "photo_stream"
+
+      nodeinfo_platform in @native_source_platforms ->
+        "native_publisher"
 
       nodeinfo_platform in @feed_microblog_platforms ->
         "microblog_feed"
@@ -466,6 +902,23 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   def group_member_count(%User{} = group), do: group.follower_count || 0
+
+  def group_status_count(%User{ap_id: ap_id} = group) when is_binary(ap_id) do
+    [ap_id]
+    |> ActivityPub.fetch_activities_query(%{
+      type: ["Create"],
+      discussion_roots_only: true,
+      skip_order: true
+    })
+    |> where([activity], fragment("?->>'type'", activity.data) == "Create")
+    |> exclude(:order_by)
+    |> Repo.aggregate(:count, :id)
+  rescue
+    _ -> group.note_count || 0
+  end
+
+  def group_status_count(%User{} = group), do: group.note_count || 0
+  def group_status_count(_group), do: 0
 
   def group_moderator_count(%User{local: true, actor_type: "Group"} = group) do
     group
@@ -768,26 +1221,89 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_kind_for_platform(%User{} = user, %{platform: platform}) do
     case source_profile(user) do
-      _ when platform == "owncast" -> "live_stream"
-      "rss_feed" -> "rss_feed"
-      "photo_stream" -> "photo_feed"
-      "microblog_feed" -> "microblog_feed"
-      "library" when platform == "funkwhale" -> "funkwhale_library"
-      "library" -> "collection"
-      "collection_channel" -> "ordered_collection"
-      "blog_publisher" -> "actor_feed"
-      "application_source" -> "service"
-      _ -> "actor_feed"
+      _ when platform == "owncast" ->
+        "live_stream"
+
+      "rss_feed" ->
+        "rss_feed"
+
+      "photo_stream" ->
+        "photo_feed"
+
+      "microblog_feed" ->
+        "microblog_feed"
+
+      "library" when platform == "funkwhale" ->
+        "funkwhale_library"
+
+      "library" when platform == "bookwyrm" ->
+        "bookwyrm_reader"
+
+      "library" ->
+        "collection"
+
+      "collection_channel" ->
+        "ordered_collection"
+
+      "blog_publisher" ->
+        "actor_feed"
+
+      "native_publisher" when platform in ["forgefed", "vervis"] ->
+        "development_source"
+
+      "native_publisher" when platform == "castling" ->
+        "game_source"
+
+      "native_publisher" when platform in ["gancio", "mobilizon"] ->
+        "event_source"
+
+      "native_publisher" when platform in ["activitypods", "mutual_aid"] ->
+        "coordination_source"
+
+      "native_publisher" when platform == "manyfold" ->
+        "model_source"
+
+      "native_publisher" when platform == "neodb" ->
+        "catalog_source"
+
+      "native_publisher" when platform == "wanderer" ->
+        "route_source"
+
+      "native_publisher" when platform == "bonfire_valueflows" ->
+        "valueflows_source"
+
+      "native_publisher" when platform == "zenpub" ->
+        "publication_source"
+
+      "native_publisher" ->
+        "native_source"
+
+      "application_source" ->
+        "service"
+
+      _ ->
+        "actor_feed"
     end
   end
 
   defp source_kind_label_for_kind("funkwhale_library"), do: "Library"
+  defp source_kind_label_for_kind("bookwyrm_reader"), do: "Reading source"
   defp source_kind_label_for_kind("photo_feed"), do: "Photo feed"
   defp source_kind_label_for_kind("microblog_feed"), do: "Microblog feed"
   defp source_kind_label_for_kind("live_stream"), do: "Live stream"
   defp source_kind_label_for_kind("ordered_collection"), do: "Ordered collection"
   defp source_kind_label_for_kind("collection"), do: "Collection"
   defp source_kind_label_for_kind("actor_feed"), do: "Actor feed"
+  defp source_kind_label_for_kind("development_source"), do: "Project source"
+  defp source_kind_label_for_kind("game_source"), do: "Game source"
+  defp source_kind_label_for_kind("event_source"), do: "Events source"
+  defp source_kind_label_for_kind("coordination_source"), do: "Coordination source"
+  defp source_kind_label_for_kind("model_source"), do: "Model source"
+  defp source_kind_label_for_kind("catalog_source"), do: "Cultural catalog"
+  defp source_kind_label_for_kind("route_source"), do: "Route source"
+  defp source_kind_label_for_kind("valueflows_source"), do: "ValueFlows source"
+  defp source_kind_label_for_kind("publication_source"), do: "Publication source"
+  defp source_kind_label_for_kind("native_source"), do: "Worlds source"
   defp source_kind_label_for_kind("rss_feed"), do: "RSS feed"
   defp source_kind_label_for_kind("service"), do: "Service"
   defp source_kind_label_for_kind("group"), do: "Group"
@@ -802,8 +1318,41 @@ defmodule Pleroma.Web.FederatedTarget do
   defp source_capability_labels("funkwhale_library", _platform),
     do: ["follow library", "preview tracks", "owner inbox"]
 
+  defp source_capability_labels("bookwyrm_reader", _platform),
+    do: ["follow reader", "preview reviews", "read posts"]
+
   defp source_capability_labels("rss_feed", _platform),
     do: ["follow feed", "read items", "share links"]
+
+  defp source_capability_labels("development_source", _platform),
+    do: ["follow project", "receive development activity", "open origin"]
+
+  defp source_capability_labels("game_source", _platform),
+    do: ["follow player", "receive games", "open board"]
+
+  defp source_capability_labels("event_source", _platform),
+    do: ["follow events", "preview events", "send replies"]
+
+  defp source_capability_labels("coordination_source", _platform),
+    do: ["follow coordinator", "receive offers and needs", "open origin"]
+
+  defp source_capability_labels("model_source", _platform),
+    do: ["follow maker", "preview models", "open origin"]
+
+  defp source_capability_labels("catalog_source", _platform),
+    do: ["follow catalog", "preview works", "read reviews"]
+
+  defp source_capability_labels("route_source", _platform),
+    do: ["follow routes", "preview trails", "open origin"]
+
+  defp source_capability_labels("valueflows_source", _platform),
+    do: ["follow coordinator", "receive offers and needs", "open origin"]
+
+  defp source_capability_labels("publication_source", _platform),
+    do: ["follow publisher", "read publications", "open origin"]
+
+  defp source_capability_labels("native_source", _platform),
+    do: ["follow source", "receive native items", "open origin"]
 
   defp source_capability_labels(_kind, platform)
        when platform in [
@@ -1031,9 +1580,10 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp search_targets(kind, params) do
     query = search_param(params)
+    fetchable_identifier = fetchable_identifier?(query)
 
     fetched =
-      if fetchable_identifier?(query) do
+      if fetchable_identifier do
         case resolve_fetchable_identifier(query, kind) do
           {:ok, %User{} = user} -> [user]
           _ -> []
@@ -1043,43 +1593,118 @@ defmodule Pleroma.Web.FederatedTarget do
       end
 
     known =
-      if query == "" do
+      if query == "" or fetchable_identifier do
         []
       else
-        term = "%#{query}%"
+        tsquery = target_search_tsquery(query)
 
-        kind_query(kind)
-        |> where(
-          [u],
-          ilike(u.nickname, ^term) or ilike(u.name, ^term) or ilike(u.ap_id, ^term) or
-            ilike(u.uri, ^term)
-        )
-        |> order_by([u], desc: u.updated_at)
-        |> offset(^offset_param(params))
-        |> limit(^limit_param(params))
-        |> Repo.all()
+        if tsquery == "" do
+          []
+        else
+          kind_query(kind)
+          |> where(
+            [u],
+            fragment(
+              """
+              (
+                setweight(to_tsvector('simple', regexp_replace(?, '\\W', ' ', 'g')), 'A') ||
+                setweight(to_tsvector('simple', regexp_replace(coalesce(?, ''), '\\W', ' ', 'g')), 'B')
+              ) @@ to_tsquery('simple', ?)
+              """,
+              u.nickname,
+              u.name,
+              ^tsquery
+            )
+          )
+          |> offset(^offset_param(params))
+          |> limit(^limit_param(params))
+          |> Repo.all()
+        end
       end
 
     [fetched, known]
     |> List.flatten()
     |> Enum.uniq_by(& &1.id)
     |> Enum.filter(&matches_kind?(&1, kind))
-    |> Enum.sort_by(&target_search_sort_key/1)
+    |> sort_search_target_users(params)
     |> Enum.take(limit_param(params))
   end
 
-  def contact_interaction_score(%User{ap_id: ap_id} = user) when is_binary(ap_id) do
-    local_follow_score(user) * 100 +
-      local_notification_score(user) * 20 +
-      local_direct_activity_score(user) * 15 +
-      min(cached_remote_post_score(user), 50)
+  defp sort_search_target_users(users, params) do
+    cond do
+      native_catalog_mode?(params) ->
+        curation_positions = FederatedTargetCuration.active_positions(users)
+
+        Enum.sort_by(users, fn user ->
+          native_catalog_target_sort_key({:target, user}, curation_positions)
+        end)
+
+      param(params, :defer_interaction_sort) == true ->
+        Enum.sort_by(users, &target_search_sort_key(&1, %{}))
+
+      true ->
+        interaction_scores = contact_interaction_scores(users)
+        Enum.sort_by(users, &target_search_sort_key(&1, interaction_scores))
+    end
+  end
+
+  # Match the existing users_fts_index expression exactly. Target discovery
+  # accepts complete handles and URLs through the deliberate resolver above;
+  # ordinary text therefore only needs indexed nickname/display-name prefixes.
+  defp target_search_tsquery(query) do
+    query
+    |> String.replace(~r/[!-\/|@|[-`|{-~|:-?]+/, " ")
+    |> String.trim()
+    |> String.split()
+    |> Enum.map(&(&1 <> ":*"))
+    |> Enum.join(" & ")
+  end
+
+  @interaction_evidence_cap 25
+  @notification_evidence_window 5_000
+  @direct_activity_sample_multiplier 4
+  @direct_activity_sample_limit 2_000
+
+  def contact_interaction_score(%User{} = user) do
+    [user]
+    |> contact_interaction_scores()
+    |> Map.get(user.id, 0)
   end
 
   def contact_interaction_score(_), do: 0
 
-  defp target_search_sort_key(%User{} = user) do
+  def contact_interaction_scores(users) when is_list(users) do
+    users =
+      Enum.filter(users, fn
+        %User{id: id, ap_id: ap_id} when not is_nil(id) and is_binary(ap_id) -> true
+        _ -> false
+      end)
+
+    if users == [] do
+      %{}
+    else
+      user_ids = Enum.map(users, & &1.id)
+      ap_ids = Enum.map(users, & &1.ap_id)
+
+      follow_scores = local_follow_scores(user_ids)
+      notification_scores = local_notification_scores(ap_ids)
+      direct_activity_scores = local_direct_activity_scores(ap_ids)
+
+      Map.new(users, fn user ->
+        score =
+          Map.get(follow_scores, user.id, 0) * 100 +
+            min(Map.get(notification_scores, user.ap_id, 0), @interaction_evidence_cap) * 20 +
+            min(Map.get(direct_activity_scores, user.ap_id, 0), @interaction_evidence_cap) * 15 +
+            cached_remote_post_score(user)
+
+        {user.id, score}
+      end)
+    end
+  end
+
+  defp target_search_sort_key(%User{} = user, interaction_scores) do
     {
-      -contact_interaction_score(user),
+      -Map.get(interaction_scores, user.id, 0),
       -sortable_datetime(user.updated_at),
       user.nickname || user.name || user.ap_id || ""
     }
@@ -1091,43 +1716,86 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp sortable_datetime(_), do: 0
 
-  defp local_follow_score(%User{id: id}) do
+  defp local_follow_scores(user_ids) do
     FollowingRelationship
     |> join(:inner, [r], follower in User, on: r.follower_id == follower.id)
-    |> where([r, follower], r.following_id == ^id and r.state == ^:follow_accept)
+    |> where([r, follower], r.following_id in ^user_ids and r.state == ^:follow_accept)
     |> where([_r, follower], follower.local == true and follower.is_active == true)
-    |> Repo.aggregate(:count, :id)
+    |> group_by([r, _follower], r.following_id)
+    |> select([r, _follower], {r.following_id, count(r.id)})
+    |> Repo.all()
+    |> Map.new()
   end
 
-  defp local_notification_score(%User{ap_id: ap_id}) do
-    Notification
-    |> join(:inner, [notification], activity in Activity,
-      on: notification.activity_id == activity.id
+  defp local_notification_scores(ap_ids) do
+    recent_notifications =
+      from(notification in Notification,
+        order_by: [desc: notification.id],
+        limit: ^@notification_evidence_window
+      )
+
+    from(notification in subquery(recent_notifications),
+      join: activity in Activity,
+      on: notification.activity_id == activity.id,
+      join: user in User,
+      on: notification.user_id == user.id,
+      where: activity.actor in ^ap_ids and user.local == true,
+      group_by: activity.actor,
+      select: {activity.actor, count(notification.id)}
     )
-    |> join(:inner, [notification, _activity], user in User, on: notification.user_id == user.id)
-    |> where([_notification, activity, user], activity.actor == ^ap_id and user.local == true)
-    |> Repo.aggregate(:count, :id)
+    |> Repo.all()
+    |> Map.new()
   end
 
-  defp local_direct_activity_score(%User{ap_id: ap_id}) do
+  defp local_direct_activity_scores(ap_ids) do
+    target_set = MapSet.new(ap_ids)
+
+    sample_limit =
+      ap_ids
+      |> length()
+      |> Kernel.*(@interaction_evidence_cap * @direct_activity_sample_multiplier)
+      |> min(@direct_activity_sample_limit)
+
     Activity
-    |> join(:inner, [activity], user in User, on: user.ap_id == activity.actor)
-    |> where([activity, user], activity.local == true and user.local == true)
+    |> where([activity], activity.local == true)
     |> where(
-      [activity, _user],
-      fragment("?->>'object' = ?", activity.data, ^ap_id) or
-        fragment("?->'to' \\? ?", activity.data, ^ap_id) or
-        fragment("?->'cc' \\? ?", activity.data, ^ap_id)
+      [activity],
+      fragment(
+        "associated_object_id(?) = ANY(?)",
+        activity.data,
+        type(^ap_ids, {:array, :string})
+      ) or
+        fragment("? && ?", activity.recipients, type(^ap_ids, {:array, :string}))
     )
-    |> Repo.aggregate(:count, :id)
+    |> order_by([activity], desc: activity.id)
+    |> limit(^sample_limit)
+    |> select(
+      [activity],
+      {fragment("associated_object_id(?)", activity.data), activity.recipients}
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn {object_ap_id, recipients}, scores ->
+      object_targets =
+        if MapSet.member?(target_set, object_ap_id), do: [object_ap_id], else: []
+
+      recipient_targets =
+        recipients
+        |> List.wrap()
+        |> Enum.filter(&MapSet.member?(target_set, &1))
+
+      object_targets
+      |> Kernel.++(recipient_targets)
+      |> Enum.uniq()
+      |> Enum.reduce(scores, fn ap_id, result ->
+        Map.update(result, ap_id, 1, &min(&1 + 1, @interaction_evidence_cap))
+      end)
+    end)
   end
 
-  defp cached_remote_post_score(%User{ap_id: ap_id}) do
-    Activity
-    |> where([activity], activity.local == false and activity.actor == ^ap_id)
-    |> where([activity], fragment("?->>'type' = 'Create'", activity.data))
-    |> Repo.aggregate(:count, :id)
-  end
+  defp cached_remote_post_score(%User{note_count: count}) when is_integer(count) and count > 0,
+    do: min(count, 50)
+
+  defp cached_remote_post_score(_), do: 0
 
   defp kind_query(:group) do
     reachability_datetime_threshold = Instances.reachability_datetime_threshold()
@@ -1179,6 +1847,17 @@ defmodule Pleroma.Web.FederatedTarget do
             u.inbox,
             u.shared_inbox,
             ^@feed_source_actor_regex
+          ) or
+          fragment(
+            """
+            exists (
+              select 1 from instances i
+              where lower(i.host) = ap_id_host(?)
+                and lower(coalesce(i.metadata->>'software_name', '')) ~ ?
+            )
+            """,
+            u.ap_id,
+            ^@feed_source_platform_regex
           ),
       where:
         fragment(
@@ -1279,9 +1958,11 @@ defmodule Pleroma.Web.FederatedTarget do
     do: url?(identifier) and not safe_fetch_url?(identifier)
 
   defp safe_fetch_url?(identifier) do
-    with %URI{scheme: scheme, host: host, path: path} when is_binary(host) <-
+    with false <- Pleroma.Web.LocalOrigin.local_url?(identifier),
+         %URI{scheme: scheme, host: host, path: path, userinfo: nil} when is_binary(host) <-
            URI.parse(identifier),
          true <- scheme in ["http", "https"],
+         true <- Pleroma.Web.LocalOrigin.public_remote_host?(host),
          false <- String.contains?(path || "", ["..", "<", ">", "\\"]) do
       true
     else
@@ -1290,8 +1971,15 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp safe_webfinger_identifier?(identifier) do
-    String.contains?(identifier, "@") and
-      not String.contains?(identifier, ["/", "\\", "<", ">", " "])
+    with true <- String.contains?(identifier, "@"),
+         false <- String.contains?(identifier, ["/", "\\", "<", ">", " "]),
+         {:ok, _local, host, _account} <- webfinger_identifier_parts(identifier),
+         false <- Pleroma.Web.LocalOrigin.local_webfinger_host?(host),
+         true <- Pleroma.Web.LocalOrigin.public_remote_host?(host) do
+      true
+    else
+      _ -> false
+    end
   end
 
   defp resolve_collection_source(identifier) when is_binary(identifier) do
@@ -1515,33 +2203,35 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp fetch_public_json(url) do
     headers = [
-      {"accept",
-       "application/activity+json, application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", application/json"}
+      {"accept", Pleroma.Constants.activity_json_accept_header()}
     ]
 
-    with {:ok, %{status: status, body: body}} when status in 200..299 <- HTTP.get(url, headers) do
+    with {:ok, %{status: status, body: body} = response} when status in 200..299 <-
+           HTTP.get(url, headers) do
+      final_url = response_final_url(response, url)
+
       case decode_source_items_body(body) do
         {:ok, %{} = data} ->
-          if data["id"] == url do
+          if public_json_identifier_matches?(data, url, final_url) do
             {:ok, data}
           else
-            fetch_public_alternate_json(url, body, headers)
+            fetch_public_alternate_json(url, final_url, body)
           end
 
         _ ->
-          fetch_public_alternate_json(url, body, headers)
+          fetch_public_alternate_json(url, final_url, body)
       end
     else
       _ -> {:error, :not_found}
     end
   end
 
-  defp fetch_public_alternate_json(url, body, headers) when is_binary(body) do
-    with alternate when is_binary(alternate) <- activity_alternate_url(url, body),
-         true <- alternate != url,
-         {:ok, %{status: status, body: body}} when status in 200..299 <-
-           HTTP.get(alternate, headers),
-         {:ok, %{} = data} <- decode_source_items_body(body),
+  defp fetch_public_alternate_json(request_url, final_url, body)
+       when is_binary(request_url) and is_binary(final_url) and is_binary(body) do
+    with true <- same_http_origin?(request_url, final_url),
+         alternate when is_binary(alternate) <- activity_alternate_url(final_url, body),
+         true <- safe_activity_alternate_url?(alternate, request_url, final_url),
+         {:ok, %{} = data} <- safe_signed_fetch(alternate),
          true <- is_binary(data["id"]) do
       {:ok, data}
     else
@@ -1551,7 +2241,59 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp fetch_public_alternate_json(_, _, _), do: {:error, :not_found}
 
-  defp activity_alternate_url(base_url, body) do
+  defp response_final_url(%{url: final_url}, _request_url)
+       when is_binary(final_url) and final_url != "",
+       do: final_url
+
+  defp response_final_url(_response, request_url), do: request_url
+
+  defp public_json_identifier_matches?(%{"id" => id}, request_url, final_url)
+       when is_binary(id) do
+    same_http_origin?(request_url, final_url) and
+      (same_http_resource?(id, request_url) or same_http_resource?(id, final_url))
+  end
+
+  defp public_json_identifier_matches?(_data, _request_url, _final_url), do: false
+
+  defp safe_activity_alternate_url?(alternate, request_url, final_url) do
+    with true <- byte_size(alternate) <= @max_alternate_url_bytes,
+         %URI{scheme: scheme, host: host, userinfo: nil, fragment: nil}
+         when scheme in ["http", "https"] and is_binary(host) and host != "" <-
+           parse_uri(alternate),
+         true <- same_http_origin?(alternate, final_url),
+         false <- same_http_resource?(alternate, request_url),
+         false <- same_http_resource?(alternate, final_url) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp same_http_resource?(left, right) when is_binary(left) and is_binary(right) do
+    normalized = normalized_http_resource(left)
+    not is_nil(normalized) and normalized == normalized_http_resource(right)
+  end
+
+  defp same_http_resource?(_, _), do: false
+
+  defp normalized_http_resource(url) do
+    with %URI{scheme: scheme, host: host} = uri
+         when scheme in ["http", "https"] and is_binary(host) and host != "" <- parse_uri(url) do
+      {
+        String.downcase(scheme),
+        String.downcase(host),
+        effective_uri_port(uri),
+        uri.path || "/",
+        uri.query
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp activity_alternate_url(base_url, body)
+       when is_binary(base_url) and is_binary(body) and
+              byte_size(body) <= @max_alternate_html_bytes do
     ~r/<link\b[^>]*>/i
     |> Regex.scan(body)
     |> Enum.find_value(fn [tag] ->
@@ -1575,7 +2317,11 @@ defmodule Pleroma.Web.FederatedTarget do
           |> to_string()
       end
     end)
+  rescue
+    _ -> nil
   end
+
+  defp activity_alternate_url(_, _), do: nil
 
   defp html_attr(tag, attr) do
     attr
@@ -1943,6 +2689,7 @@ defmodule Pleroma.Web.FederatedTarget do
         User.set_cache(group)
         GroupMembership.ensure_owner(group, owner)
         User.follow(owner, group, :follow_accept)
+        Pleroma.Nostr.Community.publish_metadata(group)
         {:ok, group}
       end
     end
@@ -1969,6 +2716,7 @@ defmodule Pleroma.Web.FederatedTarget do
   def update_local_group(%User{} = group, %User{} = actor, params) do
     with :ok <- GroupMembership.require_manager(actor, group),
          {:ok, group} <- update_group_profile(group, params) do
+      Pleroma.Nostr.Community.publish_metadata(group)
       {:ok, group}
     end
   end
@@ -1976,6 +2724,7 @@ defmodule Pleroma.Web.FederatedTarget do
   @doc "Delete a local ActivityPub Group actor after checking ownership rights."
   def delete_local_group(%User{} = group, %User{} = actor) do
     with :ok <- GroupMembership.require_owner(actor, group) do
+      Pleroma.Nostr.Community.publish_delete(group, actor)
       User.delete(group)
     end
   end
@@ -2059,7 +2808,12 @@ defmodule Pleroma.Web.FederatedTarget do
         |> source_collection_items()
         |> Enum.take(preview_candidate_limit(limit))
         |> Enum.map(&group_preview_item/1)
-        |> Enum.map(&render_source_item(&1, group_context, reading_user, fetch_replies?: false))
+        |> Enum.map(
+          &render_source_item(&1, group_context, reading_user,
+            fetch_replies?: false,
+            public_collection?: true
+          )
+        )
         |> Enum.reject(&is_nil/1)
         |> unique_preview_items()
         |> Enum.take(limit)
@@ -2263,7 +3017,13 @@ defmodule Pleroma.Web.FederatedTarget do
         |> source_collection_items()
         |> Enum.take(preview_candidate_limit(limit))
         |> Enum.map(&source_preview_item/1)
-        |> Enum.map(&render_source_item(&1, source_context, reading_user, fetch_replies?: false))
+        |> Enum.map(
+          &render_source_item(&1, source_context, reading_user,
+            fetch_replies?: false,
+            fetch_status?: false,
+            public_collection?: true
+          )
+        )
         |> Enum.reject(&is_nil/1)
         |> unique_preview_items()
         |> Enum.take(limit)
@@ -2296,7 +3056,12 @@ defmodule Pleroma.Web.FederatedTarget do
       items =
         feed.items
         |> Enum.take(preview_candidate_limit(limit))
-        |> Enum.map(&render_source_item(&1, source_context, reading_user, fetch_replies?: false))
+        |> Enum.map(
+          &render_source_item(&1, source_context, reading_user,
+            fetch_replies?: false,
+            public_collection?: true
+          )
+        )
         |> Enum.reject(&is_nil/1)
         |> unique_preview_items()
         |> Enum.take(limit)
@@ -2424,12 +3189,12 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp safe_signed_fetch(url) do
-    case Fetcher.fetch_and_contain_remote_object_from_id(url) do
+    case Fetcher.fetch_and_contain_remote_collection_from_id(url) do
       {:ok, %{} = data} ->
         {:ok, data}
 
       _ ->
-        Fetcher.fetch_and_contain_remote_collection_from_id(url)
+        Fetcher.fetch_and_contain_remote_object_from_id(url)
     end
   rescue
     _ ->
@@ -2441,8 +3206,7 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_items_unsigned_fetch(url) do
     headers = [
-      {"accept",
-       "application/activity+json, application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", application/json"}
+      {"accept", Pleroma.Constants.activity_json_accept_header()}
     ]
 
     case HTTP.get(url, headers) do
@@ -2527,16 +3291,11 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp rss_http_get(url, headers) do
-    uri = URI.parse(url)
-    adapter = Application.get_env(:tesla, :adapter)
-
-    adapter_opts =
-      uri
-      |> AdapterHelper.options(pool: :media, follow_redirect: false, force_redirect: false)
-
-    []
-    |> Tesla.client(adapter)
-    |> Tesla.get(url, headers: headers, opts: [adapter: adapter_opts])
+    Pleroma.HTTP.get(url, headers,
+      pool: :media,
+      redirect_middleware: nil,
+      adapter: [follow_redirect: false, force_redirect: false]
+    )
   end
 
   defp header_value(headers, name) when is_list(headers) do
@@ -2628,7 +3387,7 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp parse_rss_feed(body) when is_binary(body) do
-    doc = SweetXml.parse(body, dtd: :none)
+    doc = SweetXml.parse(body, dtd: :none, quiet: true)
     rss_items = SweetXml.xpath(doc, ~x"//channel/item"l)
     atom_items = SweetXml.xpath(doc, ~x"//*[local-name()='entry']"l)
 
@@ -3798,7 +4557,12 @@ defmodule Pleroma.Web.FederatedTarget do
       items =
         feed.items
         |> Enum.take(preview_candidate_limit(limit))
-        |> Enum.map(&render_source_item(&1, source_context, reading_user, fetch_replies?: false))
+        |> Enum.map(
+          &render_source_item(&1, source_context, reading_user,
+            fetch_replies?: false,
+            public_collection?: true
+          )
+        )
         |> Enum.reject(&is_nil/1)
         |> unique_preview_items()
         |> Enum.take(limit)
@@ -3821,7 +4585,14 @@ defmodule Pleroma.Web.FederatedTarget do
   defp actor_updates_feed_url(%User{} = source) do
     [source.nickname, actor_webfinger_identifier(source)]
     |> Enum.find_value(&fetch_actor_updates_feed_url/1)
+    |> Kernel.||(conventional_actor_updates_feed_url(source))
   end
+
+  defp conventional_actor_updates_feed_url(%User{ap_id: ap_id}) when is_binary(ap_id) do
+    if safe_fetch_url?(ap_id), do: ap_id <> ".atom"
+  end
+
+  defp conventional_actor_updates_feed_url(_), do: nil
 
   defp actor_webfinger_identifier(%User{} = source) do
     with username when is_binary(username) <- actor_source_username(source),
@@ -4154,7 +4925,7 @@ defmodule Pleroma.Web.FederatedTarget do
   end
 
   defp render_source_item(%{} = item, source_context, reading_user, opts) do
-    if source_item_public_preview?(item) do
+    if source_item_public_preview?(item, opts) do
       url = source_item_best_url(item)
       media = source_item_media(item)
       summary = source_item_summary(item)
@@ -4208,7 +4979,7 @@ defmodule Pleroma.Web.FederatedTarget do
       Pleroma.Web.ActivityPub.CustomObject.presentation(item)
   end
 
-  defp source_item_public_preview?(item) do
+  defp source_item_public_preview?(item, opts) do
     addresses =
       [item["to"], item["cc"], item["audience"]]
       |> Enum.flat_map(&source_item_address_ids/1)
@@ -4216,10 +4987,21 @@ defmodule Pleroma.Web.FederatedTarget do
       |> Enum.reject(&is_nil/1)
 
     cond do
-      Pleroma.Constants.as_public() in addresses -> true
-      addresses != [] -> false
-      source_item_native_presentation(item) != nil -> false
-      true -> true
+      Pleroma.Constants.as_public() in addresses ->
+        true
+
+      addresses != [] ->
+        false
+
+      Keyword.get(opts, :public_collection?, false) and
+          item["type"] in @public_collection_source_item_types ->
+        true
+
+      source_item_native_presentation(item) != nil ->
+        false
+
+      true ->
+        true
     end
   end
 
@@ -4261,7 +5043,7 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp source_item_status(%{} = item, _source_context, reading_user, comments_count, opts) do
     with id when is_binary(id) <- source_item_object_id(item),
-         %Activity{} = activity <- source_item_activity(item, id),
+         %Activity{} = activity <- source_item_activity(item, id, opts),
          true <- Visibility.visible_for_user?(activity, reading_user),
          :ok <- maybe_fetch_source_item_replies(activity, opts),
          %Activity{} = activity <- Activity.get_create_by_object_ap_id_with_object(id),
@@ -4309,9 +5091,24 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp maybe_put_status_replies_count(status, _), do: status
 
-  defp source_item_activity(item, id) do
+  defp source_item_activity(item, id, opts) do
     Activity.get_create_by_object_ap_id_with_object(id) ||
-      maybe_fetch_source_item_activity(item, id) ||
+      source_item_activity_on_miss(item, id, opts)
+  end
+
+  defp source_item_activity_on_miss(item, id, opts) do
+    if Keyword.get(opts, :fetch_status?, true) do
+      maybe_create_source_item_activity(item, id) || maybe_fetch_source_item_status(item, id)
+    else
+      # Collection pages often embed complete objects.  Materializing those
+      # objects is database-bounded and does not perform the per-item fetches
+      # that bounded source previews intentionally avoid.
+      maybe_create_source_item_activity(item, id)
+    end
+  end
+
+  defp maybe_fetch_source_item_status(item, id) do
+    maybe_fetch_source_item_activity(item, id) ||
       maybe_fetch_source_item_activity_with_resolved_id(item, id)
   end
 
@@ -4389,50 +5186,50 @@ defmodule Pleroma.Web.FederatedTarget do
 
   defp rss_source_item_object_id(%User{} = source, %{} = item) do
     [item["id"], item["url"]]
-    |> Enum.find(&same_host_url?(&1, source.ap_id))
-    |> case do
-      id when is_binary(id) ->
-        id
-
-      _ ->
-        rss_source_item_synthetic_id(source, item)
-    end
+    |> Enum.find(&same_http_origin?(&1, source.ap_id))
+    |> Kernel.||(rss_source_item_synthetic_id(source, item))
   end
-
-  defp same_host_url?(value, actor_id) when is_binary(value) and is_binary(actor_id) do
-    with true <- url?(value),
-         %URI{host: host} when is_binary(host) <- parse_uri(value),
-         %URI{host: actor_host} when is_binary(actor_host) <- parse_uri(actor_id) do
-      String.downcase(host) == String.downcase(actor_host)
-    else
-      _ -> false
-    end
-  end
-
-  defp same_host_url?(_, _), do: false
 
   defp rss_source_item_synthetic_id(%User{ap_id: ap_id}, item) when is_binary(ap_id) do
-    if url?(ap_id) do
-      ap_id <> "#item-" <> rss_source_item_hash(item)
+    with %URI{} = uri <- parse_uri(ap_id),
+         true <- is_binary(uri.scheme) and is_binary(uri.host) do
+      uri
+      |> Map.put(:fragment, "unfathomably-rss-" <> rss_source_item_hash(ap_id, item))
+      |> URI.to_string()
+    else
+      _ -> nil
     end
   end
 
   defp rss_source_item_synthetic_id(_, _), do: nil
 
-  defp rss_source_item_hash(item) do
-    [
-      item["id"],
-      item["url"],
-      item["published"],
-      item["name"],
-      item["summary"]
-    ]
-    |> Enum.find(&is_binary/1)
-    |> Kernel.||(inspect(item))
+  defp rss_source_item_hash(source_ap_id, item) do
+    item_identity =
+      [item["id"], item["url"], item["published"], item["name"], item["summary"]]
+      |> Enum.find(&is_binary/1)
+      |> Kernel.||(inspect(item, limit: 20, printable_limit: 2_048))
+
+    (source_ap_id <> "\0" <> item_identity)
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.url_encode64(padding: false)
     |> binary_part(0, 32)
   end
+
+  defp same_http_origin?(url, source_url) when is_binary(url) and is_binary(source_url) do
+    with %URI{scheme: scheme, host: host} = uri when scheme in ["http", "https"] <- parse_uri(url),
+         %URI{scheme: ^scheme, host: ^host} = source_uri <- parse_uri(source_url) do
+      effective_uri_port(uri) == effective_uri_port(source_uri)
+    else
+      _ -> false
+    end
+  end
+
+  defp same_http_origin?(_, _), do: false
+
+  defp effective_uri_port(%URI{port: port}) when is_integer(port), do: port
+  defp effective_uri_port(%URI{scheme: "https"}), do: 443
+  defp effective_uri_port(%URI{scheme: "http"}), do: 80
+  defp effective_uri_port(_), do: nil
 
   defp rss_source_item_activity(%User{} = source, item, id) do
     Activity.get_create_by_object_ap_id_with_object(id) ||
@@ -4475,7 +5272,7 @@ defmodule Pleroma.Web.FederatedTarget do
       |> Map.new()
 
     %{
-      "id" => id <> "#create",
+      "id" => id <> "/activity",
       "type" => "Create",
       "actor" => source.ap_id,
       "object" => object,

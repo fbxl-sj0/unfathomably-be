@@ -134,7 +134,7 @@ defmodule Pleroma.Web.PleromaAPI.BookmarkFolderControllerTest do
 
       folders = BookmarkFolder.for_user(user.id)
 
-      assert length(folders) == 0
+      assert Enum.empty?(folders)
     end
 
     test "it returns error when deleting others' folders", %{conn: conn} do

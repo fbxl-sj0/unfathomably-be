@@ -7,6 +7,7 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
   import Pleroma.Factory
 
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Marketplace
   alias Pleroma.Web.ActivityPub.UserView
   alias Pleroma.Web.CommonAPI
 
@@ -18,6 +19,19 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
     assert result["id"] == user.ap_id
     assert result["preferredUsername"] == user.nickname
     assert result["_misskey_summary"] == "plain profile source"
+    assert result["attributionDomains"] == [Pleroma.Web.WebFinger.domain()]
+    assert "https://w3id.org/fep/844e" in result["@context"]
+
+    assert result["generator"] == %{
+             "type" => "Application",
+             "name" => "Unfathomably",
+             "implements" => [
+               %{
+                 "href" => "https://datatracker.ietf.org/doc/html/rfc9421",
+                 "name" => "RFC-9421: HTTP Message Signatures"
+               }
+             ]
+           }
 
     public_key = result["publicKey"]["publicKeyPem"]
 
@@ -32,6 +46,66 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
     result = UserView.render("user.json", %{user: user})
 
     refute Map.has_key?(result, "_misskey_summary")
+  end
+
+  test "restricted actors expose key and routing metadata without profile data" do
+    user =
+      insert(:user,
+        name: "Private display name",
+        bio: "Private profile text",
+        raw_bio: "Private profile source",
+        fields: [%{"name" => "private", "value" => "field"}],
+        avatar: %{"url" => [%{"href" => "https://example.com/avatar.png"}]}
+      )
+
+    result = UserView.render("restricted_user.json", %{user: user})
+
+    assert result["id"] == user.ap_id
+    assert result["preferredUsername"] == user.nickname
+    assert result["inbox"] == "#{user.ap_id}/inbox"
+    assert result["outbox"] == "#{user.ap_id}/outbox"
+    assert result["endpoints"] |> Map.keys() == ["sharedInbox"]
+    assert String.starts_with?(result["publicKey"]["publicKeyPem"], "-----BEGIN PUBLIC KEY-----")
+
+    for key <- [
+          "name",
+          "summary",
+          "attachment",
+          "tag",
+          "icon",
+          "image",
+          "published",
+          "generator",
+          "_misskey_summary"
+        ] do
+      refute Map.has_key?(result, key)
+    end
+  end
+
+  test "renders the marketplace service actor with its public instance handle" do
+    {:ok, user} = Marketplace.service_actor()
+
+    result = UserView.render("user.json", %{user: user})
+
+    assert result["preferredUsername"] == Marketplace.service_actor_webfinger_nickname()
+
+    assert result["webfinger"] ==
+             "acct:#{Marketplace.service_actor_webfinger_nickname()}@#{Pleroma.Web.WebFinger.domain()}"
+  end
+
+  test "service actors advertise tested RFC 9421 support through FEP-844e" do
+    user = insert(:user)
+
+    result = UserView.render("service.json", %{user: user})
+
+    assert "https://w3id.org/fep/844e" in result["@context"]
+
+    assert result["implements"] == [
+             %{
+               "href" => "https://datatracker.ietf.org/doc/html/rfc9421",
+               "name" => "RFC-9421: HTTP Message Signatures"
+             }
+           ]
   end
 
   test "the LitePub context defines WebFinger without a remote context dependency" do
@@ -185,6 +259,8 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
 
       assert result["id"] == user.ap_id
       assert result["endpoints"] == %{}
+      refute Map.has_key?(result, "attributionDomains")
+      refute Map.has_key?(result, "generator")
     end
 
     test "instance users do not expose oAuth endpoints" do
@@ -238,6 +314,39 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
     end
   end
 
+  describe "collection pagination" do
+    test "advertises root bounds for empty follower and following collections" do
+      user = insert(:user)
+
+      assert %{
+               "first" => %{"type" => "OrderedCollectionPage"},
+               "last" => followers_last
+             } = UserView.render("followers.json", %{user: user})
+
+      assert followers_last == "#{user.ap_id}/followers?page=1"
+
+      assert %{
+               "first" => %{"type" => "OrderedCollectionPage"},
+               "last" => following_last
+             } = UserView.render("following.json", %{user: user})
+
+      assert following_last == "#{user.ap_id}/following?page=1"
+    end
+
+    test "does not advertise an empty page after the final partial page" do
+      iri = "https://example.test/users/alice/followers"
+      followers = Enum.map(1..11, &%{ap_id: "https://remote.test/users/#{&1}"})
+
+      assert %{"next" => next} = UserView.collection(followers, iri, 1)
+      assert next == iri <> "?page=2"
+
+      final_page = UserView.collection(followers, iri, 2)
+
+      assert final_page["prev"] == iri <> "?page=1"
+      refute Map.has_key?(final_page, "next")
+    end
+  end
+
   describe "acceptsChatMessages" do
     test "it returns this value if it is set" do
       true_user = insert(:user, accepts_chat_messages: true)
@@ -257,3 +366,5 @@ defmodule Pleroma.Web.ActivityPub.UserViewTest do
     end
   end
 end
+
+# end of user_view_test.exs

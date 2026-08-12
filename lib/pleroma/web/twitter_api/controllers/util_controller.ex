@@ -39,6 +39,7 @@ defmodule Pleroma.Web.TwitterAPI.UtilController do
            :update_notificaton_settings,
            :disable_account,
            :move_account,
+           :restart_move_account,
            :add_alias,
            :delete_alias
          ]
@@ -215,6 +216,7 @@ defmodule Pleroma.Web.TwitterAPI.UtilController do
              body_params.new_password,
              body_params.new_password_confirmation
            ) do
+      Pleroma.Web.OAuth.Token.delete_user_tokens(user)
       json(conn, %{status: "success"})
     else
       {:error, %Ecto.Changeset{} = changeset} ->
@@ -300,6 +302,45 @@ defmodule Pleroma.Web.TwitterAPI.UtilController do
         json(conn, %{error: msg})
     end
   end
+
+  def restart_move_account(%{assigns: %{user: user}, body_params: body_params} = conn, %{}) do
+    case CommonAPI.Utils.confirm_current_password(user, body_params.password) do
+      {:ok, user} ->
+        case ActivityPub.restart_move(user) do
+          {:ok, _activity, target} ->
+            json(conn, %{status: "success", moved_to: target.ap_id})
+
+          {:error, :move_not_found} ->
+            conn
+            |> put_status(404)
+            |> json(%{error: "No account migration is available to restart."})
+
+          {:error, :move_restart_expired} ->
+            conn
+            |> put_status(422)
+            |> json(%{error: "The account migration restart window has expired."})
+
+          {:error, :not_found} ->
+            conn
+            |> put_status(404)
+            |> json(%{error: "Target account not found."})
+
+          {:error, error} ->
+            conn
+            |> put_status(400)
+            |> json(%{error: move_error_message(error)})
+        end
+
+      {:error, msg} ->
+        conn
+        |> put_status(403)
+        |> json(%{error: msg})
+    end
+  end
+
+  defp move_error_message(error) when is_binary(error), do: error
+  defp move_error_message(error) when is_atom(error), do: Atom.to_string(error)
+  defp move_error_message(error), do: inspect(error)
 
   defp within_cooldown?(%{last_move_at: nil}), do: false
 

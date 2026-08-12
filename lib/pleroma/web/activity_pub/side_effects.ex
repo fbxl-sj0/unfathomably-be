@@ -14,6 +14,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   alias Pleroma.Activity
   alias Pleroma.Chat
   alias Pleroma.Chat.MessageReference
+  alias Pleroma.FeatureAuthorization
   alias Pleroma.FollowingRelationship
   alias Pleroma.GroupMembership
   alias Pleroma.Notification
@@ -27,9 +28,11 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Utils
+  alias Pleroma.Web.Federator
   alias Pleroma.Web.Push
   alias Pleroma.Web.Streamer
   alias Pleroma.Workers.EventReminderWorker
+  alias Pleroma.Workers.ActorOutboxBackfillWorker
   alias Pleroma.Workers.PollWorker
   alias Pleroma.Workers.RemoteRepliesFetcherWorker
 
@@ -57,6 +60,9 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     with %Activity{} = activity <-
            Activity.get_by_ap_id(activity_id) do
       case activity.data["type"] do
+        "FeatureRequest" ->
+          :ok
+
         "QuoteRequest" ->
           QuoteAuthorization.accept_from_activity(activity, actor, object.data["result"])
 
@@ -93,6 +99,9 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     with %Activity{} = activity <-
            Activity.get_by_ap_id(activity_id) do
       case activity.data["type"] do
+        "FeatureRequest" ->
+          :ok
+
         "QuoteRequest" ->
           QuoteAuthorization.reject_from_activity(activity, actor)
 
@@ -115,6 +124,14 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     end
   end
 
+  @impl true
+  def handle(%{data: %{"type" => "FeatureRequest"}} = object, meta) do
+    case FeatureAuthorization.handle_request(object) do
+      {:ok, _result} -> {:ok, object, meta}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   # Tasks this handle
   # - Follows if possible
   # - Sends a notification
@@ -131,32 +148,30 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
         } = object,
         meta
       ) do
-    with %User{} = follower <- User.get_cached_by_ap_id(following_user),
-         %User{} = followed <- User.get_cached_by_ap_id(followed_user),
-         {_, {:ok, _, _}, _, _} <-
-           {:following, follow_with_group_membership(follower, followed), follower, followed} do
-      if followed.local && !followed.is_locked do
-        {:ok, accept_data, _} = Builder.accept(followed, object)
-        {:ok, _activity, _} = Pipeline.common_pipeline(accept_data, local: true)
+    response_result =
+      with %User{} = follower <- User.get_cached_by_ap_id(following_user),
+           %User{} = followed <- User.get_cached_by_ap_id(followed_user),
+           {_, {:ok, _, _}, _, _} <-
+             {:following, follow_with_group_membership(follower, followed), follower, followed} do
+        if followed.local && !followed.is_locked do
+          ensure_accept_or_reject(followed, object, "Accept")
+        else
+          :ok
+        end
+      else
+        {:following, {:error, _}, _follower, %User{} = followed} ->
+          ensure_accept_or_reject(followed, object, "Reject")
+
+        _ ->
+          :ok
       end
-    else
-      {:following, {:error, _}, _follower, followed} ->
-        {:ok, reject_data, _} = Builder.reject(followed, object)
-        {:ok, _activity, _} = Pipeline.common_pipeline(reject_data, local: true)
 
-      _ ->
-        nil
+    case response_result do
+      :ok -> finish_follow_side_effects(object, follow_id, meta)
+      {:ok, %Activity{}} -> finish_follow_side_effects(object, follow_id, meta)
+      {:error, _reason} = error -> error
+      result -> {:error, {:invalid_follow_response_result, result}}
     end
-
-    {:ok, notifications} = Notification.create_notifications(object, do_send: false)
-
-    meta =
-      meta
-      |> add_notifications(notifications)
-
-    updated_object = Activity.get_by_ap_id(follow_id)
-
-    {:ok, updated_object, meta}
   end
 
   # Tasks this handles:
@@ -232,6 +247,9 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   @impl true
   def handle(%{data: %{"type" => "Create"}} = activity, meta) do
     with {:ok, object, meta} <- handle_object_creation(meta[:object_data], activity, meta) do
+      _ =
+        Pleroma.Web.ActivityPub.AppendableCollection.maybe_enqueue_confirmation(activity, object)
+
       if CustomObject.timeline_object?(object.data) do
         handle_timeline_object_creation(activity, object, meta)
       else
@@ -265,7 +283,20 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
     cond do
       announced_object && group_actor?(user) ->
-        ensure_announce_counters(announced_object)
+        reconciled_object =
+          case Utils.reconcile_remote_group_announce(object, announced_object, user) do
+            {:ok, reconciled_object} ->
+              reconciled_object
+
+            {:error, reason} ->
+              Logger.warning(
+                "Could not reconcile late group Announce #{object.data["id"]}: #{inspect(reason)}"
+              )
+
+              announced_object
+          end
+
+        ensure_announce_counters(reconciled_object)
 
       announced_object ->
         Utils.add_announce_to_object(object, announced_object)
@@ -385,23 +416,24 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - removes expiration job for pinned activity, if was set for expiration
   @impl true
   def handle(%{data: %{"type" => "Add"} = data} = object, meta) do
-    with {:ok, _user} <- add_collection_object(data) do
+    with {:ok, result} <- add_collection_object(data) do
       # if pinned activity was scheduled for deletion, we remove job
-      if expiration = Pleroma.Workers.PurgeExpiredActivity.get_expiration(meta[:activity_id]) do
-        Oban.cancel_job(expiration.id)
-      end
+      maybe_cancel_pinned_expiration(result, meta)
 
       {:ok, object, meta}
     else
       {:ignore, _reason} ->
         {:ok, object, meta}
 
-      {:error, changeset} ->
+      {:error, %Ecto.Changeset{} = changeset} ->
         if changeset.errors[:pinned_objects] do
           {:error, :pinned_statuses_limit_reached}
         else
           changeset.errors
         end
+
+      error ->
+        error
     end
   end
 
@@ -411,22 +443,9 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - if activity had expiration, recreates activity expiration job
   @impl true
   def handle(%{data: %{"type" => "Remove"} = data} = object, meta) do
-    with {:ok, user} <- remove_collection_object(data) do
-      data["object"]
-      |> Activity.add_by_params_query(user.ap_id, user.featured_address)
-      |> Repo.delete_all()
-
-      # if pinned activity was scheduled for deletion, we reschedule it for deletion
-      if meta[:expires_at] do
-        # MRF.ActivityExpirationPolicy used UTC timestamps for expires_at in original implementation
-        {:ok, expires_at} =
-          Pleroma.EctoType.ActivityPub.ObjectValidators.DateTime.cast(meta[:expires_at])
-
-        Pleroma.Workers.PurgeExpiredActivity.enqueue(%{
-          activity_id: meta[:activity_id],
-          expires_at: expires_at
-        })
-      end
+    with {:ok, result} <- remove_collection_object(data) do
+      maybe_remove_pinned_add(result, data)
+      maybe_restore_pinned_expiration(result, meta)
 
       {:ok, object, meta}
     else
@@ -448,22 +467,12 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   # - accepts join if event is local and public
   @impl true
   def handle(%{data: %{"type" => "Join"}} = object, meta) do
-    case Object.get_by_ap_id(object.data["object"]) do
-      %Object{} = joined_event ->
-        if Object.local?(joined_event) and
-             (joined_event.data["joinMode"] == "free" or
-                object.data["actor"] == joined_event.data["actor"]) do
-          {:ok, accept_data, _} = Builder.accept(joined_event, object)
-          {:ok, _activity, _} = Pipeline.common_pipeline(accept_data, local: true)
-        end
-
-        if Object.local?(joined_event) and joined_event.data["joinMode"] != "free" and
-             object.data["actor"] != joined_event.data["actor"] do
-          Utils.update_participation_request_count_in_object(joined_event)
-        end
+    case User.get_cached_by_ap_id(object.data["object"]) do
+      %User{} = group ->
+        handle_local_group_join(object, group)
 
       _ ->
-        :ok
+        handle_event_join(object)
     end
 
     Notification.create_notifications(object)
@@ -493,6 +502,114 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   @impl true
   def handle(object, meta) do
     {:ok, object, meta}
+  end
+
+  defp handle_local_group_join(object, group) do
+    with true <- GroupMembership.local_group?(group),
+         %User{} = account <- User.get_cached_by_ap_id(object.data["actor"]),
+         :ok <- GroupMembership.validate_federated_follow(group, account),
+         {:ok, _account, _group} <- User.follow(account, group, :follow_pending),
+         {:ok, _membership} <-
+           GroupMembership.sync_federated_follow(group, account, "pending") do
+      if group.is_locked do
+        :ok
+      else
+        accept_local_group_join(object, group, account)
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  defp accept_local_group_join(object, group, account) do
+    with {:ok, object} <- Utils.update_join_state(object, "accept"),
+         {:ok, _account, _group} <-
+           FollowingRelationship.update(account, group, :follow_accept),
+         {:ok, _membership} <-
+           GroupMembership.sync_federated_follow(group, account, "active"),
+         {:ok, accept_data, _} <- Builder.accept(group, object),
+         {:ok, _activity, _} <- Pipeline.common_pipeline(accept_data, local: true) do
+      :ok
+    end
+  end
+
+  defp finish_follow_side_effects(object, follow_id, meta) do
+    with {:ok, notifications} <- Notification.create_notifications(object, do_send: false),
+         %Activity{} = updated_object <- Activity.get_by_ap_id(follow_id) do
+      {:ok, updated_object, add_notifications(meta, notifications)}
+    else
+      nil -> {:error, :follow_activity_not_found}
+      {:error, _reason} = error -> error
+      result -> {:error, {:invalid_follow_notification_result, result}}
+    end
+  end
+
+  defp ensure_accept_or_reject(responder, source_activity, type) do
+    with {:ok, response_data, _meta} <-
+           Builder.accept_or_reject(responder, source_activity, type) do
+      case Activity.get_by_ap_id(response_data["id"]) do
+        %Activity{} = response_activity ->
+          recover_stored_response(response_activity, response_data)
+
+        nil ->
+          insert_or_recover_response(response_data)
+      end
+    end
+  end
+
+  defp insert_or_recover_response(response_data) do
+    case Pipeline.common_pipeline(response_data, local: true) do
+      {:ok, %Activity{} = response_activity, _meta} ->
+        {:ok, response_activity}
+
+      error ->
+        case Activity.get_by_ap_id(response_data["id"]) do
+          %Activity{} = response_activity ->
+            recover_stored_response(response_activity, response_data)
+
+          nil ->
+            error
+        end
+    end
+  end
+
+  defp recover_stored_response(%Activity{} = response_activity, response_data) do
+    if response_matches?(response_activity, response_data) do
+      case Federator.publish(response_activity) do
+        :ok -> {:ok, response_activity}
+        {:ok, _job} -> {:ok, response_activity}
+        {:error, reason} -> {:error, {:follow_response_enqueue_failed, reason}}
+        result -> {:error, {:invalid_follow_response_enqueue_result, result}}
+      end
+    else
+      {:error, :follow_response_id_collision}
+    end
+  end
+
+  defp response_matches?(%Activity{data: stored}, expected) do
+    Enum.all?(["id", "type", "actor", "object"], fn key ->
+      stored[key] == expected[key]
+    end)
+  end
+
+  defp handle_event_join(object) do
+    case Object.get_by_ap_id(object.data["object"]) do
+      %Object{} = joined_event ->
+        if Object.local?(joined_event) and
+             (joined_event.data["joinMode"] == "free" or
+                object.data["actor"] == joined_event.data["actor"]) do
+          {:ok, accept_data, _} = Builder.accept(joined_event, object)
+          {:ok, _activity, _} = Pipeline.common_pipeline(accept_data, local: true)
+        end
+
+        if Object.local?(joined_event) and joined_event.data["joinMode"] != "free" and
+             object.data["actor"] != joined_event.data["actor"] do
+          Utils.update_participation_request_count_in_object(joined_event)
+        end
+
+      _ ->
+        :ok
+    end
   end
 
   defp follow_with_group_membership(%User{} = follower, %User{} = followed) do
@@ -548,7 +665,6 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       ap_streamer().stream_out(delete_activity)
       ap_streamer().stream_out_participations(deleted_object, user)
       Utils.maybe_handle_group_deletes(delete_activity)
-      :ok
     else
       {:actor, _} ->
         @logger.error("The object doesn't have an actor: #{inspect(deleted_object)}")
@@ -608,7 +724,16 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
   defp handle_timeline_object_creation(activity, object, meta) do
     with %User{} = user <- User.get_cached_by_ap_id(activity.data["actor"]) do
-      {:ok, notifications} = Notification.create_notifications(activity, do_send: false)
+      surface_as_new? = surface_fetched_activity_as_new?(activity, object, meta)
+
+      notifications =
+        if surface_as_new? do
+          {:ok, notifications} = Notification.create_notifications(activity, do_send: false)
+          notifications
+        else
+          []
+        end
+
       {:ok, _user} = ActivityPub.increase_note_count_if_public(user, object)
       {:ok, _user} = ActivityPub.update_last_status_at_if_public(user, object)
 
@@ -625,6 +750,8 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       if quote_counted?, do: Object.increase_quotes_count(object.data["quoteUrl"])
 
       if activity.local, do: QuoteAuthorization.maybe_request(object, true)
+
+      Pleroma.QuoteHydration.maybe_enqueue(object, quote_counted?, (meta[:depth] || 0) + 1)
 
       reply_depth = (meta[:depth] || 0) + 1
 
@@ -659,7 +786,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       # ChatMessages are special, as they get streamed in handle_object_creation/3.
       # Other Create activities stream here so clients see Articles, Events,
       # Questions, and future object types without needing a release for each one.
-      if object.data["type"] != "ChatMessage" do
+      if surface_as_new? && object.data["type"] != "ChatMessage" do
         ap_streamer().stream_out(activity)
       end
 
@@ -668,6 +795,36 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       e -> Repo.rollback(e)
     end
   end
+
+  # A fetched thread ancestor or search result still belongs in storage,
+  # search, counters, and group association. It should not look like a new
+  # delivery to websocket clients or notification recipients months later.
+  # GoToSocial uses a 25-hour window here, leaving room for ordinary delivery
+  # delays and timezone/calendar boundaries without resurfacing old history.
+  @remote_backfill_surface_window_seconds 25 * 60 * 60
+  defp surface_fetched_activity_as_new?(%Activity{local: false} = activity, object, meta) do
+    if Keyword.has_key?(meta, :fetched_from) do
+      publication = object.data["published"] || activity.data["published"]
+      recent_publication?(publication)
+    else
+      true
+    end
+  end
+
+  defp surface_fetched_activity_as_new?(_activity, _object, _meta), do: true
+
+  defp recent_publication?(publication) when is_binary(publication) do
+    with {:ok, normalized} <-
+           Pleroma.EctoType.ActivityPub.ObjectValidators.DateTime.cast(publication),
+         {:ok, published_at, _offset} <- DateTime.from_iso8601(normalized) do
+      DateTime.diff(DateTime.utc_now(), published_at, :second) <=
+        @remote_backfill_surface_window_seconds
+    else
+      _invalid_or_missing_timestamp -> true
+    end
+  end
+
+  defp recent_publication?(_publication), do: true
 
   defp ensure_announce_counters(%Object{data: data} = object) do
     announcements =
@@ -702,23 +859,71 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
   defp add_collection_object(data) do
     with %User{} = actor <- User.get_cached_by_ap_id(data["actor"]) do
-      case collection_target(data["target"], actor) do
-        {:featured, %User{} = group} ->
-          if collection_actor_allowed?(actor, group) do
-            User.add_pinned_object_id(group, collection_object_id(data["object"]))
-          else
-            {:ignore, :unauthorized_group_collection_actor}
+      cond do
+        Pleroma.Web.ActivityPub.AggregateFeedMembership.authorized?(
+          data["target"],
+          actor,
+          data["object"]
+        ) ->
+          case Pleroma.Web.ActivityPub.AggregateFeedMembership.apply_change(
+                 "Add",
+                 data["target"],
+                 actor,
+                 data["object"]
+               ) do
+            {:ok, membership} -> {:ok, {:aggregate_feed, membership}}
+            result -> result
           end
 
-        {:moderators, %User{} = group} ->
-          if collection_actor_allowed?(actor, group) do
-            add_group_moderator(group, actor, data["object"])
-          else
-            {:ignore, :unauthorized_group_collection_actor}
+        Pleroma.Web.ActivityPub.AppendableCollection.authorized?(
+          data["target"],
+          actor,
+          data["object"]
+        ) ->
+          case Pleroma.Web.ActivityPub.AppendableCollection.apply_change(
+                 "Add",
+                 data["target"],
+                 actor,
+                 data["object"]
+               ) do
+            {:ok, membership} -> {:ok, {:appendable_collection, membership}}
+            result -> result
           end
 
-        :unsupported ->
-          {:ignore, :unsupported_collection}
+        Pleroma.Web.ActivityPub.ReadingCollectionMembership.authorized?(
+          data["target"],
+          actor,
+          data["object"]
+        ) ->
+          case Pleroma.Web.ActivityPub.ReadingCollectionMembership.apply_change(
+                 "Add",
+                 data["target"],
+                 actor,
+                 data["object"]
+               ) do
+            {:ok, collection} -> {:ok, {:reading, collection}}
+            result -> result
+          end
+
+        true ->
+          case collection_target(data["target"], actor) do
+            {:featured, %User{} = group} ->
+              if collection_actor_allowed?(actor, group) do
+                add_pinned_object(group, collection_object_id(data["object"]))
+              else
+                {:ignore, :unauthorized_group_collection_actor}
+              end
+
+            {:moderators, %User{} = group} ->
+              if collection_actor_allowed?(actor, group) do
+                add_group_moderator(group, actor, data["object"])
+              else
+                {:ignore, :unauthorized_group_collection_actor}
+              end
+
+            :unsupported ->
+              {:ignore, :unsupported_collection}
+          end
       end
     else
       nil -> {:error, :user_not_found}
@@ -727,26 +932,145 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
 
   defp remove_collection_object(data) do
     with %User{} = actor <- User.get_cached_by_ap_id(data["actor"]) do
-      case collection_target(data["target"], actor) do
-        {:featured, %User{} = group} ->
-          if collection_actor_allowed?(actor, group) do
-            User.remove_pinned_object_id(group, collection_object_id(data["object"]))
-          else
-            {:ignore, :unauthorized_group_collection_actor}
+      cond do
+        Pleroma.Web.ActivityPub.AggregateFeedMembership.authorized?(
+          data["target"],
+          actor,
+          data["object"]
+        ) ->
+          case Pleroma.Web.ActivityPub.AggregateFeedMembership.apply_change(
+                 "Remove",
+                 data["target"],
+                 actor,
+                 data["object"]
+               ) do
+            {:ok, membership} -> {:ok, {:aggregate_feed, membership}}
+            result -> result
           end
 
-        {:moderators, %User{} = group} ->
-          if collection_actor_allowed?(actor, group) do
-            remove_group_moderator(group, actor, data["object"])
-          else
-            {:ignore, :unauthorized_group_collection_actor}
+        Pleroma.Web.ActivityPub.AppendableCollection.authorized?(
+          data["target"],
+          actor,
+          data["object"]
+        ) ->
+          case Pleroma.Web.ActivityPub.AppendableCollection.apply_change(
+                 "Remove",
+                 data["target"],
+                 actor,
+                 data["object"]
+               ) do
+            {:ok, membership} -> {:ok, {:appendable_collection, membership}}
+            result -> result
           end
 
-        :unsupported ->
-          {:ignore, :unsupported_collection}
+        Pleroma.Web.ActivityPub.ReadingCollectionMembership.authorized?(
+          data["target"],
+          actor,
+          data["object"]
+        ) ->
+          case Pleroma.Web.ActivityPub.ReadingCollectionMembership.apply_change(
+                 "Remove",
+                 data["target"],
+                 actor,
+                 data["object"]
+               ) do
+            {:ok, collection} -> {:ok, {:reading, collection}}
+            result -> result
+          end
+
+        true ->
+          case collection_target(data["target"], actor) do
+            {:featured, %User{} = group} ->
+              if collection_actor_allowed?(actor, group) do
+                User.remove_pinned_object_id(group, collection_object_id(data["object"]))
+              else
+                {:ignore, :unauthorized_group_collection_actor}
+              end
+
+            {:moderators, %User{} = group} ->
+              if collection_actor_allowed?(actor, group) do
+                remove_group_moderator(group, actor, data["object"])
+              else
+                {:ignore, :unauthorized_group_collection_actor}
+              end
+
+            :unsupported ->
+              {:ignore, :unsupported_collection}
+          end
       end
     else
       nil -> {:error, :user_not_found}
+    end
+  end
+
+  defp maybe_cancel_pinned_expiration(%User{}, meta) do
+    if expiration = Pleroma.Workers.PurgeExpiredActivity.get_expiration(meta[:activity_id]) do
+      Oban.cancel_job(expiration.id)
+    end
+  end
+
+  defp maybe_cancel_pinned_expiration(_result, _meta), do: :ok
+
+  defp maybe_remove_pinned_add(%User{} = user, data) do
+    data["object"]
+    |> Activity.add_by_params_query(user.ap_id, user.featured_address)
+    |> Repo.delete_all()
+  end
+
+  defp maybe_remove_pinned_add(_result, _data), do: :ok
+
+  defp maybe_restore_pinned_expiration(%User{}, meta) when is_list(meta) or is_map(meta) do
+    case meta[:expires_at] do
+      nil ->
+        :ok
+
+      expires_at ->
+        # MRF.ActivityExpirationPolicy used UTC timestamps for expires_at in
+        # the original implementation.
+        {:ok, expires_at} =
+          Pleroma.EctoType.ActivityPub.ObjectValidators.DateTime.cast(expires_at)
+
+        Pleroma.Workers.PurgeExpiredActivity.enqueue(%{
+          activity_id: meta[:activity_id],
+          expires_at: expires_at
+        })
+    end
+  end
+
+  defp maybe_restore_pinned_expiration(_result, _meta), do: :ok
+
+  defp add_pinned_object(%User{local: false, id: user_id}, object_id) do
+    # Remote actors are allowed to publish collections larger than this
+    # instance's local authoring limit. Check the committed collection under a
+    # row lock before calling User.add_pinned_object_id/2: that helper opens a
+    # nested transaction, and a predictable limit error there would otherwise
+    # mark the surrounding ActivityPub pipeline transaction as rollback-only.
+    current_user =
+      Repo.one(from(user in User, where: user.id == ^user_id, lock: "FOR UPDATE"))
+
+    case current_user do
+      %User{} = user -> maybe_add_remote_pinned_object(user, object_id)
+      nil -> {:ignore, :missing_collection_actor}
+    end
+  end
+
+  defp add_pinned_object(%User{} = user, object_id) do
+    User.add_pinned_object_id(user, object_id)
+  end
+
+  defp maybe_add_remote_pinned_object(%User{} = user, object_id) do
+    pinned_objects = if is_map(user.pinned_objects), do: user.pinned_objects, else: %{}
+    maximum = Pleroma.Config.get([:instance, :max_pinned_statuses], 0)
+
+    cond do
+      Map.has_key?(pinned_objects, object_id) ->
+        {:ok, user}
+
+      not is_integer(maximum) or maximum <= map_size(pinned_objects) ->
+        {:ignore, :remote_pinned_statuses_limit_reached}
+
+      true ->
+        User.add_pinned_object_id(user, object_id)
     end
   end
 
@@ -893,7 +1217,9 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
            FollowingRelationship.update(follower, followed, :follow_accept),
          {:ok, _membership} <-
            GroupMembership.sync_federated_follow(followed, follower, "active") do
-      Notification.update_notification_type(followed, follow_activity)
+      result = Notification.update_notification_type(followed, follow_activity)
+      ActorOutboxBackfillWorker.maybe_enqueue(follower, followed)
+      result
     end
   end
 
@@ -975,6 +1301,10 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
           Object.Updater.do_update_and_invalidate_cache(orig_object, updated_object)
 
         if updated do
+          if not meta[:local] do
+            QuoteAuthorization.reconcile_implicit_update(orig_object, updated_object)
+          end
+
           object
           |> update_activity_for_streaming(updated_object, meta)
           |> ActivityPub.notify_and_stream()
@@ -1020,14 +1350,46 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
                object,
                Keyword.put(meta, :do_not_federate, true)
              ) do
-          {:ok, _imported_object, imported_meta} -> {:ok, object, imported_meta}
-          error -> error
+          {:ok, imported_object, imported_meta} ->
+            case reconcile_unknown_update(imported_object, updated_object) do
+              {:ok, _current_object, _updated} -> {:ok, object, imported_meta}
+              {:error, reason} -> {:error, reason}
+            end
+
+          error ->
+            error
         end
 
       _ ->
         {:ok, object, meta}
     end
   end
+
+  @doc false
+  def reconcile_unknown_update(
+        %Object{data: %{"type" => type}} = imported_object,
+        %{"type" => type} = updated_object
+      )
+      when type in Pleroma.Constants.updatable_object_types() do
+    # Object.create/1 serializes concurrent inserts by AP ID. If a Create won
+    # that lock while this Update was being validated, imported_object is the
+    # Create representation rather than the Update body. The normal updater
+    # takes a row lock and compares protocol timestamps, so applying it here
+    # preserves the newer representation without relying on arrival order.
+    Object.Updater.do_update_and_invalidate_cache(imported_object, updated_object)
+  end
+
+  def reconcile_unknown_update(%Object{} = imported_object, %{} = updated_object) do
+    if CustomObject.custom_object?(imported_object.data) and
+         CustomObject.custom_object?(updated_object) do
+      Object.Updater.do_custom_update_and_invalidate_cache(imported_object, updated_object)
+    else
+      {:ok, imported_object, false}
+    end
+  end
+
+  def reconcile_unknown_update(imported_object, _updated_object),
+    do: {:ok, imported_object, false}
 
   #
   # A Flohmarkt Update can reuse its persisted Create ID.  The database keeps

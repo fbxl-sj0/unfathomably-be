@@ -1,0 +1,27 @@
+<!--
+  Unfathomably
+  ==============
+
+  File: unfathomably-logo.svg
+
+  Purpose:
+
+    Provide the canonical Unfathomably galaxy mark used by the frontend and
+    backend branding surfaces.
+
+  This file intentionally contains no wordmark or theme-specific variant.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="unfathomably-logo-title">
+  <title id="unfathomably-logo-title">Unfathomably galaxy logo</title>
+  <g fill="none" stroke="#0482d8" stroke-linecap="round" stroke-width="44">
+    <path d="M171 252c18-72 100-107 167-72 75 40 83 139 31 198-69 77-201 60-266-27"/>
+    <path d="M341 260c-18 72-100 107-167 72-75-40-83-139-31-198 69-77 201-60 266 27"/>
+  </g>
+  <g fill="#0482d8">
+    <circle cx="256" cy="256" r="36"/>
+    <circle cx="442" cy="96" r="21"/>
+    <circle cx="70" cy="416" r="21"/>
+  </g>
+</svg>
+
+<!-- end of unfathomably-logo.svg -->

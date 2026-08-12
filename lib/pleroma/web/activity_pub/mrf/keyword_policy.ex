@@ -10,6 +10,10 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicy do
   @moduledoc "Reject or Word-Replace activities with a keyword or regex"
 
   @behaviour Pleroma.Web.ActivityPub.MRF.Policy
+
+  @text_fields ~w[content summary name]
+  @language_map_fields ~w[contentMap summaryMap nameMap]
+
   defp string_matches?(string, _) when not is_binary(string) do
     false
   end
@@ -29,9 +33,31 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicy do
   end
 
   defp object_payload(%{} = object) do
-    [object["content"], object["summary"], object["name"]]
-    |> Enum.filter(&is_binary/1)
+    object_text_values(object)
     |> Enum.join("\n")
+  end
+
+  defp object_text_values(%{} = object) do
+    scalar_values = Enum.map(@text_fields, &object[&1])
+
+    language_map_values =
+      Enum.flat_map(@language_map_fields, fn field ->
+        case object[field] do
+          values when is_map(values) -> Map.values(values)
+          _ -> []
+        end
+      end)
+
+    (scalar_values ++ language_map_values)
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp has_text_payload?(%{} = object), do: object_text_values(object) != []
+
+  defp replace_patterns(value, replacements) when is_binary(value) do
+    Enum.reduce(replacements, value, fn {pattern, replacement}, acc ->
+      String.replace(acc, pattern, replacement)
+    end)
   end
 
   defp check_reject(%{"object" => %{} = object} = activity) do
@@ -96,17 +122,37 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicy do
 
   defp check_replace(%{"object" => %{} = object} = activity) do
     replace_kw = fn object ->
-      ["content", "name", "summary"]
-      |> Enum.filter(fn field -> is_binary(object[field]) end)
-      |> Enum.reduce(object, fn field, object ->
-        data =
-          Enum.reduce(
-            Pleroma.Config.get([:mrf_keyword, :replace]),
-            object[field],
-            fn {pat, repl}, acc -> String.replace(acc, pat, repl) end
-          )
+      replacements = Pleroma.Config.get([:mrf_keyword, :replace])
 
-        Map.put(object, field, data)
+      @text_fields
+      |> Enum.reduce(object, fn field, object ->
+        case object[field] do
+          value when is_binary(value) ->
+            Map.put(object, field, replace_patterns(value, replacements))
+
+          _ ->
+            object
+        end
+      end)
+      |> then(fn object ->
+        Enum.reduce(@language_map_fields, object, fn field, object ->
+          case object[field] do
+            values when is_map(values) ->
+              values =
+                Map.new(values, fn
+                  {language, value} when is_binary(value) ->
+                    {language, replace_patterns(value, replacements)}
+
+                  entry ->
+                    entry
+                end)
+
+              Map.put(object, field, values)
+
+            _ ->
+              object
+          end
+        end)
       end)
       |> (fn object -> {:ok, object} end).()
     end
@@ -119,16 +165,20 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicy do
   end
 
   @impl true
-  def filter(%{"type" => type, "object" => %{"content" => _content}} = activity)
+  def filter(%{"type" => type, "object" => %{} = object} = activity)
       when type in ["Create", "Update"] do
-    with {:ok, activity} <- check_reject(activity),
-         {:ok, activity} <- check_ftl_removal(activity),
-         {:ok, activity} <- check_replace(activity) do
-      {:ok, activity}
+    if has_text_payload?(object) do
+      with {:ok, activity} <- check_reject(activity),
+           {:ok, activity} <- check_ftl_removal(activity),
+           {:ok, activity} <- check_replace(activity) do
+        {:ok, activity}
+      else
+        {:reject, nil} -> {:reject, "[KeywordPolicy] "}
+        {:reject, _} = e -> e
+        _e -> {:reject, "[KeywordPolicy] "}
+      end
     else
-      {:reject, nil} -> {:reject, "[KeywordPolicy] "}
-      {:reject, _} = e -> e
-      _e -> {:reject, "[KeywordPolicy] "}
+      {:ok, activity}
     end
   end
 

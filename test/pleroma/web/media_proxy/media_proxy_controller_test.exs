@@ -73,7 +73,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
 
     test "it performs ReverseProxy.call with valid signature", %{conn: conn, url: url} do
       with_mock Pleroma.ReverseProxy,
-        call: fn _conn, _url, _opts -> %Conn{status: :success} end do
+        media_call: fn _conn, _url, _opts -> %Conn{status: :success} end do
         assert %Conn{status: :success} = get(conn, url)
       end
     end
@@ -102,7 +102,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
     end
 
     test "it serves a local placeholder when proxied image fetch fails", %{conn: conn} do
-      clear_config([:media_proxy, :proxy_opts], redirect_on_failure: false)
+      clear_config([:media_proxy, :proxy_opts, :redirect_on_failure], false)
 
       media_url = "https://dead.example/image.png"
       media_proxy_url = MediaProxy.encode_url(media_url)
@@ -136,6 +136,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
 
     setup do
       clear_config([:media_proxy, :enabled], true)
+      clear_config([:media_proxy, :internal_base_url], MediaProxy.base_url())
       clear_config([:media_preview_proxy, :enabled], true)
       clear_config([Pleroma.Web.Endpoint, :secret_key_base], "00000000000")
 
@@ -208,7 +209,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
       assert redirected_to(response) == url
     end
 
-    test "responds with 424 Failed Dependency if HEAD request to media proxy fails", %{
+    test "serves a placeholder if the HEAD request to the media proxy fails", %{
       conn: conn,
       url: url,
       media_proxy_url: media_proxy_url
@@ -219,11 +220,12 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
       end)
 
       response = get(conn, url)
-      assert response.status == 424
-      assert response.resp_body == "Can't fetch HTTP headers (HTTP 500)."
+      assert response.status == 200
+      assert Conn.get_resp_header(response, "content-type") == ["image/svg+xml"]
+      assert response.resp_body =~ "<svg"
     end
 
-    test "redirects to media proxy URI on unsupported content type", %{
+    test "serves a placeholder for an unsupported preview content type", %{
       conn: conn,
       url: url,
       media_proxy_url: media_proxy_url
@@ -234,8 +236,9 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
       end)
 
       response = get(conn, url)
-      assert response.status == 302
-      assert redirected_to(response) == media_proxy_url
+      assert response.status == 200
+      assert Conn.get_resp_header(response, "content-type") == ["image/svg+xml"]
+      assert response.resp_body =~ "<svg"
     end
 
     test "with `static=true` and GIF image preview requested, responds with JPEG image", %{
@@ -273,8 +276,13 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
            url: url,
            media_proxy_url: media_proxy_url
          } do
+      internal_media_proxy_url =
+        String.replace(media_proxy_url, MediaProxy.base_url(), "http://192.168.250.41:4000")
+
+      clear_config([:media_proxy, :internal_base_url], "http://192.168.250.41:4000")
+
       Tesla.Mock.mock(fn
-        %{method: "HEAD", url: ^media_proxy_url} ->
+        %{method: "HEAD", url: ^internal_media_proxy_url} ->
           %Tesla.Env{status: 200, body: "", headers: [{"content-type", "image/gif"}]}
       end)
 
@@ -398,7 +406,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
       assert response.resp_body != ""
     end
 
-    test "redirects to media proxy URI in case of thumbnailing error", %{
+    test "serves a placeholder in case of a thumbnailing error", %{
       conn: conn,
       url: url,
       media_proxy_url: media_proxy_url
@@ -413,8 +421,9 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
 
       response = get(conn, url)
 
-      assert response.status == 302
-      assert redirected_to(response) == media_proxy_url
+      assert response.status == 200
+      assert Conn.get_resp_header(response, "content-type") == ["image/svg+xml"]
+      assert response.resp_body =~ "<svg"
     end
   end
 end

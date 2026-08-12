@@ -19,7 +19,10 @@ defmodule Pleroma.Web.NodeInfoTest do
 
     assert Enum.map(links, & &1["rel"]) == [
              "http://nodeinfo.diaspora.software/ns/schema/2.1",
-             "http://nodeinfo.diaspora.software/ns/schema/2.0"
+             "https://nodeinfo.diaspora.software/ns/schema/2.1",
+             "http://nodeinfo.diaspora.software/ns/schema/2.0",
+             "https://nodeinfo.diaspora.software/ns/schema/2.0",
+             "https://www.w3.org/ns/activitystreams#Application"
            ]
 
     Enum.each(links, fn link ->
@@ -29,6 +32,14 @@ defmodule Pleroma.Web.NodeInfoTest do
       |> get(href)
       |> json_response(200)
     end)
+
+    application_actor =
+      Enum.find(links, &(&1["rel"] == "https://www.w3.org/ns/activitystreams#Application"))
+
+    assert %{"id" => application_actor["href"], "type" => "Application"} =
+             conn
+             |> get(application_actor["href"])
+             |> json_response(200)
   end
 
   test "nodeinfo responses advertise their schema profile", %{conn: conn} do
@@ -43,6 +54,20 @@ defmodule Pleroma.Web.NodeInfoTest do
     assert [content_type] = get_resp_header(conn, "content-type")
     assert content_type =~ "profile=http://nodeinfo.diaspora.software/ns/schema/2.0#"
     assert json_response(conn, 200)["version"] == "2.0"
+  end
+
+  test "nodeinfo discovery and payloads are publicly cacheable for a bounded period", %{
+    conn: conn
+  } do
+    discovery = get(conn, "/.well-known/nodeinfo")
+
+    assert ["public, max-age=300, stale-while-revalidate=60"] ==
+             get_resp_header(discovery, "cache-control")
+
+    payload = get(build_conn(), "/nodeinfo/2.1.json")
+
+    assert ["public, max-age=300, stale-while-revalidate=60"] ==
+             get_resp_header(payload, "cache-control")
   end
 
   test "nodeinfo responses work with bare dotted schema versions", %{conn: conn} do
@@ -99,7 +124,7 @@ defmodule Pleroma.Web.NodeInfoTest do
              result["metadata"]["restrictedNicknames"]
   end
 
-  test "returns software.repository field in nodeinfo 2.1", %{conn: conn} do
+  test "returns software repository and homepage fields in nodeinfo 2.1", %{conn: conn} do
     conn
     |> get("/.well-known/nodeinfo")
     |> json_response(200)
@@ -110,6 +135,7 @@ defmodule Pleroma.Web.NodeInfoTest do
 
     assert result = json_response(conn, 200)
     assert Pleroma.Application.repository() == result["software"]["repository"]
+    assert Pleroma.Application.homepage() == result["software"]["homepage"]
   end
 
   test "returns the compatibility software name", %{conn: conn} do

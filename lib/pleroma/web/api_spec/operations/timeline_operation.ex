@@ -64,6 +64,9 @@ defmodule Pleroma.Web.ApiSpec.TimelineOperation do
         instance_param(),
         only_media_param(),
         only_events_param(),
+        only_native_param(),
+        native_family_param(),
+        native_query_param(),
         remote_param(),
         with_muted_param(),
         exclude_visibilities_param(),
@@ -240,6 +243,43 @@ defmodule Pleroma.Web.ApiSpec.TimelineOperation do
       :query,
       %Schema{allOf: [BooleanLike], default: false},
       "Include only objects with Event type"
+    )
+  end
+
+  defp only_native_param do
+    Operation.parameter(
+      :only_native,
+      :query,
+      %Schema{allOf: [BooleanLike], default: false},
+      "Include only statuses backed by validated native ActivityPub metadata"
+    )
+  end
+
+  defp native_family_param do
+    Operation.parameter(
+      :native_family,
+      :query,
+      %Schema{
+        type: :string,
+        enum: ~w[
+          audio video longform photo books bookmarks groups events development
+          models marketplace games routes culture coordination publishing
+        ]
+      },
+      "Include only native objects from this structural family"
+    )
+  end
+
+  defp native_query_param do
+    Operation.parameter(
+      :native_query,
+      :query,
+      # Browsers can retain a previous Worlds bundle while a service worker
+      # installs the current one. Treat its empty optional value exactly like
+      # an omitted filter; ActivityPub still ignores non-empty terms shorter
+      # than two characters before constructing the metadata predicate.
+      %Schema{type: :string, maxLength: 200},
+      "Search validated native object metadata in the local cache; an empty value is omitted"
     )
   end
 

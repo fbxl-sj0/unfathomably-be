@@ -38,7 +38,7 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
   ]
 
   @collection_object_types ~w[
-    BookList Shelf ListItem ShelfItem
+    BookList Shelf ListItem ShelfItem Series SeriesBook Playlist PlaylistTrack
   ]
 
   @process_types ~w[
@@ -60,6 +60,19 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
 
   @valueflows_resource_types ~w[
     EconomicResource Measure ProcessSpecification ResourceSpecification Unit
+  ]
+
+  # ValueFlows payloads in the wild use both the original compact IRI and the
+  # current ontology IRI. JSON-LD context is inspected as data only; this
+  # module never dereferences a remote context document to classify an object.
+  @valueflows_iri_prefixes [
+    "https://w3id.org/valueflows#",
+    "https://w3id.org/valueflows/ont/vf#"
+  ]
+
+  @valueflows_context_prefixes [
+    "https://w3id.org/valueflows#",
+    "https://w3id.org/valueflows/ont/vf"
   ]
 
   @valueflows_scalar_fields %{
@@ -135,7 +148,78 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
   @native_detail_field "https://unfathomably.social/ns#detail"
   @native_secondary_field "https://unfathomably.social/ns#secondary"
   @native_reference_field "https://unfathomably.social/ns#reference"
-  @native_families ~w[books software models markets games routes culture coordination publishing]
+  @native_namespace "https://unfathomably.social/ns#"
+  @native_families ~w[audio video longform photo books bookmarks software models markets games routes culture coordination publishing]
+  @discoverable_standard_types ~w[Audio Event Image Video]
+  @native_presentation_fields %{
+    "action" => :action,
+    "album" => :album,
+    "artist" => :artist,
+    "author" => :author,
+    "byline" => :byline,
+    "category" => :category,
+    "channel" => :channel,
+    "condition" => :condition,
+    "creator" => :creator,
+    "currency" => :currency,
+    "delivery" => :delivery,
+    "difficulty" => :difficulty,
+    "distance" => :distance,
+    "distance_unit" => :distance_unit,
+    "due" => :due,
+    "duration" => :duration,
+    "edition" => :edition,
+    "elevation_gain" => :elevation_gain,
+    "elevation_loss" => :elevation_loss,
+    "expires" => :expires,
+    "fen" => :fen,
+    "file_name" => :file_name,
+    "file_format" => :file_format,
+    "format" => :format,
+    "game_kind" => :game_kind,
+    "genres" => :genres,
+    "isbn" => :isbn,
+    "labels" => :labels,
+    "language" => :language,
+    "level" => :level,
+    "license" => :license,
+    "live_start" => :live_start,
+    "is_live_broadcast" => :is_live_broadcast,
+    "embed_url" => :embed_url,
+    "listing_type" => :listing_type,
+    "location" => :location,
+    "platform" => :platform_name,
+    "players" => :players,
+    "price" => :price,
+    "printable" => :printable,
+    "priority" => :priority,
+    "project_status" => :project_status,
+    "provider" => :provider,
+    "published_at" => :published_at,
+    "quantity" => :quantity,
+    "reading_status" => :reading_status,
+    "receiver" => :receiver,
+    "release_date" => :release_date,
+    "release_year" => :release_year,
+    "repository" => :repository,
+    "resource" => :resource,
+    "route_kind" => :route_kind,
+    "scale" => :scale,
+    "site_name" => :site_name,
+    "skills" => :skills,
+    "start_time" => :start_time,
+    "state" => :state,
+    "status" => :status,
+    "subject" => :subject,
+    "subtitle" => :subtitle,
+    "tags" => :tags,
+    "taken_at" => :taken_at,
+    "ticket_kind" => :ticket_kind,
+    "track_number" => :track_number,
+    "unit" => :unit,
+    "url" => :url,
+    "version" => :version
+  }
 
   @presentation_scalar_fields %{
     "hashAfter" => :hash_after,
@@ -145,6 +229,8 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
     "protected" => :protected,
     "rating" => :rating,
     "readingStatus" => :reading_status,
+    "seriesNumber" => :series_number,
+    "index" => :index,
     "ref" => :ref,
     "relationship" => :relationship,
     "state" => :state,
@@ -155,17 +241,69 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
     "book" => :book,
     "edition" => :edition,
     "edits" => :edits,
+    "gpxUrl" => :gpx_url,
     "inReplyToBook" => :in_reply_to_book,
     "managedBy" => :managed_by,
+    "resourceUrl" => :resource_url,
     "result" => :result,
     "target" => :target,
-    "work" => :work
+    "work" => :work,
+    "series" => :series,
+    "seriesBooks" => :series_books,
+    "seriesIds" => :series_ids,
+    "playlist" => :playlist,
+    "track" => :track,
+    "shapeTreeUri" => :shape_tree_uri,
+    "interop:registeredShapeTree" => :registered_shape_tree
   }
 
   @type object_class :: String.t()
 
   @spec internal_field() :: String.t()
   def internal_field, do: @internal_field
+
+  @doc "Returns true when an object has a meaningful specialized presentation."
+  @spec discoverable?(map()) :: boolean()
+  def discoverable?(%{} = object) do
+    metadata = object[@internal_field] || %{}
+
+    not discovery_opted_out?(object) and
+      not bare_audio_activity?(object) and
+      (metadata["discoverable"] == true or
+         custom_object?(object) or
+         object[@native_family_field] in @native_families or
+         short_type(object["type"]) in @discoverable_standard_types or
+         "capabilities" in standard_extension_fields(object) or
+         not is_nil(wanderer_object_kind(object)) or
+         map_size(presentation_fields(object)) > 0)
+  end
+
+  def discoverable?(_object), do: false
+
+  # Some specialized publishers, notably Manyfold, use Mastodon's indexable
+  # extension on objects rather than only on actors. Keep an explicitly hidden
+  # object directly resolvable, but do not promote it into Worlds or search.
+  defp discovery_opted_out?(object) do
+    object["indexable"] == false or object["discoverable"] == false
+  end
+
+  # Legacy Pleroma scrobbles use Audio as a listening-activity envelope. They
+  # carry a title, artist, and external Last.fm link, but no post body or media
+  # that a status card can play. Explicit native objects remain eligible so a
+  # locally authored music entry is never mistaken for a legacy scrobble.
+  defp bare_audio_activity?(%{} = object) do
+    metadata = object[@internal_field] || %{}
+
+    short_type(object["type"]) == "Audio" and
+      metadata["discoverable"] != true and
+      blank_audio_value?(object[@native_family_field]) and
+      blank_audio_value?(object["content"]) and
+      blank_audio_value?(object["attachment"]) and
+      blank_audio_value?(object["url"])
+  end
+
+  defp blank_audio_value?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_audio_value?(value), do: value in [nil, [], %{}]
 
   @spec custom_object?(map()) :: boolean()
   def custom_object?(%{"type" => type}), do: custom_type?(type)
@@ -186,7 +324,7 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
   @spec class(map()) :: object_class()
   def class(%{"type" => type} = object) do
     short_type = short_type(type)
-    valueflows_class = valueflows_class(type)
+    valueflows_class = valueflows_class(object)
 
     cond do
       valueflows_class -> valueflows_class
@@ -278,6 +416,7 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
       "canonicalId" => id,
       "class" => class(object),
       "context" => reference_id(object["context"]),
+      "discoverable" => true,
       "type" => type
     }
 
@@ -288,7 +427,9 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
         metadata
       end
 
-    Map.put(object, @internal_field, metadata)
+    object = Map.put(object, @internal_field, metadata)
+
+    put_in(object, [@internal_field, "discoverable"], discoverable?(object))
   end
 
   def put_internal_metadata(object, _options), do: object
@@ -345,20 +486,64 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
   @doc "Returns bounded native metadata suitable for Mastodon API and preview clients."
   @spec presentation(map()) :: map() | nil
   def presentation(%{} = object) do
-    if custom_object?(object) or standard_extension_fields(object) != [] or
-         not is_nil(wanderer_object_kind(object)) do
+    if discoverable?(object) do
+      fields = presentation_fields(object)
+
       %{
         canonical_id: object["id"],
         class: class(object),
         context: reference_id(object["context"]),
-        controls: ["open"],
-        fields: presentation_fields(object),
+        controls: presentation_controls(object, fields),
+        fields: fields,
         type: object["type"]
       }
     end
   end
 
   def presentation(_object), do: nil
+
+  defp presentation_controls(object, fields) do
+    type = short_type(object["type"])
+    family = fields[:family]
+    platform = fields[:platform]
+
+    ["open"]
+    |> maybe_add_control(
+      is_binary(fields[:gpx_url]) or is_binary(fields[:resource_url]),
+      "download"
+    )
+    |> maybe_add_control(
+      family in ["books", "culture"] or platform == "neodb" or type in ["Book", "Edition"],
+      "review"
+    )
+    |> maybe_add_control(family == "markets" or platform == "flohmarkt", "contact")
+    |> maybe_add_control(
+      family in ["coordination", "games"] or
+        platform in ["activitypods", "bonfire_valueflows", "mutual_aid"],
+      "respond"
+    )
+    |> maybe_add_control(
+      family in [
+        "software",
+        "longform",
+        "publishing",
+        "bookmarks",
+        "routes",
+        "models",
+        "video",
+        "photo"
+      ] or
+        (type in ["Issue", "Repository", "Ticket"] and platform != "activitypods"),
+      "discuss"
+    )
+    |> maybe_add_control(
+      type in ["Audio", "Track"] and is_binary(object["id"]) and object["id"] != "",
+      "listen"
+    )
+  end
+
+  defp maybe_add_control(controls, true, control), do: controls ++ [control]
+  defp maybe_add_control(controls, false, _control), do: controls
 
   @spec short_type(term()) :: String.t() | nil
   def short_type(type) when is_binary(type) do
@@ -417,11 +602,322 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
     |> put_valueflows_presentation_fields(object)
     |> put_zenpub_presentation_fields(object)
     |> put_neodb_presentation_fields(object)
+    |> put_audio_presentation_fields(object)
+    |> put_music_catalog_presentation_fields(object)
     |> put_wanderer_presentation_fields(object)
+    |> put_model_presentation_fields(object)
+    |> put_live_video_presentation_fields(object)
     |> put_castling_presentation_fields(object)
     |> put_flohmarkt_presentation_fields(object)
+    |> put_photo_capabilities_presentation_fields(object)
     |> put_unfathomably_presentation_fields(object)
   end
+
+  defp put_photo_capabilities_presentation_fields(fields, object) do
+    if "capabilities" in standard_extension_fields(object) and image_attachment?(object) do
+      fields
+      |> Map.put_new(:family, "photo")
+      |> Map.put_new(:kind, "photo_story")
+    else
+      fields
+    end
+  end
+
+  # Funkwhale publishes ordinary ActivityStreams Audio and Track objects. Their
+  # music metadata is not extension-vocabulary data, so retain the bounded
+  # standard fields explicitly instead of requiring a platform-specific shape.
+  defp put_audio_presentation_fields(fields, object) do
+    case short_type(object["type"]) do
+      type when type in ["Audio", "Track"] ->
+        fields
+        |> Map.put_new(:family, "audio")
+        |> Map.put_new(:kind, String.downcase(type))
+        |> put_presentation_scalar(
+          :title,
+          presentation_scalar(object["title"] || object["name"])
+        )
+        |> put_presentation_scalar(:artist, presentation_scalar(object["artist"]))
+        |> put_presentation_scalar(:album, presentation_scalar(object["album"]))
+        |> put_presentation_reference(:external_link, audio_external_link(object["externalLink"]))
+
+      _type ->
+        fields
+    end
+  end
+
+  defp audio_external_link(value) do
+    case presentation_reference(value) do
+      value when is_binary(value) ->
+        if native_resource_http_url?(value), do: value
+
+      _value ->
+        nil
+    end
+  end
+
+  defp put_music_catalog_presentation_fields(fields, object) do
+    type = short_type(object["type"])
+
+    if type in ["Artist", "Album", "Library", "Playlist"] and
+         music_catalog_presentation_shape?(type, object) do
+      fields
+      |> Map.put_new(:platform, "funkwhale")
+      |> Map.put_new(:family, "audio")
+      |> Map.put_new(:kind, String.downcase(type))
+      |> put_presentation_scalar(:title, presentation_scalar(object["name"] || object["title"]))
+      |> put_presentation_scalar(
+        :description,
+        presentation_scalar(object["summary"] || object["content"])
+      )
+      |> put_presentation_scalar(:artist, music_catalog_artist(object["artist_credit"]))
+      |> put_presentation_scalar(
+        :released,
+        presentation_scalar(object["released"] || object["release_date"])
+      )
+      |> put_presentation_scalar(
+        :musicbrainz_id,
+        presentation_scalar(object["musicbrainzId"] || object["musicbrainz_id"])
+      )
+      |> put_presentation_scalar(:total_items, presentation_scalar(object["totalItems"]))
+      |> put_presentation_reference(
+        :image,
+        presentation_reference(object["cover"] || object["image"] || object["icon"])
+      )
+      |> put_presentation_reference(:owner, presentation_reference(object["attributedTo"]))
+      |> put_presentation_reference(
+        :collection,
+        presentation_reference(object["current"] || object["first"] || object["id"])
+      )
+    else
+      fields
+    end
+  end
+
+  defp music_catalog_presentation_shape?("Artist", object) do
+    music_catalog_musicbrainz?(object) or music_catalog_context?(object)
+  end
+
+  defp music_catalog_presentation_shape?("Album", object) do
+    music_catalog_musicbrainz?(object) or
+      Map.has_key?(object, "artist_credit") or
+      Map.has_key?(object, "cover") or
+      music_catalog_context?(object)
+  end
+
+  defp music_catalog_presentation_shape?("Library", object) do
+    is_binary(presentation_reference(object["followers"])) and
+      is_binary(presentation_reference(object["first"])) and
+      is_integer(presentation_scalar(object["totalItems"]))
+  end
+
+  defp music_catalog_presentation_shape?("Playlist", object) do
+    is_binary(presentation_reference(object["first"])) and
+      is_binary(presentation_reference(object["last"])) and
+      is_integer(presentation_scalar(object["totalItems"]))
+  end
+
+  defp music_catalog_presentation_shape?(_type, _object), do: false
+
+  defp music_catalog_musicbrainz?(object) do
+    is_binary(presentation_scalar(object["musicbrainzId"] || object["musicbrainz_id"]))
+  end
+
+  defp music_catalog_context?(object) do
+    object
+    |> Map.get("@context", [])
+    |> List.wrap()
+    |> Enum.any?(fn
+      value when is_binary(value) ->
+        String.starts_with?(value, "https://funkwhale.audio/ns")
+
+      value when is_map(value) ->
+        value
+        |> Map.values()
+        |> Enum.any?(&(is_binary(&1) and String.contains?(&1, "funkwhale.audio/ns")))
+
+      _ ->
+        false
+    end)
+  end
+
+  defp music_catalog_artist(value) when is_binary(value), do: presentation_scalar(value)
+
+  defp music_catalog_artist(values) when is_list(values) do
+    values
+    |> Enum.map(fn
+      %{"credit" => credit} when is_binary(credit) ->
+        presentation_scalar(credit)
+
+      %{"artist" => %{} = artist} ->
+        presentation_scalar(artist["name"] || artist["preferredUsername"])
+
+      %{"name" => name} when is_binary(name) ->
+        presentation_scalar(name)
+
+      value when is_binary(value) ->
+        presentation_scalar(value)
+
+      _ ->
+        nil
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.join(", ")
+    |> presentation_scalar()
+  end
+
+  defp music_catalog_artist(_value), do: nil
+
+  defp put_model_presentation_fields(fields, object) do
+    descriptor = model_file_descriptor(object["attachment"])
+    manyfold_model? = manyfold_model_shape?(object)
+
+    if manyfold_model? or not is_nil(descriptor) do
+      fields
+      |> Map.put_new(:family, "models")
+      |> Map.put_new(:kind, "3d_model")
+      |> put_presentation_scalar(:platform, if(manyfold_model?, do: "manyfold"))
+      |> put_model_file_descriptor(descriptor)
+    else
+      fields
+    end
+  end
+
+  defp put_live_video_presentation_fields(fields, %{"type" => "Video"} = object) do
+    live_broadcast = object["isLiveBroadcast"]
+    live_start = live_video_start(object["schedules"])
+    embed_url = presentation_reference(object["embedUrl"])
+
+    if live_broadcast == true or not is_nil(live_start) or not is_nil(embed_url) do
+      fields
+      |> Map.put_new(:family, "video")
+      |> Map.put_new(:kind, if(live_start, do: "scheduled_live_video", else: "live_video"))
+      |> put_presentation_scalar(:is_live_broadcast, live_broadcast)
+      |> put_presentation_scalar(:live_start, live_start)
+      |> put_presentation_reference(:embed_url, embed_url)
+    else
+      fields
+    end
+  end
+
+  defp put_live_video_presentation_fields(fields, _object), do: fields
+
+  defp live_video_start(schedules) when is_list(schedules) do
+    Enum.find_value(schedules, fn
+      %{"startDate" => start_date} when is_binary(start_date) -> start_date
+      _schedule -> nil
+    end)
+  end
+
+  defp live_video_start(_schedules), do: nil
+
+  defp put_model_file_descriptor(fields, nil), do: fields
+
+  defp put_model_file_descriptor(fields, descriptor) do
+    fields
+    |> put_presentation_reference(:resource_url, descriptor.url)
+    |> put_presentation_scalar(:file_format, descriptor.format)
+    |> put_presentation_scalar(:file_name, descriptor.name)
+  end
+
+  defp manyfold_model_shape?(object) do
+    Enum.any?(object, fn
+      {key, value} when is_binary(key) ->
+        String.ends_with?(key, "concreteType") and
+          short_type(reference_id(value) || presentation_scalar(value)) == "3DModel"
+
+      _field ->
+        false
+    end)
+  end
+
+  defp model_file_descriptor(attachments) do
+    attachments
+    |> List.wrap()
+    |> Enum.find_value(&model_attachment_descriptor/1)
+  end
+
+  defp model_attachment_descriptor(%{} = attachment) do
+    url = model_media_url(attachment["url"] || attachment["href"])
+    media_type = presentation_scalar(attachment["mediaType"])
+
+    if model_media?(media_type, url) do
+      %{
+        format: media_type || model_file_extension(url),
+        name: presentation_scalar(attachment["name"]),
+        url: url
+      }
+    end
+  end
+
+  defp model_attachment_descriptor(_attachment), do: nil
+
+  defp model_media_url(values) when is_list(values) do
+    Enum.find_value(values, &model_media_url/1)
+  end
+
+  defp model_media_url(value) when is_binary(value) do
+    if native_resource_http_url?(value), do: value
+  end
+
+  defp model_media_url(%{"href" => href}), do: model_media_url(href)
+  defp model_media_url(%{"id" => id}), do: model_media_url(id)
+  defp model_media_url(_value), do: nil
+
+  defp model_media?(media_type, url) when is_binary(url) do
+    normalized_media_type =
+      if is_binary(media_type), do: String.downcase(media_type), else: nil
+
+    normalized_media_type in [
+      "application/sla",
+      "application/vnd.flock+json",
+      "application/vnd.ms-pki.stl",
+      "model/3mf",
+      "model/gltf+json",
+      "model/gltf-binary",
+      "model/obj",
+      "model/stl"
+    ] or model_file_extension(url) in ~w[3mf amf flock glb gltf obj ply step stl stp]
+  end
+
+  defp model_media?(_media_type, _url), do: false
+
+  defp model_file_extension(url) do
+    url
+    |> URI.parse()
+    |> Map.get(:path)
+    |> to_string()
+    |> Path.extname()
+    |> String.trim_leading(".")
+    |> String.downcase()
+    |> case do
+      "" -> nil
+      extension -> extension
+    end
+  end
+
+  defp native_resource_http_url?(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host}
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        true
+
+      _uri ->
+        false
+    end
+  end
+
+  defp image_attachment?(%{"attachment" => attachments}) do
+    attachments
+    |> List.wrap()
+    |> Enum.any?(fn
+      %{"mediaType" => "image/" <> _subtype} -> true
+      %{"type" => "Image"} -> true
+      _attachment -> false
+    end)
+  end
+
+  defp image_attachment?(_object), do: false
 
   defp put_unfathomably_presentation_fields(fields, object) do
     family = presentation_scalar(object[@native_family_field])
@@ -436,10 +932,24 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
       |> Map.put(:kind, kind)
       |> put_presentation_scalar(:detail, presentation_scalar(object[@native_detail_field]))
       |> put_presentation_scalar(:secondary, presentation_scalar(object[@native_secondary_field]))
-      |> put_presentation_reference(:reference, presentation_reference(object[@native_reference_field]))
+      |> put_presentation_reference(
+        :reference,
+        presentation_reference(object[@native_reference_field])
+      )
+      |> put_unfathomably_detail_fields(object)
     else
       fields
     end
+  end
+
+  defp put_unfathomably_detail_fields(fields, object) do
+    Enum.reduce(@native_presentation_fields, fields, fn {source, target}, result ->
+      put_presentation_scalar(
+        result,
+        target,
+        presentation_scalar(object[@native_namespace <> source])
+      )
+    end)
   end
 
   defp locally_authored?(%{
@@ -513,8 +1023,8 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
     object["maid:#{field}"] || object["https://mutual-aid.app/ns/core##{field}"]
   end
 
-  defp put_valueflows_presentation_fields(fields, %{"type" => type} = object) do
-    case valueflows_name(type) do
+  defp put_valueflows_presentation_fields(fields, %{"type" => _type} = object) do
+    case valueflows_name(object) do
       nil ->
         fields
 
@@ -522,7 +1032,7 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
         fields
         |> Map.put(:platform, "bonfire_valueflows")
         |> Map.put(:valueflows_type, name)
-        |> put_presentation_scalar(:action, valueflows_action(object["action"]))
+        |> put_presentation_scalar(:action, valueflows_action(valueflows_field(object, "action")))
         |> put_valueflows_fields(object, @valueflows_scalar_fields, &presentation_scalar/1)
         |> put_valueflows_fields(object, @valueflows_reference_fields, &presentation_reference/1)
         |> put_valueflows_quantities(object)
@@ -576,14 +1086,14 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
 
   defp put_valueflows_fields(fields, object, field_map, value_fun) do
     Enum.reduce(field_map, fields, fn {source, target}, result ->
-      put_presentation_scalar(result, target, value_fun.(object[source]))
+      put_presentation_scalar(result, target, value_fun.(valueflows_field(object, source)))
     end)
   end
 
   defp put_valueflows_quantities(fields, object) do
     Enum.reduce(@valueflows_quantity_fields, fields, fn
       {source, {value_key, unit_key}}, result ->
-        case object[source] do
+        case valueflows_field(object, source) do
           %{} = quantity ->
             result
             |> put_presentation_scalar(
@@ -598,13 +1108,16 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
     end)
   end
 
-  defp valueflows_action("https://w3id.org/valueflows#" <> action),
-    do: presentation_scalar(action)
+  defp valueflows_action(action) when is_binary(action) do
+    action
+    |> valueflows_term()
+    |> presentation_scalar()
+  end
 
   defp valueflows_action(action), do: presentation_scalar(action)
 
-  defp valueflows_class(type) do
-    case valueflows_name(type) do
+  defp valueflows_class(object) do
+    case valueflows_name(object) do
       name when name in @valueflows_status_types -> "status"
       name when name in @valueflows_process_types -> "process"
       name when name in @valueflows_resource_types -> "resource"
@@ -612,9 +1125,68 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
     end
   end
 
+  defp valueflows_name(%{"type" => types} = object) do
+    Enum.find_value(List.wrap(types), &valueflows_name/1) ||
+      valueflows_context_type_name(types, object)
+  end
+
   defp valueflows_name("ValueFlows:" <> name), do: known_valueflows_name(name)
-  defp valueflows_name("https://w3id.org/valueflows#" <> name), do: known_valueflows_name(name)
+
+  defp valueflows_name(type) when is_binary(type) do
+    Enum.find_value(@valueflows_iri_prefixes, fn prefix ->
+      if String.starts_with?(type, prefix) do
+        type
+        |> String.replace_prefix(prefix, "")
+        |> known_valueflows_name()
+      end
+    end)
+  end
+
   defp valueflows_name(_type), do: nil
+
+  defp valueflows_context_type_name(types, object) do
+    if valueflows_context?(object) do
+      types
+      |> List.wrap()
+      |> Enum.find_value(fn type -> type |> short_type() |> known_valueflows_name() end)
+    end
+  end
+
+  defp valueflows_context?(object) do
+    object
+    |> Map.get("@context", [])
+    |> List.wrap()
+    |> Enum.any?(&valueflows_context_entry?/1)
+  end
+
+  defp valueflows_context_entry?(context) when is_binary(context),
+    do: valueflows_context_iri?(context)
+
+  defp valueflows_context_entry?(context) when is_map(context) do
+    Enum.any?(context, fn {_term, value} -> valueflows_context_iri?(value) end)
+  end
+
+  defp valueflows_context_entry?(_context), do: false
+
+  defp valueflows_context_iri?(value) when is_binary(value) do
+    Enum.any?(@valueflows_context_prefixes, &String.starts_with?(value, &1))
+  end
+
+  defp valueflows_context_iri?(_value), do: false
+
+  defp valueflows_field(object, field) when is_map(object) and is_binary(field) do
+    object[field] || object["vf:" <> field] ||
+      Enum.find_value(@valueflows_iri_prefixes, &object[&1 <> field])
+  end
+
+  defp valueflows_field(_object, _field), do: nil
+
+  defp valueflows_term(value) when is_binary(value) do
+    Enum.find_value(@valueflows_iri_prefixes, value, fn prefix ->
+      if String.starts_with?(value, prefix), do: String.replace_prefix(value, prefix, "")
+    end)
+    |> String.replace_prefix("vf:", "")
+  end
 
   defp known_valueflows_name(name) do
     if name in (@valueflows_status_types ++
@@ -702,20 +1274,84 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
   end
 
   defp put_flohmarkt_presentation_fields(fields, object) do
-    case flohmarkt_listing_data(object) do
+    case flohmarkt_listing_data(object) || fep0837_listing_presentation_data(object) do
       nil ->
         fields
 
       data ->
         fields
         |> Map.put(:platform, "flohmarkt")
+        |> Map.put_new(:family, "markets")
+        |> Map.put_new(:kind, "market_listing")
         |> put_presentation_scalar(:listing_name, presentation_scalar(data["name"]))
         |> put_presentation_scalar(:price, presentation_scalar(data["price"]))
         |> put_presentation_scalar(:currency, presentation_scalar(data["currency"]))
         |> put_presentation_scalar(:original_id, presentation_scalar(data["original_id"]))
+        |> put_presentation_scalar(:listing_location, presentation_scalar(data["location"]))
         |> put_flohmarkt_coordinates(data["coordinates"])
     end
   end
+
+  # New Flohmarkt instances can send an interoperable FEP-0837 Proposal
+  # attachment without the older flohmarkt:data extension. This is presentation
+  # metadata only: lifecycle and update validation remain limited to the fully
+  # verified legacy listing shape below.
+  defp fep0837_listing_presentation_data(
+         %{
+           "attachment" => attachments,
+           "attributedTo" => actor,
+           "type" => "Note"
+         } = object
+       )
+       when is_binary(actor) do
+    attachments
+    |> List.wrap()
+    |> Enum.find_value(&fep0837_listing_attachment_data(&1, actor, object))
+  end
+
+  defp fep0837_listing_presentation_data(_object), do: nil
+
+  defp fep0837_listing_attachment_data(%{} = proposal, actor, object) do
+    publishes = valueflows_field(proposal, "publishes")
+    reciprocal = valueflows_field(proposal, "reciprocal")
+    quantity = valueflows_field(reciprocal, "resourceQuantity")
+    location = valueflows_field(proposal, "location")
+
+    if fep0837_proposal?(proposal, object) and proposal["attributedTo"] == actor and
+         presentation_scalar(valueflows_field(proposal, "purpose")) == "offer" and
+         fep0837_transfer?(publishes) and is_map(quantity) do
+      name = presentation_scalar(proposal["name"])
+      price = presentation_scalar(valueflows_field(quantity, "hasNumericalValue"))
+      currency = presentation_scalar(valueflows_field(quantity, "hasUnit"))
+
+      if is_binary(name) and not is_nil(price) and is_binary(currency) do
+        %{
+          "currency" => currency,
+          "location" => fep0837_location_name(location),
+          "name" => name,
+          "original_id" => presentation_scalar(proposal["id"]),
+          "price" => price
+        }
+      end
+    end
+  end
+
+  defp fep0837_listing_attachment_data(_proposal, _actor, _object), do: nil
+
+  defp fep0837_proposal?(proposal, object) do
+    valueflows_name(proposal) == "Proposal" or
+      (short_type(proposal["type"]) == "Proposal" and valueflows_context?(object))
+  end
+
+  defp fep0837_transfer?(%{} = intent) do
+    short_type(intent["type"]) == "Intent" and
+      valueflows_term(valueflows_field(intent, "action")) == "transfer"
+  end
+
+  defp fep0837_transfer?(_intent), do: false
+
+  defp fep0837_location_name(%{} = location), do: presentation_scalar(location["name"])
+  defp fep0837_location_name(_location), do: nil
 
   @doc "Returns true for a canonical stock Flohmarkt listing Note."
   @spec flohmarkt_listing?(map()) :: boolean()
@@ -825,6 +1461,8 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
       kind ->
         fields
         |> Map.put(:platform, "wanderer")
+        |> Map.put(:family, "routes")
+        |> Map.put(:kind, kind)
         |> Map.put(:route_kind, kind)
         |> put_presentation_scalar(:start_time, presentation_scalar(object["startTime"]))
         |> put_wanderer_location(object["location"])
@@ -919,8 +1557,13 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
 
   defp wanderer_gpx_url(attachments) when is_list(attachments) do
     Enum.find_value(attachments, fn
-      %{"mediaType" => "application/xml+gpx", "url" => url} -> wanderer_media_url(url)
-      _attachment -> nil
+      %{} = attachment ->
+        url = wanderer_media_url(attachment["url"] || attachment["href"])
+
+        if wanderer_gpx_attachment?(attachment["mediaType"], url), do: url
+
+      _attachment ->
+        nil
     end)
   end
 
@@ -935,6 +1578,21 @@ defmodule Pleroma.Web.ActivityPub.CustomObject do
   defp wanderer_media_url(%{"href" => href}) when is_binary(href), do: href
   defp wanderer_media_url(%{"id" => id}) when is_binary(id), do: id
   defp wanderer_media_url(_value), do: nil
+
+  defp wanderer_gpx_attachment?(media_type, url) when is_binary(url) do
+    normalized_media_type =
+      if is_binary(media_type), do: String.downcase(media_type), else: nil
+
+    normalized_media_type in [
+      "application/gpx",
+      "application/gpx+xml",
+      "application/xml+gpx"
+    ] or
+      (normalized_media_type == "application/octet-stream" and
+         model_file_extension(url) == "gpx")
+  end
+
+  defp wanderer_gpx_attachment?(_media_type, _url), do: false
 
   defp neodb_related_activity?(%{"type" => type, "withRegardTo" => target})
        when type in ~w[Comment Note Rating Review Status] do

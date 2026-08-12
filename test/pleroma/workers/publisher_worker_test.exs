@@ -3,11 +3,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Workers.PublisherWorkerTest do
-  use Pleroma.DataCase, async: true
+  use Pleroma.DataCase, async: false
   use Oban.Testing, repo: Pleroma.Repo
 
   import Pleroma.Factory
+  import Mock
 
+  alias Pleroma.Activity
   alias Pleroma.Instances
   alias Pleroma.Object
   alias Pleroma.Repo
@@ -75,6 +77,51 @@ defmodule Pleroma.Workers.PublisherWorkerTest do
 
       assert {:cancel, :activity_not_found} = PublisherWorker.perform(job)
     end
+
+    test "cancels per-inbox Create deliveries inserted after deletion" do
+      activity = insert(:note_activity)
+      activity_id = activity.data["id"]
+      {:ok, _activity} = Repo.delete(activity)
+
+      job = %Oban.Job{
+        args: %{
+          "op" => "publish_one",
+          "module" => "Elixir.Pleroma.Web.ActivityPub.Publisher",
+          "params" => %{
+            "actor_id" => insert(:user).id,
+            "id" => activity_id,
+            "inbox" => "https://remote.example/inbox",
+            "json" => Jason.encode!(activity.data)
+          }
+        }
+      }
+
+      assert {:cancel, :activity_not_found} = PublisherWorker.perform(job)
+    end
+
+    test "records a successful Create delivery on the source activity" do
+      activity = insert(:note_activity)
+
+      job = %Oban.Job{
+        args: %{
+          "op" => "publish_one",
+          "module" => "Elixir.Pleroma.Web.ActivityPub.Publisher",
+          "params" => %{
+            "actor_id" => insert(:user).id,
+            "id" => activity.data["id"],
+            "inbox" => "https://remote.example/inbox",
+            "json" => Jason.encode!(activity.data)
+          }
+        }
+      }
+
+      with_mock Federator,
+        perform: fn :publish_one, _module, _params -> {:ok, %{status: 202}} end do
+        assert {:ok, %{status: 202}} = PublisherWorker.perform(job)
+      end
+
+      assert Activity.get_by_id(activity.id).federated
+    end
   end
 
   describe "dormant instance delivery" do
@@ -126,6 +173,28 @@ defmodule Pleroma.Workers.PublisherWorkerTest do
 
       assert {:cancel, :invalid_params} =
                PublisherWorker.perform(%Oban.Job{args: %{"op" => "unknown"}})
+    end
+  end
+
+  describe "delivery backoff" do
+    test "snoozes a queued delivery while its recently failing host is backed off" do
+      inbox = "https://backed-off.example/inbox"
+
+      assert {:ok, _instance} =
+               Instances.record_delivery_failure(inbox, {:error, :timeout}, source: "publisher")
+
+      job = %Oban.Job{
+        id: 41,
+        args: %{
+          "op" => "publish_one",
+          "module" => "Elixir.Pleroma.Web.ActivityPub.Publisher",
+          "params" => %{"inbox" => inbox}
+        }
+      }
+
+      assert {:snooze, seconds} = PublisherWorker.perform(job)
+      assert seconds >= 60
+      assert seconds <= 24 * 60 * 60 + 5 * 60
     end
   end
 end

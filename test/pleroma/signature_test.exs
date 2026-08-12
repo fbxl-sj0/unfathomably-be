@@ -14,6 +14,9 @@ defmodule Pleroma.SignatureTest do
   alias Pleroma.Signature
   alias Pleroma.StubbedHTTPSignaturesMock, as: HTTPSignaturesMock
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.ActivityPub
+
+  @base58btc_alphabet "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
   setup do
     mock(fn env -> apply(HttpRequestMock, :request, [env]) end)
@@ -44,6 +47,71 @@ defmodule Pleroma.SignatureTest do
     [public_key_entry]
     |> :public_key.pem_encode()
     |> IO.iodata_to_binary()
+  end
+
+  defp base58btc_encode(binary) do
+    leading_zeroes = binary |> :binary.bin_to_list() |> Enum.take_while(&(&1 == 0)) |> length()
+    encoded = binary |> :binary.decode_unsigned() |> encode_base58btc_integer("")
+    String.duplicate("1", leading_zeroes) <> encoded
+  end
+
+  defp encode_base58btc_integer(0, encoded), do: encoded
+
+  defp encode_base58btc_integer(integer, encoded) do
+    character = binary_part(@base58btc_alphabet, rem(integer, 58), 1)
+    encode_base58btc_integer(div(integer, 58), character <> encoded)
+  end
+
+  describe "Ed25519 actor keys" do
+    test "extracts actor-controlled JWK and Multikey representations once" do
+      {public_key, _private_key} = :crypto.generate_key(:eddsa, :ed25519)
+      actor_id = "https://remote.example/users/alice"
+      multibase = "z" <> base58btc_encode(<<0xED, 0x01, public_key::binary>>)
+
+      actor = %{
+        "id" => actor_id,
+        "verificationMethod" => [
+          %{
+            "id" => actor_id <> "#jwk",
+            "controller" => actor_id,
+            "publicKeyJwk" => %{
+              "kty" => "OKP",
+              "crv" => "Ed25519",
+              "x" => Base.url_encode64(public_key, padding: false)
+            }
+          },
+          %{
+            "id" => actor_id <> "#multikey",
+            "controller" => actor_id,
+            "publicKeyMultibase" => multibase
+          }
+        ]
+      }
+
+      assert [pem] = Keys.ed25519_public_key_pems(actor)
+      assert Keys.public_keys_from_pem(pem) == [{:ed25519, public_key}]
+    end
+
+    test "rejects Ed25519 methods controlled by another actor" do
+      {public_key, _private_key} = :crypto.generate_key(:eddsa, :ed25519)
+
+      actor = %{
+        "id" => "https://remote.example/users/alice",
+        "verificationMethod" => [
+          %{
+            "id" => "https://remote.example/users/mallory#key",
+            "controller" => "https://remote.example/users/mallory",
+            "publicKeyJwk" => %{
+              "kty" => "OKP",
+              "crv" => "Ed25519",
+              "x" => Base.url_encode64(public_key, padding: false)
+            }
+          }
+        ]
+      }
+
+      assert Keys.ed25519_public_key_pems(actor) == []
+    end
   end
 
   describe "fetch_public_key/1" do
@@ -87,6 +155,26 @@ defmodule Pleroma.SignatureTest do
         {:error, _} = Signature.refetch_public_key(make_fake_conn("https://test-ap_id"))
       end)
     end
+
+    test "reuses a recently refreshed actor key without another remote fetch" do
+      actor_id = "https://remote.example/users/recent-key"
+
+      insert(:user,
+        ap_id: actor_id,
+        local: false,
+        public_key: @public_key,
+        last_refreshed_at: NaiveDateTime.utc_now()
+      )
+
+      with_mock(ActivityPub,
+        make_user_from_ap_id: fn ^actor_id ->
+          flunk("a fresh actor key must not trigger a remote actor fetch")
+        end
+      ) do
+        assert Signature.refetch_public_key(make_fake_conn(actor_id)) == {:ok, @rsa_public_key}
+        assert_not_called(ActivityPub.make_user_from_ap_id(actor_id))
+      end
+    end
   end
 
   describe "sign/2" do
@@ -118,6 +206,46 @@ defmodule Pleroma.SignatureTest do
   end
 
   describe "validate_signature/1" do
+    test "validates a legacy hs2019 signature with an Ed25519 actor key" do
+      {public_key, private_key} = :crypto.generate_key(:eddsa, :ed25519)
+      user = insert(:user, public_key: Keys.ed25519_public_key_to_pem(public_key))
+      date = Signature.signed_date()
+      signed_headers = ["(request-target)", "date", "host"]
+
+      signing_string =
+        HTTPSignatures.build_signing_string(
+          %{
+            "(request-target)" => "get /inbox",
+            "date" => date,
+            "host" => "example.com"
+          },
+          signed_headers
+        )
+
+      encoded_signature =
+        :crypto.sign(:eddsa, :none, signing_string, [private_key, :ed25519])
+        |> Base.encode64()
+
+      signature =
+        "keyId=\"#{user.ap_id}#ed25519-key\",algorithm=\"hs2019\"," <>
+          "headers=\"#{Enum.join(signed_headers, " ")}\",signature=\"#{encoded_signature}\""
+
+      conn = %Plug.Conn{
+        method: "GET",
+        request_path: "/inbox",
+        query_string: "",
+        req_headers: [
+          {"host", "example.com"},
+          {"date", date},
+          {"signature", signature}
+        ]
+      }
+
+      Mox.expect(HTTPSignaturesMock, :validate_conn, fn _conn -> false end)
+
+      assert Signature.validate_signature(conn)
+    end
+
     test "rejects duplicate legacy Signature parameters before validation" do
       conn = %Plug.Conn{
         method: "POST",
@@ -150,21 +278,74 @@ defmodule Pleroma.SignatureTest do
       assert Signature.validate_signature(conn) == false
     end
 
-    test "falls back to historical public keys" do
-      historical_public_key = public_key_pem_from_private_key_pem(@private_key)
-      user = insert(:user, public_key: nil, public_key_history: [historical_public_key])
+    test "rejects legacy signatures without a signed time" do
+      conn = %Plug.Conn{
+        method: "GET",
+        request_path: "/inbox",
+        query_string: "",
+        req_headers: [
+          {"host", "example.com"},
+          {"signature",
+           "keyId=\"https://example.com/users/alice#main-key\",headers=\"(request-target) host\",signature=\"invalid\""}
+        ]
+      }
 
-      signature =
-        Signature.sign(%User{ap_id: user.ap_id, keys: @private_key}, %{
-          "host" => "example.com",
-          "(request-target)" => "post /inbox"
-        })
+      refute Signature.validate_signature(conn)
+    end
 
+    test "rejects stale legacy signatures before key validation" do
+      conn = %Plug.Conn{
+        method: "GET",
+        request_path: "/inbox",
+        query_string: "",
+        req_headers: [
+          {"host", "example.com"},
+          {"date", "Fri, 23 Aug 2019 18:11:24 GMT"},
+          {"signature",
+           "keyId=\"https://example.com/users/alice#main-key\",headers=\"(request-target) date host\",signature=\"invalid\""}
+        ]
+      }
+
+      refute Signature.validate_signature(conn)
+    end
+
+    test "rejects body-bearing legacy signatures without a signed digest" do
       conn = %Plug.Conn{
         method: "POST",
         request_path: "/inbox",
         query_string: "",
-        req_headers: [{"host", "example.com"}, {"signature", signature}]
+        req_headers: [
+          {"host", "example.com"},
+          {"date", Signature.signed_date()},
+          {"signature",
+           "keyId=\"https://example.com/users/alice#main-key\",headers=\"(request-target) date host\",signature=\"invalid\""}
+        ]
+      }
+
+      refute Signature.validate_signature(conn)
+    end
+
+    test "falls back to historical public keys" do
+      historical_public_key = public_key_pem_from_private_key_pem(@private_key)
+      user = insert(:user, public_key: nil, public_key_history: [historical_public_key])
+      date = Signature.signed_date()
+
+      signature =
+        Signature.sign(%User{ap_id: user.ap_id, keys: @private_key}, %{
+          "host" => "example.com",
+          "date" => date,
+          "(request-target)" => "get /inbox"
+        })
+
+      conn = %Plug.Conn{
+        method: "GET",
+        request_path: "/inbox",
+        query_string: "",
+        req_headers: [
+          {"host", "example.com"},
+          {"date", date},
+          {"signature", signature}
+        ]
       }
 
       Mox.expect(HTTPSignaturesMock, :validate_conn, fn _conn -> false end)

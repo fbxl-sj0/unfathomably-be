@@ -63,6 +63,60 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateHandlingTest do
 
       assert {:ok, _update, _} = ObjectValidator.validate(update, [])
     end
+
+    test "rejects an Update that moves an existing object to another reply parent" do
+      user = insert(:user, local: false)
+      parent = insert(:note)
+      other_parent = insert(:note)
+
+      note =
+        insert(:note,
+          user: user,
+          data: %{"inReplyTo" => parent.data["id"]}
+        )
+
+      updated_note = Map.put(note.data, "inReplyTo", other_parent.data["id"])
+      {:ok, update, _meta} = Builder.update(user, updated_note)
+
+      assert {:error, changeset} = ObjectValidator.validate(update, local: false)
+      assert {"inReplyTo can't be changed", []} == changeset.errors[:object]
+    end
+
+    test "normalizes NodeBB Update(Tombstone) activities through Delete validation" do
+      user = insert(:user, local: false)
+      note = insert(:note, user: user)
+
+      update = %{
+        "actor" => user.ap_id,
+        "cc" => note.data["cc"] || [],
+        "id" => note.data["id"] <> "/delete",
+        "object" => %{"id" => note.data["id"], "type" => "Tombstone"},
+        "to" => note.data["to"] || [],
+        "type" => "Update"
+      }
+
+      assert {:ok, delete, meta} = ObjectValidator.validate(update, local: false)
+      assert delete["type"] == "Delete"
+      assert delete["object"] == note.data["id"]
+      assert meta[:normalized_update_tombstone]
+    end
+
+    test "rejects Update(Tombstone) deletion by an unrelated actor" do
+      user = insert(:user, local: false)
+      other_user = insert(:user, local: false)
+      note = insert(:note, user: user)
+
+      update = %{
+        "actor" => other_user.ap_id,
+        "cc" => note.data["cc"] || [],
+        "id" => note.data["id"] <> "/invalid-delete",
+        "object" => %{"id" => note.data["id"], "type" => "Tombstone"},
+        "to" => note.data["to"] || [],
+        "type" => "Update"
+      }
+
+      assert {:error, _changeset} = ObjectValidator.validate(update, local: false)
+    end
   end
 
   describe "update note" do

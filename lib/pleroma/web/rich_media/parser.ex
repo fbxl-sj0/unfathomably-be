@@ -7,6 +7,9 @@ defmodule Pleroma.Web.RichMedia.Parser do
   import Pleroma.Web.Metadata.Utils, only: [scrub_html_and_truncate: 2]
 
   @config_impl Application.compile_env(:pleroma, [__MODULE__, :config_impl], Pleroma.Config)
+  @fragment_headings ~w[h1 h2 h3 h4 h5 h6]
+  @maximum_fragment_length 200
+  @maximum_fragment_nodes 5_000
 
   defp parsers do
     Pleroma.Config.get([:rich_media, :parsers])
@@ -34,9 +37,141 @@ defmodule Pleroma.Web.RichMedia.Parser do
          {:ok, html} <- Floki.parse_document(body) do
       html
       |> maybe_parse()
+      |> enrich_fragment_context(url, html)
       |> clean_parsed_data()
       |> check_parsed_data()
     end
+  end
+
+  @doc false
+  @spec enrich_fragment_context(map(), String.t(), Floki.html_tree()) :: map()
+  def enrich_fragment_context(data, url, html)
+      when is_map(data) and is_binary(url) and is_list(html) do
+    with fragment when is_binary(fragment) <- safe_fragment(url),
+         node when not is_nil(node) <- fragment_node(html, fragment),
+         context when is_map(context) <- fragment_context(node) do
+      data
+      |> put_fragment_title(context.title)
+      |> put_fragment_description(context.description)
+    else
+      _ -> data
+    end
+  rescue
+    _ -> data
+  end
+
+  def enrich_fragment_context(data, _url, _html), do: data
+
+  defp safe_fragment(url) do
+    case URI.parse(url).fragment do
+      fragment when is_binary(fragment) and byte_size(fragment) <= @maximum_fragment_length * 3 ->
+        fragment = URI.decode(fragment)
+
+        if fragment != "" and String.length(fragment) <= @maximum_fragment_length and
+             String.printable?(fragment) do
+          fragment
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    URI.Error -> nil
+    ArgumentError -> nil
+  end
+
+  # The selector is constant. The untrusted fragment is compared as an
+  # attribute value and is never interpolated into CSS or XPath syntax.
+  defp fragment_node(html, fragment) do
+    html
+    |> Floki.find("[id]")
+    |> Enum.take(@maximum_fragment_nodes)
+    |> Enum.find(fn
+      {_tag, attributes, _children} ->
+        Enum.any?(attributes, fn
+          {"id", ^fragment} -> true
+          _ -> false
+        end)
+
+      _ ->
+        false
+    end)
+  end
+
+  defp fragment_context({tag, _attributes, _children} = node) do
+    title =
+      if tag in @fragment_headings do
+        node_text(node, 200)
+      else
+        node
+        |> Floki.find(Enum.join(@fragment_headings, ","))
+        |> List.first()
+        |> node_text(200)
+      end
+
+    text = node_text(node, 600)
+
+    %{
+      title: title || text,
+      description: if(text && text != title, do: text, else: nil)
+    }
+  end
+
+  defp fragment_context(_node), do: nil
+
+  defp node_text(nil, _maximum), do: nil
+
+  defp node_text(node, maximum) do
+    node
+    |> Floki.text(sep: " ")
+    |> String.replace(~r/\s+/u, " ")
+    |> String.trim()
+    |> String.slice(0, maximum)
+    |> case do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp put_fragment_title(data, nil), do: data
+
+  defp put_fragment_title(%{"title" => title} = data, fragment_title)
+       when is_binary(title) and title != "" do
+    if same_text?(title, fragment_title) or contains_text?(title, fragment_title) do
+      data
+    else
+      Map.put(data, "title", title <> ": " <> fragment_title)
+    end
+  end
+
+  defp put_fragment_title(data, fragment_title), do: Map.put(data, "title", fragment_title)
+
+  defp put_fragment_description(data, nil), do: data
+
+  defp put_fragment_description(%{"description" => description} = data, fragment_description)
+       when is_binary(description) and description != "" do
+    if same_text?(description, fragment_description) or
+         contains_text?(description, fragment_description) do
+      data
+    else
+      Map.put(data, "description", fragment_description)
+    end
+  end
+
+  defp put_fragment_description(data, fragment_description),
+    do: Map.put(data, "description", fragment_description)
+
+  defp same_text?(left, right), do: normalized_text(left) == normalized_text(right)
+
+  defp contains_text?(container, value) do
+    String.contains?(normalized_text(container), normalized_text(value))
+  end
+
+  defp normalized_text(value) do
+    value
+    |> String.downcase()
+    |> String.replace(~r/\s+/u, " ")
+    |> String.trim()
   end
 
   defp maybe_parse(html) do

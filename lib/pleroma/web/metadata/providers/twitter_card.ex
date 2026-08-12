@@ -16,13 +16,14 @@ defmodule Pleroma.Web.Metadata.Providers.TwitterCard do
   @impl Provider
   def build_tags(%{activity_id: id, object: object, user: user}) do
     attachments = build_attachments(id, object)
-    scrubbed_content = Utils.scrub_html_and_truncate(object)
+    hide_sensitive? = Metadata.activity_nsfw?(object)
+    scrubbed_content = Utils.scrub_html_and_truncate_for_preview(object, hide_sensitive?)
 
     [
       title_tag(user),
       {:meta, [name: "twitter:description", content: scrubbed_content], []}
     ] ++
-      if attachments == [] or Metadata.activity_nsfw?(object) do
+      if attachments == [] or hide_sensitive? do
         [
           image_tag(user),
           {:meta, [name: "twitter:card", content: "summary"], []}

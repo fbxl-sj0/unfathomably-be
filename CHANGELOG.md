@@ -6,12 +6,1102 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-08-12
+
 ### Added
+
+- Added a bounded local-user Nostr bootstrap task that repairs missing profiles, NIP-65 relay lists, and a small sample of existing public posts without creating ActivityPub activities or exporting private content.
+- Added durable BookWyrm-style reading lifecycle tracking to personal book
+  shelves, including started and finished dates exposed through the book shelf
+  API.
+- Added public account Worlds participation and book-shelf endpoints so clients
+  can show only the specialized profile tabs an account actually uses.
+- Added on-demand local AT Protocol identity provisioning with standards-valid
+  handles below `social.fbxl.net`, encrypted publishing sessions, and a bounded
+  PDS deployment that stores only opted-in local repositories. Remote Bluesky
+  reads remain selective and no relay, AppView, or full-network mirror is run.
+- Advertised FEP-3b86 Follow and Create activity intents through WebFinger so
+  compatible clients can open the existing remote-interaction and share
+  workflows instead of requiring manual actor or object URL copying.
+- Advertised tested RFC 9421 HTTP Message Signature support on local actors and
+  the instance service actor through FEP-844e capability discovery.
+- Added PieFed-compatible `/activitypub/externalInteraction` handling and
+  advertised `web+ap:` support through the generated browser manifest, while
+  recording remote `410 Gone` responses so future federation deliveries stop
+  targeting deliberately retired servers.
+- Marked machine-facing API and ActivityPub responses with `X-Robots-Tag:
+  noindex` so search engines prefer human-facing profile and status pages over
+  duplicate JSON endpoints.
+- Advertised the instance ActivityPub `Application` actor from
+  `/.well-known/nodeinfo` using the FEP-2677 relation so compatible event and
+  relay software can discover the existing service actor without a hard-coded
+  path.
+- Added Mastodon-compatible About, Privacy Policy, and Terms URL fields to the
+  v2 instance API, advertising only destinations the installation actually
+  serves.
+- Added Manyfold-compatible object-level `indexable` and `discoverable` hints
+  for public locally authored 3D models while explicitly opting quieter models
+  out of catalogue discovery.
+- Added validated catalogue actions for received BookWyrm books, including
+  Open Library, Inventaire, Finna, LibraryThing, Goodreads, Wikidata, VIAF,
+  and BnF identifiers without making remote catalogue requests at render time.
+- Preferred JRD JSON for outgoing WebFinger requests while retaining JSON and
+  lower-priority XRD XML compatibility for legacy servers.
+- Added bounded FEP-f228 reply discovery through same-origin `contextHistory`
+  collections so compatible Mitra conversations can expose remote replies.
+- Added OAuth 2.0 PKCE support for authorization-code grants, including bounded
+  `plain` and `S256` challenges that survive login and MFA and are checked
+  before one-time codes are consumed.
+- Added support for GoToSocial's unauthenticated-web visibility actor hints so
+  remote public and quiet-public profile posts honor explicit privacy choices
+  before pagination without changing authenticated timelines.
+- Added FEP-c180 Problem Details responses for ActivityPub endpoint errors while
+  preserving structured metadata and `410 Gone` Tombstone representations.
+- Centralized security-sensitive URL-safe token generation behind named,
+  allocation-bounded entropy levels and migrated OAuth, password-reset,
+  confirmation, invitation, and archive identifiers to the shared policy.
+- Added a hybrid authorized-fetch mode that exposes only local actor keys and
+  delivery routes to unsigned requests, allowing peers to bootstrap signed
+  federation without exposing profile data, posts, or collections.
+- Hardened OpenGraph and Twitter-card privacy for sensitive posts so external
+  unfurlers receive only the sanitized content warning, or a neutral fallback,
+  unless the operator explicitly enables NSFW unfurls.
+- Added a reproducible patch-level audit ledger for the 2025 commit history of
+  platforms in the wide federation matrix, plus the official Nostr NIPs,
+  recording reviewed candidates, implemented lessons, explicit no-change
+  dispositions, and remaining coverage in
+  `docs/UPSTREAM_FEDERATION_ECOSYSTEM_AUDIT_2025.md`.
+- Added bounded native metadata for BookWyrm `Series` and `SeriesBook`,
+  Funkwhale `Playlist` and `PlaylistTrack`, and ActivityPods/Solid Shape Tree
+  relationships so these 2025 ecosystem additions remain discoverable and
+  presentable without retaining unbounded remote structures.
+- Added standards-shaped RFC 9421 `Accept-Signature` negotiation for
+  ActivityPub inboxes, including exact body-digest coverage and a bounded
+  per-authority preference cache so cooperating peers can use the modern
+  signature format directly on later deliveries.
+- Added a complete 2026 commit audit across Mobilizon, Fedify, Ghost
+  ActivityPub, BookWyrm, WordPress ActivityPub, Bonfire, Manyfold, NeoDB,
+  Flohmarkt, Wanderer, Takahē, snac2, Hubzilla, Streams, and experimental
+  Forgejo federation, with explicit upstream cursors and dispositions.
+- Advertised tested RFC 9421 HTTP Message Signature support through FEP-844e
+  Link capabilities on local actor generators and service actors, improving
+  format discovery without relying on software-version guesses.
+- Added a focused audit of GoToSocial's 2026 changes, with an explicit
+  upstream cursor and dispositions for interaction authorization, remote poll,
+  backfill surfacing, relay, media, and federation error-handling lessons.
+- Added a focused audit of NodeBB's 2026 changes, with an explicit upstream
+  cursor and dispositions for portable ActivityPub, security, retention, and
+  pagination lessons.
+- Added an opt-in, server-side FediBuzz discovery connector that consumes the
+  public event stream, accepts only posts matching locally followed actors or
+  hashtags, and routes canonical objects through the normal ActivityPub fetch,
+  validation, visibility, blocking, and MRF pipeline.
+- Added the publisher half of FEP-2345 `fediverse:creator` attribution for
+  local status pages, including local actor `attributionDomains` authorization
+  so compatible link-preview consumers can verify the claimed creator.
+- Added fast Mastodon-compatible `/context/ancestors` and
+  `/context/descendants` status endpoints with bounded ascending keyset
+  pagination, visibility filtering, continuation Link headers, and no
+  synchronous remote-reply fetch.
+- Added bounded, signature-checked discovery for active NIP-29 relay groups and
+  NIP-72 moderated communities, including moderator approval verification and
+  safe projection of approved embedded posts.
+- Added an activity-ranked Nostr community catalogue that records recent post
+  counts, distinct authors, and last activity instead of treating historical
+  membership totals as evidence that a group is alive.
+- Added server-side NIP-17 private chats using NIP-44 encryption and NIP-59
+  gift wraps, including bounded private-message relay discovery, local sent
+  copies, missed-message subscriptions, safe projection into normal chat
+  activities, and explicit refusal to expose unencrypted chat attachments.
+- Added NIP-38 live profile statuses and NIP-58 profile badges to the native
+  Nostr bridge. Public ActivityPub Listen activities now publish expiring music
+  statuses, remote status and user-selected badge references appear as bounded
+  account presentation data, local visible `badge:` tags publish portable badge
+  definitions and selections, and remote awards never confer local roles,
+  verification, or moderation authority.
+- Added safe NIP-21 and NIP-27 reference interoperability so known Nostr
+  profiles and events become usable local links on inbound posts, explicit
+  ActivityPub mentions become portable `nostr:nprofile` references with
+  matching `p` tags, mapped post links become `nostr:nevent` references, and
+  private-key `nsec` identifiers remain excluded.
+- Added bounded NIP-52 calendar-event and NIP-53 live-activity translation to
+  the server-side Nostr bridge. Scheduled and live entries now use native
+  ActivityPub Event rendering, including times, locations, banners, stream and
+  recording links, accepted RSVP joins, and threaded live-chat projections,
+  while unsupported meeting-space presence remains outside the advertised
+  bridge behavior.
+- Added bounded NIP-51 public simple-group lists, NIP-56 report translation,
+  and NIP-88 polls and votes to the server-side Nostr bridge. Group membership
+  changes now refresh portable relay-aware lists, locally actionable reports
+  reuse the normal moderation queue without automatic enforcement, and poll
+  interoperability reuses the existing ActivityPub poll limits and vote path.
+- Added end-to-end Nostr compatibility for content warnings, event expiration,
+  protected-event redistribution boundaries, external content identifiers, and
+  outbound media metadata, and now accurately advertise the existing thread,
+  long-form, custom-emoji, and external-identity behavior through NIP-11.
+- Added NIP-19, NIP-24, NIP-30, NIP-39, and NIP-65 profile parity to the
+  server-side Nostr bridge: local ActivityPub profile edits now publish
+  portable relay-aware identities, birthdays, bot state, websites, Lightning
+  addresses, and custom emoji immediately, while verified incoming events
+  populate ordinary account presentation without fabricating identity-proof
+  verification.
+- Added a complete beginner-oriented epic, story, and acceptance catalogue for
+  all 16 Worlds families, including explicit knowledge boundaries, safe source
+  handoffs, non-mutating browser evidence, and implementation ownership across
+  the frontend and backend.
+- Added bounded, server-brokered NeoDB catalogue lookup for Culture authoring so
+  users can select a federatable cultural work without contacting remote
+  providers directly from the browser.
 - Added authenticated Worlds object authoring for books, software tickets,
   3D models, marketplace offers, games, routes, culture, coordination, and
   publishing through fixed server-side ActivityPub templates. Locally authored
   resource and process objects can participate in the Worlds timeline without
   allowing remote objects to opt themselves into ordinary timelines.
+
+### Changed
+
+- Reduced federation delivery-health write pressure by persisting successful
+  inbox health only when a host or endpoint actually transitions to healthy,
+  while retaining first-success, recovery, and new-endpoint observations.
+- Extended untouched remote-group discussion retention to two years when a
+  local user follows the group, while preserving the shorter configurable
+  cleanup horizon for incidental, unfollowed group traffic.
+- Moved uncached quote hydration out of incoming federation requests and into
+  the deduplicated remote-fetch queue, retaining the normalized quote URL while
+  the original object is unavailable and reconciling quote authorization and
+  counters after hydration.
+- Added bounded automated-source pacing for RSS refreshes and FediBuzz
+  discovery, including per-source reservations, a global discovery budget,
+  and per-remote-host fetch spacing.
+- Updated the remaining compatible direct dependency lines, including Oban,
+  Tesla, ExMachina, libsecp256k1, and mdex_native, while retaining only
+  constraints required by the current HTTP/3 and WebTransport stack.
+
+### Fixed
+
+- Added security-bounded HTML canonical discovery for remote object actions so
+  Lemmy-family reactions referencing alternate frontends resolve to the real
+  ActivityPub object, retain canonical interaction state, and still pass the
+  normal URL, MRF, containment, origin, and object-validation checks.
+- Fixed verified incoming ActivityPub deliveries carrying preserved HTTP
+  headers being mistaken for legacy failed-signature retries and cancelled;
+  legacy retry detection now requires the complete saved request envelope.
+- Implemented finalized ActivityPub FEP gaps for structural quoted-object
+  Links, safe RSA Multikey actor publication, deployment-gated signed follower
+  collection synchronization, and owner-confirmed appendable wall collections.
+- Added a concurrent partial index for confirmed appendable collection
+  memberships so empty and populated walls stay responsive on large object
+  tables without indexing unconfirmed remote target claims.
+- Fixed unsigned follower-synchronization and unavailable appendable-collection
+  requests so they return normal not-found responses instead of violating the
+  Phoenix controller contract and producing HTTP 500.
+- Preserved the Ibis Delete compatibility fallback because peers do not yet
+  advertise an equivalent protocol capability; presentation-only platform
+  classification remains separate from federation wire behavior.
+- Fixed the shared `/relay` endpoint so ActivityPub actor requests reach an
+  `Application` relay actor while Nostr WebSocket and NIP-11 requests retain
+  their existing behavior, and normalized other internal service actors away
+  from the user schema's `Person` default.
+- Added finalized FEP-d556 server-actor discovery for exact server-prefix
+  WebFinger requests and a FEP-67ff root federation capability manifest.
+- Audited every currently finalized FEP, documenting complete, partial, and
+  deferred support plus the prioritized interoperability roadmap.
+- Completed FEP-7aa9 actor-feature consent by accepting directly signed
+  actorless `FeatureRequest` activities, persisting idempotent collection
+  authorizations, returning dereferenceable authorization documents, and
+  rejecting requests when the local actor is not discoverable.
+- Fixed the inbox guard activity allowlist so supported `QuoteRequest`
+  activities reach the existing quote-consent pipeline instead of being
+  acknowledged as unknown federation traffic.
+- Audited 960 commits across the 47-target federation matrix for the seven-day
+  window ending 2026-08-12, recording portable lessons and explicit
+  already-covered or non-portable dispositions.
+- Replaced OTP's Linux system-memory alarm, which treated reclaimable page
+  cache as unavailable, with a supervised available-memory monitor whose
+  configurable set and clear thresholds use hysteresis to report real pressure
+  without producing a false alarm after every application start.
+- Added a partial local-activity context index so conservative remote-post
+  cleanup can preserve locally touched threads without repeatedly scanning the
+  full federation activity table or exhausting its database checkout timeout.
+- Kept valid signed Nostr text events with empty, non-media bodies in the
+  native event store without repeatedly attempting an impossible ActivityPub
+  status projection during profile backfills.
+- Added public WebSocket fanout for `Listen` activities, including remote,
+  hashtag, and media topics, so Funkwhale-style listening entries can update
+  live Worlds and media views without a reload.
+- Classified ActivityPub object and collection containment mismatches with
+  explicit terminal reasons so deterministic identity and origin failures no
+  longer retry as opaque remote-fetch errors.
+- Added standards-compliant AT Protocol OAuth account linking with PKCE, PAR,
+  DPoP, one-use bounded state, protected-resource and issuer rebinding, encrypted
+  session secrets, and least-privilege repository and blob permissions while
+  retaining app passwords as a fallback.
+- Added bounded AT Protocol image and video blob uploads for explicitly
+  published local attachments, with content and size validation, fallback
+  links for unsupported media, and no relay or firehose ingestion.
+- Hardened native AT Protocol identity resolution with DID-document binding,
+  bidirectional handle verification, typed origin-only PDS discovery, strict
+  blessed DID/NSID/record-key/AT-URI validation, bounded identity caching, and
+  IPv4-mapped IPv6, transition-address, path-based did:web, and future-time
+  rejection.
+- Made selective Bluesky ingestion resilient to malformed records without
+  abandoning a whole author feed, preserved retryable AppView failures,
+  refreshed changed projections by CID, removed confirmed deleted projections,
+  kept durable retention source/local state from being downgraded, and selected
+  reassigned handles deterministically.
+- Made outbound AT repository writes idempotent with deterministic record keys
+  and putRecord, synchronized edits and mapping cleanup after deletes, retried
+  XRPC 400 ExpiredToken/InvalidToken sessions while keeping refreshed sessions
+  bound to the original DID, and stopped replies with no native parent from
+  being misrepresented as unrelated root posts.
+- Added standards-correct Bluesky URL and hashtag facets, boundary-safe mention
+  rewriting, and ASCII-stable Unicode mention-boundary handling.
+- Treated DIDs rather than mutable handles as the durable identity of linked AT
+  Protocol accounts, while retaining indexed handle lookup and deterministic
+  Bridgy identity-field precedence.
+- Kept Diaspora and ActivityPub visibility boundaries aligned by rejecting
+  non-public status messages on the public Diaspora endpoint, declining
+  encrypted aspect-scoped posts until their audience can be represented
+  locally, and preventing non-public ActivityPub posts from entering the
+  public Diaspora publisher.
+- Completed the native Diaspora bridge with actor- and root-aware delivery,
+  independently retryable per-pod jobs, retryable encrypted contact delivery,
+  bounded hCard key-rotation recovery, public profile synchronization, safe
+  profile media handling, and no-destination record suppression.
+- Replaced the web-of-trust-gated Nostr relay after it rejected otherwise valid new local identities, and added a metadata refresh mode so relay-policy changes can be announced for existing users without replaying their posts.
+- Fixed Nostr profile bootstrap after relay-policy changes so a new NIP-65 relay list is fanned out to every configured discovery relay rather than only the newly added relay.
+- Exported ordinary public local posts as Nostr kind-1 notes while preserving
+  direct, followers-only, local-only, chat, and explicit opt-out boundaries.
+- Replaced fire-and-forget Nostr WebSocket publication with one durable,
+  acknowledgement-aware Oban delivery per event and relay, including bounded
+  retry for temporary relay failures and terminal policy rejection handling.
+- Fixed NIP-29 group event delivery so group-tagged events use configured group
+  relays instead of being confined to the local relay.
+- Fixed local NIP-65 relay-list events so they advertise the external relays
+  where local actor events are actually published, and added conservative
+  public relay.nostr.com, nostr.mom, and Primal relay defaults.
+- Unified reply ancestry for ActivityPub, Nostr, ATProto, and diaspora* so
+  bridge-projected comments receive the normal replied-to display and complete
+  thread contexts, including NIP-22 parent tags and parents projected after
+  their replies.
+- Made native discovery and Meilisearch authorize the activities they return,
+  preventing a matching identifier or search hit from bypassing the final
+  per-user visibility decision.
+- Added stable current-status and exact-revision identities to native discovery,
+  selected canonical Create envelopes deterministically, and deduplicated
+  repeated object envelopes from status contexts, including duplicate roots.
+- Balanced merged Worlds discovery pages across distinct actors, channels, and
+  source hosts, exposed bounded language/participant metadata, and honored an
+  explicit preferred discovery language without displacing chronological
+  relevance within each class.
+- Bounded each Oban janitor mutation batch, prevented overlapping hourly cleanup
+  cycles, limited historical duplicate repair work, and logged one semantic
+  cleanup summary when a cycle changes rows or encounters a failed step.
+- Normalized native book comments around their canonical book URL through both
+  BookWyrm's `inReplyToBook` relationship and ordinary ActivityPub
+  `inReplyTo`/`context`, while keeping reviews as independent posts.
+- Accepted remote object updates from actors retained in both the stored and
+  incoming multi-valued ownership sets, supporting PeerTube account/channel
+  video ownership without allowing an incoming update to claim a new owner.
+- Reported attempts to update deleted ActivityPub objects as Tombstone
+  resurrection attempts instead of misleading actor-ownership failures.
+- Stopped retrying local relay wrapping for public activities other than
+  `Create`, which the relay actor intentionally does not implement.
+- Preserved Bluesky facet mentions and signed Nostr `p`-tag account references
+  as ordinary linked ActivityPub mentions, displayed them with recognizable
+  native handles, and added bounded repair paths for existing projections.
+- Classified locally hosted Nostr, ATProto, and diaspora* projections as
+  remote in local timelines and admin account filters, including a migration
+  that repairs existing projected activities.
+- Clarified remote collection diagnostics so transport failures are no longer
+  mislabeled as JSON decoding failures, preserving useful federation signal.
+- Fixed authenticated WebSocket crashes when legacy or malformed streamed
+  activities have no actor URI by safely filtering those activities.
+- Fixed Mastodon poll updates whose plain-text option labels contain Unicode
+  emoji, while continuing to reject actual HTML markup in poll choices.
+- Collapsed synchronized ActivityPub outbox-root count requests through a
+  short visibility-aware cache so discovery bursts cannot exhaust the database
+  pool while collection pages remain exact and uncached.
+- Fixed outbound HTTP 5xx delivery handling to record host failure backoff, so
+  a failed peer snoozes queued fanout instead of making every delivery probe it.
+- Added a validated native-family filter to account status timelines so profile
+  Worlds tabs reuse normal local post rendering and visibility enforcement.
+- Added a concurrent actor/native-family object index so complete historical
+  profile Worlds participation summaries avoid full cached-object scans.
+- Kept malformed RSS, Atom, and federation XML discovery candidates from
+  emitting xmerl fatal-error noise after their callers had already handled the
+  parse failure, and staggered remote-post cleanup away from the busy 04:00
+  cron boundary after a live database checkout timeout.
+- Kept Worlds book-library add, move, progress, and remove operations out of
+  timelines and notifications while preserving public BookWyrm-compatible
+  shelf collections and explicit review publishing.
+- Updated Hackney to 4.7.2, normalized recently added federation source,
+  migration, and test formatting, and registered new federation logger
+  metadata keys with both configured logger backends.
+- Preserved book titles, authors, covers, ISBNs, and progress when clients move
+  an existing book with a partial shelf update.
+- Kept successful media-proxy size-limit fallbacks at debug severity instead
+  of logging an application error when oversized remote media is safely
+  replaced by the local placeholder.
+- Made Funkwhale actor rendering tests explicitly enable federation and updated
+  unread-notification fixtures to represent distinct events under the new
+  user/activity uniqueness invariant.
+- Restored the identity-proof compatibility endpoint's factory-backed
+  regression test so clean test compilation exercises persisted proofs.
+- Removed warning-backed unreachable paths in accepted-answer validation,
+  deferred collection counts, account native metadata, and status edits while
+  preserving their explicit error contracts and background-refresh behavior.
+- Added the missing OpenAPI contracts for moderator-reply distinguish and
+  undistinguish routes so API schema generation no longer fails during clean
+  compilation, and regrouped ActivityPub collection render clauses.
+- Fixed migration ordering for simultaneous notification-integrity and
+  federation-delivery tracking changes, completed suspended-state Oban
+  uniqueness, and removed unreachable worker clauses that hid real validation
+  signal under current Elixir and Oban.
+- Updated remote reply and collection traversal for the contained prefetched
+  object's three-element return shape, restoring context, parent, and paged
+  reply discovery without bypassing canonical fetch validation.
+- Restored explicit repository and constants-macro bindings in event capacity,
+  interaction policy, actor rendering, validation, and ActivityPub metadata
+  paths, and cleaned stale notification and account rendering bindings.
+- Restored stable status-render cache keys for current content and summaries by
+  deriving their chronological position from bounded object history, with a
+  safe zero fallback for malformed legacy history.
+- Fixed local-reference resolution under current Elixir by moving dynamic URL
+  membership checks out of guards, and removed a duplicate create-status quote
+  policy schema that silently replaced the documented creation default.
+- Restored the ActivityPub BCC publisher's nested delivery loop and federated
+  collection removal control flow so both paths compile and preserve their
+  fail-fast error handling.
+- Fixed a malformed poll-option default argument and cleaned warning-backed
+  defects in accepted-answer publishing, aggregate Feed membership, native
+  ISBN validation, quote-link recognition, and Nostr maintenance tasks.
+- Updated Phoenix, Phoenix LiveView, and Postgrex to patched releases after
+  Hex advisory checks identified the previous locks as vulnerable.
+- Fixed remote-target curation re-enablement on current Ecto by preventing the
+  imported query `update/2` macro from intercepting the curation module's own
+  persistence function.
+- Exposed backend-verified FEP-c390 identity statements in public Mastodon
+  account metadata so profile clients do not need privileged secondary
+  requests to present them.
+- Prevented unverified FEP-c390 identity statements from surviving as opaque
+  actor extensions, so only statements accepted by the bounded cryptographic
+  verification pipeline can be stored or re-emitted.
+- Added bounded FEP-c390 remote identity-proof verification using the W3C
+  `eddsa-jcs-2022` algorithm, actor/DID binding checks, persistent original
+  statements, ActivityPub actor re-emission, and the account identity-proofs
+  API instead of its former empty stub response.
+- Bound prefetched ActivityPub objects to the exact URL that passed the normal
+  fetch and containment pipeline, and tightened canonical permalink aliases to
+  explicit document metadata or an authoritative HTTP redirect instead of a
+  permissive path-name heuristic.
+- Added bounded ActivityPub request counters and latency distributions labeled
+  only by code-defined route, method, and response class, avoiding actor, IP,
+  host, body, query, and full-URL cardinality or adjacent-pipeline duplication.
+- Added bounded, cache-only canonical link localization so known actor and
+  visible object references in sanitized status HTML open through local FE
+  routes without changing stored content or fetching arbitrary links.
+- Added administrator-managed remote Group curation with safe actor
+  resolution, duplicate-safe reversible storage, explicit ordering, and
+  priority placement in ordinary Worlds community discovery.
+- Made local Group Announce identifiers deterministic and propagated wrapped
+  Delete and Undo creation or enqueue failures through the owning deletion
+  pipeline, allowing retries to validate and requeue one canonical wrapper.
+- Made automatic Follow and Join responses use deterministic local activity
+  IDs, recover and requeue the exact stored response after a processing race,
+  and fail the owning pipeline when durable federation insertion fails instead
+  of creating duplicate Accept or Reject activities on retry.
+- Unified the runtime ActivityPub disable switch across protocol routes,
+  WebFinger and NodeInfo advertisements, actor and object fetch fallbacks,
+  outgoing queue insertion, and queued AP workers while leaving cached remote
+  content, RSS ingestion, and independently gated native bridges available.
+- Made outgoing ActivityPub fanout observable and retryable by propagating
+  publisher, inbox-job, relay, and forwarded-activity enqueue failures through
+  the owning Oban worker, while deduplicating already-inserted delivery jobs.
+- Made canonical ActivityPub actor IDs authoritative over inferred host-based
+  handles, persisted verified WebFinger aliases separately with bounded
+  revalidation, and prevented unverified actor documents from displacing an
+  existing remote nickname.
+- Made ordinary client replies inherit and reauthorize the parent post's
+  canonical group audience, so remote group replies retain both object context
+  and durable delivery even when the client does not submit a group-specific
+  field, and copied that audience onto the outer Create envelope.
+- Distinguished intentionally bounded remote collection results from incomplete
+  page walks, preventing unavailable, malformed, or cross-origin continuation
+  pages from publishing partial featured data or caching partial counts.
+- Preserved bounded native Video attachment metadata while selecting a
+  type-appropriate playable representation, retaining captions and alternate
+  metadata instead of replacing the remote attachment set.
+- Resolved relative HTML and Markdown source links against canonical object or
+  instance URLs through parsed Floki and MDEx trees, and scrubbed outbound HTML
+  source so portable federation does not preserve executable source markup.
+- Added one bounded, cycle-safe remote collection reader for mixed inline and
+  URL entries, and used it for featured-object and moderator-count refreshes so
+  collection pages without `totalItems` no longer collapse silently to zero.
+- Enforced remote moderator-only group posting restrictions before status
+  creation and exposed role-aware `can_post` relationships so clients do not
+  offer group composers that the destination will reject.
+- Reconciled concurrent Create and Update deliveries at the object insertion
+  boundary with the existing row-locking timestamp-aware updater, so a Create
+  that wins insertion cannot discard a newer Update body and an older Update
+  cannot overwrite newer stored content.
+- Added a bounded, configurable post-follow outbox backfill worker that fetches
+  only the remote actor's outbox root and first page, rechecks the active
+  follow, and schedules same-origin canonical items through ordinary contained
+  remote-fetch jobs with per-item spacing.
+- Hardened remote media representation handling by bounding URL alternatives,
+  filtering malformed and unsafe entries, selecting typed HTTP(S) media and
+  page URLs, and rejecting unusable objects without `[nil]` attachment data.
+- Made status edits reject quote-target mutation and incompatible poll/media
+  replacements with clear client errors instead of reporting an internal
+  server error.
+- Allowed validated polls, media, and visible quotes to stand alone without a
+  text body while continuing to reject submissions that have no meaningful
+  content after poll and quote resolution.
+- Added one sanitized visible fallback link to serialized local quote posts so
+  peers that discard structured quote properties retain the quoted target,
+  including quotes whose authored body is empty and only has a content warning.
+- Made RichMedia previews fragment-aware through bounded exact-ID section
+  extraction, while safely falling back to ordinary card metadata for missing,
+  malformed, selector-shaped, or oversized fragments.
+- Made specialized photograph discovery interaction permissions explicit and
+  fail-closed when a remote object does not advertise reply, like, or announce
+  support, while preserving whether each permission was actually declared.
+- Fixed source-only ActivityPub posts, including private posts delivered to an
+  authorized recipient, by safely formatting supported `source.content`
+  representations when the peer supplies no rendered content.
+- Normalized current Funkwhale artist `cover` metadata and the historical
+  `attachment_cover` alias, including bounded generated cover URL maps, so
+  received audio can fall back to artist artwork when track and album artwork
+  are absent.
+- Added authority-checked accepted-answer interoperability for question-style
+  discussions, including PieFed `ChooseAnswer` and embedded Undo handling,
+  one-answer-per-thread persistence, group-wrapped delivery, Mastodon API
+  controls, and status metadata for native frontend presentation.
+- Corrected protected API authentication semantics so absent or invalid bearer
+  credentials return JSON 401 responses with a Bearer challenge, while valid
+  tokens lacking required scopes continue to return 403.
+- Added authority-backed Threadiverse distinguished comments: the validator
+  preserves the wire property only for a known group actor or manager, the
+  Mastodon status extension exposes it, and local moderators can federate
+  distinction changes on their own group replies through dedicated endpoints.
+- Scoped federated Flag delivery to remote community actors or explicitly known
+  remote community moderators and, where needed, the reported actor's instance;
+  sensitive reports now discard inherited public/follower audiences and
+  deduplicate destinations by instance.
+- Added an idempotent, normalized projection for PieFed-style aggregate Feed
+  membership so signed Feed Add/Remove activities can curate community actors
+  without creating account follows, changing pins, or trusting foreign
+  collection targets, and surfaced the curated communities with Feed provenance
+  through native group discovery. Feed actor refreshes now seed the projection
+  from one bounded, same-origin following page in the existing background
+  collection worker.
+- Enforced bounded plaintext on every final Web Push title and body so remote
+  group names, fallback notification types, and future formatters cannot leak
+  HTML or oversized text into device notifications.
+- Normalized bounded decimal and hexadecimal HTML numeric entities used by
+  snac-style EmojiReact activities, but only when they decode to one valid
+  Unicode emoji grapheme.
+- Preserved remote attachment labels while consistently preferring nonblank
+  ActivityStreams `summary` alt text in Mastodon API responses, RSS/Atom media
+  descriptions, and Schema.org metadata.
+- Prevented inherited Mention tags from generating irrelevant notifications on
+  federated replies unless the mentioned actor is also present in the reply's
+  ActivityPub audience, while retaining tag-only compatibility for top-level
+  posts.
+- Isolated malformed or historically orphaned ActivityPub outbox entries so
+  one unrenderable item is skipped with bounded diagnostic metadata instead of
+  returning a 500 for the complete collection page.
+- Bounded failed-signature actor key refreshes with a durable freshness
+  cooldown, preventing invalid inbox signatures from repeatedly forcing
+  synchronous remote actor fetches while preserving key-rotation recovery.
+- Excluded quote fallbacks, recipient affordances, and invisible URL fragments
+  from generated group titles and native-object catalog text so transport
+  compatibility markup is not presented as authored content.
+- Rejected canonical localhost, private, link-local, documentation, multicast,
+  and non-public literal addresses during federated URL and WebFinger target
+  discovery, with production host resolution failing closed when no public
+  address is available, including IPv4-compatible and IPv4-mapped IPv6 forms.
+- Added shared page-budget and cycle state to remote reply and context
+  collection traversal, preventing cyclic `first`, `current`, and `next` links
+  from causing repeated network fetches while preserving mixed inline items and
+  URL identifiers.
+- Prevented federated target discovery from recursively probing the local
+  endpoint, alternate WebFinger domain, or configured fetch-actor origin by
+  comparing normalized schemes, hosts, and effective ports before network I/O.
+- Hardened oEmbed ingestion so only bounded scalar card fields and reasonable
+  dimensions reach storage, while hostile nested metadata is ignored without
+  breaking the entire preview.
+- Added flattened media width, height, and aspect metadata alongside
+  `meta.original` for Mastodon-compatible attachment consumers.
+- Prevented concurrent federation deliveries from persisting or streaming
+  duplicate notifications for the same local user and exact activity, with a
+  migration that safely merges historical duplicate rows before enforcing the
+  database invariant.
+- Added context-aware Mastodon filter results with exact matched text, corrected
+  per-filter whole-word semantics, included content warnings in irreversible
+  filtering, and reused active filters across each rendered page.
+- Moved allowlisted remote emoji downloads out of incoming ActivityPub request
+  processing into deduplicated background jobs that revalidate policy, retry
+  transient failures, install files atomically, and refresh the emoji cache.
+- Added complete Mastodon search pagination links that preserve the active
+  query, resource type, account and capability filters, resolution mode, and
+  offset for frontend and third-party API clients.
+- Enforced local federation policy before creating replies, quotes, chats,
+  likes, dislikes, reposts, and emoji reactions, preventing local interaction
+  state from claiming success when either endpoint is defederated and the
+  publisher would necessarily discard delivery.
+- Tracked successful outbound object delivery so drafts, local-only posts, and
+  failed publishes no longer emit misleading remote Deletes to peers that
+  never received the object, while preserving conservative behavior for
+  historical activities whose delivery state cannot be reconstructed.
+- Preserved bounded attachment licensing metadata in Mastodon status responses,
+  including common SPDX and license-reference shapes, alongside the existing
+  media type, dimensions, description, and blurhash fields.
+- Stopped the custom emoji API from returning entries with blank, malformed, or
+  credential-bearing media locations, while retaining those loader records for
+  operator diagnosis and reload instead of emitting broken client markup.
+- Fixed Mastodon pagination links so short pages do not advertise false next
+  cursors, full descending pages continue from their oldest item, empty pages
+  remain header-free, and invalid limits resolve to bounded defaults.
+- Centralized bounded HTTP media-type parsing for ActivityPub negotiation,
+  object fetches, WebFinger, and rich media so valid lists and parameters work
+  while malformed ranges and explicit `q=0` alternatives fail closed.
+- Made Nostr media backfills deterministic and resumable with an indexed event
+  scope, bounded batches, validated `--after-id` cursors, completion reporting,
+  and exact continuation tokens for interrupted maintenance.
+- Added asynchronous instance metadata discovery when a remote actor first
+  establishes an accepted follow to a local account, so active new peers become
+  classifiable without delaying or risking the follow transaction.
+- Added regression coverage proving pending and rejected relationships cannot
+  enter followed group, source, RSS refresh, or Worlds discovery surfaces.
+- Enforced ActivityPub Lock across complete reply subtrees with bounded,
+  cycle-safe ancestor checks, preserving local group-manager authority while
+  rejecting ordinary local and remote replies and rendering descendants closed.
+- Hardened HTML ActivityPub alternate discovery by resolving relative links
+  against the final response URL, rejecting cross-origin, credential-bearing,
+  fragment, oversized, and looping targets, and routing accepted alternates
+  through the normal SSRF, redirect, MRF, and identifier-containment fetcher.
+- Preserved the exact audience of followers-only and direct parents for local
+  replies, and rejected incoming protected replies that widen that audience or
+  reference a missing parent whose authorization cannot be established.
+- Bounded local and incoming emoji reaction names by grapheme and byte length,
+  normalized locally submitted poll choices to unique plain text before limits
+  and storage, and rejected remote poll choices containing raw or escaped HTML.
+- Centralized credential-safe URL rendering for logs and applied it to actor
+  fetches, outbound federation, remote reply hydration, RSS ingestion, and rich
+  media diagnostics so userinfo, signed queries, and fragments are not logged.
+- Stopped internal and ActivityStreams `Application` actors from accumulating
+  human follow, interaction, stream, and push notifications while preserving
+  notification behavior for user-controlled `Service` bots.
+- Added a bounded account-migration restart endpoint that reuses the latest
+  stored Move, re-resolves and reauthorizes its destination, deduplicates
+  delivery and follower-reconciliation jobs, preserves the original cooldown,
+  and exposes the moved-to actor to the authenticated account owner.
+- Accepted account archives with one enclosing export directory while
+  rejecting path traversal, duplicate required files, and ambiguous roots;
+  running imports now publish their total item count for meaningful client
+  progress reporting.
+- Completed the FEP-1b12 group activity authority verifier with compile-safe
+  canonical type comparison, allowing cross-origin wrapped activities to be
+  refetched and checked instead of leaving the verifier unavailable at runtime.
+- Normalized multi-valued and embedded-ID ActivityPub `inReplyTo` values at
+  ingress and during remote reply discovery, preserving threads from peers
+  that publish more than one reply target representation.
+- Recognized FlockXR 3D model attachments by their registered media type and
+  `.flock` extension so federated model objects use the native model workflow.
+- Routed server-side media preview work through the configured internal HTTP
+  listener while retaining public HTTPS browser redirects, preventing local
+  hairpin timeouts and persistent self-TLS connections during shutdown.
+- Acknowledged remote featured-collection additions beyond the local pin
+  authoring limit without mutating the bounded local view, preventing permanent
+  remote pin-limit failures from retrying as generic transaction rollbacks.
+- Accepted bounded NIP-31 `alt` and NIP-89 `client` metadata on NIP-17 relay
+  lists, accepted bounded Unicode NIP-58 badge identifiers, and retained large
+  valid remote badge selections while resolving and displaying only the first
+  eight entries. Control characters and malformed badge references remain
+  rejected.
+- Accepted bounded large NIP-29 administrator and member lists so followed
+  Nostr communities with more than 128 identities can synchronize their signed
+  group state without weakening the smaller limit applied to ordinary events.
+- Applied the NIP-01 lowest-event-ID tie-break to equally dated replaceable
+  events during both storage and query deduplication, preventing relay arrival
+  order from oscillating group membership and other replaceable state.
+- Replaced quote-forwarding and post-hydration scans with the existing indexed
+  JSONB quote-target lookup, preventing ordinary remote Update and Delete
+  activities from exhausting database connections while preserving validation
+  that a matching local Create activity exists.
+- Restored GoToSocial unauthenticated-web visibility normalization in account
+  status queries so remote profile timelines cannot fail when those actor
+  extensions are present.
+- Serialized native-object lifecycle transitions and made repeated state changes
+  idempotent so concurrent or duplicate requests cannot publish redundant
+  ActivityPub Update activities.
+- Improved NodeInfo 2.1 interoperability by publishing the software homepage,
+  advertising both legacy HTTP and current HTTPS schema relation aliases, and
+  adding bounded public cache headers for discovery and metadata responses.
+- Kept retried ActivityPub Follow activities idempotent at the notification
+  layer without loading a user's full notification history, while still
+  emitting a fresh Accept activity to repair remote relationship state.
+- Honored explicit ActivityPub `indexable: false` and `discoverable: false`
+  object-level preferences in full-text search indexing, extending the existing
+  FEP-5feb actor and native Worlds discovery protections to ordinary posts.
+- Encrypted webhook signing secrets at rest with authenticated, record-bound
+  ciphertext and added safe Schema.org JSON-LD descriptions for public
+  profiles, native objects, non-sensitive media, reviews, ratings, and reviewed
+  catalogue items.
+- Hardened WebFinger and account Move handling for legacy actors whose
+  `also_known_as` value is absent, and exposed alias and last-move state to
+  administrators for migration diagnosis.
+- Prevented disabled admin webhooks from being selected for delivery.
+- Preserved canonical and legacy quote target IDs in scheduled-status API
+  responses so clients can render scheduled quotes after reloading them.
+- Fixed frontend reply composition so normal and event replies cannot retain a
+  stale quote target from an earlier composer action.
+- Removed scheduled statuses and their linked Oban jobs before deleting an
+  account, and deduplicated identical incomplete deletion jobs so stale
+  schedules cannot outlive account cleanup or run concurrently twice.
+- Validated Open Library ISBN metadata by checksum, including both assigned
+  `978` and `979` ISBN-13 ranges, so malformed provider values do not populate
+  editable book drafts when a valid candidate is available.
+- Stopped expired account relationships from remaining effective while their
+  cleanup job is delayed by filtering them from existence, timeline, and
+  rendering queries and expiring the muted-user cache at its nearest deadline.
+- Bounded per-account content filters and filter-phrase length, rejected
+  unknown filter contexts, and serialized filter ID allocation so simultaneous
+  clients cannot create ambiguous filter IDs or race past the configured cap.
+- Rejected blank Mastodon admin account actions before moderation side effects,
+  preventing an omitted action type from silently resolving an attached report.
+- Preserved reporter and target ActivityPub identities in admin report
+  responses after either account has been deleted, keeping historical reports
+  reviewable without inventing a replacement account.
+- Prevented concurrent incoming activities from downloading and writing the
+  same stolen remote emoji more than once by locking and rechecking the target.
+- Added route-aware crawler directives for API, authentication, and federation
+  infrastructure while keeping public profiles and post pages indexable.
+- Enforced federated event attendee capacity under a per-event database lock
+  for direct joins and restricted-event approvals, preventing concurrent local
+  requests from overbooking Mobilizon-compatible events.
+- Fixed local ActivityPub outbox collection metadata so root collections and
+  pages report the full visibility-aware `totalItems` count instead of omitting
+  it or confusing the total with the current page size.
+- Preserved WordPress ActivityPub content warnings that arrive through
+  `dcterms:subject` by using them as the standard object summary when no
+  explicit ActivityStreams summary is present.
+- Prevented historical federation backfills from producing fresh web-push
+  alerts while retaining the stored notification and websocket update.
+- Made timestamped ActivityPub Update activity IDs deterministic per object and
+  edit timestamp so peers can deduplicate repeated deliveries safely.
+- Fixed NodeBB category addressing when forum posts identify their destination
+  Group through ActivityPub `target` rather than `audience`, `to`, or `cc`.
+- Bounded remote ActivityPub media arrays separately from local composer limits,
+  preserved a bounded set of excess media as safe post links, and enforced the
+  documented remote character limit against visible text after stripping HTML.
+- Rejected ActivityPub Updates that attempt to move an existing object to a
+  different `inReplyTo` parent, preserving thread, visibility, and notification
+  topology across remote edits.
+- Restricted private quote-authorization documents to the signed quoting or
+  quoted actor while keeping fully public approvals briefly cacheable, so
+  cache-control headers are no longer mistaken for access control.
+- Inlined federation-ready quote objects in outgoing QuoteRequest instruments
+  so peers can validate local quotes without a second fetch, and streamed status
+  updates when quote authorization is accepted, rejected, or revoked.
+- Verified profile-field backlinks against both canonical ActivityPub actor IDs
+  and advertised human profile URLs, so remote rel-me fields do not lose
+  verification when those URLs differ.
+- Acknowledged unsupported ActivityPub activities from validly signed or
+  already-known actors without queueing them, preventing pointless remote
+  retries while retaining strict rejection for unsigned unknown first contact.
+- Completed FEP-e232 quote Link handling by emitting the explicit Misskey
+  quote relation on outbound tags, requiring it during inbound normalization,
+  and keeping repeated policy passes idempotent.
+- Added safe inbound PieFed `PollVote` compatibility by normalizing known-poll
+  votes through the existing ActivityStreams Answer validation and storage
+  pipeline.
+- Added `Vary: Accept` to negotiated profile and object responses while
+  preserving authorized-fetch variation, preventing intermediary caches from
+  mixing frontend HTML and ActivityPub JSON for the same URL.
+- Accepted bounded PieFed-style multi-object Announce activities by expanding
+  same-group items into deterministic single-object activities before the normal
+  validation, authorization, containment, and side-effect pipeline runs.
+- Accepted direct `mediaType: text/markdown` Article, Note, and Page objects,
+  preserving their original Markdown source while rendering safe HTML locally.
+- Preserved explicitly tagged ActivityPub Group mentions with actor-type metadata
+  while continuing to hide implicit group audience addresses from status mentions.
+- Fixed incoming poll option and vote names containing HTML entities so remote
+  poll updates match their options consistently and clients receive the
+  intended text.
+- Updated local Question federation so poll result Updates are delivered
+  privately to all known remote voters as well as the original status
+  recipients.
+- Kept remote tag, emoji, and generator refreshes from fabricating post edit
+  history or replacing the user-visible edit timestamp when human-authored
+  content did not change.
+- Stopped outbound Like and EmojiReact activities from addressing the Public
+  collection while retaining their concrete author and follower recipients.
+- Hardened FEP-1b12 group wrappers by using inline activities only when their
+  identifiers share the Announce origin and otherwise fetching the canonical
+  cross-origin activity before ingestion; also advertised Mastodon-compatible
+  actor `canFeature` policies, preferred canonical ActivityStreams content
+  negotiation, and exposed both standard ActivityPub alternate-link types.
+- Accepted linked ActivityStreams `likes` collections on incoming notes and
+  edits by dropping the remote aggregate before validating locally maintained
+  reaction state.
+- Rechecked remote quote authorization when an implicit object update adds a
+  verification URL, while refusing target swaps and revoked-quote revival.
+- Ignored malformed cross-origin shared inbox endpoints while importing remote
+  actors, preserving actor compatibility without allowing signed deliveries to
+  be redirected to an unrelated origin.
+- Made event link previews use the event's own sanitized title and event type
+  instead of presenting Mobilizon and Gancio events under the organizer name.
+- Bound fetched ActivityPub documents to the single final response URL after
+  redirects, rejecting cross-origin responses that claim an identifier on the
+  requested host while retaining same-origin human-to-canonical redirects.
+- Serialized featured-collection pin and unpin updates against the current
+  user row so concurrent ActivityPub Add and Remove deliveries cannot lose a
+  valid pin or restore one that was already removed.
+- Serialized local unreblog requests and made already-unreblogged requests
+  idempotent so concurrent clients cannot publish duplicate Undo activities.
+- Deferred AT Protocol and Nostr user-cache population until after their
+  identity transactions commit, preventing rolled-back identity state from
+  leaking through cache entries.
+- Serialized remote object edits against the current database row so a stale
+  concurrent Update cannot overwrite a newer edit or emit duplicate edit
+  events.
+- Prevented clients from making direct or followers-only posts advertise a
+  broader ActivityPub quote policy, while preserving normal quote controls for
+  public and unlisted posts.
+- Fixed ActivityPub follower and following collection pagination so roots
+  advertise both bounds, pages include backward links, and final partial pages
+  no longer point peers at a nonexistent extra page.
+- Normalized NodeBB-style `Update(Tombstone)` deletion activities through the
+  existing authorized Delete pipeline so remote topic removals are applied
+  without introducing a weaker deletion path.
+- Preserved PeerTube account and channel relationships when newer video
+  objects send `attributedTo` as bare actor URLs instead of embedded actors.
+- Fixed BookWyrm quotation objects so their string-valued `quote` passage is
+  not mistaken for a federated quote-object URL.
+- Defaulted unlisted posts to follower-only quote approval when a client omits
+  an explicit policy, preventing quotes from unexpectedly promoting an
+  intentionally unlisted post to unrelated users.
+- Bound newly issued OAuth authorization codes to their original redirect URI,
+  preventing a code created for one registered callback from being redeemed
+  through another callback owned by the same client.
+- Made TOTP enrollment replace recovery codes atomically when confirmation
+  succeeds and return their one-time plaintext values to the enrolling client,
+  preventing settings-page visits from silently invalidating saved codes.
+- Prevented browsers and intermediary caches from storing dynamic error
+  responses by applying `Cache-Control: private, no-store` to every HTTP 4xx
+  and 5xx response, even when the optional HTTP security-header bundle is
+  disabled.
+- Revoked every active OAuth session after a successful password change so a
+  previously stolen token cannot remain usable after the account is secured.
+- Updated the default Owncast live-stream discovery endpoint from the retired
+  `directory.owncast.online` host to `owncast.directory`, restoring the native
+  live-stream catalogue without overriding operator-configured directories.
+- Normalized inbound bare `Public` and compact `as:Public` ActivityStreams
+  audience values through the standard recipient pipeline, preserving public
+  visibility for NodeBB-style activities without a redundant compatibility
+  pass.
+- Rechecked the current MRF domain reject list when queued federation delivery
+  runs, preventing jobs created before an operator block from sending after the
+  block takes effect.
+- Completed local `toot:indexable` support so users can independently control
+  whether compatible federated services include their public posts in
+  full-text search, without conflating post indexing with profile discovery.
+- Queued direct ActivityPub recipient deliveries before creating relay
+  Announces so relays cannot race ahead of the object they reference.
+- Fixed external OAuth provider failure callbacks so browser-supplied state
+  cannot redirect outside an application's registered callback URI list.
+- Added a bounded per-domain `MRF.SimplePolicy` content-warning rule that
+  safely prepends operator context to remote author warnings and marks matching
+  Create and Update objects sensitive without discarding either warning.
+- Preserved ActivityPub quote policies across unrelated status edits and
+  exposed the normalized policy to clients so an edit cannot silently broaden
+  quote permission back to the frontend default.
+- Added the missing Ed25519 ActivityPub HTTP-signature path promised by the
+  actor-key compatibility work: bounded actor-controlled JWK and Multikey
+  methods are retained alongside RSA keys and verified for both legacy and
+  RFC 9421 signatures without accepting malformed or foreign-controlled keys.
+- Reduced incoming `Announce`/`Create` queue races by retrying an unresolved
+  announcement quickly only while its referenced Create is still pending in
+  the local receiver queue, without accelerating ordinary remote failures.
+- Required incoming replies, quotes, reactions, boosts, answers, and event
+  participation activities to target objects visible to their actors, closing
+  a cross-platform authorization gap identified in Sharkey's 2025 hardening.
+- Extended outgoing Delete delivery to known remote reply, quote, boost, like,
+  dislike, and emoji-reaction actors even when they discovered a public object
+  without receiving its original delivery from this server.
+- Forwarded origin-authenticated public quote Updates and Deletes to remote
+  followers of local quote authors when the original activity carries a safe
+  embedded forwarding proof, while preventing origin loops and duplicate inbox
+  deliveries.
+- Applied keyword moderation to ActivityStreams language maps as well as scalar
+  content, summary, and name fields, preventing multilingual payloads from
+  bypassing reject, delist, or replacement rules.
+- Honored explicit `indexable: false` and `discoverable: false` object metadata
+  in native Worlds discovery and its PostgreSQL partial indexes while keeping
+  direct object resolution available.
+- Corrected NIP-29 group semantics so `restricted` means member-only posting
+  rather than moderator-only posting, `hidden` controls local discovery, and
+  private Nostr group events are retained as signed relay records without
+  being projected into the public ActivityPub timeline.
+- Hardened FEP-044f quote authorization documents so deleted quote or target
+  objects return not found, public live documents receive only a 30-second
+  shared cache lifetime, and all other authorization responses are explicitly
+  non-cacheable.
+- Preserved remote NIP-11 `default_limit` relay metadata, matching its
+  clarified meaning for subscriptions that omit an explicit result limit.
+- Rejected embedded legacy signature proofs whose `creator` conflicts with a
+  second `verificationMethod`, preserving canonical-origin forwarding support
+  without accepting ambiguous proof identity.
+- Accepted bounded JSON-LD `type` arrays on incoming activities and embedded
+  objects, preferring known concrete ActivityStreams types without discarding
+  specialized vocabulary types.
+- Accepted Mobilizon group Events whose authenticated organizer differs from
+  `attributedTo` only when the attributed actor is a known Group on the same
+  host, preserving useful group attribution without allowing cross-host claims.
+- Canonicalized recognized remote public-key PEM blocks before storage so
+  harmless snac-style trailing text no longer makes a valid actor key unusable.
+- Preserved GoToSocial `replyAuthorization` on incoming replies, accepted the
+  deprecated `approvedBy` fallback, and advertised the corresponding JSON-LD
+  interaction-policy vocabulary when re-serving those objects.
+- Rejected votes after a remote poll's known closing time even when its final
+  closing Update has not arrived yet.
+- Prevented old posts discovered through explicit object or thread fetching
+  from generating fresh notifications or websocket events while retaining
+  storage, search, counters, group association, and normal inbox behavior.
+- Reconciled public posts that arrive before a remote Group actor's Announce so
+  their cached object and Create envelopes acquire the late group context
+  without changing authorship or broadening private content.
+- Accepted Unicode local WebFinger account names and centralized outbound
+  resource encoding so explicit `acct:` subjects are encoded exactly once.
+- Explicitly addressed remote event organizers on outgoing Join activities so
+  Friendica-style RSVP notifications reach the organizer without broadening
+  the event audience.
+- Prevented local replies and quotes from being published more broadly than
+  the referenced private, unlisted, or local post.
+- Rejected malformed actorless ActivityPub activities at the inbox guard
+  before they can consume incoming federation queue capacity, while retaining
+  embedded actor-object compatibility.
+- Routed RSS and Atom source refresh requests through the shared HTTP client so
+  they receive the same pooling, timeout, proxy, TLS fallback, and exception
+  handling as other controlled outbound requests.
+- Accepted safely origin-refetched public ActivityPub Updates and Deletes from
+  authenticated inbox forwarders, handled forwarded View/Read receipts as
+  state-free no-ops, and retained strict rejection when a destructive activity
+  cannot be confirmed from its canonical origin.
+- Fixed idless Smithereen-style featured collections by fetching them through
+  the collection containment path, including collections that embed complete
+  pinned objects in `orderedItems`.
+- Fixed a native-Nostr ingestion race where ActivityPub reactions targeting a
+  Mostr object could arrive just before the corresponding native projection;
+  target resolution now performs the bounded native lookup and returns the
+  existing retryable Nostr error instead of permanently losing the reaction.
+- Applied Akkoma's 2026 security and correctness lessons by redacting OAuth
+  bearer material from struct inspection, treating user filter phrases as
+  literal text, preferring query-bound incoming HTTP signatures, signing query
+  parameters on outgoing federation requests, and reapplying activity-shaped
+  MRF policy to fetched object updates.
+- Removed the global PostgreSQL GIN fuzzy-search cap so database fallback
+  searches remain deterministic instead of silently returning an arbitrary
+  subset under load.
+- Applied Pixelfed's recent OAuth hardening lesson by placing token exchanges
+  behind dedicated per-minute and per-hour rate limits, while retaining
+  Unfathomably's existing application-scope validation.
+- Applied PieFed's untitled-post interoperability lesson by removing its
+  `(content in post body)` sentinel during incoming ActivityPub normalization,
+  preventing the implementation detail from appearing as a user-facing title.
+- Applied MBin's actor-profile compatibility lesson by considering every usable
+  link in ActivityPub actor `url` arrays and selecting the shallowest canonical
+  profile route instead of assuming the first entry is suitable.
+- Applied Lemmy's canonical-actor routing lesson so ActivityPub requests for a
+  known remote actor through a qualified local alias redirect to the actor's
+  authoritative HTTP(S) identifier instead of returning a misleading local
+  representation or an unhelpful 404.
+- Applied PeerTube's recent actor-binding lessons by requiring unknown remote
+  Updates to keep object identifiers on the signing actor's host and rejecting
+  actor documents whose embedded public key explicitly names another owner.
+- Deduplicated received-audio discovery by canonical ActivityPub object,
+  added reliable look-ahead pagination metadata, and preserved nested track,
+  album, genre, category, and podcast taxonomy supplied by audio publishers.
+- Preserved safe ActivityStreams `Link` attachments as rich-card candidates
+  without exposing them as broken media attachments in Mastodon API status
+  responses.
+- Rejected repeat ActivityPub `Create` deliveries when an already-known object
+  belongs to a different actor, while retaining idempotent same-author delivery.
+- Dropped null ActivityPub tag entries before object validation and capped
+  remote featured collections and pin-fetch fanout at 150 items.
+- Included a bounded, visibility-filtered ancestor closure on reply-inclusive
+  Nostr group timeline pages so kind-9 conversations remain visibly threaded
+  when pagination would otherwise return a child without its local parent.
+- Kept NIP-17 gift wraps and kind-10050 private-message relay metadata off
+  strict group-only relays, even when those relays are part of the broader
+  configured Nostr relay set.
+- Fixed bounded source previews so complete posts embedded by Mitra and similar
+  ActivityPub collections become normal local status cards without restoring
+  synchronous per-item network fetches.
+- Fixed instance-panel preloading so only an operator-installed panel is
+  advertised; packaged frontend fallbacks can no longer mask a configured
+  panel or appear as instance-specific content.
+- Fixed remote-instance deletion so its reachability jobs, cached state, and
+  database record are removed together.
+- Rejected fetched ActivityPub objects whose response body claims an
+  unadvertised attachment, media, storage, or upload URL as its identity while
+  retaining legitimate same-origin human-page aliases.
+- Fixed incoming joins for local Group actors so open groups accept and record
+  membership immediately while moderated groups retain a pending request.
+- Kept Worlds discovery SQL aligned with every supported native platform and
+  rejected obvious inbound actor-origin spoofing before remote actor lookup.
+- Fixed NIP-C7 chat reply projection so kind-9 Nostr group messages using
+  `q` parent tags render as ordinary threaded replies, hydrate bounded context,
+  propagate corrected root context through nested replies, maintain parent
+  reply counts, and repair automatically when a referenced parent arrives
+  later.
+- Fixed Mastodon context rendering for out-of-order remote imports by deriving
+  ancestors from explicit ActivityPub `inReplyTo` links instead of comparing
+  locally assigned activity IDs, and ordering context entries by published
+  time.
+- Fixed native Nostr reply threading by distinguishing NIP-10 root/reply tags
+  from citation-only mentions, hydrating bounded missing-parent threads, and
+  consulting explicit hints, known parent/participant NIP-65 write relays, and
+  approved search/profile relays before atomically reattaching existing
+  ActivityPub projections once their parent becomes available; late parent
+  arrivals now wake a bounded set of directly waiting child projections, and
+  stored poll/media/event roots are reprojected through normal bridge checks.
+- Moved bounded Nostr thread retrieval and local projection repair onto the
+  existing remote-fetch and background queues so profile backfills cannot
+  starve user-requested conversation context.
+- Moved bulk Nostr profile/history backfills to the slow-work queue so they no
+  longer occupy every native relay-ingest slot during large synchronization
+  runs.
+- Fixed historical Nostr polls used as conversation roots so elapsed `endsAt`
+  values remain importable with their original closed timestamp and cannot be
+  reopened for local voting.
+- Separated group-only Nostr relays from profile-capable relays so account
+  metadata, NIP-65 lists, badges, and private-message relay lists are no longer
+  sent to strict NIP-29 relays that require an `h` group tag.
+- Added outbound Nostr relay acknowledgement logging so rejected events retain
+  their relay, immutable event ID, and protocol reason instead of disappearing
+  behind an ignored `OK` response.
+- Fixed deterministic Nostr metadata validation failures so malformed relay
+  lists, badge definitions, and profile badge selections cancel ingestion on
+  the first attempt instead of raising a worker case error and retrying.
+- Fixed Nostr profile and NIP-65 relay-list propagation so each destination
+  relay receives fresh local actor metadata before posts or interactions even
+  when another relay was refreshed recently, and added a background profile
+  publication operation using stable actor URIs for controlled refreshes.
+- Stopped the generic ActivityPub follow exporter from emitting NIP-29 join or
+  leave events for NIP-72 communities, whose membership is a local subscription
+  rather than a relay-managed group relationship.
+- Kept active Nostr community discovery actionable by withholding relay
+  catalogue entries until at least one verified post is available in their
+  indexed local group timeline.
+- Fixed NIP-72 clients that place the community coordinate only on the signed
+  approval by accepting that moderator-authorized form without weakening
+  mismatched-coordinate checks, applying the verified address only to the
+  local projection, and supporting picture/video-first submissions.
+- Fixed approved NIP-72 submissions that were already known as ordinary Nostr
+  posts so verified community replays add the group audience and indexed
+  recipient without duplicating or deleting the existing local projection.
+- Fixed OAuth scope and view rendering coverage for active Nostr community
+  discovery so the Worlds and group interfaces can load the ranked catalogue.
+- Prevented ActivityPub ChatMessage objects from entering the public Nostr
+  status exporter and avoided atomizing attacker-controlled tag names while
+  decrypting native Nostr messages.
+- Completed NIP-29 group detail hydration by exposing real owner accounts,
+  public member cards, and root-post counts; explicit NIP-21 event links now
+  resolve through balanced, bounded server-side relay requests and normal
+  signature and bridge validation instead of opening missing Mastodon status
+  IDs or being hidden by a long identity relay list.
+- Added a second bounded Nostr profile backfill pass when NIP-65 metadata
+  reveals additional approved relays, improving names, avatars, and biographies
+  for members discovered through NIP-29 group directories.
+- Implemented capability-aware NIP-50 profile discovery through explicitly
+  configured search relays, including NIP-11 feature checks, bounded
+  server-side requests, signature verification, and relevance-ranked local
+  relay search results.
+- Corrected NIP-65 outbox routing so followed-author events are downloaded
+  from write relays, tagged-user events are delivered to read relays, and
+  local actors publish their relay-list metadata alongside outgoing events.
+- Kept NIP-29 group events on their authoritative host relay instead of
+  leaking group interactions onto unrelated profile relays.
+- Allowed explicitly approved Nostr profile-discovery relays to hydrate account
+  metadata without treating those relays as general posting or group relays.
+- Hydrated followed NIP-29 group directories into standard member accounts,
+  roles, and metadata backfills so group posts and member lists show usable
+  names, avatars, biographies, and profile links instead of public-key
+  placeholders.
+- Ordered native Nostr community timelines by the original event publication
+  time, including timestamp-aware Mastodon cursors and canonical Create
+  projections, so historical backfills do not appear in arbitrary local
+  ingestion order or lose page capacity to duplicate group Announces.
+- Hydrated NIP-29 administrator, member, and role snapshots for native Nostr
+  community mirrors so group APIs report the relay identity, authoritative
+  member and moderator counts, and native platform classification instead of
+  presenting an incomplete local ActivityPub shell.
+- Routed browser-rendered Worlds catalogue artwork through a same-origin media
+  proxy URL even for operator-whitelisted remote hosts, preventing strict CSP
+  deployments from hiding PeerTube thumbnails and other native discovery
+  previews.
+- Integrated Pleroma's new Gun stream-lease architecture with Unfathomably's
+  custom pools, proxy handling, and RichMedia limits; added safe extensionless
+  image detection, strict Content-Length handling, and hard aborts for
+  truncated committed proxy responses.
+- Merged the newest fedidev.fun ActivityPub normalization cases for preferred
+  list-valued types, inferred tags, varied emoji icons, and safe attachment URL
+  shapes while retaining the broader local actor and native-object vocabulary.
+- Backported the newest applicable Pleroma fixes for stale numeric user-cache
+  entries, followed-account streaming through domain blocks, multi-hashtag
+  pagination, unauthenticated account-feed restrictions, grouped notification
+  details, and safer RSS/Atom links and sensitive-media enclosures.
+- Isolated OpenTranslate requests from the federation HTTP pool and gave the
+  self-hosted provider a bounded configurable receive timeout, preventing busy
+  federation traffic from turning fast local translations into HTTP 503s.
+- Stopped deterministic remote ActivityPub object-validation failures, such as
+  polls with blank options, from consuming every remote-fetch retry when the
+  same immutable object cannot become valid on a later attempt.
+- Bounded incoming federation retries when a peer still rejects the verified
+  TLS 1.2 compatibility request, and taught the Oban janitor to discard older
+  exhausted handshake jobs instead of retaining impossible nested context
+  fetches for days.
+- Added a verified TLS 1.2 compatibility retry for idempotent Gun requests
+  when an otherwise reachable federation peer rejects OTP's normal TLS
+  ClientHello, without weakening certificate or hostname verification.
+- Fixed remote instance favicon rendering so malformed absolute favicon URLs
+  are normalized and media-proxied instead of violating the frontend's strict
+  image Content Security Policy.
+- Stopped the native book catalog from advertising local review posts and other
+  non-book objects as selectable BookWyrm books. Catalog results now pass the
+  same Book, Edition, or Work trust check used when publishing reading activity.
+- Closed a delete-versus-fanout race where per-inbox `Create` publisher jobs
+  inserted after the deletion cleanup could still deliver an already-deleted
+  local object. Each queued `Create` now verifies its persisted source before
+  delivery.
+- Extended failed-image proxy fallbacks to extensionless ActivityPub custom
+  emoji when the browser explicitly requests an image, preventing malformed
+  remote emoji URLs from surfacing as page-level HTTP errors.
+- Restricted Mastodon admin pending-account listings to local registrations,
+  preventing federated remote actors from entering the approval workflow and
+  avoiding an unindexed full-user scan for empty waitlists.
+- Fixed outgoing ActivityPub normalization for remote attachments that omit
+  `mediaType`, preserving validated HTTP(S) media links without inventing a MIME
+  type so boosts, group wrappers, and object re-serving do not drop the media.
+- Fixed quote-policy handling for remote actors whose advertised following
+  collection does not use the conventional `actor-id/following` path.
+
+### Security
+
+- Centralized credential-safe URL diagnostics across remote object fetches,
+  WebFinger, RichMedia-adjacent federation work, reply hydration, relay output,
+  and remote emoji fetches, including redaction of credentials repeated inside
+  adapter errors and reviewed search or database service DSNs.
+- Bound legacy HTTP signatures to a signed request time, rejected stale
+  signatures, and required body-bearing federation requests to sign a verified
+  digest so captured signatures cannot authorize altered or indefinitely
+  replayed inbox payloads.
+- Prevented password-reset links from creating local credentials for
+  external-auth-only accounts that do not already have a local password.
 
 ## [3.4.0] - 2026-07-19
 

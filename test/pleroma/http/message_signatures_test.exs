@@ -63,7 +63,7 @@ defmodule Pleroma.HTTP.MessageSignaturesTest do
   end
 
   test "rejects signatures outside the replay window" do
-    created = System.system_time(:second) - :timer.hours(2) |> div(1000)
+    created = (System.system_time(:second) - :timer.hours(2)) |> div(1000)
     {conn, public_key} = signed_conn("{}", created: created)
 
     refute MessageSignatures.validate(conn, public_key)

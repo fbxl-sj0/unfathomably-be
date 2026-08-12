@@ -15,7 +15,8 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   includes local replies in the same context, local likes/reactions/repeats, and
   local bookmarks. Local Group actors are intentionally ignored here because
   group mirroring can create automatic local activities that should not pin the
-  remote discussion forever.
+  remote discussion forever. Untouched discussions from a group that a local
+  user follows receive a longer, but still finite, retention horizon.
   """
 
   use Oban.Worker, queue: "background", max_attempts: 3
@@ -24,14 +25,20 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
 
   alias Pleroma.Activity
   alias Pleroma.Config
+  alias Pleroma.FollowingRelationship
   alias Pleroma.Object
   alias Pleroma.Repo
 
   @default_max_age_days 183
-  @default_batch_size 100
-  @default_candidate_scan_limit 1_000
+  @default_followed_group_max_age_days 730
+  @default_batch_size 50
+  @default_candidate_scan_limit 250
+  @default_candidate_query_chunk_size 10
   @default_max_scan_pages 10
   @default_query_timeout_ms 120_000
+  @max_batch_size 500
+  @max_candidate_scan_limit 500
+  @max_candidate_query_chunk_size 100
   @seconds_per_day 86_400
   @group_service_actor_regex "fedigroups|gancio|gup\\.pe|buzzrelay|tootgroup"
 
@@ -116,7 +123,7 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
         object_ids = Enum.map(object_rows, &elem(&1, 0))
         remaining_count = batch_size - length(objects)
 
-        case object_ids |> candidates_query(cutoff, remaining_count) |> safe_repo_all() do
+        case candidate_page_objects(object_ids, cutoff, remaining_count) do
           {:ok, page_objects} ->
             mark_retained_candidates(object_ids, Enum.map(page_objects, & &1.id))
 
@@ -136,6 +143,31 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # Each candidate needs several safety checks before it may be removed. Keep
+  # those checks in small slices so a single janitor query cannot monopolize a
+  # database connection on a large federation cache.
+  defp candidate_page_objects(object_ids, cutoff, remaining_count) do
+    object_ids
+    |> Enum.chunk_every(candidate_query_chunk_size())
+    |> Enum.reduce_while({:ok, []}, fn object_id_chunk, {:ok, selected_objects} ->
+      remaining_count = remaining_count - length(selected_objects)
+
+      if remaining_count <= 0 do
+        {:halt, {:ok, selected_objects}}
+      else
+        result =
+          object_id_chunk
+          |> candidates_query(cutoff, remaining_count)
+          |> safe_repo_all()
+
+        case result do
+          {:ok, objects} -> {:cont, {:ok, selected_objects ++ objects}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end
+    end)
   end
 
   defp delete_object(%Object{} = object, count) do
@@ -203,6 +235,7 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
           object.data
         ),
       where: ^addressed_to_remote_group?(),
+      where: ^followed_group_retention_elapsed?(followed_group_cutoff()),
       where: ^no_local_user_activity?(),
       where: ^no_local_bookmark?(),
       distinct: object.id,
@@ -312,6 +345,68 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
     )
   end
 
+  # A local follow is an explicit request to retain a community's useful
+  # history. It extends, rather than disables, pruning so a followed high-volume
+  # forum still has a finite storage horizon.
+  defp followed_group_retention_elapsed?(followed_cutoff) do
+    group_service_actor_regex = @group_service_actor_regex
+    follow_accept = FollowingRelationship.accept_state_code()
+
+    dynamic(
+      [activity, object],
+      object.inserted_at < ^followed_cutoff or
+        fragment(
+          """
+          NOT EXISTS (
+            SELECT 1
+            FROM users AS group_actor
+            JOIN following_relationships AS group_follow
+              ON group_follow.following_id = group_actor.id
+            JOIN users AS local_follower
+              ON local_follower.id = group_follow.follower_id
+            WHERE group_follow.state = ?
+              AND local_follower.local = true
+              AND local_follower.is_active = true
+              AND group_actor.local = false
+              AND group_actor.is_active = true
+              AND group_actor.invisible = false
+              AND (
+                group_actor.actor_type = 'Group'
+                OR (
+                  group_actor.actor_type IN ('Application', 'Service')
+                  AND group_actor.ap_id ~* ?
+                )
+              )
+              AND (
+                (?->'to') \\? group_actor.ap_id
+                OR (?->'cc') \\? group_actor.ap_id
+                OR (?->'bto') \\? group_actor.ap_id
+                OR (?->'bcc') \\? group_actor.ap_id
+                OR (?->'to') \\? group_actor.ap_id
+                OR (?->'cc') \\? group_actor.ap_id
+                OR (?->'bto') \\? group_actor.ap_id
+                OR (?->'bcc') \\? group_actor.ap_id
+                OR ?->>'target' = group_actor.ap_id
+                OR ?->>'context' = group_actor.ap_id
+              )
+          )
+          """,
+          ^follow_accept,
+          ^group_service_actor_regex,
+          object.data,
+          object.data,
+          object.data,
+          object.data,
+          activity.data,
+          activity.data,
+          activity.data,
+          activity.data,
+          object.data,
+          object.data
+        )
+    )
+  end
+
   defp enabled? do
     Config.get([__MODULE__, :enabled], true)
   end
@@ -327,16 +422,37 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
     |> max(1)
   end
 
+  defp followed_group_cutoff do
+    NaiveDateTime.utc_now()
+    |> NaiveDateTime.add(-followed_group_max_age_days() * @seconds_per_day, :second)
+  end
+
+  defp followed_group_max_age_days do
+    __MODULE__
+    |> config_integer(:followed_group_max_age_days, @default_followed_group_max_age_days)
+    |> max(max_age_days())
+  end
+
   defp batch_size do
     __MODULE__
     |> config_integer(:batch_size, @default_batch_size)
     |> max(1)
+    |> min(@max_batch_size)
   end
 
   defp candidate_scan_limit do
     __MODULE__
     |> config_integer(:candidate_scan_limit, @default_candidate_scan_limit)
+    |> max(batch_size())
+    |> min(@max_candidate_scan_limit)
+  end
+
+  defp candidate_query_chunk_size do
+    __MODULE__
+    |> config_integer(:candidate_query_chunk_size, @default_candidate_query_chunk_size)
     |> max(1)
+    |> min(@max_candidate_query_chunk_size)
+    |> min(candidate_scan_limit())
   end
 
   defp max_scan_pages do

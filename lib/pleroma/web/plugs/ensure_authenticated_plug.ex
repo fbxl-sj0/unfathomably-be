@@ -39,7 +39,8 @@ defmodule Pleroma.Web.Plugs.EnsureAuthenticatedPlug do
 
   def perform(conn, _) do
     conn
-    |> render_error(:forbidden, "Invalid credentials.")
+    |> put_resp_header("www-authenticate", ~s(Bearer realm="Unfathomably"))
+    |> render_error(:unauthorized, "Invalid credentials.")
     |> halt()
   end
 end

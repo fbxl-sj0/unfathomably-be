@@ -33,6 +33,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LeaveValidator do
     |> validate_required([:id, :type, :actor, :to, :cc, :object])
     |> CommonValidations.validate_actor_presence()
     |> CommonValidations.validate_object_presence(allowed_types: ["Event"])
+    |> CommonValidations.validate_object_visibility()
     |> validate_existing_join()
   end
 

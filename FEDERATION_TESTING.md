@@ -48,6 +48,16 @@ frontend renders disabled blocked/federation controls for groups and feeds.
 The peer-specific Docker lanes still prove platform behavior; this shared lane
 keeps the safety UX contract consistent across all of them.
 
+`build_scripts/unfathomably-nostr-smoke.sh`
+
+Verifies the isolated native-Nostr fixture after its lifecycle driver has run.
+The fixture intentionally contains exactly two containers: one
+Unfathomably instance and one stock NIP-29 relay. PostgreSQL runs on the smoke
+host so the database is not a third protocol peer. The verifier checks NIP-11,
+NIP-29 metadata and content, ActivityPub-to-Nostr and Nostr-to-ActivityPub
+mappings, joins, leaves, reactions, deletes, durable Undo references, corrected
+NIP-01 replacement keys, and an idle terminal Nostr Oban queue.
+
 `build_scripts/unfathomably-nodebb-smoke.sh`
 
 Runs a local stock NodeBB peer against disposable Unfathomably instances. The
@@ -111,6 +121,24 @@ from both sides, and unfollow cleanup runs at the end. The harness also probes
 whether stock GoToSocial can import an Unfathomably `Group` actor as a
 followable account. If it cannot, the result is recorded as an explicit stock
 limitation instead of being confused with untested group coverage.
+
+`build_scripts/unfathomably-flohmarkt-smoke.sh`
+
+Runs an official stock Flohmarkt marketplace peer against a disposable,
+HTTPS-advertised Unfathomably instance. The lane covers Flohmarkt's native
+listing, listing update, deletion, conversation, report, and instance-follow
+behavior. It also covers Unfathomably's marketplace connector contract: an
+administrator configures one explicit remote instance actor, the local
+`/users/instance` service actor sends a normal ActivityPub `Follow`, authors
+can see only aggregate delivery readiness, and a public offer must explicitly
+opt in before it can be distributed. No marketplace is crawled, backfilled, or
+contacted outside the disposable test network.
+
+Flohmarkt's instance actor can retain an incoming service-actor Follow as
+pending when it does not dispatch an ActivityPub `Accept`. That is reported as
+a stock limitation, not a test failure and not permission to deliver offers.
+Unfathomably delivers only after an accepted relationship, and connector
+removal sends an `Undo` before deleting the local allowlist policy.
 
 `build_scripts/unfathomably-misskey-smoke.sh`
 
@@ -235,6 +263,94 @@ cd /home/jkfirth/unfathomably-smoke/work/pleroma
 SMOKE_PREFIX=uf-discourse-330a SMOKE_POLL_ATTEMPTS=120 \
   bash build_scripts/unfathomably-discourse-smoke.sh
 ```
+
+## Native Nostr and NIP-29 lane
+
+Unfathomably remains ActivityPub-authoritative. Local users and groups keep
+their existing ActivityPub identities, moderation, storage, and timelines.
+The Nostr bridge signs projections of those records and imports approved relay
+events into ordinary ActivityPub users, groups, activities, and objects. It
+does not turn Unfathomably into a Nostr-primary server and never imports a
+remote user's private key.
+
+The `.99` fixture uses:
+
+- `unfathomably-nostr-smoke`, exposing the application and its bounded local
+  relay on port 45000.
+- `unfathomably-nip29-relay`, a stock NIP-29 group relay on port 43000.
+- Host PostgreSQL on port 55432, outside the protocol-container count.
+
+Run the post-lifecycle verifier on the smoke host:
+
+```sh
+cd /home/jkfirth/.cache/unfathomably-nostr-smoke/run-20260728-1/unfathomably-be
+NOSTR_GROUP_ID=04b568 \
+NOSTR_OWNER_PUBKEY=091ce6d285f6980dffd725a3070c996a71235f0484474c62069c37d2d4ddbe82 \
+bash build_scripts/unfathomably-nostr-smoke.sh
+```
+
+The tested lifecycle covers:
+
+- resolving native `npub` and `nprofile` identities into followable local
+  account projections;
+- discovering NIP-29 `naddr` communities and following or leaving them through
+  the normal group workflow;
+- importing native group roots, compact group replies, reactions, reposts,
+  deletes, joins, and leaves;
+- exporting local group roots, replies, reactions, reaction Undo, deletes,
+  joins, and leaves to the group relay;
+- publishing local groups as NIP-29 metadata and accepting native members,
+  posts, replies, reactions, deletes, and leave events;
+- replacing NIP-02 contact lists after profile follow and unfollow;
+- rejecting unsolicited unknown writers at the local relay, invalid
+  signatures, unauthorized group writes, oversized messages, unbounded
+  filters, and per-connection event floods.
+
+The stock group relay is deliberately specialized: it accepts NIP-29 group
+traffic but rejects general profile metadata and contact-list kinds. That is a
+relay policy result, not permission to weaken Unfathomably's local writer
+boundary. General profile events are synchronized only through separately
+approved general-purpose relays, while NIP-29 events go to each group's
+authoritative relay.
+
+The public `/relay` path must preserve WebSocket upgrades at the reverse proxy.
+For nginx, use a dedicated exact location rather than allowing the request to
+fall through to an ordinary HTTP proxy:
+
+```nginx
+location = /relay {
+    proxy_pass http://pleroma_backend;
+
+    proxy_cache off;
+    proxy_buffering off;
+    proxy_request_buffering off;
+
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 86400s;
+
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Sec-WebSocket-Protocol $http_sec_websocket_protocol;
+}
+```
+
+An ordinary request with `Accept: application/nostr+json` still reaches NIP-11
+through this location because `$connection_upgrade` is empty unless the client
+requests a WebSocket upgrade.
+
+Mostr follow migration is dry-run-first:
+
+```sh
+mix pleroma.nostr migrate_mostr --relay wss://approved-relay.example
+mix pleroma.nostr migrate_mostr --relay wss://approved-relay.example --execute
+```
+
+The dry run only decodes and reports candidates. Execution resolves the native
+identity, establishes the native follow first, and unfollows the Mostr actor
+only after that succeeds. Existing Mostr actors and historical activities are
+retained so old links and conversations do not break. Candidate discovery is
+bounded to Mostr-hosted actors with local followers; it does not resolve every
+historical Mostr actor cached in the users table.
 
 ## Remaining broad-platform full-matrix boundaries
 

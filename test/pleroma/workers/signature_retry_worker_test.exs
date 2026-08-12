@@ -81,6 +81,37 @@ defmodule Pleroma.Workers.SignatureRetryWorkerTest do
     end
   end
 
+  test "accepts a harmless forwarded View after authenticating its transport" do
+    signature_actor = "https://forwarder.example/users/bob"
+
+    params = %{
+      "id" => @actor <> "/activities/view-1",
+      "type" => "View",
+      "actor" => @actor,
+      "object" => "https://example.test/objects/1"
+    }
+
+    with_mocks([
+      {Signature, [],
+       [
+         get_actor_id: fn _conn -> {:ok, signature_actor} end,
+         refetch_public_key: fn _conn -> {:ok, "public key"} end,
+         validate_signature: fn _conn -> true end
+       ]},
+      {EnsureHostMatchesPlug, [],
+       [
+         call: fn conn, [] ->
+           Plug.Conn.assign(conn, :valid_host_header, true)
+         end
+       ]},
+      {User, [], [get_or_fetch_by_ap_id: fn @actor -> {:ok, %User{}} end]},
+      {Federator, [], [perform: fn :incoming_ap_doc, ^params -> {:ok, :ignored} end]},
+      {Instances, [], [reachable?: fn @actor -> true end]}
+    ]) do
+      assert {:ok, :ignored} = SignatureRetryWorker.perform(retry_job(params))
+    end
+  end
+
   defp retry_job(status) when is_integer(status) do
     retry_job(%{
       "id" => "https://remote.example/activities/#{status}",

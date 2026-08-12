@@ -7,6 +7,7 @@ defmodule Pleroma.Helpers.MediaHelper do
   Handles common media-related operations.
   """
 
+  alias Pleroma.Config
   alias Pleroma.HTTP
 
   @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
@@ -22,15 +23,18 @@ defmodule Pleroma.Helpers.MediaHelper do
   end
 
   def image_resize(url, options) do
-    with executable when is_binary(executable) <- System.find_executable("convert"),
-         {:ok, args} <- prepare_image_resize_args(options),
+    with {:ok, args} <- prepare_image_resize_args(options),
+         false <- preview_failed?(url),
+         executable when is_binary(executable) <- System.find_executable("convert"),
          {:ok, env} <- HTTP.get(url, [], http_client_opts()) do
       run_with_input(env, executable, fn input ->
         List.flatten([input, args])
       end)
     else
+      true -> {:error, :cached_failure}
       nil -> {:error, {:convert, :command_not_found}}
-      {:error, _} = error -> error
+      {:error, :missing_options} = error -> error
+      {:error, _} = error -> cache_media_helper_failure(url, error)
     end
   end
 
@@ -72,7 +76,7 @@ defmodule Pleroma.Helpers.MediaHelper do
 
   # Note: video thumbnail is intentionally not resized (always has original dimensions)
   def video_framegrab(url) do
-    with {:ok, false} <- @cachex.exists?(:failed_media_helper_cache, url),
+    with false <- preview_failed?(url),
          executable when is_binary(executable) <- System.find_executable("ffmpeg"),
          {:ok, env} <- HTTP.get(url, [], http_client_opts()),
          {:ok, output} <-
@@ -92,18 +96,41 @@ defmodule Pleroma.Helpers.MediaHelper do
            end) do
       {:ok, output}
     else
-      {:ok, true} -> {:error, :cached_failure}
+      true -> {:error, :cached_failure}
       nil -> cache_media_helper_failure(url, {:error, {:ffmpeg, :command_not_found}})
       {:error, _} = error -> cache_media_helper_failure(url, error)
     end
   end
 
-  defp cache_media_helper_failure(url, error) do
+  def preview_failed?(url) when is_binary(url) do
+    case @cachex.exists?(:failed_media_helper_cache, url) do
+      {:ok, failed?} -> failed?
+      _ -> false
+    end
+  end
+
+  def cache_preview_failure(url) when is_binary(url) do
     @cachex.put(:failed_media_helper_cache, url, true)
+    :ok
+  end
+
+  defp cache_media_helper_failure(url, error) do
+    cache_preview_failure(url)
     error
   end
 
-  defp http_client_opts, do: Pleroma.Config.get([:media_proxy, :proxy_opts, :http], pool: :media)
+  defp http_client_opts do
+    Config.get([:media_proxy, :proxy_opts, :http], pool: :media)
+    |> Keyword.put(:connect_timeout, preview_operation_timeout())
+    |> Keyword.put(:recv_timeout, preview_operation_timeout())
+  end
+
+  defp preview_operation_timeout do
+    case Config.get([:media_preview_proxy, :operation_timeout], 2_000) do
+      timeout when is_integer(timeout) and timeout > 0 -> min(timeout, 10_000)
+      _ -> 2_000
+    end
+  end
 
   defp run_with_input(env, executable, args_fun) do
     if match?({:win32, _}, :os.type()) do
@@ -228,7 +255,7 @@ defmodule Pleroma.Helpers.MediaHelper do
       {^pid, {:exit_status, status}} ->
         {:error, status}
     after
-      5000 ->
+      preview_operation_timeout() ->
         :erlang.port_close(pid)
         {:error, :timeout}
     end

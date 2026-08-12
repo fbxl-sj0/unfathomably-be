@@ -29,6 +29,18 @@ defmodule Pleroma.NotificationTest do
   end
 
   describe "create_notifications" do
+    test "persists only one notification for a user and activity" do
+      user = insert(:user)
+      activity = insert(:note_activity)
+
+      assert {:created, first} = Notification.persist_notification(activity, user, "mention")
+      assert {:existing, second} = Notification.persist_notification(activity, user, "mention")
+
+      assert first.id == second.id
+      assert [persisted] = Repo.all(Notification)
+      assert persisted.id == first.id
+    end
+
     test "never returns nil" do
       user = insert(:user)
       other_user = insert(:user, %{invisible: true})
@@ -43,6 +55,22 @@ defmodule Pleroma.NotificationTest do
       activity = %Pleroma.Activity{data: %{"type" => "Unsupported"}}
 
       assert {[], []} = Notification.get_notified_from_activity(activity)
+    end
+
+    test "does not create human notifications for internal or application actors" do
+      follower = insert(:user)
+
+      receivers = [
+        insert(:user, actor_type: "Application"),
+        insert(:user, actor_type: "Service", nickname: "internal.notification-test")
+      ]
+
+      Enum.each(receivers, fn receiver ->
+        {:ok, follow_data, []} = Builder.follow(follower, receiver)
+        {:ok, follow, _meta} = ActivityPub.persist(follow_data, local: true)
+
+        assert {:ok, []} = Notification.create_notifications(follow)
+      end)
     end
 
     test "creates a report notification only for privileged users" do
@@ -436,6 +464,29 @@ defmodule Pleroma.NotificationTest do
       assert notify.user_id == user.id
       Task.await(task)
       Task.await(task_user_notification)
+    end
+
+    test_with_mock "it stores historical remote notifications without sending a fresh push",
+                   Push,
+                   [:passthrough],
+                   [] do
+      user = insert(:user)
+      activity = insert(:note_activity)
+
+      published =
+        DateTime.utc_now()
+        |> DateTime.add(-3_601, :second)
+        |> DateTime.to_iso8601()
+
+      activity =
+        activity
+        |> Ecto.Changeset.change(data: Map.put(activity.data, "published", published))
+        |> Repo.update!()
+
+      notification = Notification.create_notification(activity, user)
+
+      assert notification.user_id == user.id
+      refute called(Push.send(:_))
     end
 
     test "it creates a notification for user if the user blocks the activity author" do

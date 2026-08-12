@@ -820,6 +820,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffectsTest do
 
       %{
         announce: announce,
+        post: post,
         user: user,
         poster: poster,
         private_announce: private_announce,
@@ -840,6 +841,28 @@ defmodule Pleroma.Web.ActivityPub.SideEffectsTest do
       {:ok, announce, _} = SideEffects.handle(announce)
       object = Object.get_by_ap_id(announce.data["object"])
       assert object.data["announcement_count"] == nil
+    end
+
+    test "reconciles a public object when a remote group announces it late", %{post: post} do
+      group =
+        insert(:user,
+          local: false,
+          actor_type: "Group",
+          domain: "community.nodebb.example"
+        )
+
+      {:ok, announce_data, _meta} = Builder.announce(group, post.object, public: true)
+      {:ok, announce, _meta} = ActivityPub.persist(announce_data, local: false)
+
+      assert {:ok, ^announce, _meta} = SideEffects.handle(announce)
+
+      object = Object.get_by_ap_id(post.object.data["id"])
+      create = Activity.get_create_by_object_ap_id(post.object.data["id"])
+
+      assert group.ap_id in List.wrap(object.data["audience"])
+      assert group.ap_id in List.wrap(create.data["audience"])
+      assert group.ap_id in create.recipients
+      assert object.data["actor"] == post.object.data["actor"]
     end
 
     test "creates a notification", %{announce: announce, poster: poster} do

@@ -14,6 +14,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
   alias Pleroma.Tests.ObanHelpers
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.Marketplace
   alias Pleroma.Web.ActivityPub.ObjectView
   alias Pleroma.Web.ActivityPub.Relay
   alias Pleroma.Web.ActivityPub.UserView
@@ -145,6 +146,32 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
   end
 
   describe "/users/:nickname" do
+    test "renders the marketplace service actor as an Application", %{conn: conn} do
+      {:ok, service_actor} = Marketplace.service_actor()
+
+      response =
+        conn
+        |> put_req_header("accept", "application/activity+json")
+        |> get("/users/instance")
+        |> json_response(200)
+
+      assert response["id"] == service_actor.ap_id
+      assert response["type"] == "Application"
+      assert response["preferredUsername"] == Marketplace.service_actor_webfinger_nickname()
+
+      assert response["webfinger"] ==
+               "acct:#{Marketplace.service_actor_webfinger_nickname()}@#{Pleroma.Web.WebFinger.domain()}"
+    end
+
+    test "does not expose the marketplace service actor internal nickname", %{conn: conn} do
+      {:ok, _service_actor} = Marketplace.service_actor()
+
+      conn
+      |> put_req_header("accept", "application/activity+json")
+      |> get("/users/#{Marketplace.service_actor_nickname()}")
+      |> json_response(404)
+    end
+
     test "it returns a json representation of the user with accept application/json", %{
       conn: conn
     } do
@@ -430,7 +457,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       assert response == ObjectView.render("object.json", %{object: note})
     end
 
-    test "it returns 404 for tombstone objects", %{conn: conn} do
+    test "it returns 410 for tombstone objects", %{conn: conn} do
       tombstone = insert(:tombstone)
       uuid = String.split(tombstone.data["id"], "/") |> List.last()
 
@@ -439,7 +466,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("accept", "application/activity+json")
         |> get("/objects/#{uuid}")
 
-      assert json_response(conn, 404)
+      assert %{"id" => tombstone_id, "type" => "Tombstone"} = json_response(conn, 410)
+      assert tombstone_id == tombstone.data["id"]
     end
 
     test "it caches a response", %{conn: conn} do
@@ -482,7 +510,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("accept", "application/activity+json")
         |> get("/objects/#{uuid}")
 
-      assert "Not found" == json_response(conn2, :not_found)
+      assert %{"id" => tombstone_id, "type" => "Tombstone"} = json_response(conn2, :gone)
+      assert tombstone_id == note.data["id"]
     end
   end
 
@@ -1193,7 +1222,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       refute Activity.get_by_ap_id(data["id"])
     end
 
-    test "it returns 404 for signed delivery to missing or deactivated inbox users", %{
+    test "it rejects signed delivery to missing or deactivated inbox users", %{
       conn: conn,
       data: data
     } do
@@ -1211,7 +1240,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("content-type", "application/activity+json")
         |> post("/users/#{user.nickname}/inbox", data)
 
-      assert "User deactivated" == json_response(conn, 404)
+      assert "Invalid request." == json_response(conn, 400)
       refute Activity.get_by_ap_id(data["id"])
 
       data = Map.put(data, "actor", actor.ap_id <> "/missing")
@@ -1222,10 +1251,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("content-type", "application/activity+json")
         |> post("/users/not-real/inbox", data)
 
-      assert "User does not exist" == json_response(conn, 404)
+      assert "Not found" == json_response(conn, 404)
     end
 
-    test "it returns 404 for signed delivery from a deactivated sender", %{
+    test "it rejects signed delivery from a deactivated sender", %{
       conn: conn,
       data: data
     } do
@@ -1252,7 +1281,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("content-type", "application/activity+json")
         |> post("/users/#{user.nickname}/inbox", data)
 
-      assert "Sender deactivated" == json_response(conn, 404)
+      assert "Invalid request." == json_response(conn, 400)
       refute Activity.get_by_ap_id(data["id"])
     end
 
@@ -1560,6 +1589,22 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       assert outbox_endpoint == result["id"]
     end
 
+    test "it briefly caches the visibility-aware collection root total", %{conn: conn} do
+      user = insert(:user)
+      {:ok, _activity} = CommonAPI.post(user, %{status: "cached outbox total"})
+
+      result =
+        conn
+        |> put_req_header("accept", "application/activity+json")
+        |> get(user.ap_id <> "/outbox")
+        |> json_response(200)
+
+      assert result["totalItems"] == 1
+
+      assert {:ok, 1} =
+               Cachex.get(:web_resp_cache, {:activity_pub_outbox_total, user.id, nil})
+    end
+
     test "it returns a local note activity when authenticated as local user", %{conn: conn} do
       user = insert(:user)
       reader = insert(:user)
@@ -1614,6 +1659,33 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> get("/users/#{user.nickname}/outbox?page=true")
 
       assert response(conn, 200) =~ announce_activity.data["object"]
+    end
+
+    test "one unrenderable activity does not fail the complete collection" do
+      valid_activity = insert(:note_activity)
+
+      malformed_activity = %Activity{
+        id: Ecto.UUID.generate(),
+        data: %{
+          "id" => "https://example.com/activities/malformed-update",
+          "type" => "Update",
+          "actor" => valid_activity.data["actor"],
+          "object" => %{
+            "id" => "https://example.com/objects/unsupported",
+            "type" => "UnsupportedObject"
+          }
+        }
+      }
+
+      result =
+        UserView.render("activity_collection_page.json", %{
+          activities: [malformed_activity, valid_activity],
+          iri: "https://example.com/users/alice/outbox",
+          pagination: %{}
+        })
+
+      assert [%{"id" => valid_id}] = result["orderedItems"]
+      assert valid_id == valid_activity.data["id"]
     end
 
     test "It returns poll Answers when authenticated", %{conn: conn} do

@@ -8,9 +8,11 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   alias Pleroma.Activity
   alias Pleroma.Activity.Queries
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
+  alias Pleroma.GroupMembership
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
@@ -64,7 +66,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
     |> validate_required([:id, :type, :actor, :to, :cc, :object])
     |> validate_inclusion(:type, ["Delete"])
     |> validate_delete_actor(:actor)
-    |> CommonValidations.validate_modification_rights(:messages_delete)
+    |> validate_modification_rights()
     |> validate_delete_target()
     |> validate_custom_object_authority()
     |> add_deleted_activity_id()
@@ -216,6 +218,35 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator do
   defp object_id(value) when is_binary(value), do: value
   defp object_id(%{"id" => id}) when is_binary(id), do: id
   defp object_id(_value), do: nil
+
+  defp validate_modification_rights(cng) do
+    if local_group_manager_delete?(cng) do
+      cng
+    else
+      CommonValidations.validate_modification_rights(cng, :messages_delete)
+    end
+  end
+
+  defp local_group_manager_delete?(cng) do
+    with actor_id when is_binary(actor_id) <- get_field(cng, :actor),
+         %User{local: true} = actor <- User.get_cached_by_ap_id(actor_id),
+         object_id when is_binary(object_id) <- object_id(get_field(cng, :object)),
+         %Object{data: data} <- Object.get_cached_by_ap_id(object_id) do
+      data
+      |> Addressing.addressed_group_ap_ids()
+      |> Enum.any?(fn group_ap_id ->
+        case User.get_cached_by_ap_id(group_ap_id) do
+          %User{actor_type: "Group", local: true} = group ->
+            GroupMembership.manager?(actor, group)
+
+          _ ->
+            false
+        end
+      end)
+    else
+      _ -> false
+    end
+  end
 
   defp validate_delete_actor(cng, field_name) do
     validate_change(cng, field_name, fn field_name, actor ->

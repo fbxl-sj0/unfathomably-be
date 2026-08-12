@@ -75,8 +75,9 @@ defmodule Pleroma.ReverseProxyTest do
     |> expect(:stream_body, fn _ -> {:error, :closed} end)
     |> expect(:close, fn _ -> :ok end)
 
-    conn = ReverseProxy.call(conn, "/closed")
-    assert conn.halted
+    assert_raise ReverseProxy.StreamError, fn ->
+      ReverseProxy.call(conn, "/closed")
+    end
   end
 
   test "request connection close is not logged as an application error", %{conn: conn} do
@@ -89,7 +90,7 @@ defmodule Pleroma.ReverseProxyTest do
       capture_log([level: :debug], fn ->
         conn = ReverseProxy.call(conn, url)
 
-        assert conn.status == 500
+        assert conn.status == 502
         assert conn.halted
       end)
 
@@ -97,7 +98,93 @@ defmodule Pleroma.ReverseProxyTest do
              "[debug] Elixir.Pleroma.ReverseProxy: request to \"/request-closed\" failed: :closed"
 
     refute log =~ "[error]"
-    assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
+
+    assert Cachex.get(:failed_proxy_url_cache, url) ==
+             {:ok, %{status: 502, body: "Upstream request failed"}}
+
+    cached_conn = ReverseProxy.call(recycle(conn), url)
+    assert cached_conn.status == 502
+    assert cached_conn.resp_body == "Upstream request failed"
+  end
+
+  test "uses the image fallback for an animated PNG during an origin cooldown", %{conn: conn} do
+    url = "https://media-apng.example/posts/animation.apng"
+    cooldown_key = {:media_origin_throttle, {"https", "media-apng.example", 443}}
+
+    Cachex.put(
+      :failed_proxy_url_cache,
+      cooldown_key,
+      %{retry_at: System.system_time(:second) + 60},
+      expire: :timer.seconds(60)
+    )
+
+    on_exit(fn -> Cachex.del(:failed_proxy_url_cache, cooldown_key) end)
+
+    conn = ReverseProxy.media_call(conn, url, image_fallback_on_failure: true)
+
+    assert conn.status == 200
+    assert Conn.get_resp_header(conn, "content-type") == ["image/svg+xml"]
+
+    assert Conn.get_resp_header(conn, "content-disposition") ==
+             ["inline; filename=\"remote-media-unavailable.svg\""]
+
+    assert Conn.get_resp_header(conn, "retry-after") != []
+    assert conn.resp_body =~ "<svg"
+  end
+
+  test "uses the image fallback when an opaque media path has an image query name", %{
+    conn: conn
+  } do
+    url = "https://media.example/files/opaque?name=preview.png"
+
+    ClientMock
+    |> expect(:request, fn :get, ^url, _, _, _ -> {:error, :timeout} end)
+
+    conn =
+      ReverseProxy.media_call(conn, url,
+        attachment_name: "opaque",
+        image_fallback_on_failure: true
+      )
+
+    assert conn.status == 200
+    assert Conn.get_resp_header(conn, "content-type") == ["image/svg+xml"]
+    assert conn.resp_body =~ "<svg"
+  end
+
+  test "uses the image fallback for an extensionless image request", %{conn: conn} do
+    url = "https://media.example/files/opaque"
+
+    ClientMock
+    |> expect(:request, fn :get, ^url, _, _, _ -> {:error, :timeout} end)
+
+    conn =
+      conn
+      |> Conn.put_req_header("accept", "image/avif,image/webp,image/*,*/*;q=0.8")
+      |> ReverseProxy.media_call(url,
+        attachment_name: "opaque",
+        image_fallback_on_failure: true
+      )
+
+    assert conn.status == 200
+    assert Conn.get_resp_header(conn, "content-type") == ["image/svg+xml"]
+    assert conn.resp_body =~ "<svg"
+  end
+
+  test "preserves an extensionless failure for a non-image request", %{conn: conn} do
+    url = "https://media.example/files/opaque"
+
+    ClientMock
+    |> expect(:request, fn :get, ^url, _, _, _ -> {:error, :timeout} end)
+
+    conn =
+      conn
+      |> Conn.put_req_header("accept", "application/json")
+      |> ReverseProxy.media_call(url,
+        attachment_name: "opaque",
+        image_fallback_on_failure: true
+      )
+
+    assert conn.status == 504
   end
 
   defp stream_mock(invokes, with_close? \\ false) do
@@ -135,13 +222,20 @@ defmodule Pleroma.ReverseProxyTest do
   describe "max_body" do
     test "length returns error if content-length more than option", %{conn: conn} do
       request_mock(0)
+      expect(ClientMock, :close, fn _ -> :ok end)
 
-      assert capture_log(fn ->
-               ReverseProxy.call(conn, "/huge-file", max_body_length: 4)
-             end) =~
-               "[error] Elixir.Pleroma.ReverseProxy: request to \"/huge-file\" failed: :body_too_large"
+      log =
+        capture_log([level: :debug], fn ->
+          ReverseProxy.call(conn, "/huge-file", max_body_length: 4)
+        end)
 
-      assert {:ok, true} == Cachex.get(:failed_proxy_url_cache, "/huge-file")
+      assert log =~
+               "[debug] Elixir.Pleroma.ReverseProxy: request to \"/huge-file\" failed: :body_too_large"
+
+      refute log =~ "[error]"
+
+      assert {:ok, %{status: 502, body: "Upstream request failed"}} ==
+               Cachex.get(:failed_proxy_url_cache, "/huge-file")
 
       assert capture_log(fn ->
                ReverseProxy.call(conn, "/huge-file", max_body_length: 4)
@@ -149,11 +243,16 @@ defmodule Pleroma.ReverseProxyTest do
     end
 
     test "max_body_length returns error if streaming body more than that option", %{conn: conn} do
-      stream_mock(3, true)
+      stream_mock(4, true)
 
-      assert capture_log(fn ->
-               ReverseProxy.call(conn, "/stream-bytes/50", max_body_length: 30)
-             end) =~
+      log =
+        capture_log(fn ->
+          assert_raise ReverseProxy.StreamError, fn ->
+            ReverseProxy.call(conn, "/stream-bytes/50", max_body_length: 30)
+          end
+        end)
+
+      assert log =~
                "Elixir.Pleroma.ReverseProxy request to /stream-bytes/50 failed while reading/chunking: :body_too_large"
     end
   end
@@ -175,6 +274,7 @@ defmodule Pleroma.ReverseProxyTest do
     |> expect(:request, fn :get, "/status/" <> _, _, _, _ ->
       {:ok, status, [], %{}}
     end)
+    |> expect(:close, fn %{} -> :ok end)
   end
 
   describe "returns error on" do
@@ -185,7 +285,8 @@ defmodule Pleroma.ReverseProxyTest do
       assert capture_log(fn -> ReverseProxy.call(conn, url) end) =~
                "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/500\" failed with HTTP status 500"
 
-      assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
+      assert Cachex.get(:failed_proxy_url_cache, url) ==
+               {:ok, %{status: 500, body: "Request failed: Internal Server Error"}}
 
       {:ok, ttl} = Cachex.ttl(:failed_proxy_url_cache, url)
       assert ttl <= 60_000
@@ -198,7 +299,9 @@ defmodule Pleroma.ReverseProxyTest do
       assert capture_log(fn -> ReverseProxy.call(conn, url) end) =~
                "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/400\" failed with HTTP status 400"
 
-      assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
+      assert Cachex.get(:failed_proxy_url_cache, url) ==
+               {:ok, %{status: 400, body: "Request failed: Bad Request"}}
+
       assert Cachex.ttl(:failed_proxy_url_cache, url) == {:ok, nil}
     end
 
@@ -222,7 +325,10 @@ defmodule Pleroma.ReverseProxyTest do
 
     test "204", %{conn: conn} do
       url = "/status/204"
-      expect(ClientMock, :request, fn :get, _url, _, _, _ -> {:ok, 204, [], %{}} end)
+
+      ClientMock
+      |> expect(:request, fn :get, _url, _, _, _ -> {:ok, 204, [], %{}} end)
+      |> expect(:close, fn %{} -> :ok end)
 
       assert capture_log(fn ->
                conn = ReverseProxy.call(conn, url)
@@ -231,7 +337,9 @@ defmodule Pleroma.ReverseProxyTest do
              end) =~
                "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/204\" failed with HTTP status 204"
 
-      assert Cachex.get(:failed_proxy_url_cache, url) == {:ok, true}
+      assert Cachex.get(:failed_proxy_url_cache, url) ==
+               {:ok, %{status: 204, body: "Request failed: No Content"}}
+
       assert Cachex.ttl(:failed_proxy_url_cache, url) == {:ok, nil}
     end
   end
@@ -310,7 +418,8 @@ defmodule Pleroma.ReverseProxyTest do
       |> expect(:stream_body, fn _ -> :done end)
 
       conn = ReverseProxy.call(conn, "/cache")
-      assert {"cache-control", "public, max-age=1209600, immutable"} in conn.resp_headers
+
+      assert {"cache-control", "public, max-age=1209600, immutable, no-transform"} in conn.resp_headers
     end
   end
 

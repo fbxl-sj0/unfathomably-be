@@ -15,15 +15,24 @@ defmodule Pleroma.Workers.PurgeExpiredActivity do
 
   defguardp valid_job_id(id) when (is_binary(id) and byte_size(id) > 0) or is_integer(id)
 
+  @far_future_seconds 10 * 365 * 24 * 60 * 60
+
   @spec enqueue(map()) ::
-          {:ok, Oban.Job.t()}
+          {:ok, Oban.Job.t() | nil}
           | {:error, :expired_activities_disabled}
           | {:error, :expiration_too_close}
   def enqueue(args) do
     with true <- enabled?() do
       {scheduled_at, args} = Map.pop(args, :expires_at)
 
-      enqueue(args, scheduled_at: scheduled_at)
+      if far_future?(scheduled_at) do
+        # Some remote servers use a century-away timestamp to mean "never".
+        # Keeping one Oban timer per sentinel only moves permanent data into
+        # the job table without providing useful expiration behavior.
+        {:ok, nil}
+      else
+        enqueue(args, scheduled_at: scheduled_at)
+      end
     end
   end
 
@@ -55,6 +64,25 @@ defmodule Pleroma.Workers.PurgeExpiredActivity do
       {:error, :expired_activities_disabled}
     end
   end
+
+  defp far_future?(%DateTime{} = scheduled_at) do
+    DateTime.diff(scheduled_at, DateTime.utc_now()) > @far_future_seconds
+  end
+
+  defp far_future?(%NaiveDateTime{} = scheduled_at) do
+    scheduled_at
+    |> DateTime.from_naive!("Etc/UTC")
+    |> far_future?()
+  end
+
+  defp far_future?(scheduled_at) when is_binary(scheduled_at) do
+    case DateTime.from_iso8601(scheduled_at) do
+      {:ok, scheduled_at, _offset} -> far_future?(scheduled_at)
+      _error -> false
+    end
+  end
+
+  defp far_future?(_scheduled_at), do: false
 
   defp find_activity(id) do
     with nil <- Activity.get_by_id_with_object(id) do

@@ -266,6 +266,34 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       assert user.is_indexable == false
     end
 
+    test "ignores a cross-origin shared inbox without rejecting the actor" do
+      user_id = "https://actor.example/users/alice"
+
+      actor = %{
+        "@context" => "https://www.w3.org/ns/activitystreams",
+        "id" => user_id,
+        "type" => "Person",
+        "preferredUsername" => "alice",
+        "name" => "Alice",
+        "summary" => "Remote account",
+        "inbox" => "https://actor.example/users/alice/inbox",
+        "endpoints" => %{"sharedInbox" => "https://delivery.example/inbox"}
+      }
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^user_id} ->
+          %Tesla.Env{
+            status: 200,
+            body: Jason.encode!(actor),
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      assert {:ok, user} = ActivityPub.make_user_from_ap_id(user_id)
+      assert user.inbox == "https://actor.example/users/alice/inbox"
+      assert is_nil(user.shared_inbox)
+    end
+
     test "retains every ForgeFed actor type and selects a stable primary type" do
       actor_id = "https://forge.example/projects/alpha"
 
@@ -400,6 +428,20 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
 
       assert user.actor_type == "Group"
       assert user.attributed_to_address == moderators_url
+      assert user.moderator_count == 0
+
+      assert_enqueued(
+        worker: Pleroma.Workers.ActorCollectionRefreshWorker,
+        args: %{
+          "ap_id" => user_id,
+          "kind" => "moderators",
+          "collection" => moderators_url
+        }
+      )
+
+      Pleroma.Tests.ObanHelpers.perform_all()
+
+      user = Pleroma.User.get_by_ap_id(user_id)
       assert user.moderator_count == 4
     end
 
@@ -431,6 +473,43 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       assert {:ok, updated_user} = ActivityPub.make_user_from_ap_id(user_id)
       refute updated_user.is_active
       refute User.get_cached_by_ap_id(user.ap_id).is_active
+    end
+
+    test "removes a stale moderator-only posting restriction on group refresh" do
+      user_id = "https://nodebb.example/category/open-forum"
+
+      insert(:user,
+        local: false,
+        ap_id: user_id,
+        nickname: "open-forum@nodebb.example",
+        actor_type: "Group",
+        posting_restricted_to_mods: true
+      )
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^user_id} ->
+          %Tesla.Env{
+            status: 200,
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => user_id,
+                "type" => "Group",
+                "preferredUsername" => "open-forum",
+                "name" => "Open forum",
+                "summary" => "Posting is open to group followers.",
+                "inbox" => "https://nodebb.example/category/open-forum/inbox",
+                "outbox" => "https://nodebb.example/category/open-forum/outbox",
+                "followers" => "https://nodebb.example/category/open-forum/followers",
+                "following" => "https://nodebb.example/category/open-forum/following"
+              }),
+            headers: [{"content-type", "application/activity+json"}]
+          }
+      end)
+
+      assert {:ok, updated_user} = ActivityPub.make_user_from_ap_id(user_id)
+      refute updated_user.posting_restricted_to_mods
+      refute User.get_cached_by_ap_id(user_id).posting_restricted_to_mods
     end
 
     test "works for bridgy actors" do
@@ -630,7 +709,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       assert user.raw_bio == raw_summary
     end
 
-    test "fetches user featured collection" do
+    test "fetches an idless user featured collection" do
       ap_id = "https://example.com/users/lain"
 
       featured_url = "https://example.com/users/lain/collections/featured"
@@ -651,6 +730,9 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
         |> String.replace("{{domain}}", "example.com")
         |> String.replace("{{nickname}}", "lain")
         |> String.replace("{{object_id}}", object_id)
+        |> Jason.decode!()
+        |> Map.delete("id")
+        |> Jason.encode!()
 
       object_url = "https://example.com/objects/#{object_id}"
 
@@ -693,14 +775,25 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       end)
 
       {:ok, user} = ActivityPub.make_user_from_ap_id(ap_id)
+
+      assert_enqueued(
+        worker: Pleroma.Workers.ActorCollectionRefreshWorker,
+        args: %{
+          "ap_id" => ap_id,
+          "kind" => "featured",
+          "collection" => featured_url
+        }
+      )
+
+      refute Map.has_key?(user.pinned_objects, object_url)
+      Pleroma.Tests.ObanHelpers.perform_all()
       Pleroma.Tests.ObanHelpers.perform_all()
 
       assert user.featured_address == featured_url
-      assert Map.has_key?(user.pinned_objects, object_url)
 
       in_db = Pleroma.User.get_by_ap_id(ap_id)
       assert in_db.featured_address == featured_url
-      assert Map.has_key?(user.pinned_objects, object_url)
+      assert Map.has_key?(in_db.pinned_objects, object_url)
 
       assert %{data: %{"id" => ^object_url}} = Object.get_by_ap_id(object_url)
     end
@@ -768,14 +861,25 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       end)
 
       {:ok, user} = ActivityPub.make_user_from_ap_id(ap_id)
+
+      assert_enqueued(
+        worker: Pleroma.Workers.ActorCollectionRefreshWorker,
+        args: %{
+          "ap_id" => ap_id,
+          "kind" => "featured",
+          "collection" => featured_url
+        }
+      )
+
+      refute Map.has_key?(user.pinned_objects, object_url)
+      Pleroma.Tests.ObanHelpers.perform_all()
       Pleroma.Tests.ObanHelpers.perform_all()
 
       assert user.featured_address == featured_url
-      assert Map.has_key?(user.pinned_objects, object_url)
 
       in_db = Pleroma.User.get_by_ap_id(ap_id)
       assert in_db.featured_address == featured_url
-      assert Map.has_key?(user.pinned_objects, object_url)
+      assert Map.has_key?(in_db.pinned_objects, object_url)
 
       assert %{data: %{"id" => ^object_url}} = Object.get_by_ap_id(object_url)
     end
@@ -863,16 +967,19 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
                {:ok, user} = ActivityPub.make_user_from_ap_id(ap_id)
 
                assert_enqueued(
-                 worker: Pleroma.Workers.RemoteFetcherWorker,
+                 worker: Pleroma.Workers.ActorCollectionRefreshWorker,
                  args: %{
-                   "op" => "fetch_remote",
-                   "id" => object_url,
-                   "depth" => 1
+                   "ap_id" => ap_id,
+                   "kind" => "featured",
+                   "collection" => featured_url
                  }
                )
 
+               refute Map.has_key?(user.pinned_objects, object_url)
+               Pleroma.Tests.ObanHelpers.perform_all()
                Pleroma.Tests.ObanHelpers.perform_all()
 
+               user = Pleroma.User.get_by_ap_id(ap_id)
                assert user.featured_address == featured_url
                assert Map.has_key?(user.pinned_objects, object_url)
                assert %{data: %{"id" => ^object_url}} = Object.get_by_ap_id(object_url)
@@ -3104,6 +3211,17 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
       with_mock Pleroma.Object.Fetcher,
         fetch_and_contain_remote_collection_from_id: fn _ ->
           {:error, "Object has been deleted"}
+        end do
+        refute capture_log([level: :warning], fn ->
+                 ActivityPub.maybe_update_follow_information(user)
+               end) =~ "Follower/Following counter update for #{user.ap_id} failed"
+      end
+    end
+
+    test "does not warn when remote follow collections time out", %{user: user} do
+      with_mock Pleroma.Object.Fetcher,
+        fetch_and_contain_remote_collection_from_id: fn _ ->
+          {:error, :recv_response_timeout}
         end do
         refute capture_log([level: :warning], fn ->
                  ActivityPub.maybe_update_follow_information(user)

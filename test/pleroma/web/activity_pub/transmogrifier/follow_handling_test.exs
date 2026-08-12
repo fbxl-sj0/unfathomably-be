@@ -178,6 +178,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.FollowHandlingTest do
         |> Repo.all()
 
       assert length(accepts) == 2
+
+      assert [notification] = Notification.for_user(user)
+      assert notification.type == "follow"
     end
 
     test "it rejects incoming follow requests from blocked users when deny_follow_blocked is enabled" do

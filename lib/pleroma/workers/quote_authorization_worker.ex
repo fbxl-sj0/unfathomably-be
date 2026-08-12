@@ -34,7 +34,8 @@ defmodule Pleroma.Workers.QuoteAuthorizationWorker do
          %QuoteAuthorization{} = record <- QuoteAuthorization.get_by_quote_object(quote_object),
          %Object{} = quoted_object <- Repo.get(Object, record.quoted_object_id),
          {:ok, document} <- Fetcher.fetch_and_contain_remote_object_from_id(authorization),
-         true <- QuotePolicy.valid_authorization?(document, authorization, quote_object, quoted_object),
+         true <-
+           QuotePolicy.valid_authorization?(document, authorization, quote_object, quoted_object),
          {:ok, _object} <- QuoteAuthorization.transition(record, "accepted", authorization) do
       :ok
     else

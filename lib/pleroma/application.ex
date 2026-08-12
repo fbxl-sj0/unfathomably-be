@@ -14,6 +14,7 @@ defmodule Pleroma.Application do
   @name Mix.Project.config()[:name]
   @compat_name Mix.Project.config()[:compat_name]
   @version Mix.Project.config()[:version]
+  @homepage Mix.Project.config()[:homepage_url]
   @repository Mix.Project.config()[:source_url]
 
   def name, do: @name
@@ -21,6 +22,7 @@ defmodule Pleroma.Application do
   def version, do: @version
   def named_version, do: @name <> " " <> @version
   def compat_version, do: @compat_name <> " " <> @version
+  def homepage, do: @homepage
   def repository, do: @repository
 
   def user_agent do
@@ -108,11 +110,15 @@ defmodule Pleroma.Application do
         cachex_children() ++
         http_children(adapter) ++
         [
+          Pleroma.SystemMemoryMonitor,
           Pleroma.Stats,
           Pleroma.Instances.Cache,
           Pleroma.JobQueueMonitor,
           {Majic.Pool, [name: Pleroma.MajicPool, pool_size: Config.get([:majic_pool, :size], 2)]},
           {Oban, Config.get(Oban)},
+          Pleroma.Nostr.Supervisor,
+          Pleroma.AutomatedSourcePacer,
+          Pleroma.Web.ActivityPub.FediBuzzConnector,
           Pleroma.Web.Endpoint,
           TzWorld.Backend.DetsWithIndexCache
         ] ++
@@ -157,6 +163,7 @@ defmodule Pleroma.Application do
     [
       build_cachex("used_captcha", ttl_interval: seconds_valid_interval()),
       build_cachex("user", default_ttl: 25_000, ttl_interval: 1000, limit: 2500),
+      build_cachex("following", limit: 2500),
       build_cachex("object", default_ttl: 25_000, ttl_interval: 1000, limit: 2500),
       build_cachex("rich_media", default_ttl: :timer.minutes(120), limit: 5000),
       build_cachex("scrubber", limit: 2500),
@@ -166,6 +173,8 @@ defmodule Pleroma.Application do
       build_cachex("emoji_packs", expiration: emoji_packs_expiration(), limit: 10),
       build_cachex("failed_proxy_url", limit: 2500),
       build_cachex("failed_media_helper", default_ttl: :timer.minutes(15), limit: 2_500),
+      build_cachex("failed_featured_collection", default_ttl: :timer.minutes(15), limit: 2_500),
+      build_cachex("media_preview", default_ttl: :timer.hours(24), limit: 500),
       build_cachex("banned_urls", default_ttl: :timer.hours(24 * 30), limit: 5_000),
       build_cachex("chat_message_id_idempotency_key",
         expiration: chat_message_id_idempotency_key_expiration(),
@@ -176,6 +185,12 @@ defmodule Pleroma.Application do
       build_cachex("rel_me", default_ttl: :timer.minutes(30), limit: 2_500),
       build_cachex("remote_group_backfill", default_ttl: :timer.minutes(5), limit: 5_000),
       build_cachex("remote_group_preview", default_ttl: :timer.minutes(5), limit: 5_000),
+      build_cachex("native_catalog", default_ttl: :timer.minutes(5), limit: 2_500),
+      build_cachex("nostr_ingest_dedup", default_ttl: :timer.minutes(10), limit: 25_000),
+      build_cachex("nostr_subscriptions", default_ttl: :timer.minutes(1), limit: 10),
+      build_cachex("nostr_relay_info", default_ttl: :timer.hours(6), limit: 128),
+      build_cachex("nostr_search", default_ttl: :timer.minutes(5), limit: 500),
+      build_cachex("http_signature_format", default_ttl: :timer.hours(24), limit: 5_000),
       build_cachex("host_meta", default_ttl: :timer.minutes(120), limit: 5000)
     ]
   end
@@ -227,13 +242,14 @@ defmodule Pleroma.Application do
   end
 
   defp task_children do
-    children = [
-      %{
-        id: :web_push_init,
-        start: {Task, :start_link, [&Pleroma.Web.Push.init/0]},
-        restart: :temporary
-      }
-    ]
+    children =
+      [
+        %{
+          id: :web_push_init,
+          start: {Task, :start_link, [&Pleroma.Web.Push.init/0]},
+          restart: :temporary
+        }
+      ] ++ marketplace_service_actor_children()
 
     if application_config(:internal_fetch, true) do
       children ++
@@ -246,6 +262,20 @@ defmodule Pleroma.Application do
         ]
     else
       children
+    end
+  end
+
+  defp marketplace_service_actor_children do
+    if Pleroma.Config.get(:env) == :test do
+      []
+    else
+      [
+        %{
+          id: :marketplace_service_actor_init,
+          start: {Task, :start_link, [&Pleroma.Web.ActivityPub.Marketplace.init/0]},
+          restart: :temporary
+        }
+      ]
     end
   end
 

@@ -68,6 +68,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFields do
       field(:quote, ObjectValidators.ObjectID)
       field(:quoteUrl, ObjectValidators.ObjectID)
       field(:quoteAuthorization, ObjectValidators.ObjectID)
+      field(:replyAuthorization, ObjectValidators.ObjectID)
       field(:quoteRequest, ObjectValidators.ObjectID)
       field(:quoteState, :string)
       field(:quoteTargetActor, ObjectValidators.ObjectID)
@@ -84,7 +85,16 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFields do
       field(:startTime, ObjectValidators.DateTime)
       field(:endTime, ObjectValidators.DateTime)
 
-      field(:joinMode, :string, default: "free")
+      field(:joinMode, :string)
+      field(:eventStatus, :string)
+      field(:eventAttendanceMode, :string)
+      field(:category, :string)
+      field(:maximumAttendeeCapacity, :integer)
+      field(:remainingAttendeeCapacity, :integer)
+      field(:participantCount, :integer)
+      field(:isOnline, :boolean)
+      field(:onlineAddress, :string)
+      field(:timezone, :string)
 
       embeds_one(:location, PlaceValidator)
 

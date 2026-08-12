@@ -21,7 +21,7 @@ defmodule Pleroma.Gun.ConnectionPoolTest do
       Registry.register(
         ConnectionPool,
         key,
-        {conn_pid, [self()], 1, System.monotonic_time(:millisecond)}
+        {conn_pid, nil}
       )
 
       {:ok, %{}}
@@ -29,6 +29,30 @@ defmodule Pleroma.Gun.ConnectionPoolTest do
 
     @impl true
     def handle_call(:remove_client, _from, state) do
+      {:stop, :normal, state}
+    end
+  end
+
+  defmodule StaleAddWorker do
+    use GenServer
+
+    def start_link(key, conn_pid) do
+      GenServer.start_link(__MODULE__, {key, conn_pid})
+    end
+
+    @impl true
+    def init({key, conn_pid}) do
+      Registry.register(
+        ConnectionPool,
+        key,
+        {conn_pid, nil}
+      )
+
+      {:ok, %{}}
+    end
+
+    @impl true
+    def handle_call(:checkout, _from, state) do
       {:stop, :normal, state}
     end
   end
@@ -49,9 +73,35 @@ defmodule Pleroma.Gun.ConnectionPoolTest do
     on_exit(fn -> if Process.alive?(conn_pid), do: Process.exit(conn_pid, :kill) end)
 
     {:ok, worker_pid} = NormalExitWorker.start_link("normal-exit-release", conn_pid)
+    worker_ref = Process.monitor(worker_pid)
 
     assert :ok = ConnectionPool.release_conn(conn_pid)
-    refute Process.alive?(worker_pid)
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker_pid, :normal}
+  end
+
+  test "get_conn/2 retries when a registered worker exits before checkout" do
+    uri = URI.parse("http://stale-worker.example")
+
+    fingerprint =
+      %{}
+      |> :erlang.term_to_binary()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    key = "#{uri.scheme}:#{uri.host}:#{uri.port}:#{fingerprint}"
+    stale_conn_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    on_exit(fn ->
+      if Process.alive?(stale_conn_pid), do: Process.exit(stale_conn_pid, :kill)
+    end)
+
+    {:ok, stale_worker_pid} = StaleAddWorker.start_link(key, stale_conn_pid)
+    stale_worker_ref = Process.monitor(stale_worker_pid)
+
+    assert {:ok, conn_pid} = ConnectionPool.get_conn(uri, [])
+    refute conn_pid == stale_conn_pid
+    assert_receive {:DOWN, ^stale_worker_ref, :process, ^stale_worker_pid, :normal}
+    assert :ok = ConnectionPool.release_conn(conn_pid)
   end
 
   test "gives the same connection to 2 concurrent requests" do

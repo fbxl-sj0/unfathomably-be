@@ -70,8 +70,8 @@ defmodule Pleroma.Web.PleromaAPI.TwoFactorAuthenticationController do
         %{"method" => "totp", "password" => _, "code" => _} = params
       ) do
     with {:ok, _user} <- Utils.confirm_current_password(user, params["password"]),
-         {:ok, _user} <- MFA.confirm_totp(user, params) do
-      json(conn, %{})
+         {:ok, _user, codes} <- MFA.confirm_totp_with_backup_codes(user, params) do
+      json(conn, %{codes: codes})
     else
       {:error, message} ->
         json_response(conn, :unprocessable_entity, %{error: message})

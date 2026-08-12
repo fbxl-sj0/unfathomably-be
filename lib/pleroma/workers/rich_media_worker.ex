@@ -24,7 +24,7 @@ defmodule Pleroma.Workers.RichMediaWorker do
         :cancelled,
         :discarded
       ],
-      keys: [:op, :url, :activity_id]
+      keys: [:op, :url]
     ]
 
   @impl Oban.Worker
@@ -47,6 +47,6 @@ defmodule Pleroma.Workers.RichMediaWorker do
 
   @impl Oban.Worker
   def timeout(_job) do
-    Config.get([:rich_media, :timeout], 5_000) + :timer.seconds(2)
+    Config.get([:rich_media, :timeout], 5_000) * 3 + :timer.seconds(2)
   end
 end

@@ -68,6 +68,33 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
 
   def filter_implicit_mention_ap_ids(_, _object), do: []
 
+  def filter_implicit_mention_ap_ids(ap_ids, object, users)
+      when is_list(ap_ids) and is_map(users) do
+    group_reply? = group_reply_context?(object)
+    replied_to_actor = if group_reply?, do: replied_to_actor(object)
+
+    Enum.reject(ap_ids, fn
+      ap_id when is_binary(ap_id) ->
+        case Map.get(users, ap_id) do
+          %User{actor_type: "Group"} ->
+            true
+
+          %User{ap_id: ^replied_to_actor} when group_reply? ->
+            true
+
+          _ ->
+            false
+        end
+
+      _ ->
+        false
+    end)
+  end
+
+  def filter_implicit_mention_ap_ids(ap_ids, object, _users) do
+    filter_implicit_mention_ap_ids(ap_ids, object)
+  end
+
   def addressed_group_ap_ids(object) when is_map(object) do
     object
     |> group_context_ap_ids()
@@ -131,6 +158,7 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
     |> internal_group_ap_ids()
     |> Kernel.++(audience_ap_ids(object))
     |> Kernel.++(recipient_group_ap_ids(object))
+    |> Kernel.++(target_group_ap_ids(object))
     |> Kernel.++(mention_group_ap_ids(object))
     |> Kernel.++(content_group_ap_ids(object))
     |> Kernel.++(actor_group_ap_ids(object))
@@ -213,6 +241,17 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
   end
 
   defp actor_group_ap_ids(_), do: []
+
+  # NodeBB addresses category posts through `target`. Only retain targets that
+  # already resolve to Group actors so ordinary object and collection targets
+  # cannot be promoted into group audience state.
+  defp target_group_ap_ids(%{"target" => target}) do
+    target
+    |> normalize_ap_ids()
+    |> Enum.filter(&group_actor_ap_id?/1)
+  end
+
+  defp target_group_ap_ids(_), do: []
 
   defp attributed_to_group_ap_ids(%{"attributedTo" => attributed_to}) do
     attributed_to

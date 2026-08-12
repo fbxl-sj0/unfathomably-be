@@ -37,6 +37,9 @@ defmodule Pleroma.Instances do
   def record_delivery_failure(url, reason \\ :failure, opts \\ []),
     do: Instance.record_delivery_failure(url, reason, opts)
 
+  def delivery_backoff_seconds(url_or_host),
+    do: Instance.delivery_backoff_seconds(url_or_host)
+
   def get_consistently_unreachable, do: Instance.get_consistently_unreachable()
 
   def set_consistently_unreachable(url_or_host),

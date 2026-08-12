@@ -68,7 +68,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.QuestionHandlingTest do
     assert reply_object.data["context"] == object.data["context"]
   end
 
-  test "Mastodon Question activity with HTML tags in plaintext" do
+  test "rejects a remote Question with HTML tags in plaintext options" do
     options = [
       %{
         "type" => "Note",
@@ -97,10 +97,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.QuestionHandlingTest do
       |> Jason.decode!()
       |> Kernel.put_in(["object", "oneOf"], options)
 
-    {:ok, %Activity{local: false} = activity} = Transmogrifier.handle_incoming(data)
-    object = Object.normalize(activity, fetch: false)
-
-    assert Enum.sort(object.data["oneOf"]) == Enum.sort(options)
+    assert {:error, _reason} = Transmogrifier.handle_incoming(data)
   end
 
   test "Mastodon Question activity with custom emojis" do

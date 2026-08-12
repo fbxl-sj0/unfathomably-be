@@ -6,6 +6,10 @@ defmodule Pleroma.Web.Router do
   use Pleroma.Web, :router
   import Phoenix.LiveDashboard.Router
 
+  defp user_enabled(conn, opts) do
+    Pleroma.Web.Plugs.UserEnabledPlug.call(conn, opts)
+  end
+
   pipeline :accepts_html do
     plug(:accepts, ["html"])
   end
@@ -35,7 +39,7 @@ defmodule Pleroma.Web.Router do
   pipeline :oauth do
     plug(:fetch_session)
     plug(Pleroma.Web.Plugs.OAuthPlug)
-    plug(Pleroma.Web.Plugs.UserEnabledPlug)
+    plug(:user_enabled)
     plug(Pleroma.Web.Plugs.EnsureUserTokenAssignsPlug)
   end
 
@@ -57,7 +61,7 @@ defmodule Pleroma.Web.Router do
   end
 
   pipeline :after_auth do
-    plug(Pleroma.Web.Plugs.UserEnabledPlug)
+    plug(:user_enabled)
     plug(Pleroma.Web.Plugs.SetUserSessionIdPlug)
     plug(Pleroma.Web.Plugs.EnsureUserTokenAssignsPlug)
     plug(Pleroma.Web.Plugs.UserTrackingPlug)
@@ -65,6 +69,7 @@ defmodule Pleroma.Web.Router do
   end
 
   pipeline :base_api do
+    plug(Pleroma.Web.Plugs.NoIndexPlug)
     plug(:accepts, ["json"])
     plug(:fetch_session)
     plug(:authenticate)
@@ -188,6 +193,11 @@ defmodule Pleroma.Web.Router do
     plug(:accepts, ["json", "jrd", "jrd+json", "xml", "xrd+xml", "activity+json"])
   end
 
+  pipeline :diaspora do
+    plug(Pleroma.Web.Plugs.NoIndexPlug)
+    plug(:accepts, ["html", "xml", "json"])
+  end
+
   pipeline :config do
     plug(:accepts, ["json", "xml"])
     plug(OpenApiSpex.Plug.PutApiSpec, module: Pleroma.Web.ApiSpec)
@@ -208,6 +218,7 @@ defmodule Pleroma.Web.Router do
   end
 
   pipeline :http_signature do
+    plug(Pleroma.Web.Plugs.SignatureNegotiationPlug)
     plug(Pleroma.Web.Plugs.HTTPSignaturePlug)
     plug(Pleroma.Web.Plugs.MappedSignatureToIdentityPlug)
     plug(Pleroma.Web.Plugs.EnsureHostMatchesPlug)
@@ -280,6 +291,28 @@ defmodule Pleroma.Web.Router do
     get("/config", ConfigController, :show)
     post("/config", ConfigController, :update)
     get("/config/descriptions", ConfigController, :descriptions)
+    get("/federation_connectors/marketplace", FederationConnectorController, :index)
+    post("/federation_connectors/marketplace", FederationConnectorController, :connect)
+    delete("/federation_connectors/marketplace/:id", FederationConnectorController, :delete)
+    get("/fasps", FASPController, :index)
+    get("/fasps/:id", FASPController, :show)
+    post("/fasps/:id/approve", FASPController, :approve)
+    post("/fasps/:id/reject", FASPController, :reject)
+    delete("/fasps/:id", FASPController, :delete)
+    post("/fasps/:id/refresh", FASPController, :refresh)
+
+    post(
+      "/fasps/:id/capabilities/:capability/:version/activate",
+      FASPController,
+      :activate
+    )
+
+    delete(
+      "/fasps/:id/capabilities/:capability/:version/activate",
+      FASPController,
+      :deactivate
+    )
+
     get("/need_reboot", AdminAPIController, :need_reboot)
     get("/restart", AdminAPIController, :restart)
 
@@ -310,6 +343,10 @@ defmodule Pleroma.Web.Router do
     delete("/rules/:id", RuleController, :delete)
 
     get("/federation/health", FederationHealthController, :show)
+    get("/federation/curated_groups", FederatedTargetCurationController, :index)
+    post("/federation/curated_groups", FederatedTargetCurationController, :create)
+    patch("/federation/curated_groups/:id", FederatedTargetCurationController, :update)
+    delete("/federation/curated_groups/:id", FederatedTargetCurationController, :delete)
 
     get("/webhooks", WebhookController, :index)
     get("/webhooks/:id", WebhookController, :show)
@@ -545,6 +582,7 @@ defmodule Pleroma.Web.Router do
 
     get("/authorize_interaction", RemoteFollowController, :authorize_interaction)
     get("/authorize-interaction", RemoteFollowController, :authorize_interaction)
+    get("/activitypub/externalInteraction", RemoteFollowController, :authorize_interaction)
   end
 
   scope "/api/pleroma", Pleroma.Web.TwitterAPI do
@@ -556,6 +594,7 @@ defmodule Pleroma.Web.Router do
     put("/notification_settings", UtilController, :update_notificaton_settings)
     post("/disable_account", UtilController, :disable_account)
     post("/move_account", UtilController, :move_account)
+    post("/move_account/restart", UtilController, :restart_move_account)
 
     put("/aliases", UtilController, :add_alias)
     get("/aliases", UtilController, :list_aliases)
@@ -800,11 +839,30 @@ defmodule Pleroma.Web.Router do
     end
   end
 
+  # Worlds may show a bounded local catalog before a visitor signs in. This
+  # endpoint returns only operator-configured origins and active, visible,
+  # reachable specialized actors already stored locally; it does not search,
+  # resolve, follow, or fetch a remote provider.
+  scope "/api/v1", Pleroma.Web.MastodonAPI do
+    pipe_through(:api)
+
+    get("/discovery/native-communities", NativeCommunityCatalogController, :index)
+    get("/discovery/native/workflows", NativeDiscoveryController, :workflows)
+    get("/atproto/oauth/client-metadata.json", ATProtoController, :oauth_metadata)
+    get("/atproto/oauth/callback", ATProtoController, :oauth_callback)
+  end
+
   scope "/api/v1", Pleroma.Web.MastodonAPI do
     pipe_through(:authenticated_api)
 
     get("/accounts/verify_credentials", AccountController, :verify_credentials)
     patch("/accounts/update_credentials", AccountController, :update_credentials)
+
+    get("/atproto/link", ATProtoController, :show)
+    post("/atproto/link", ATProtoController, :create)
+    post("/atproto/oauth/start", ATProtoController, :oauth_start)
+    post("/atproto/provision", ATProtoController, :provision)
+    delete("/atproto/link", ATProtoController, :delete)
 
     get("/accounts/relationships", AccountController, :relationships)
     get("/accounts/familiar_followers", AccountController, :familiar_followers)
@@ -852,14 +910,18 @@ defmodule Pleroma.Web.Router do
     post("/follow_requests/:id/reject", FollowRequestController, :reject)
 
     get("/groups", FederatedGroupController, :index)
+    get("/groups/discover", FederatedGroupController, :discover)
     post("/groups", FederatedGroupController, :create)
     put("/groups/:id", FederatedGroupController, :update)
     delete("/groups/:id", FederatedGroupController, :delete)
     get("/groups/search", FederatedGroupController, :search)
     get("/discovery/targets", FederatedTargetController, :search)
+    get("/discovery/native", NativeDiscoveryController, :index)
+    get("/discovery/native-objects/catalog", NativeObjectController, :catalog)
+    get("/discovery/native-objects/connectors", NativeObjectController, :connectors)
+    get("/discovery/native-objects/resolve", NativeObjectController, :resolve)
     post("/discovery/native-objects", NativeObjectController, :create)
-    get("/groups/relationships", FederatedGroupController, :relationships)
-    get("/groups/:id/memberships", FederatedGroupController, :memberships)
+    patch("/discovery/native-objects/:id/state", NativeObjectController, :transition)
     get("/groups/:id/membership_requests", FederatedGroupController, :membership_requests)
 
     post(
@@ -884,6 +946,10 @@ defmodule Pleroma.Web.Router do
     delete("/groups/:id/blocks", FederatedGroupController, :unblock)
     post("/groups/:id/follow", FederatedGroupController, :follow)
     post("/groups/:id/unfollow", FederatedGroupController, :unfollow)
+
+    get("/book_shelves", BookShelfController, :index)
+    post("/book_shelves", BookShelfController, :put)
+    delete("/book_shelves", BookShelfController, :delete)
 
     get("/lists", ListController, :index)
     get("/lists/:id", ListController, :show)
@@ -949,8 +1015,13 @@ defmodule Pleroma.Web.Router do
     post("/statuses/:id/unreblog", StatusController, :unreblog)
     post("/statuses/:id/favourite", StatusController, :favourite)
     post("/statuses/:id/unfavourite", StatusController, :unfavourite)
+    post("/statuses/:id/listen", StatusController, :listen)
     post("/statuses/:id/pin", StatusController, :pin)
     post("/statuses/:id/unpin", StatusController, :unpin)
+    post("/statuses/:id/distinguish", StatusController, :distinguish)
+    post("/statuses/:id/undistinguish", StatusController, :undistinguish)
+    post("/statuses/:id/accept_answer", AcceptedAnswerController, :accept)
+    post("/statuses/:id/unaccept_answer", AcceptedAnswerController, :unaccept)
     post("/statuses/:id/bookmark", StatusController, :bookmark)
     post("/statuses/:id/unbookmark", StatusController, :unbookmark)
     post("/statuses/:id/mute", StatusController, :mute_conversation)
@@ -968,7 +1039,6 @@ defmodule Pleroma.Web.Router do
 
     get("/timelines/home", TimelineController, :home)
     get("/timelines/direct", TimelineController, :direct)
-    get("/timelines/groups", FederatedGroupTimelineController, :index)
     get("/timelines/sources", FederatedSourceTimelineController, :index)
     get("/timelines/feeds", FederatedSourceTimelineController, :index)
     get("/timelines/list/:list_id", TimelineController, :list)
@@ -994,11 +1064,16 @@ defmodule Pleroma.Web.Router do
     get("/accounts/lookup", AccountController, :lookup)
 
     get("/groups/lookup", FederatedGroupController, :lookup)
+    get("/groups/relationships", FederatedGroupController, :relationships)
+    get("/timelines/groups", FederatedGroupTimelineController, :index)
     get("/groups/:id/preview", FederatedGroupController, :preview)
     get("/groups/:id/statuses", FederatedGroupTimelineController, :show)
+    get("/groups/:id/memberships", FederatedGroupController, :memberships)
     get("/groups/:id", FederatedGroupController, :show)
 
     get("/accounts/:id/statuses", AccountController, :statuses)
+    get("/accounts/:id/worlds", BookShelfController, :worlds)
+    get("/accounts/:id/book_shelves", BookShelfController, :account_index)
     get("/accounts/:id/followers", AccountController, :followers)
     get("/accounts/:id/following", AccountController, :following)
     get("/accounts/:id/endorsements", AccountController, :endorsements)
@@ -1007,6 +1082,7 @@ defmodule Pleroma.Web.Router do
     post("/accounts", AccountController, :create)
 
     get("/instance", InstanceController, :show)
+    get("/instance/activity", InstanceActivityController, :show)
     get("/instance/peers", InstanceController, :peers)
     get("/instance/rules", InstanceController, :rules)
     get("/instance/extended_description", InstanceController, :extended_description)
@@ -1124,6 +1200,15 @@ defmodule Pleroma.Web.Router do
     get("/users/:nickname/statuses/:id/activity", OStatus.OStatusController, :activity)
   end
 
+  # Flohmarkt peers resolve this exact actor path. It must precede the generic
+  # /users/:nickname profile route below, which otherwise treats "instance" as
+  # a local profile nickname and returns a frontend-facing 404.
+  scope "/", Pleroma.Web.ActivityPub do
+    pipe_through(:activitypub_client)
+
+    get("/users/instance", ActivityPubController, :marketplace_service)
+  end
+
   scope "/", Pleroma.Web do
     # Note: html format is supported only if static FE is enabled
     # Note: http signature is only considered for json requests (no auth for non-json requests)
@@ -1157,10 +1242,12 @@ defmodule Pleroma.Web.Router do
 
   pipeline :ap_service_actor do
     plug(:accepts, ["activity+json", "json"])
+    plug(Pleroma.Web.Plugs.ActivityPubMetricsPlug)
   end
 
   # Server to Server (S2S) AP interactions
   pipeline :activitypub do
+    plug(Pleroma.Web.Plugs.NoIndexPlug)
     plug(:ap_service_actor)
     plug(:http_signature)
   end
@@ -1171,6 +1258,7 @@ defmodule Pleroma.Web.Router do
 
   # Client to Server (C2S) AP interactions
   pipeline :activitypub_client do
+    plug(Pleroma.Web.Plugs.NoIndexPlug)
     plug(:ap_service_actor)
     plug(:fetch_session)
     plug(:authenticate)
@@ -1181,26 +1269,45 @@ defmodule Pleroma.Web.Router do
     pipe_through([:activitypub_client])
 
     get("/api/ap/whoami", ActivityPubController, :whoami)
+    get("/users/:nickname/items/:uuid", ActivityPubController, :marketplace_item)
+    get("/users/instance/outbox", ActivityPubController, :marketplace_outbox)
+    get("/users/instance/followers", ActivityPubController, :marketplace_followers)
+    get("/users/instance/following", ActivityPubController, :marketplace_following)
+    get("/users/instance/collections/featured", ActivityPubController, :marketplace_featured)
     get("/users/:nickname/inbox", ActivityPubController, :read_inbox)
 
     get("/users/:nickname/outbox", ActivityPubController, :outbox)
+    get("/users/:nickname/books/:shelf", BookShelfController, :show)
     post("/users/:nickname/outbox", ActivityPubController, :update_outbox)
     post("/api/ap/upload_media", ActivityPubController, :upload_media)
 
     # The following two are S2S as well, see `ActivityPub.fetch_follow_information_for_user/1`:
     get("/users/:nickname/followers", ActivityPubController, :followers)
     get("/users/:nickname/following", ActivityPubController, :following)
+    get("/users/:nickname/collections/wall", AppendableCollectionController, :show)
     get("/users/:nickname/collections/featured", ActivityPubController, :pinned)
     get("/users/:nickname/collections/moderators", ActivityPubController, :moderators)
     get("/objects/:uuid/replies", ActivityPubController, :object_replies)
     get("/contexts/:uuid", ActivityPubController, :context)
     get("/contexts/:uuid/items", ActivityPubController, :context_items)
+    get("/feature_authorizations/:id", FeatureAuthorizationController, :show)
     get("/quote_authorizations/:id", QuoteAuthorizationController, :show)
+  end
+
+  scope "/", Pleroma.Web.ActivityPub do
+    pipe_through(:activitypub)
+
+    get(
+      "/users/:nickname/followers_synchronization",
+      FollowersSynchronizationController,
+      :show
+    )
   end
 
   scope "/", Pleroma.Web.ActivityPub do
     pipe_through([:activitypub, :inbox_guard])
     post("/inbox", ActivityPubController, :inbox)
+    post("/users/instance/inbox", ActivityPubController, :marketplace_inbox)
     post("/users/:nickname/inbox", ActivityPubController, :inbox)
   end
 
@@ -1230,15 +1337,35 @@ defmodule Pleroma.Web.Router do
 
     get("/host-meta", WebFinger.WebFingerController, :host_meta)
     get("/webfinger", WebFinger.WebFingerController, :webfinger)
+    get("/nostr.json", Nostr.NIP05Controller, :show)
     get("/nodeinfo", Nodeinfo.NodeinfoController, :schemas)
+  end
+
+  scope "/", Pleroma.Web.Diaspora do
+    pipe_through(:diaspora)
+
+    get("/hcard/users/:nickname", HCardController, :show)
+    post("/receive/public", ReceiveController, :public)
+    post("/receive/users/:guid", ReceiveController, :private)
+    get("/fetch/:type/:guid", FetchController, :show)
   end
 
   scope "/nodeinfo", Pleroma.Web do
     get("/:version", Nodeinfo.NodeinfoController, :nodeinfo)
   end
 
-  scope "/", Pleroma.Web do
+  scope "/fasp", Pleroma.Web.FASP do
     pipe_through(:api)
+
+    get("/providers", DiscoveryController, :index)
+    post("/registration", RegistrationController, :create)
+  end
+
+  scope "/", Pleroma.Web do
+    # A browser opening the manifest directly advertises HTML. The response is
+    # still JSON, but accepting either representation here avoids turning a
+    # harmless direct navigation into a logged 406 error.
+    pipe_through(:accepts_html_json)
 
     get("/manifest.json", ManifestController, :show)
   end
@@ -1300,6 +1427,13 @@ defmodule Pleroma.Web.Router do
   scope "/", Pleroma.Web.MongooseIM do
     get("/user_exists", MongooseIMController, :user_exists)
     get("/check_password", MongooseIMController, :check_password)
+  end
+
+  scope "/api/v3", Pleroma.Web.LemmyAPI do
+    pipe_through(:api)
+
+    get("/site", SiteController, :show)
+    get("/community/list", CommunityController, :list)
   end
 
   scope "/", Pleroma.Web.Fallback do

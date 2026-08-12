@@ -57,7 +57,7 @@ defmodule Pleroma.Web.ActivityPub.GroupDeleteFederationTest do
     assert announce.data["type"] == "Announce"
     assert announce.data["actor"] == group.ap_id
     assert announce.data["object"] == delete.data["id"]
-    assert announce.data["audience"] == group.ap_id
+    assert announce.data["audience"] == [group.ap_id]
     assert announce.data["to"] == [Pleroma.Constants.as_public()]
     assert group.follower_address in announce.data["cc"]
   end

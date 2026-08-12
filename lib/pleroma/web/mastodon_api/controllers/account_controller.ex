@@ -5,10 +5,13 @@
 defmodule Pleroma.Web.MastodonAPI.AccountController do
   use Pleroma.Web, :controller
 
+  alias Pleroma.ATProto.Identities, as: ATProtoIdentities
+  alias Pleroma.Diaspora.Identities, as: DiasporaIdentities
   alias Pleroma.FederationStatus
   alias Pleroma.Maps
   alias Pleroma.User
   alias Pleroma.UserNote
+  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Pipeline
@@ -17,7 +20,6 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.ListView
   alias Pleroma.Web.MastodonAPI.MastodonAPI
-  alias Pleroma.Web.MastodonAPI.MastodonAPIController
   alias Pleroma.Web.MastodonAPI.StatusView
   alias Pleroma.Web.OAuth.OAuthController
   alias Pleroma.Web.Plugs.OAuthScopesPlug
@@ -85,7 +87,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   @relationship_actions [:follow, :unfollow, :remove_from_followers]
   @needs_account ~W(
     followers following lists follow unfollow mute unmute block unblock
-    note endorse unendorse endorsements remove_from_followers
+    note endorse unendorse endorsements identity_proofs remove_from_followers
   )a
 
   plug(
@@ -225,6 +227,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
       |> Maps.put_if_present(:is_locked, params[:locked])
       # Note: param name is indeed :discoverable (not an error)
       |> Maps.put_if_present(:is_discoverable, params[:discoverable])
+      # Post indexing is independent from profile-directory discovery.
+      |> Maps.put_if_present(:is_indexable, params[:indexable])
       |> Maps.put_if_present(:birthday, params[:birthday])
       |> Maps.put_if_present(:location, params[:location])
       |> Maps.put_if_present(:language, Pleroma.Web.Gettext.normalize_locale(params[:language]))
@@ -334,6 +338,9 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
         params
         |> Map.delete(:tagged)
         |> Map.put(:tag, params[:tagged])
+        |> Map.put(:restrict_unauthenticated, true)
+        |> maybe_put_native_family()
+        |> maybe_put_unauthenticated_web_visibility(user, reading_user)
 
       activities = ActivityPub.fetch_user_activities(user, reading_user, params)
 
@@ -350,6 +357,27 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
       error -> user_visibility_error(conn, error)
     end
   end
+
+  @native_families ~w[
+    audio video longform photo books bookmarks groups events development
+    models marketplace games routes culture coordination publishing
+  ]
+
+  defp maybe_put_native_family(%{native_family: family} = params)
+       when family in @native_families do
+    Map.put(params, :only_native, true)
+  end
+
+  defp maybe_put_native_family(params), do: Map.delete(params, :native_family)
+
+  defp maybe_put_unauthenticated_web_visibility(params, user, nil) do
+    case ActorExtensions.unauthenticated_web_visibility(user.actor_extensions) do
+      %{} = visibility -> Map.put(params, :profile_web_visibility, visibility)
+      nil -> params
+    end
+  end
+
+  defp maybe_put_unauthenticated_web_visibility(params, _user, _reading_user), do: params
 
   defp user_visibility_error(conn, error) do
     case error do
@@ -427,7 +455,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
 
   def follow(%{body_params: params, assigns: %{user: follower, account: followed}} = conn, _) do
     with :ok <- ensure_federation_follow_allowed(followed),
-         {:ok, follower} <- MastodonAPI.follow(follower, followed, params) do
+         {:ok, follower} <- follow_account(follower, followed, params) do
       render(conn, "relationship.json", user: follower, target: followed)
     else
       {:error, {:federation_blocked, message}} ->
@@ -444,8 +472,40 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   end
 
   def unfollow(%{assigns: %{user: follower, account: followed}} = conn, _params) do
-    with {:ok, follower} <- CommonAPI.unfollow(follower, followed) do
+    with {:ok, follower} <- unfollow_account(follower, followed) do
       render(conn, "relationship.json", user: follower, target: followed)
+    end
+  end
+
+  defp follow_account(follower, followed, params) do
+    cond do
+      ATProtoIdentities.mirror?(followed) ->
+        MastodonAPI.follow(follower, followed, params)
+
+      DiasporaIdentities.mirror?(followed) ->
+        MastodonAPI.follow(follower, followed, params)
+
+      Pleroma.Nostr.Identity.nostr?(followed) ->
+        Pleroma.Nostr.Bridge.follow(follower, followed)
+
+      true ->
+        MastodonAPI.follow(follower, followed, params)
+    end
+  end
+
+  defp unfollow_account(follower, followed) do
+    cond do
+      ATProtoIdentities.mirror?(followed) ->
+        CommonAPI.unfollow(follower, followed)
+
+      DiasporaIdentities.mirror?(followed) ->
+        CommonAPI.unfollow(follower, followed)
+
+      Pleroma.Nostr.Identity.nostr?(followed) ->
+        Pleroma.Nostr.Bridge.unfollow(follower, followed)
+
+      true ->
+        CommonAPI.unfollow(follower, followed)
     end
   end
 
@@ -696,5 +756,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   end
 
   @doc "GET /api/v1/identity_proofs"
-  def identity_proofs(conn, params), do: MastodonAPIController.empty_array(conn, params)
+  def identity_proofs(%{assigns: %{account: account}} = conn, _params) do
+    json(conn, account.identity_proofs || [])
+  end
 end

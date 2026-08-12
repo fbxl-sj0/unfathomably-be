@@ -85,6 +85,48 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest 
       assert length(cng.changes.attachment) == 1
     end
 
+    test "bounds remote attachments and preserves overflow as safe links", %{note: note} do
+      clear_config([:instance, :remote_media_attachment_limit], 1)
+
+      attachments =
+        for number <- 1..3 do
+          %{
+            "type" => "Document",
+            "mediaType" => "image/png",
+            "url" => "https://media.example/#{number}.png"
+          }
+        end
+
+      cng =
+        note
+        |> Map.put("attachment", attachments)
+        |> ArticleNotePageValidator.cast_and_validate()
+
+      assert cng.valid?
+      assert length(cng.changes.attachment) == 1
+      assert cng.changes.content =~ "https://media.example/2.png"
+      refute cng.changes.content =~ "https://media.example/3.png"
+      assert cng.changes.content =~ "Additional attachments omitted."
+    end
+
+    test "applies the remote content limit after stripping HTML", %{note: note} do
+      clear_config([:instance, :remote_limit], 4)
+
+      valid =
+        note
+        |> Map.put("content", "<p><strong>1234</strong></p>")
+        |> ArticleNotePageValidator.cast_and_validate()
+
+      invalid =
+        note
+        |> Map.put("content", "<p><strong>12345</strong></p>")
+        |> ArticleNotePageValidator.cast_and_validate()
+
+      assert valid.valid?
+      refute invalid.valid?
+      assert {"is longer than the configured remote post limit", []} = invalid.errors[:content]
+    end
+
     test "a note with a non-list attachment field drops it without crashing", %{note: note} do
       note = Map.put(note, "attachment", "not an attachment")
 
@@ -105,6 +147,114 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest 
 
       assert cng.valid?
       refute Map.has_key?(cng.changes, :replies_collection)
+    end
+
+    test "preserves a modern GoToSocial reply authorization", %{note: note} do
+      authorization = "https://parent.example/authorizations/reply-1"
+
+      note =
+        note
+        |> Map.put("inReplyTo", "https://parent.example/statuses/1")
+        |> Map.put("replyAuthorization", authorization)
+
+      assert {:ok, validated, []} = ObjectValidator.validate(note, local: false)
+      assert validated["replyAuthorization"] == authorization
+    end
+
+    test "canonicalizes deprecated approvedBy reply authorization", %{note: note} do
+      authorization = "https://parent.example/authorizations/reply-legacy"
+
+      note =
+        note
+        |> Map.put("inReplyTo", "https://parent.example/statuses/1")
+        |> Map.put("approvedBy", authorization)
+
+      assert {:ok, validated, []} = ObjectValidator.validate(note, local: false)
+      assert validated["replyAuthorization"] == authorization
+      refute Map.has_key?(validated, "approvedBy")
+    end
+
+    test "a protected reply cannot widen the parent audience" do
+      parent_author =
+        insert(:user,
+          local: false,
+          ap_id: "https://parent.example/users/author",
+          follower_address: "https://parent.example/users/author/followers"
+        )
+
+      replier =
+        insert(:user,
+          local: false,
+          ap_id: "https://reply.example/users/replier",
+          follower_address: "https://reply.example/users/replier/followers"
+        )
+
+      assert {:ok, _, _} = Pleroma.FollowingRelationship.follow(replier, parent_author)
+
+      parent =
+        insert(:note,
+          user: parent_author,
+          data: %{
+            "id" => "https://parent.example/statuses/1",
+            "type" => "Note",
+            "actor" => parent_author.ap_id,
+            "attributedTo" => parent_author.ap_id,
+            "to" => [parent_author.follower_address],
+            "cc" => [],
+            "content" => "Protected parent",
+            "context" => "https://parent.example/contexts/1"
+          }
+        )
+
+      base_reply = %{
+        "id" => "https://reply.example/statuses/1",
+        "type" => "Note",
+        "actor" => replier.ap_id,
+        "attributedTo" => replier.ap_id,
+        "inReplyTo" => parent.data["id"],
+        "to" => [parent_author.follower_address, parent_author.ap_id],
+        "cc" => [],
+        "content" => "Protected reply",
+        "context" => parent.data["context"]
+      }
+
+      assert ArticleNotePageValidator.cast_and_validate(base_reply).valid?
+
+      widened =
+        base_reply
+        |> Map.put("to", [parent_author.ap_id, replier.follower_address])
+        |> ArticleNotePageValidator.cast_and_validate()
+
+      refute widened.valid?
+
+      assert {"reply audience is broader than parent audience", []} =
+               widened.errors[:inReplyTo]
+    end
+
+    test "an unresolved non-public reply is rejected" do
+      actor =
+        insert(:user,
+          local: false,
+          ap_id: "https://reply.example/users/unresolved",
+          follower_address: "https://reply.example/users/unresolved/followers"
+        )
+
+      reply = %{
+        "id" => "https://reply.example/statuses/unresolved",
+        "type" => "Note",
+        "actor" => actor.ap_id,
+        "attributedTo" => actor.ap_id,
+        "inReplyTo" => "https://missing.example/statuses/1",
+        "to" => ["https://missing.example/users/author"],
+        "cc" => [],
+        "content" => "Incomplete protected reply",
+        "context" => "https://missing.example/contexts/1"
+      }
+
+      changeset = ArticleNotePageValidator.cast_and_validate(reply)
+
+      refute changeset.valid?
+      assert {"protected reply parent is unavailable", []} = changeset.errors[:inReplyTo]
     end
   end
 
@@ -193,6 +343,19 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest 
       "test/fixtures/mastodon-update-with-likes.json"
       |> File.read!()
       |> Jason.decode!()
+
+    %{valid?: true} = ArticleNotePageValidator.cast_and_validate(note)
+  end
+
+  test "a Note with a linked likes collection validates" do
+    insert(:user, ap_id: "https://pol.social/users/mkljczk")
+
+    %{"object" => note} =
+      "test/fixtures/mastodon-update-with-likes.json"
+      |> File.read!()
+      |> Jason.decode!()
+
+    note = Map.put(note, "likes", "https://pol.social/users/mkljczk/statuses/1/likes")
 
     %{valid?: true} = ArticleNotePageValidator.cast_and_validate(note)
   end

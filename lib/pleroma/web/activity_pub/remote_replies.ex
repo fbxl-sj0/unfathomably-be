@@ -76,14 +76,11 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
       Fetcher.fetch_object_from_id(reply_id, opts)
     else
       case safe_fetch_remote_object(reply_id) do
-        {:ok, %{} = data} ->
+        {:ok, %{} = data, prefetched_object} ->
           fetch_reply_ancestors(data, depth, MapSet.new([reply_id]), @max_parent_hops)
 
-          opts = Keyword.put(opts, :prefetched_data, data)
+          opts = Keyword.put(opts, :prefetched_object, prefetched_object)
           Fetcher.fetch_object_from_id(reply_id, opts)
-
-        {:ok, _invalid_data} ->
-          {:error, :invalid_remote_object}
 
         error ->
           error
@@ -131,7 +128,8 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
     with true <- http_url?(context_id),
          true <- same_origin?(context_id, object_id),
          true <- context_id != object_id,
-         {:ok, %{"type" => type} = data} <- safe_fetch_remote_object(context_id),
+         {:ok, %{"type" => type} = data, _prefetched_object} <-
+           safe_fetch_remote_object(context_id),
          true <- collection_type?(type) do
       data
       |> collection_item_ids(context_id, opts)
@@ -139,7 +137,9 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
     else
       error ->
         if error not in [false, nil] do
-          Logger.debug("Could not fetch remote context #{context_id}: #{inspect(error)}")
+          Logger.debug(
+            "Could not fetch remote context #{Pleroma.Helpers.UriHelper.log_safe_url(context_id)}: #{Pleroma.Helpers.UriHelper.log_safe_text(error)}"
+          )
         end
 
         []
@@ -150,7 +150,7 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
 
   defp remote_reply_ids(parent_id, opts) do
     with true <- http_url?(parent_id),
-         {:ok, %{} = data} <- safe_fetch_remote_object(parent_id) do
+         {:ok, %{} = data, _prefetched_object} <- safe_fetch_remote_object(parent_id) do
       reply_ids_from_data(data, opts)
     else
       _ -> []
@@ -170,65 +170,87 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
   defp reply_collection(%{"comments" => comments}), do: comments
   defp reply_collection(_), do: nil
 
-  defp collection_item_ids(nil, _parent_id, _opts), do: []
+  defp collection_item_ids(value, parent_id, opts) do
+    state = %{
+      pages_left: Keyword.get(opts, :remote_replies_pages_left, @max_collection_pages),
+      visited: Keyword.get(opts, :remote_replies_visited, MapSet.new())
+    }
 
-  defp collection_item_ids(items, _parent_id, _opts) when is_list(items) do
-    Enum.flat_map(items, &reply_item_ids/1)
+    state = seed_collection_identity(value, state)
+    {ids, _state} = traverse_collection(value, parent_id, state)
+    ids
   end
 
-  defp collection_item_ids(collection_url, parent_id, opts)
+  defp seed_collection_identity(%{"id" => id}, state) when is_binary(id) do
+    %{state | visited: MapSet.put(state.visited, id)}
+  end
+
+  defp seed_collection_identity(_value, state), do: state
+
+  defp traverse_collection(nil, _parent_id, state), do: {[], state}
+
+  defp traverse_collection(items, _parent_id, state) when is_list(items) do
+    {Enum.flat_map(items, &reply_item_ids/1), state}
+  end
+
+  defp traverse_collection(collection_url, parent_id, state)
        when is_binary(collection_url) do
-    fetch_collection_page(collection_url, parent_id, opts)
+    fetch_collection_page(collection_url, parent_id, state)
   end
 
-  defp collection_item_ids(%{} = collection, parent_id, opts) do
-    items =
-      collection["items"] ||
-        collection["orderedItems"] ||
-        []
+  defp traverse_collection(%{} = collection, parent_id, state) do
+    items = collection["items"] || collection["orderedItems"] || []
+    {item_ids, state} = traverse_collection(items, parent_id, state)
 
-    item_ids = collection_item_ids(items, parent_id, opts)
-
-    item_ids =
-      case item_ids do
-        [] ->
-          first_page =
-            collection["first"] ||
-              collection["current"]
-
-          collection_item_ids(first_page, parent_id, opts)
-
-        item_ids ->
-          item_ids
-      end
-
-    next_ids =
-      collection
-      |> Map.get("next")
-      |> collection_item_ids(parent_id, opts)
-
-    item_ids ++ next_ids
-  end
-
-  defp collection_item_ids(_, _parent_id, _opts), do: []
-
-  defp fetch_collection_page(collection_url, parent_id, opts) do
-    pages_left = Keyword.get(opts, :remote_replies_pages_left, @max_collection_pages)
-
-    if pages_left > 0 and same_origin?(collection_url, parent_id) do
-      with {:ok, %{} = page} <- safe_fetch_remote_object(collection_url),
-           type <- page["type"],
-           true <- is_nil(type) or collection_type?(type) do
-        opts = Keyword.put(opts, :remote_replies_pages_left, pages_left - 1)
-
-        collection_item_ids(page, parent_id, opts)
+    {item_ids, state} =
+      if item_ids == [] do
+        first_page = collection["first"] || collection["current"]
+        traverse_collection(first_page, parent_id, state)
       else
-        error ->
-          Logger.debug("Could not fetch remote replies #{collection_url}: #{inspect(error)}")
-          []
+        {item_ids, state}
       end
-    else
-      []
+
+    {next_ids, state} = traverse_collection(collection["next"], parent_id, state)
+    {item_ids ++ next_ids, state}
+  end
+
+  defp traverse_collection(_value, _parent_id, state), do: {[], state}
+
+  defp fetch_collection_page(collection_url, parent_id, state) do
+    cond do
+      state.pages_left <= 0 ->
+        {[], state}
+
+      MapSet.member?(state.visited, collection_url) ->
+        {[], state}
+
+      not same_origin?(collection_url, parent_id) ->
+        {[], state}
+
+      true ->
+        # Mark the page before network I/O. A page that points to itself, or a
+        # later page that closes a cycle, is therefore terminal even when the
+        # remote response fails or contains another collection root.
+        state = %{
+          state
+          | pages_left: state.pages_left - 1,
+            visited: MapSet.put(state.visited, collection_url)
+        }
+
+        with {:ok, %{} = page, _prefetched_object} <-
+               safe_fetch_remote_object(collection_url),
+             type <- page["type"],
+             true <- is_nil(type) or collection_type?(type) do
+          state = seed_collection_identity(page, state)
+          traverse_collection(page, parent_id, state)
+        else
+          error ->
+            Logger.debug(
+              "Could not fetch remote replies #{Pleroma.Helpers.UriHelper.log_safe_url(collection_url)}: #{Pleroma.Helpers.UriHelper.log_safe_text(error)}"
+            )
+
+            {[], state}
+        end
     end
   end
 
@@ -257,7 +279,9 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
           :ok
 
         error ->
-          Logger.debug("Could not store remote replies for #{data["id"]}: #{inspect(error)}")
+          Logger.debug(
+            "Could not store remote replies for #{Pleroma.Helpers.UriHelper.log_safe_url(data["id"])}: #{Pleroma.Helpers.UriHelper.log_safe_text(error)}"
+          )
       end
     end
   end
@@ -267,8 +291,13 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
       :ok
     else
       case fetch_thread_from_reply(reply_id, depth: depth) do
-        {:ok, _object} -> :ok
-        error -> Logger.debug("Could not hydrate remote reply #{reply_id}: #{inspect(error)}")
+        {:ok, _object} ->
+          :ok
+
+        error ->
+          Logger.debug(
+            "Could not hydrate remote reply #{Pleroma.Helpers.UriHelper.log_safe_url(reply_id)}: #{Pleroma.Helpers.UriHelper.log_safe_text(error)}"
+          )
       end
     end
   end
@@ -281,20 +310,22 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
          true <- http_url?(parent_id),
          false <- MapSet.member?(seen, parent_id),
          nil <- Object.get_cached_by_ap_id(parent_id),
-         {:ok, %{} = parent_data} <- safe_fetch_remote_object(parent_id) do
+         {:ok, %{} = parent_data, prefetched_object} <- safe_fetch_remote_object(parent_id) do
       seen = MapSet.put(seen, parent_id)
 
       fetch_reply_ancestors(parent_data, depth, seen, hops_left - 1)
 
       case Fetcher.fetch_object_from_id(parent_id,
              depth: depth,
-             prefetched_data: parent_data
+             prefetched_object: prefetched_object
            ) do
         {:ok, _object} ->
           :ok
 
         error ->
-          Logger.debug("Could not hydrate remote reply ancestor #{parent_id}: #{inspect(error)}")
+          Logger.debug(
+            "Could not hydrate remote reply ancestor #{Pleroma.Helpers.UriHelper.log_safe_url(parent_id)}: #{Pleroma.Helpers.UriHelper.log_safe_text(error)}"
+          )
       end
     else
       _ -> :ok
@@ -302,19 +333,37 @@ defmodule Pleroma.Web.ActivityPub.RemoteReplies do
   end
 
   defp safe_fetch_remote_object(url) do
-    Fetcher.fetch_and_contain_remote_object_from_id(url)
+    with {:ok, prefetched_object} <- Fetcher.fetch_prefetched_remote_object_from_id(url),
+         {:ok, %{} = data} <- Fetcher.prefetched_object_data(prefetched_object) do
+      {:ok, data, prefetched_object}
+    end
   rescue
     error ->
-      Logger.debug("Could not fetch remote reply object #{url}: #{inspect(error)}")
+      Logger.debug(
+        "Could not fetch remote reply object #{Pleroma.Helpers.UriHelper.log_safe_url(url)}: #{Pleroma.Helpers.UriHelper.log_safe_text(error)}"
+      )
+
       {:error, error}
   catch
     kind, error ->
-      Logger.debug("Could not fetch remote reply object #{url}: #{inspect({kind, error})}")
+      Logger.debug(
+        "Could not fetch remote reply object #{Pleroma.Helpers.UriHelper.log_safe_url(url)}: #{Pleroma.Helpers.UriHelper.log_safe_text({kind, error})}"
+      )
+
       {:error, error}
   end
 
   defp in_reply_to_id(%{"type" => "Create", "object" => %{} = object}), do: in_reply_to_id(object)
   defp in_reply_to_id(%{"object" => %{} = object}), do: in_reply_to_id(object)
+
+  defp in_reply_to_id(%{"inReplyTo" => in_reply_to}) when is_list(in_reply_to) do
+    Enum.find_value(in_reply_to, fn
+      id when is_binary(id) -> id
+      %{"id" => id} when is_binary(id) -> id
+      _ -> nil
+    end)
+  end
+
   defp in_reply_to_id(%{"inReplyTo" => %{"id" => id}}) when is_binary(id), do: id
   defp in_reply_to_id(%{"inReplyTo" => id}) when is_binary(id), do: id
   defp in_reply_to_id(_), do: nil

@@ -603,6 +603,39 @@ defmodule Pleroma.Web.CommonAPI.UtilsTest do
              ]
     end
 
+    test "ignores inherited tag-only mentions on replies" do
+      author = insert(:user)
+      mentioned = insert(:user)
+      parent = insert(:note, user: author)
+
+      reply =
+        insert(:note,
+          user: author,
+          data: %{
+            "inReplyTo" => parent.data["id"],
+            "to" => [Pleroma.Constants.as_public()],
+            "cc" => [],
+            "tag" => [%{"type" => "Mention", "href" => mentioned.ap_id}]
+          }
+        )
+
+      activity = insert(:note_activity, user: author, note: reply)
+
+      assert Utils.maybe_notify_mentioned_recipients(["existing"], activity) == ["existing"]
+
+      addressed_reply =
+        reply
+        |> Ecto.Changeset.change(data: Map.put(reply.data, "cc", [mentioned.ap_id]))
+        |> Pleroma.Repo.update!()
+
+      addressed_activity = insert(:note_activity, user: author, note: addressed_reply)
+
+      assert mentioned.ap_id in Utils.maybe_notify_mentioned_recipients(
+               ["existing"],
+               addressed_activity
+             )
+    end
+
     test "returns recipients when object not found" do
       user = insert(:user)
       object = insert(:note, user: user)

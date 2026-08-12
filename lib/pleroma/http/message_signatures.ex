@@ -4,15 +4,16 @@
 
 defmodule Pleroma.HTTP.MessageSignatures do
   @moduledoc """
-  Implements the RSA ActivityPub subset of RFC 9421 HTTP Message Signatures.
+  Implements the RSA ActivityPub and Ed25519 FASP subsets of RFC 9421 HTTP
+  Message Signatures.
 
   The module intentionally accepts one selected signature and the components
-  needed by federation requests. It does not implement response signatures,
-  symmetric MACs, or arbitrary Structured Field component parameters.
+  needed by federation requests. It does not implement symmetric MACs or
+  arbitrary Structured Field component parameters.
   """
 
-  alias Plug.Conn
   alias Pleroma.Web.Endpoint
+  alias Plug.Conn
 
   @algorithm "rsa-v1_5-sha256"
   @clock_skew :timer.hours(1) |> div(1000)
@@ -63,16 +64,31 @@ defmodule Pleroma.HTTP.MessageSignatures do
     _, _ -> {:error, :malformed_signature}
   end
 
+  def validate_response_result(response, public_key) do
+    with {:ok, signature} <- parse_request(response),
+         :ok <- validate_parameters(signature.parameters),
+         :ok <- validate_response_components(signature.components),
+         :ok <- validate_body_digest(response, signature.components),
+         {:ok, signature_base} <-
+           signature_base(response, signature.components, signature.signature_parameters),
+         true <- verify(signature_base, signature.signature, public_key) do
+      :ok
+    else
+      false -> {:error, :invalid_signature}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :invalid_signature}
+    end
+  rescue
+    _ -> {:error, :malformed_signature}
+  catch
+    _, _ -> {:error, :malformed_signature}
+  end
+
   def sign(private_key, key_id, method, target_uri, headers, opts \\ [])
       when is_binary(key_id) and is_binary(target_uri) do
     created = Keyword.get(opts, :created, System.system_time(:second))
 
-    components =
-      if header_values(%{headers: headers}, "content-digest") == [] do
-        ["@method", "@target-uri"]
-      else
-        ["@method", "@target-uri", "content-digest"]
-      end
+    components = request_components(headers)
 
     signature_parameters =
       "(" <>
@@ -97,8 +113,77 @@ defmodule Pleroma.HTTP.MessageSignatures do
     _, _ -> {:error, :signature_failed}
   end
 
+  def sign_ed25519(private_key, key_id, method, target_uri, headers, opts \\ [])
+      when is_binary(private_key) and is_binary(key_id) and is_binary(target_uri) do
+    created = Keyword.get(opts, :created, System.system_time(:second))
+
+    components = request_components(headers)
+
+    signature_parameters =
+      "(" <>
+        Enum.map_join(components, " ", &quoted/1) <>
+        ");created=#{created};keyid=#{quoted(key_id)}"
+
+    request = %{method: method, target_uri: target_uri, headers: headers}
+
+    with {:ok, base} <- signature_base(request, components, signature_parameters),
+         signature when is_binary(signature) <-
+           :crypto.sign(:eddsa, :none, base, [private_key, :ed25519]) do
+      {:ok,
+       [
+         {"Signature-Input", "sig1=#{signature_parameters}"},
+         {"Signature", "sig1=:#{Base.encode64(signature)}:"}
+       ]}
+    else
+      _ -> {:error, :signature_failed}
+    end
+  rescue
+    _ -> {:error, :signature_failed}
+  catch
+    _, _ -> {:error, :signature_failed}
+  end
+
+  def sign_response_ed25519(private_key, key_id, status, headers, opts \\ [])
+      when is_binary(private_key) and is_binary(key_id) and is_integer(status) do
+    created = Keyword.get(opts, :created, System.system_time(:second))
+    components = ["@status", "content-digest"]
+
+    signature_parameters =
+      "(" <>
+        Enum.map_join(components, " ", &quoted/1) <>
+        ");created=#{created};keyid=#{quoted(key_id)}"
+
+    response = %{status: status, headers: headers}
+
+    with {:ok, base} <- signature_base(response, components, signature_parameters),
+         signature when is_binary(signature) <-
+           :crypto.sign(:eddsa, :none, base, [private_key, :ed25519]) do
+      {:ok,
+       [
+         {"Signature-Input", "sig1=#{signature_parameters}"},
+         {"Signature", "sig1=:#{Base.encode64(signature)}:"}
+       ]}
+    else
+      _ -> {:error, :signature_failed}
+    end
+  rescue
+    _ -> {:error, :signature_failed}
+  catch
+    _, _ -> {:error, :signature_failed}
+  end
+
   def content_digest(body) when is_binary(body) do
     "sha-256=:#{:crypto.hash(:sha256, body) |> Base.encode64()}:"
+  end
+
+  defp request_components(headers) do
+    header_components =
+      headers
+      |> Enum.map(fn {name, _value} -> String.downcase(to_string(name)) end)
+      |> Enum.reject(&(&1 in ["signature", "signature-input"]))
+      |> Enum.sort()
+
+    Enum.uniq(["@method", "@target-uri" | header_components])
   end
 
   # ---------------------------------------------------------------------------
@@ -281,7 +366,7 @@ defmodule Pleroma.HTTP.MessageSignatures do
       not is_integer(created) ->
         {:error, :missing_created}
 
-      algorithm not in [nil, @algorithm, "rsa-sha256"] ->
+      algorithm not in [nil, @algorithm, "rsa-sha256", "ed25519"] ->
         {:error, :unsupported_algorithm}
 
       created > now + @clock_skew ->
@@ -313,6 +398,22 @@ defmodule Pleroma.HTTP.MessageSignatures do
     end
   end
 
+  defp validate_response_components(components) do
+    cond do
+      length(components) != MapSet.size(MapSet.new(components)) ->
+        {:error, :duplicate_component}
+
+      "@status" not in components ->
+        {:error, :missing_required_component}
+
+      "content-digest" not in components ->
+        {:error, :missing_content_digest}
+
+      true ->
+        :ok
+    end
+  end
+
   defp validate_body_digest(request, components) do
     if "content-digest" in components do
       case request do
@@ -328,17 +429,27 @@ defmodule Pleroma.HTTP.MessageSignatures do
   defp validate_content_digest_header(request) do
     case header_values(request, "content-digest") do
       [value] ->
-        case Regex.run(~r/\Asha-256=:([A-Za-z0-9+\/=]+):\z/, value,
-               capture: :all_but_first
-             ) do
-          [encoded] ->
-            case Base.decode64(encoded) do
-              {:ok, digest} when byte_size(digest) == 32 -> :ok
-              _ -> {:error, :invalid_content_digest}
-            end
+        case request do
+          %{body: body} when is_binary(body) ->
+            if value == content_digest(body),
+              do: :ok,
+              else: {:error, :invalid_content_digest}
 
           _ ->
-            {:error, :invalid_content_digest}
+            validate_content_digest_value(value)
+        end
+
+      _ ->
+        {:error, :invalid_content_digest}
+    end
+  end
+
+  defp validate_content_digest_value(value) do
+    case Regex.run(~r/\Asha-256=:([A-Za-z0-9+\/=]+):\z/, value, capture: :all_but_first) do
+      [encoded] ->
+        case Base.decode64(encoded) do
+          {:ok, digest} when byte_size(digest) == 32 -> :ok
+          _ -> {:error, :invalid_content_digest}
         end
 
       _ ->
@@ -367,6 +478,9 @@ defmodule Pleroma.HTTP.MessageSignatures do
   defp component_value(request, "@method"), do: {:ok, request_method(request)}
   defp component_value(request, "@target-uri"), do: target_uri(request)
 
+  defp component_value(%{status: status}, "@status") when is_integer(status),
+    do: {:ok, Integer.to_string(status)}
+
   defp component_value(request, component) do
     case header_values(request, component) do
       [] -> {:error, :missing_component}
@@ -376,6 +490,11 @@ defmodule Pleroma.HTTP.MessageSignatures do
 
   defp verify(base, signature, {:RSAPublicKey, _, _} = public_key) do
     :public_key.verify(base, :sha256, signature, public_key)
+  end
+
+  defp verify(base, signature, {:ed25519, public_key})
+       when is_binary(public_key) and byte_size(public_key) == 32 do
+    :crypto.verify(:eddsa, :none, signature, base, [public_key, :ed25519])
   end
 
   defp verify(_base, _signature, _public_key), do: false
@@ -443,6 +562,17 @@ defmodule Pleroma.HTTP.MessageSignatures do
       else
         []
       end
+    end)
+  end
+
+  defp header_values(%{headers: headers}, name) when is_list(headers) do
+    headers
+    |> Enum.flat_map(fn
+      {key, value} when is_binary(key) and is_binary(value) ->
+        if String.downcase(key) == name, do: [value], else: []
+
+      _ ->
+        []
     end)
   end
 

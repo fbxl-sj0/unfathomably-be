@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Workers.SignatureRetryWorker do
-  alias Pleroma.Instances
+  alias Pleroma.ATProto.BridgyCompat
   alias Pleroma.Helpers.UriHelper
+  alias Pleroma.Instances
+  alias Pleroma.Nostr.MostrCompat
   alias Pleroma.Signature
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ForwardedActivityVerifier
@@ -13,12 +15,14 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
   alias Pleroma.Web.Federator
   alias Pleroma.Web.Plugs.EnsureHostMatchesPlug
   alias Pleroma.Web.Plugs.MappedSignatureToIdentityPlug
+  alias Pleroma.Workers.LegacyNostrUnsubscribeWorker
 
   require Logger
 
   use Oban.Worker, queue: :federator_incoming, max_attempts: 5, unique: [period: :infinity]
 
   @terminal_http_statuses [400, 401, 403, 404, 405, 406, 410, 501]
+  @forwarded_receipt_types ["Read", "View"]
 
   @impl true
   def perform(%Job{
@@ -33,6 +37,35 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
       })
       when is_binary(method) and is_map(params) and is_list(req_headers) and
              is_binary(request_path) and is_binary(query_string) do
+    cond do
+      MostrCompat.legacy_envelope?(params) ->
+        cancel_legacy_nostr_retry(params)
+
+      BridgyCompat.legacy_envelope?(params) ->
+        {:cancel, :native_atproto_required}
+
+      true ->
+        perform_signature_retry(method, params, req_headers, request_path, query_string)
+    end
+  end
+
+  def perform(%Job{args: %{"op" => "incoming_failed_signature_ap_doc"} = args}) do
+    process_errors(
+      :missing_signature_retry_metadata,
+      retry_log_context(Map.get(args, "params"), Map.get(args, "request_path"), nil)
+    )
+  end
+
+  def perform(%Job{args: args}) when is_map(args) do
+    process_errors(
+      :missing_signature_retry_metadata,
+      retry_log_context(Map.get(args, "params"), Map.get(args, "request_path"), nil)
+    )
+  end
+
+  def perform(%Job{}), do: process_errors(:missing_signature_retry_metadata)
+
+  defp perform_signature_retry(method, params, req_headers, request_path, query_string) do
     case normalize_req_headers(req_headers) do
       {:ok, req_headers} ->
         conn_data = %Plug.Conn{
@@ -73,21 +106,14 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
     end
   end
 
-  def perform(%Job{args: %{"op" => "incoming_failed_signature_ap_doc"} = args}) do
-    process_errors(
-      :missing_signature_retry_metadata,
-      retry_log_context(Map.get(args, "params"), Map.get(args, "request_path"), nil)
-    )
-  end
+  defp cancel_legacy_nostr_retry(params) do
+    params
+    |> Map.get("actor")
+    |> Utils.get_ap_id()
+    |> LegacyNostrUnsubscribeWorker.enqueue()
 
-  def perform(%Job{args: args}) when is_map(args) do
-    process_errors(
-      :missing_signature_retry_metadata,
-      retry_log_context(Map.get(args, "params"), Map.get(args, "request_path"), nil)
-    )
+    {:cancel, :native_nostr_required}
   end
-
-  def perform(%Job{}), do: process_errors(:missing_signature_retry_metadata)
 
   @impl true
   def timeout(%_{args: %{"timeout" => timeout}}), do: timeout
@@ -137,10 +163,18 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
   end
 
   defp verify_activity_actor(params, actor_id, signature_actor_id) do
-    if UriHelper.equivalent?(actor_id, signature_actor_id) do
-      {:ok, params}
-    else
-      ForwardedActivityVerifier.verify_and_fetch(params, signature_actor_id)
+    cond do
+      UriHelper.equivalent?(actor_id, signature_actor_id) ->
+        {:ok, params}
+
+      params["type"] in @forwarded_receipt_types ->
+        # Read and View are receipt-only activities. Once the transport
+        # signature and Host header are authenticated they cannot mutate local
+        # content, so inbox forwarding does not require origin refetching.
+        {:ok, params}
+
+      true ->
+        ForwardedActivityVerifier.verify_and_fetch(params, signature_actor_id)
     end
   end
 
@@ -219,6 +253,9 @@ defmodule Pleroma.Workers.SignatureRetryWorker do
 
         {:error, :origin_containment_failed} ->
           {:cancel, :origin_containment_failed}
+
+        {:error, :error} ->
+          {:cancel, :opaque_incoming_failure}
 
         {:error, {:side_effects, {:error, :no_object_actor}} = reason} ->
           {:cancel, reason}

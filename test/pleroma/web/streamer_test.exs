@@ -260,6 +260,15 @@ defmodule Pleroma.Web.StreamerTest do
       refute Streamer.filtered_by_user?(user, activity)
     end
 
+    test "it safely filters an activity without an actor", %{user: user} do
+      activity =
+        :note_activity
+        |> build()
+        |> Map.put(:actor, nil)
+
+      assert Streamer.filtered_by_user?(user, activity)
+    end
+
     test "it streams boosts of the user in the 'user' stream", %{user: user, token: oauth_token} do
       Streamer.get_topic_and_add_socket("user", user, oauth_token)
 

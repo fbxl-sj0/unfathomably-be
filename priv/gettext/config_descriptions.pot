@@ -2941,7 +2941,7 @@ msgstr ""
 #: lib/pleroma/docs/translator.ex:5
 #, elixir-autogen, elixir-format
 msgctxt "config description at :pleroma-Pleroma.Emails.UserEmail > :logo"
-msgid "A path to a custom logo. Set it to `nil` to use the default Pleroma logo."
+msgid "A path to a custom logo. Set it to `nil` to use the packaged Unfathomably logo."
 msgstr ""
 
 #: lib/pleroma/docs/translator.ex:5

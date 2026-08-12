@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Object.Updater do
+  import Ecto.Query, only: [from: 2]
+
   require Pleroma.Constants
 
   alias Pleroma.Maps
@@ -11,15 +13,27 @@ defmodule Pleroma.Object.Updater do
   alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Workers.EventReminderWorker
 
+  # ActivityPub Update objects frequently carry bookkeeping changes such as
+  # refreshed tags, emoji maps, or generator metadata. Those changes still
+  # need to be stored, but they must not make clients report that the author
+  # edited the post or add a duplicate formerRepresentation.
+  @meaningful_edit_fields ~w[
+    source content summary sensitive attachment language startTime endTime
+    location location_id location_provider name
+  ]
+
   def update_content_fields(orig_object_data, updated_object) do
     Pleroma.Constants.status_updatable_fields()
     |> Enum.reduce(
-      %{data: orig_object_data, updated: false},
-      fn field, %{data: data, updated: updated} ->
+      %{data: orig_object_data, edited: false, updated: false},
+      fn field, %{data: data, edited: edited, updated: updated} ->
+        changed? = Map.get(updated_object, field) != Map.get(orig_object_data, field)
+
         updated =
           updated or
-            (field != "updated" and
-               Map.get(updated_object, field) != Map.get(orig_object_data, field))
+            (field != "updated" and changed?)
+
+        edited = edited or (field in @meaningful_edit_fields and changed?)
 
         data =
           if Map.has_key?(updated_object, field) do
@@ -28,7 +42,7 @@ defmodule Pleroma.Object.Updater do
             Map.drop(data, [field])
           end
 
-        %{data: data, updated: updated}
+        %{data: data, edited: edited, updated: updated}
       end
     )
     |> update_standard_extension_fields(orig_object_data, updated_object)
@@ -43,7 +57,8 @@ defmodule Pleroma.Object.Updater do
       original_fields = CustomObject.standard_extension_fields(original)
       fields = Enum.uniq(original_fields ++ incoming_fields)
 
-      Enum.reduce(fields, result, fn field, %{data: data, updated: updated} = result ->
+      Enum.reduce(fields, result, fn field,
+                                     %{data: data, edited: edited, updated: updated} = result ->
         next_data =
           if Map.has_key?(incoming, field) do
             Map.put(data, field, incoming[field])
@@ -51,13 +66,27 @@ defmodule Pleroma.Object.Updater do
             Map.delete(data, field)
           end
 
-        %{result | data: next_data, updated: updated or next_data != data}
+        changed? = next_data != data
+
+        %{
+          result
+          | data: next_data,
+            edited: edited or changed?,
+            updated: updated or changed?
+        }
       end)
       |> then(fn %{data: data} = result ->
         marker = incoming[CustomObject.internal_field()]
         next_data = Map.put(data, CustomObject.internal_field(), marker)
         %{result | data: next_data, updated: result.updated or next_data != data}
       end)
+    end
+  end
+
+  defp preserve_edit_timestamp(updated_object, orig_object_data) do
+    case Map.fetch(orig_object_data, "updated") do
+      {:ok, timestamp} -> Map.put(updated_object, "updated", timestamp)
+      :error -> Map.delete(updated_object, "updated")
     end
   end
 
@@ -170,17 +199,17 @@ defmodule Pleroma.Object.Updater do
   # new_data's formerRepresentations is not considered.
   # formerRepresentations is added to the returned data.
   def make_update_object_data(original_data, new_data, date) do
-    %{data: updated_data, updated: updated} =
+    %{data: updated_data, edited: edited} =
       original_data
       |> update_content_fields(new_data)
 
-    if not updated do
+    if not edited do
       updated_data
     else
       %{updated_object: updated_data} =
         updated_data
         |> maybe_update_history(original_data,
-          updated: updated,
+          updated: edited,
           use_history_in_new_object?: false
         )
 
@@ -217,13 +246,20 @@ defmodule Pleroma.Object.Updater do
       updated: updated
     } =
       if update_is_reasonable == :update_everything do
-        %{data: updated_data, updated: updated} =
+        %{data: updated_data, edited: edited, updated: updated} =
           original_data
           |> update_content_fields(new_data)
 
+        updated_data =
+          if edited do
+            updated_data
+          else
+            preserve_edit_timestamp(updated_data, original_data)
+          end
+
         updated_data
         |> maybe_update_history(original_data,
-          updated: updated,
+          updated: edited,
           use_history_in_new_object?: true,
           new_data: new_data
         )
@@ -301,23 +337,57 @@ defmodule Pleroma.Object.Updater do
 
   defp maybe_touch_changeset(changeset, _), do: changeset
 
+  # An Update is validated before side effects run, so its caller may hold an
+  # object snapshot that became stale while another delivery was being
+  # processed. Reloading the row under a PostgreSQL lock keeps timestamp
+  # comparison and persistence in one serialized operation. Without this, an
+  # older Update can overwrite a newer edit and produce duplicate edit events.
+  defp persist_locked_update(orig_object, updated_object, touch_changeset?) do
+    case Repo.transaction(fn ->
+           current_object =
+             Repo.one(
+               from(object in Object,
+                 where: object.id == ^orig_object.id,
+                 lock: "FOR UPDATE"
+               )
+             )
+
+           case current_object do
+             %Object{} ->
+               %{
+                 updated_data: updated_object_data,
+                 updated: updated,
+                 used_history_in_new_object?: used_history_in_new_object?
+               } = make_new_object_data_from_update_object(current_object.data, updated_object)
+
+               changeset =
+                 current_object
+                 |> Repo.preload(:hashtags)
+                 |> Object.change(%{data: updated_object_data})
+                 |> maybe_touch_changeset(touch_changeset?)
+
+               case Repo.update(changeset) do
+                 {:ok, new_object} ->
+                   {new_object, updated, used_history_in_new_object?}
+
+                 {:error, reason} ->
+                   Repo.rollback(reason)
+               end
+
+             nil ->
+               Repo.rollback(:object_not_found)
+           end
+         end) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   def do_update_and_invalidate_cache(orig_object, updated_object, touch_changeset? \\ false) do
     orig_object_ap_id = updated_object["id"]
-    orig_object_data = orig_object.data
 
-    %{
-      updated_data: updated_object_data,
-      updated: updated,
-      used_history_in_new_object?: used_history_in_new_object?
-    } = make_new_object_data_from_update_object(orig_object_data, updated_object)
-
-    changeset =
-      orig_object
-      |> Repo.preload(:hashtags)
-      |> Object.change(%{data: updated_object_data})
-      |> maybe_touch_changeset(touch_changeset?)
-
-    with {:ok, new_object} <- Repo.update(changeset),
+    with {:ok, {new_object, updated, used_history_in_new_object?}} <-
+           persist_locked_update(orig_object, updated_object, touch_changeset?),
          {:ok, _} <- Object.invalid_object_cache(new_object),
          {:ok, _} <- Object.set_cache(new_object),
          # The metadata/utils.ex uses the object id for the cache.
@@ -332,7 +402,7 @@ defmodule Pleroma.Object.Updater do
         end
       end
 
-      EventReminderWorker.schedule_event_reminder(orig_object)
+      EventReminderWorker.schedule_event_reminder(new_object)
 
       {:ok, new_object, updated}
     end

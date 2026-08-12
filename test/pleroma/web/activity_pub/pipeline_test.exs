@@ -8,9 +8,9 @@ defmodule Pleroma.Web.ActivityPub.PipelineTest do
   import Mox
   import Pleroma.Factory
 
+  alias Pleroma.ConfigMock
   alias Pleroma.Object
   alias Pleroma.Web.ActivityPub.ActivityPub
-  alias Pleroma.ConfigMock
   alias Pleroma.Web.ActivityPub.ActivityPubMock
   alias Pleroma.Web.ActivityPub.MRFMock
   alias Pleroma.Web.ActivityPub.ObjectValidatorMock

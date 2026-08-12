@@ -9,12 +9,17 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   alias Pleroma.Config
   alias Pleroma.Delivery
   alias Pleroma.HTTP
+  alias Pleroma.HTTP.SignatureNegotiation
+  alias Pleroma.Helpers.UriHelper
   alias Pleroma.Instances
   alias Pleroma.Instances.Instance
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.FollowersSynchronization
+  alias Pleroma.Web.ActivityPub.Marketplace
+  alias Pleroma.Web.ActivityPub.MRF.QuoteToLinkTagPolicy
   alias Pleroma.Web.ActivityPub.Relay
   alias Pleroma.Web.ActivityPub.Transmogrifier
 
@@ -31,6 +36,8 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   """
 
   @terminal_delivery_statuses %{
+    301 => :moved_permanently,
+    308 => :permanent_redirect,
     400 => :bad_request,
     401 => :unauthorized,
     403 => :forbidden,
@@ -40,6 +47,14 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     410 => :gone,
     501 => :not_implemented
   }
+
+  # HTTP signatures bind the destination host and request path. Inbox
+  # redirects must therefore be resolved through a refreshed actor document,
+  # not followed as an ordinary HTTP redirect with stale request semantics.
+  @delivery_http_options [
+    redirect_middleware: nil,
+    adapter: [follow_redirect: false, force_redirect: false]
+  ]
 
   @delivery_error_body_limit 2_048
 
@@ -60,31 +75,45 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   * `id`: the ActivityStreams URI of the message
   """
   def publish_one(%{json: json, actor: %User{}, id: id}) when not is_binary(json) do
-    Logger.metadata(activity: id)
-    Logger.debug("Publisher rejected malformed JSON body #{inspect(json)}")
+    Logger.metadata(activity: UriHelper.log_safe_url(id))
+    Logger.debug("Publisher rejected malformed JSON body")
     {:cancel, :bad_request}
   end
 
   def publish_one(%{inbox: inbox, json: json, actor: %User{} = actor, id: id} = params) do
-    Logger.debug("Federating #{id} to #{inbox}")
+    safe_id = UriHelper.log_safe_url(id)
+    safe_inbox = UriHelper.log_safe_url(inbox)
+    Logger.debug("Federating #{safe_id} to #{safe_inbox}")
 
     with {:ok, uri, path} <- signature_uri(inbox) do
       json = prepare_delivery_json(json, inbox)
+      collection_synchronization = FollowersSynchronization.outbound_header(actor, inbox)
       digest = "SHA-256=" <> (:crypto.hash(:sha256, json) |> Base.encode64())
 
       date = Pleroma.Signature.signed_date()
 
-      signature =
-        Pleroma.Signature.sign(actor, %{
+      signature_headers =
+        %{
           "(request-target)": "post #{path}",
           host: signature_host(uri),
           "content-length": byte_size(json),
           digest: digest,
           date: date
-        })
+        }
+        |> maybe_put_collection_synchronization(collection_synchronization)
+
+      signature = Pleroma.Signature.sign(actor, signature_headers)
 
       with {:ok, %{status: code}} = result when code in 200..299 <-
-             post_with_signature_fallback(inbox, json, actor, date, signature, digest) do
+             post_with_signature_fallback(
+               inbox,
+               json,
+               actor,
+               date,
+               signature,
+               digest,
+               collection_synchronization
+             ) do
         if not Map.has_key?(params, :unreachable_since) || params[:unreachable_since] do
           Instances.record_delivery_success(inbox, source: "publisher")
         end
@@ -92,19 +121,29 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
         result
       else
         {_post_result, %{status: code} = response} ->
-          Logger.metadata(activity: id, inbox: inbox, status: code)
+          Logger.metadata(activity: safe_id, inbox: safe_inbox, status: code)
 
           Logger.debug(fn ->
-            "Publisher failed to inbox #{inbox} with status #{code}: " <>
+            "Publisher failed to inbox #{safe_inbox} with status #{code}: " <>
               delivery_error_body(response)
           end)
 
           case Map.fetch(@terminal_delivery_statuses, code) do
+            {:ok, :gone} ->
+              Instances.record_gone(inbox, source: "publisher", status: code)
+              {:cancel, :gone}
+
             {:ok, reason} ->
               {:cancel, reason}
 
             :error ->
-              unless known_unreachable?(params), do: Instances.set_unreachable(inbox)
+              unless known_unreachable?(params) do
+                Instances.record_delivery_failure(inbox, {:http, code},
+                  source: "publisher",
+                  status: code
+                )
+              end
+
               {:error, response}
           end
 
@@ -117,8 +156,8 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
           connection_pool_snooze()
 
         e ->
-          Logger.metadata(activity: id, inbox: inbox)
-          Logger.debug("Publisher failed to inbox #{inbox}: #{inspect(e)}")
+          Logger.metadata(activity: safe_id, inbox: safe_inbox)
+          Logger.debug("Publisher failed to inbox #{safe_inbox}: #{inspect(e)}")
 
           if known_unreachable?(params) do
             {:cancel, :unreachable_host}
@@ -129,8 +168,8 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
       end
     else
       {:error, reason} ->
-        Logger.metadata(activity: id, inbox: inbox)
-        Logger.debug("Publisher rejected malformed inbox #{inspect(inbox)}")
+        Logger.metadata(activity: safe_id, inbox: safe_inbox)
+        Logger.debug("Publisher rejected malformed inbox #{safe_inbox}")
         {:cancel, reason}
     end
   end
@@ -144,18 +183,23 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     |> publish_one()
   end
 
-  def publish_one(%{actor: actor, id: id}) do
-    Logger.metadata(activity: id)
-    Logger.debug("Publisher rejected malformed actor #{inspect(actor)}")
+  def publish_one(%{actor: _actor, id: id}) do
+    Logger.metadata(activity: UriHelper.log_safe_url(id))
+    Logger.debug("Publisher rejected malformed actor")
     {:cancel, :bad_request}
   end
 
   def publish_one(params) when is_map(params) do
-    Logger.debug("Publisher rejected malformed delivery params #{inspect(params)}")
+    Logger.debug(
+      "Publisher rejected malformed delivery params; keys=#{inspect(Map.keys(params))}"
+    )
+
     {:cancel, :bad_request}
   end
 
   defp prepare_delivery_json(json, inbox) do
+    json = Marketplace.prepare_delivery_json(json, inbox)
+
     with {:ok,
           %{"type" => "Delete", "object" => %{"id" => object_id, "type" => "Tombstone"}} =
             data}
@@ -184,47 +228,111 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     _, _ -> false
   end
 
-  defp post_with_signature_fallback(inbox, json, actor, date, signature, digest) do
-    legacy_result =
+  defp post_with_signature_fallback(
+         inbox,
+         json,
+         actor,
+         date,
+         signature,
+         digest,
+         collection_synchronization
+       ) do
+    if SignatureNegotiation.prefers_rfc9421?(inbox) do
+      case post_rfc9421(inbox, json, actor, date, collection_synchronization) do
+        {:ok, %{status: status}} when status in [400, 401] ->
+          SignatureNegotiation.forget(inbox)
+          post_legacy(inbox, json, date, signature, digest, collection_synchronization)
+
+        {:error, _reason} ->
+          SignatureNegotiation.forget(inbox)
+          post_legacy(inbox, json, date, signature, digest, collection_synchronization)
+
+        result ->
+          result
+      end
+    else
+      legacy_result =
+        post_legacy(inbox, json, date, signature, digest, collection_synchronization)
+
+      case legacy_result do
+        {:ok, %{status: status}} when status in [400, 401] ->
+          case post_rfc9421(inbox, json, actor, date, collection_synchronization) do
+            {:ok, %{status: successful_status}} = result when successful_status in 200..299 ->
+              SignatureNegotiation.remember_rfc9421(inbox)
+              result
+
+            {:error, _reason} ->
+              legacy_result
+
+            result ->
+              result
+          end
+
+        {:ok, response} = result ->
+          SignatureNegotiation.observe_response(inbox, response)
+          result
+
+        result ->
+          result
+      end
+    end
+  end
+
+  defp post_legacy(inbox, json, date, signature, digest, collection_synchronization) do
+    headers =
+      [
+        {"Content-Type", "application/activity+json"},
+        {"Date", date},
+        {"signature", signature},
+        {"digest", digest}
+      ]
+      |> maybe_add_collection_synchronization_header(collection_synchronization)
+
+    HTTP.post(
+      inbox,
+      json,
+      headers,
+      @delivery_http_options
+    )
+  end
+
+  defp post_rfc9421(inbox, json, actor, date, collection_synchronization) do
+    content_digest = Pleroma.HTTP.MessageSignatures.content_digest(json)
+
+    signed_headers =
+      %{"content-digest" => content_digest}
+      |> maybe_put_collection_synchronization(collection_synchronization)
+
+    with {:ok, signature_headers} <-
+           Pleroma.Signature.sign_rfc9421(actor, "POST", inbox, signed_headers) do
+      headers =
+        [
+          {"Content-Type", "application/activity+json"},
+          {"Content-Digest", content_digest},
+          {"Date", date}
+          | signature_headers
+        ]
+        |> maybe_add_collection_synchronization_header(collection_synchronization)
+
       HTTP.post(
         inbox,
         json,
-        [
-          {"Content-Type", "application/activity+json"},
-          {"Date", date},
-          {"signature", signature},
-          {"digest", digest}
-        ]
+        headers,
+        @delivery_http_options
       )
-
-    case legacy_result do
-      {:ok, %{status: status}} when status in [400, 401] ->
-        content_digest = Pleroma.HTTP.MessageSignatures.content_digest(json)
-
-        signed_headers = %{
-          "content-digest" => content_digest
-        }
-
-        case Pleroma.Signature.sign_rfc9421(actor, "POST", inbox, signed_headers) do
-          {:ok, signature_headers} ->
-            HTTP.post(
-              inbox,
-              json,
-              [
-                {"Content-Type", "application/activity+json"},
-                {"Content-Digest", content_digest},
-                {"Date", date}
-                | signature_headers
-              ]
-            )
-
-          _ ->
-            legacy_result
-        end
-
-      _ ->
-        legacy_result
     end
+  end
+
+  defp maybe_put_collection_synchronization(headers, nil), do: headers
+
+  defp maybe_put_collection_synchronization(headers, value) when is_binary(value) do
+    Map.put(headers, "collection-synchronization", value)
+  end
+
+  defp maybe_add_collection_synchronization_header(headers, nil), do: headers
+
+  defp maybe_add_collection_synchronization_header(headers, value) when is_binary(value) do
+    [{"Collection-Synchronization", value} | headers]
   end
 
   defp signature_uri(inbox) when is_binary(inbox) do
@@ -234,7 +342,16 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
          true <- scheme in ["http", "https"],
          true <- is_binary(host),
          normalized_host when is_binary(normalized_host) <- Instances.host(inbox) do
-      {:ok, uri, uri.path || "/"}
+      path = uri.path || "/"
+
+      request_target =
+        if Config.get([:activitypub, :sign_query_part], true) and is_binary(uri.query) do
+          path <> "?" <> uri.query
+        else
+          path
+        end
+
+      {:ok, uri, request_target}
     else
       _ -> {:error, :bad_request}
     end
@@ -270,19 +387,27 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   end
 
   def should_federate?(nil, _), do: false
-  def should_federate?(_, true), do: true
-  def should_federate?(inbox, _) when not is_binary(inbox), do: false
 
-  def should_federate?(inbox, _) do
+  def should_federate?(inbox, public) when is_binary(inbox) do
     host = uri_host(inbox)
+
+    rejected_instances =
+      Config.get([:mrf_simple, :reject], [])
+      |> Pleroma.Web.ActivityPub.MRF.instance_list_from_tuples()
+      |> Pleroma.Web.ActivityPub.MRF.subdomains_regex()
 
     quarantined_instances =
       Config.get([:instance, :quarantined_instances], [])
       |> Pleroma.Web.ActivityPub.MRF.instance_list_from_tuples()
       |> Pleroma.Web.ActivityPub.MRF.subdomains_regex()
 
-    is_binary(host) and !Pleroma.Web.ActivityPub.MRF.subdomain_match?(quarantined_instances, host)
+    is_binary(host) and
+      !Pleroma.Web.ActivityPub.MRF.subdomain_match?(rejected_instances, host) and
+      (public or !Pleroma.Web.ActivityPub.MRF.subdomain_match?(quarantined_instances, host))
   end
+
+  def should_federate?(_, true), do: true
+  def should_federate?(_, _), do: false
 
   @spec recipients(User.t(), Activity.t()) :: [[User.t()]]
   defp recipients(actor, activity) do
@@ -295,19 +420,21 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
         []
       end
 
-    fetchers =
+    delete_recipients =
       with %Activity{data: %{"type" => "Delete"}} <- activity,
-           %Object{id: object_id} <- Object.normalize(activity, fetch: false),
-           fetchers <- User.get_delivered_users_by_object_id(object_id),
+           %Object{id: object_id, data: %{"id" => object_ap_id}} <-
+             Object.normalize(activity, fetch: false),
+           delivered_users <- User.get_delivered_users_by_object_id(object_id),
+           interacting_users <- User.get_remote_interactors_by_object_ap_id(object_ap_id),
            _ <- Delivery.delete_all_by_object_id(object_id) do
-        fetchers
+        Enum.uniq_by(delivered_users ++ interacting_users, & &1.id)
       else
         _ ->
           []
       end
 
     mentioned = Pleroma.Web.Federator.Publisher.remote_users(actor, activity)
-    non_mentioned = (followers ++ fetchers) -- mentioned
+    non_mentioned = (followers ++ delete_recipients) -- mentioned
 
     [mentioned, non_mentioned]
   end
@@ -392,10 +519,15 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   Publishes an activity with BCC to all relevant peers.
   """
 
-  def publish(%User{} = actor, %{data: %{"bcc" => bcc}} = activity)
-      when is_list(bcc) and bcc != [] do
+  def publish(%User{} = actor, %Activity{} = activity) do
+    if Pleroma.Federation.enabled?(), do: do_publish(actor, activity), else: :ok
+  end
+
+  defp do_publish(%User{} = actor, %{data: %{"bcc" => bcc}} = activity)
+       when is_list(bcc) and bcc != [] do
     public = is_public?(activity)
     {:ok, data} = Transmogrifier.prepare_outgoing(activity.data)
+    data = QuoteToLinkTagPolicy.add_object_link_tag(data)
     {actor, activity, data} = maybe_replace_actor(actor, activity, data)
 
     [priority_recipients, recipients] = recipients(actor, activity)
@@ -417,52 +549,51 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
     inboxes = [priority_inboxes, Map.drop(inboxes, Map.keys(priority_inboxes))]
 
     Repo.checkout(fn ->
-      Enum.each(Enum.with_index(inboxes), fn {inboxes, priority} ->
-        Enum.each(inboxes, fn {inbox, unreachable_since} ->
-          %User{ap_id: ap_id} =
-            Enum.find(all_recipients, fn user -> determine_inbox(activity, user) == inbox end)
+      Enum.reduce_while(Enum.with_index(inboxes), :ok, fn {inboxes, priority}, :ok ->
+        result =
+          Enum.reduce_while(inboxes, :ok, fn {inbox, unreachable_since}, :ok ->
+            %User{ap_id: ap_id} =
+              Enum.find(all_recipients, fn user -> determine_inbox(activity, user) == inbox end)
 
-          # Get all the recipients on the same host and add them to cc. Otherwise, a remote
-          # instance would only accept a first message for the first recipient and ignore the rest.
-          cc = get_cc_ap_ids(ap_id, all_recipients)
+            # Get all the recipients on the same host and add them to cc. Otherwise, a remote
+            # instance would only accept a first message for the first recipient and ignore the rest.
+            cc = get_cc_ap_ids(ap_id, all_recipients)
 
-          cc =
-            if Pleroma.Constants.as_public() in Map.get(data, "cc", []) and
-                 Pleroma.Constants.as_public() not in cc do
-              [Pleroma.Constants.as_public() | cc]
-            else
-              cc
-            end
+            cc =
+              if Pleroma.Constants.as_public() in Map.get(data, "cc", []) and
+                   Pleroma.Constants.as_public() not in cc do
+                [Pleroma.Constants.as_public() | cc]
+              else
+                cc
+              end
 
-          json =
-            data
-            |> Map.put("cc", cc)
-            |> Jason.encode!()
+            json =
+              data
+              |> Map.put("cc", cc)
+              |> Jason.encode!()
 
-          Pleroma.Web.Federator.Publisher.enqueue_one(
-            __MODULE__,
-            %{
-              inbox: inbox,
-              json: json,
-              actor_id: actor.id,
-              id: activity.data["id"],
-              unreachable_since: unreachable_since
-            },
-            priority: priority
-          )
-        end)
+            enqueue_delivery(
+              actor,
+              activity.data["id"],
+              inbox,
+              json,
+              unreachable_since,
+              priority
+            )
+            |> continue_enqueue()
+          end)
+
+        case result do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
       end)
     end)
   end
 
   # Publishes an activity to all relevant peers.
-  def publish(%User{} = actor, %Activity{} = activity) do
+  defp do_publish(%User{} = actor, %Activity{} = activity) do
     public = is_public?(activity)
-
-    if public && Config.get([:instance, :allow_relay]) do
-      Logger.debug(fn -> "Relaying #{activity.data["id"]} out" end)
-      Relay.publish(activity)
-    end
 
     {:ok, data} = Transmogrifier.prepare_outgoing(activity.data)
     {actor, activity, data} = maybe_replace_actor(actor, activity, data)
@@ -486,27 +617,81 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
 
     inboxes = inboxes -- priority_inboxes
 
-    [{priority_inboxes, 0}, {inboxes, 1}]
-    |> Enum.each(fn {inboxes, priority} ->
-      inboxes
-      |> Instances.filter_reachable()
-      |> Enum.each(fn {inbox, unreachable_since} ->
-        Pleroma.Web.Federator.Publisher.enqueue_one(
-          __MODULE__,
-          %{
-            inbox: inbox,
-            json: json,
-            actor_id: actor.id,
-            id: activity.data["id"],
-            unreachable_since: unreachable_since
-          },
-          priority: priority
-        )
-      end)
-    end)
+    result =
+      [{priority_inboxes, 0}, {inboxes, 1}]
+      |> Enum.reduce_while(:ok, fn {inboxes, priority}, :ok ->
+        result =
+          inboxes
+          |> Instances.filter_reachable()
+          |> Enum.reduce_while(:ok, fn {inbox, unreachable_since}, :ok ->
+            enqueue_delivery(
+              actor,
+              activity.data["id"],
+              inbox,
+              json,
+              unreachable_since,
+              priority
+            )
+            |> continue_enqueue()
+          end)
 
-    :ok
+        case result do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+
+    with :ok <- result do
+      maybe_publish_relay(public, activity)
+    end
   end
+
+  defp enqueue_delivery(actor, activity_id, inbox, json, unreachable_since, priority) do
+    case Pleroma.Web.Federator.Publisher.enqueue_one(
+           __MODULE__,
+           %{
+             inbox: inbox,
+             json: json,
+             actor_id: actor.id,
+             id: activity_id,
+             unreachable_since: unreachable_since
+           },
+           priority: priority
+         ) do
+      {:ok, %Oban.Job{}} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, {:delivery_enqueue_failed, UriHelper.log_safe_url(inbox), reason}}
+
+      result ->
+        {:error, {:invalid_delivery_enqueue_result, UriHelper.log_safe_url(inbox), result}}
+    end
+  end
+
+  defp continue_enqueue(:ok), do: {:cont, :ok}
+  defp continue_enqueue({:error, _reason} = error), do: {:halt, error}
+
+  # Direct inbox jobs must exist before the relay Announce is created. If
+  # either insertion fails, the owning publish worker retries while the unique
+  # delivery jobs prevent already-inserted work from being duplicated.
+  defp maybe_publish_relay(true, %Activity{data: %{"type" => "Create"}} = activity) do
+    if Config.get([:instance, :allow_relay]) do
+      Logger.debug(fn ->
+        "Relaying #{UriHelper.log_safe_url(activity.data["id"])} out"
+      end)
+
+      case Relay.publish(activity) do
+        {:ok, %Activity{}} -> :ok
+        {:error, reason} -> {:error, {:relay_publish_failed, reason}}
+        result -> {:error, {:invalid_relay_publish_result, result}}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_publish_relay(_public, _activity), do: :ok
 
   defp delivery_activity(%Activity{} = activity, data) do
     # Transmogrifier may translate both an object's identifier and its audience

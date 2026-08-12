@@ -7,6 +7,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetControllerTest do
 
   import Pleroma.Factory
 
+  alias Pleroma.Instances.Instance
+
   setup do
     Mox.stub_with(Pleroma.UnstubbedConfigMock, Pleroma.Config)
     :ok
@@ -34,6 +36,44 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetControllerTest do
           name: "Shared Target"
         )
 
+      native_sources =
+        [
+          {"bonfire valueflows", "coordination"},
+          {"castling", "games"},
+          {"forgefed", "development"},
+          {"gancio", "events"},
+          {"manyfold", "models"},
+          {"mobilizon", "events"},
+          {"mutual aid", "coordination"},
+          {"neodb", "culture"},
+          {"vervis", "development"},
+          {"wanderer", "routes"},
+          {"zenpub", "publishing"}
+        ]
+        |> Enum.with_index(1)
+        |> Enum.map(fn {{software_name, platform_family}, index} ->
+          host = "native#{index}.example"
+
+          insert(:instance,
+            host: host,
+            metadata: %Instance.Pleroma.Instances.Metadata{
+              software_name: software_name,
+              software_version: "1.0.0"
+            }
+          )
+
+          user =
+            insert(:user,
+              actor_type: "Person",
+              local: false,
+              nickname: "shared@#{host}",
+              ap_id: "https://#{host}/users/shared",
+              name: "Shared Target"
+            )
+
+          {user, platform_family}
+        end)
+
       profile =
         insert(:user,
           actor_type: "Person",
@@ -56,6 +96,14 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetControllerTest do
 
       assert %{"source_profile" => _, "target_type" => "source"} =
                Enum.find(response, &(&1["id"] == to_string(source.id)))
+
+      for {native_source, platform_family} <- native_sources do
+        assert %{
+                 "platform_family" => ^platform_family,
+                 "source_profile" => "native_publisher",
+                 "target_type" => "source"
+               } = Enum.find(response, &(&1["id"] == to_string(native_source.id)))
+      end
 
       refute Enum.any?(response, &(&1["id"] == to_string(profile.id)))
     end

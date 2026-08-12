@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,minimal-ui">
     <title><%= Pleroma.Config.get([:instance, :name]) %></title>
+    <%= instance_meta_tags() %>
     <%= Phoenix.HTML.raw(assigns[:meta] || "") %>
     <link rel="stylesheet" href="/instance/static.css">
     <style>

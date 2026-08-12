@@ -5,6 +5,9 @@
 defmodule Pleroma.Web.MastodonAPI.CustomEmojiControllerTest do
   use Pleroma.Web.ConnCase, async: true
 
+  alias Pleroma.Emoji
+  alias Pleroma.Web.MastodonAPI.CustomEmojiView
+
   test "with tags", %{conn: conn} do
     assert resp =
              conn
@@ -19,5 +22,18 @@ defmodule Pleroma.Web.MastodonAPI.CustomEmojiControllerTest do
     assert Map.has_key?(emoji, "category")
     assert Map.has_key?(emoji, "url")
     assert Map.has_key?(emoji, "visible_in_picker")
+  end
+
+  test "omits entries that cannot produce a usable media URL" do
+    entries = [
+      {"blank", %Emoji{file: "", tags: []}},
+      {"credentialed", %Emoji{file: "https://user:secret@example.com/emoji.png", tags: []}},
+      {"usable", %Emoji{file: "/emoji/usable.png", tags: ["Custom"]}}
+    ]
+
+    assert [%{"shortcode" => "usable", "url" => url}] =
+             CustomEmojiView.render("index.json", %{custom_emojis: entries})
+
+    assert String.ends_with?(url, "/emoji/usable.png")
   end
 end

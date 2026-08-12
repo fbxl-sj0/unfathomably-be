@@ -5,6 +5,9 @@
 defmodule Pleroma.Web.MastodonAPI.AccountControllerTest do
   use Pleroma.Web.ConnCase
 
+  alias Pleroma.ATProto.Identity, as: ATProtoIdentity
+  alias Pleroma.Diaspora.Entity, as: DiasporaEntity
+  alias Pleroma.Nostr.Entity, as: NostrEntity
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.Tests.ObanHelpers
@@ -302,6 +305,69 @@ defmodule Pleroma.Web.MastodonAPI.AccountControllerTest do
 
       assert [%{"id" => id}] = resp
       assert id == announce.id
+    end
+
+    test "respects remote actor web visibility hints only for anonymous profile reads", %{
+      conn: authenticated_conn
+    } do
+      public = Pleroma.Constants.as_public()
+
+      remote_user =
+        insert(:user,
+          local: false,
+          ap_id: "https://privacy.example/users/alice",
+          follower_address: "https://privacy.example/users/alice/followers",
+          actor_extensions: %{
+            "hidesToPublicFromUnauthedWeb" => true,
+            "hidesCcPublicFromUnauthedWeb" => false
+          }
+        )
+
+      author = insert(:user)
+      {:ok, public_post} = CommonAPI.post(author, %{status: "public target"})
+      {:ok, unlisted_post} = CommonAPI.post(author, %{status: "unlisted target"})
+
+      {:ok, public_announce, _} =
+        ActivityPub.persist(
+          %{
+            "actor" => remote_user.ap_id,
+            "id" => "https://privacy.example/activities/public",
+            "object" => public_post.data["object"],
+            "to" => [public],
+            "type" => "Announce"
+          },
+          local: false
+        )
+
+      {:ok, unlisted_announce, _} =
+        ActivityPub.persist(
+          %{
+            "actor" => remote_user.ap_id,
+            "cc" => [public],
+            "id" => "https://privacy.example/activities/unlisted",
+            "object" => unlisted_post.data["object"],
+            "to" => [remote_user.follower_address],
+            "type" => "Announce"
+          },
+          local: false
+        )
+
+      assert [%{"id" => anonymous_id}] =
+               build_conn()
+               |> get("/api/v1/accounts/#{remote_user.id}/statuses")
+               |> json_response_and_validate_schema(200)
+
+      assert anonymous_id == unlisted_announce.id
+
+      authenticated_ids =
+        authenticated_conn
+        |> get("/api/v1/accounts/#{remote_user.id}/statuses")
+        |> json_response_and_validate_schema(200)
+        |> Enum.map(& &1["id"])
+        |> MapSet.new()
+
+      assert authenticated_ids ==
+               MapSet.new([public_announce.id, unlisted_announce.id])
     end
 
     test "deactivated user", %{conn: conn} do
@@ -869,6 +935,88 @@ defmodule Pleroma.Web.MastodonAPI.AccountControllerTest do
                conn
                |> put_req_header("content-type", "application/json")
                |> post("/api/v1/follows", %{"uri" => other_user_nickname})
+               |> json_response_and_validate_schema(200)
+    end
+
+    test "ATProto projections use ordinary follows when a Nostr entity also exists", %{
+      conn: conn
+    } do
+      followed = insert(:user, local: true)
+
+      %ATProtoIdentity{}
+      |> ATProtoIdentity.changeset(%{
+        user_id: followed.id,
+        did: "did:plc:account-controller-test",
+        handle: "controller-test.bsky.social",
+        pds_url: "https://bsky.social"
+      })
+      |> Repo.insert!()
+
+      %NostrEntity{}
+      |> NostrEntity.changeset(%{
+        user_id: followed.id,
+        kind: "local_actor",
+        pubkey: String.duplicate("1", 64),
+        metadata: %{}
+      })
+      |> Repo.insert!()
+
+      assert %{"following" => true} =
+               conn
+               |> post("/api/v1/accounts/#{followed.id}/follow")
+               |> json_response_and_validate_schema(200)
+
+      assert %{"following" => false} =
+               conn
+               |> post("/api/v1/accounts/#{followed.id}/unfollow")
+               |> json_response_and_validate_schema(200)
+    end
+
+    test "diaspora* projections use ordinary follows when a Nostr entity also exists", %{
+      conn: conn
+    } do
+      followed =
+        insert(:user,
+          local: true,
+          actor_extensions: %{
+            "diaspora" => %{
+              "id" => "hq@diaspora.example",
+              "guid" => "7bca7c80311b01332d046c626dd55703",
+              "mirror" => true,
+              "pod" => "https://diaspora.example"
+            }
+          }
+        )
+
+      %DiasporaEntity{}
+      |> DiasporaEntity.changeset(%{
+        user_id: followed.id,
+        diaspora_id: "hq@diaspora.example",
+        guid: "7bca7c80311b01332d046c626dd55703",
+        pod_url: "https://diaspora.example",
+        public_key: "test public key"
+      })
+      |> Repo.insert!()
+
+      %NostrEntity{}
+      |> NostrEntity.changeset(%{
+        user_id: followed.id,
+        kind: "local_actor",
+        pubkey: String.duplicate("2", 64),
+        metadata: %{}
+      })
+      |> Repo.insert!()
+
+      refute Pleroma.Nostr.Identity.presentation(followed)
+
+      assert %{"following" => true} =
+               conn
+               |> post("/api/v1/accounts/#{followed.id}/follow")
+               |> json_response_and_validate_schema(200)
+
+      assert %{"following" => false} =
+               conn
+               |> post("/api/v1/accounts/#{followed.id}/unfollow")
                |> json_response_and_validate_schema(200)
     end
 

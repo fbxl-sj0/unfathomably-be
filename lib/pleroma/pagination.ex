@@ -20,6 +20,16 @@ defmodule Pleroma.Pagination do
 
   def page_keys, do: @page_keys
 
+  @spec page_limit(map()) :: pos_integer()
+  def page_limit(params) when is_map(params) do
+    params
+    |> cast_params()
+    |> Map.get(:limit, @default_limit)
+    |> normalize_limit()
+  end
+
+  def page_limit(_params), do: @default_limit
+
   @spec fetch_paginated(Ecto.Query.t(), map(), type(), atom() | nil) :: [Ecto.Schema.t()]
   def fetch_paginated(query, params, type \\ :keyset, table_binding \\ nil)
 
@@ -152,17 +162,15 @@ defmodule Pleroma.Pagination do
   end
 
   defp restrict(query, :limit, options, _table_binding) do
-    limit =
-      case Map.get(options, :limit, @default_limit) do
-        limit when limit < @max_limit -> limit
-        _ -> @max_limit
-      end
-
     query
-    |> limit(^limit)
+    |> limit(^normalize_limit(Map.get(options, :limit, @default_limit)))
   end
 
   defp restrict(query, _, _, _), do: query
+
+  defp normalize_limit(limit) when is_integer(limit) and limit in 1..@max_limit, do: limit
+  defp normalize_limit(limit) when is_integer(limit) and limit > @max_limit, do: @max_limit
+  defp normalize_limit(_limit), do: @default_limit
 
   defp enforce_order(result, %{min_id: _, order_asc: true}), do: result
   defp enforce_order(result, %{min_id: _}), do: Enum.reverse(result)

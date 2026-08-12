@@ -430,6 +430,38 @@ defmodule Pleroma.Web.ActivityPub.UtilsTest do
       {:ok, announce} = CommonAPI.repeat(note_activity.id, actor)
       assert Utils.get_existing_announce(actor.ap_id, object) == announce
     end
+
+    test "returns one activity when legacy duplicate announces exist" do
+      note_activity = insert(:note_activity)
+      assert object = Object.normalize(note_activity, fetch: false)
+      actor = insert(:user)
+
+      announce_data = %{
+        "type" => "Announce",
+        "actor" => actor.ap_id,
+        "object" => object.data["id"],
+        "to" => [actor.follower_address, note_activity.actor],
+        "cc" => [Pleroma.Constants.as_public()],
+        "context" => note_activity.data["context"]
+      }
+
+      first =
+        Repo.insert!(%Activity{
+          actor: actor.ap_id,
+          data: announce_data,
+          recipients: announce_data["to"]
+        })
+
+      second =
+        Repo.insert!(%Activity{
+          actor: actor.ap_id,
+          data: announce_data,
+          recipients: announce_data["to"]
+        })
+
+      assert existing = Utils.get_existing_announce(actor.ap_id, object)
+      assert existing.id in [first.id, second.id]
+    end
   end
 
   describe "fetch_latest_block/2" do

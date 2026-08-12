@@ -7,6 +7,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
 
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Object
+  alias Pleroma.Object.Containment
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
@@ -40,6 +41,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
     |> validate_inclusion(:type, ["Update"])
     |> CommonValidations.validate_actor_presence()
     |> validate_updating_rights(meta)
+    |> validate_immutable_reply_target()
   end
 
   def cast_and_validate(data, meta \\ []) do
@@ -83,13 +85,17 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
          entity <-
            Object.normalize(object_id, fetch: false) || User.get_cached_by_ap_id(object_id) do
       case entity do
+        %Object{data: %{"type" => "Tombstone"}} ->
+          add_error(cng, :object, "Deleted object can't be updated")
+
         %Object{} ->
           authorized? =
             if CustomObject.custom_object?(entity.data) do
               CustomObject.authorized?(entity.data, actor) and
                 CustomObject.authorized?(object, actor)
             else
-              actor == entity.data["actor"]
+              object_actor_matches?(entity.data, actor) and
+                object_actor_matches?(object, actor)
             end
 
           if authorized? do
@@ -121,6 +127,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
     with true <-
            (CustomObject.custom_object?(object) and CustomObject.authorized?(object, actor)) or
              object_actor_matches?(object, actor),
+         :ok <- validate_object_actor_origin(object, actor),
          true <- recent_unknown_update?(object) do
       cng
     else
@@ -139,6 +146,16 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
     end)
   end
 
+  # An unknown object has no stored ownership record to consult. Requiring its
+  # canonical identifier to remain on the signing actor's host prevents a
+  # valid remote actor from claiming an object URL owned by another server.
+  defp validate_object_actor_origin(%{"id" => object_id}, actor)
+       when is_binary(object_id) and is_binary(actor) do
+    Containment.contain_origin(object_id, %{"actor" => actor})
+  end
+
+  defp validate_object_actor_origin(_object, _actor), do: :error
+
   defp recent_unknown_update?(object) do
     timestamp = object["updated"] || object["published"]
 
@@ -147,6 +164,34 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator do
          age <- DateTime.diff(DateTime.utc_now(), datetime, :second) do
       age >= -3600 and age <= 86_400
     else
+      _ -> false
+    end
+  end
+
+  # Moving an existing object to another parent changes conversation topology,
+  # visibility assumptions, and notification context. It is not an edit, even
+  # when the same actor still owns the object. Missing inReplyTo remains valid
+  # for partial actor updates and for peers that omit unchanged properties.
+  defp validate_immutable_reply_target(cng) do
+    with object when is_map(object) <- get_field(cng, :object),
+         true <- Map.has_key?(object, "inReplyTo"),
+         {:ok, object_id} <- ObjectValidators.ObjectID.cast(object),
+         %Object{} = original <- Object.normalize(object_id, fetch: false),
+         false <- same_reply_target?(object["inReplyTo"], original.data["inReplyTo"]) do
+      add_error(cng, :object, "inReplyTo can't be changed")
+    else
+      _ -> cng
+    end
+  end
+
+  defp same_reply_target?(nil, nil), do: true
+
+  defp same_reply_target?(incoming, original) do
+    case {
+      ObjectValidators.ObjectID.cast(incoming),
+      ObjectValidators.ObjectID.cast(original)
+    } do
+      {{:ok, id}, {:ok, id}} -> true
       _ -> false
     end
   end

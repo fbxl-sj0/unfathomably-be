@@ -101,4 +101,31 @@ defmodule Pleroma.ScheduledActivityTest do
       assert changeset.errors == [scheduled_at: {"must be at least 5 minutes from now", []}]
     end
   end
+
+  describe "delete_all_for_user/1" do
+    test "deletes only the user's scheduled activities and linked jobs" do
+      clear_config([ScheduledActivity, :enabled], true)
+      user = insert(:user)
+      other_user = insert(:user)
+
+      scheduled_at =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(:timer.minutes(6), :millisecond)
+        |> NaiveDateTime.to_iso8601()
+
+      attrs = %{params: %{}, scheduled_at: scheduled_at}
+      {:ok, first} = ScheduledActivity.create(user, attrs)
+      {:ok, second} = ScheduledActivity.create(user, attrs)
+      {:ok, retained} = ScheduledActivity.create(other_user, attrs)
+
+      assert {:ok, 2} = ScheduledActivity.delete_all_for_user(user)
+
+      refute Repo.get(ScheduledActivity, first.id)
+      refute Repo.get(ScheduledActivity, second.id)
+      assert Repo.get(ScheduledActivity, retained.id)
+      refute Repo.exists?(ScheduledActivity.job_query(first.id))
+      refute Repo.exists?(ScheduledActivity.job_query(second.id))
+      assert Repo.exists?(ScheduledActivity.job_query(retained.id))
+    end
+  end
 end

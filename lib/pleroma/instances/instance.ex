@@ -13,6 +13,9 @@ defmodule Pleroma.Instances.Instance do
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Workers.DeleteWorker
+  alias Pleroma.Workers.ReachabilityWorker
+
+  @favicon_refresh_interval_seconds 86_400
 
   use Ecto.Schema
 
@@ -371,6 +374,20 @@ defmodule Pleroma.Instances.Instance do
     end
   end
 
+  def delivery_backoff_seconds(url_or_host) when is_binary(url_or_host) do
+    with host when is_binary(host) <- host(url_or_host),
+         %Instance{} = instance <- Repo.get_by(Instance, host: host),
+         %DateTime{} = backoff_until <- metadata_value(instance, :backoff_until) do
+      backoff_until
+      |> DateTime.diff(DateTime.utc_now(), :second)
+      |> max(0)
+    else
+      _ -> 0
+    end
+  end
+
+  def delivery_backoff_seconds(_), do: 0
+
   defp parse_datetime(datetime) when is_binary(datetime) do
     case NaiveDateTime.from_iso8601(datetime) do
       {:ok, datetime} -> datetime
@@ -399,13 +416,18 @@ defmodule Pleroma.Instances.Instance do
   defp update_instance_health(url_or_host, opts, fun) when is_function(fun, 2) do
     with host when is_binary(host) <- normalize_host(url_or_host) do
       instance = Repo.get_by(Instance, %{host: host}) || %Instance{host: host}
-      changes = fun.(instance, now())
 
-      instance
-      |> changeset(Map.put_new(changes, :host, host))
-      |> insert_or_update()
-      |> tap_cache_update()
-      |> tap_log_health_update(host, opts)
+      case fun.(instance, now()) do
+        :unchanged ->
+          {:ok, instance}
+
+        changes ->
+          instance
+          |> changeset(Map.put_new(changes, :host, host))
+          |> insert_or_update()
+          |> tap_cache_update()
+          |> tap_log_health_update(host, opts)
+      end
     else
       _ -> {:error, nil}
     end
@@ -414,16 +436,20 @@ defmodule Pleroma.Instances.Instance do
   defp update_delivery_health(url, outcome, reason, opts) do
     with endpoint when is_binary(endpoint) <- normalize_endpoint(url) do
       update_instance_health(url, opts, fn instance, now ->
-        endpoint_history =
-          instance
-          |> metadata_value(:delivery_endpoints)
-          |> update_endpoint_history(endpoint, outcome, reason, now, opts)
+        if outcome == :success and delivery_success_recorded?(instance, endpoint, opts) do
+          :unchanged
+        else
+          endpoint_history =
+            instance
+            |> metadata_value(:delivery_endpoints)
+            |> update_endpoint_history(endpoint, outcome, reason, now, opts)
 
-        host_changes = delivery_host_changes(instance, outcome, reason, now, opts)
+          host_changes = delivery_host_changes(instance, outcome, reason, now, opts)
 
-        Map.update!(host_changes, :metadata, fn metadata ->
-          Map.put(metadata, :delivery_endpoints, endpoint_history)
-        end)
+          Map.update!(host_changes, :metadata, fn metadata ->
+            Map.put(metadata, :delivery_endpoints, endpoint_history)
+          end)
+        end
       end)
     else
       _ -> {:error, nil}
@@ -486,6 +512,25 @@ defmodule Pleroma.Instances.Instance do
       _ -> 1
     end
   end
+
+  # A successful delivery is a health transition only when the host or this
+  # particular inbox was previously unhealthy. Avoid rewriting the same
+  # instance row for every post delivered to an already healthy endpoint.
+  defp delivery_success_recorded?(%Instance{unreachable_since: nil} = instance, endpoint, opts) do
+    expected_status = metadata_status(opts, "success")
+
+    metadata_integer(instance, :failure_count) == 0 and
+      is_nil(metadata_value(instance, :backoff_until)) and
+      is_nil(metadata_value(instance, :gone_at)) and
+      Enum.any?(metadata_value(instance, :delivery_endpoints) || [], fn entry ->
+        Map.get(entry, "url") == endpoint and
+          Map.get(entry, "failure_count") == 0 and
+          Map.get(entry, "last_status") == expected_status and
+          is_nil(Map.get(entry, "backoff_until"))
+      end)
+  end
+
+  defp delivery_success_recorded?(_instance, _endpoint, _opts), do: false
 
   defp put_endpoint_outcome(entry, :success, _reason, now, _failure_count, _opts) do
     entry
@@ -623,13 +668,28 @@ defmodule Pleroma.Instances.Instance do
   defp metadata_reason_part(value), do: inspect(value)
 
   defp backoff_until(now, failure_count) do
+    base_minutes = reachability_backoff_base_minutes()
+    max_minutes = reachability_backoff_max_minutes()
+
     minutes =
-      reachability_backoff_base_minutes()
-      |> Kernel.*(:math.pow(2, max(failure_count - 1, 0)))
-      |> round()
-      |> min(reachability_backoff_max_minutes())
+      capped_backoff_minutes(
+        base_minutes,
+        max_minutes,
+        max(failure_count - 1, 0)
+      )
 
     DateTime.add(now, minutes * 60, :second)
+  end
+
+  defp capped_backoff_minutes(minutes, max_minutes, _remaining)
+       when minutes >= max_minutes,
+       do: max_minutes
+
+  defp capped_backoff_minutes(minutes, _max_minutes, remaining) when remaining <= 0,
+    do: minutes
+
+  defp capped_backoff_minutes(minutes, max_minutes, remaining) do
+    capped_backoff_minutes(min(minutes * 2, max_minutes), max_minutes, remaining - 1)
   end
 
   defp reachability_backoff_base_minutes do
@@ -655,12 +715,60 @@ defmodule Pleroma.Instances.Instance do
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
 
+  def favicon_cache_key(host) when is_binary(host),
+    do: "instance_favicon:#{String.downcase(host)}"
+
+  def favicon_status(%URI{host: host}) when is_binary(host) do
+    now = NaiveDateTime.utc_now()
+
+    case Repo.get_by(Instance, %{host: host}) do
+      %Instance{} = instance ->
+        if fresh_favicon?(instance, now),
+          do: {:fresh, instance.favicon},
+          else: {:stale, instance.favicon}
+
+      nil ->
+        {:stale, nil}
+    end
+  end
+
+  def favicon_status(_instance_uri), do: {:error, :invalid_uri}
+
+  def normalize_favicon_url(url) when is_binary(url) do
+    uri = URI.parse(url)
+
+    cond do
+      uri.scheme in ["http", "https"] and is_binary(uri.host) and uri.host != "" ->
+        URI.to_string(uri)
+
+      uri.scheme in ["http", "https"] and uri.host in [nil, ""] ->
+        normalize_favicon_url_with_missing_authority(uri)
+
+      true ->
+        nil
+    end
+  end
+
+  def normalize_favicon_url(_url), do: nil
+
+  # Some remote pages publish absolute favicon links with three slashes after
+  # the scheme. Browsers reinterpret the first path component as the host, but
+  # URI.merge/2 preserves the malformed URL and MediaProxy cannot sign it.
+  defp normalize_favicon_url_with_missing_authority(%URI{path: path, scheme: scheme})
+       when is_binary(path) do
+    candidate = "#{scheme}://#{String.trim_leading(path, "/")}"
+    repaired = URI.parse(candidate)
+
+    if is_binary(repaired.host), do: URI.to_string(repaired), else: nil
+  end
+
+  defp normalize_favicon_url_with_missing_authority(_uri), do: nil
+
   def get_or_update_favicon(%URI{host: host} = instance_uri) do
     existing_record = Repo.get_by(Instance, %{host: host})
     now = NaiveDateTime.utc_now()
 
-    if existing_record && existing_record.favicon_updated_at &&
-         NaiveDateTime.diff(now, existing_record.favicon_updated_at) < 86_400 do
+    if fresh_favicon?(existing_record, now) do
       existing_record.favicon
     else
       favicon = scrape_favicon(instance_uri)
@@ -687,6 +795,15 @@ defmodule Pleroma.Instances.Instance do
       nil
   end
 
+  defp fresh_favicon?(
+         %Instance{favicon_updated_at: %NaiveDateTime{} = favicon_updated_at},
+         %NaiveDateTime{} = now
+       ) do
+    NaiveDateTime.diff(now, favicon_updated_at) < @favicon_refresh_interval_seconds
+  end
+
+  defp fresh_favicon?(_instance, _now), do: false
+
   defp scrape_favicon(%URI{} = instance_uri) do
     try do
       with {_, true} <- {:reachable, reachable_from_database?(instance_uri.host)},
@@ -696,7 +813,11 @@ defmodule Pleroma.Instances.Instance do
              {:parse,
               html |> Floki.parse_document!() |> Floki.attribute("link[rel=icon]", "href")},
            {_, favicon} when is_binary(favicon) <-
-             {:merge, to_string(URI.merge(instance_uri, favicon_rel))} do
+             {:merge,
+              instance_uri
+              |> URI.merge(favicon_rel)
+              |> URI.to_string()
+              |> normalize_favicon_url()} do
         favicon
       else
         {:reachable, false} ->
@@ -727,30 +848,37 @@ defmodule Pleroma.Instances.Instance do
   end
 
   def get_or_update_metadata(%URI{host: host} = instance_uri) do
-    existing_record = Repo.get_by(Instance, %{host: host})
-    now = NaiveDateTime.utc_now()
+    # Publisher jobs for one host can begin together. Coalescing the probe
+    # prevents each delivery from opening its own NodeInfo connection before
+    # the first result reaches the instances table.
+    lock = {{__MODULE__, :metadata_refresh, host}, self()}
 
-    if fresh_metadata?(existing_record, now) do
-      existing_record.metadata
-    else
-      metadata =
-        case scrape_metadata(instance_uri) do
-          nil -> existing_metadata(existing_record)
-          metadata -> metadata
+    :global.trans(lock, fn ->
+      existing_record = Repo.get_by(Instance, %{host: host})
+      now = NaiveDateTime.utc_now()
+
+      if fresh_metadata?(existing_record, now) do
+        existing_record.metadata
+      else
+        metadata =
+          case scrape_metadata(instance_uri) do
+            nil -> existing_metadata(existing_record)
+            metadata -> metadata
+          end
+
+        if existing_record do
+          existing_record
+          |> changeset(%{metadata: metadata, metadata_updated_at: now})
+          |> Repo.update()
+        else
+          %Instance{}
+          |> changeset(%{host: host, metadata: metadata, metadata_updated_at: now})
+          |> insert_or_update()
         end
 
-      if existing_record do
-        existing_record
-        |> changeset(%{metadata: metadata, metadata_updated_at: now})
-        |> Repo.update()
-      else
-        %Instance{}
-        |> changeset(%{host: host, metadata: metadata, metadata_updated_at: now})
-        |> insert_or_update()
+        metadata
       end
-
-      metadata
-    end
+    end)
   end
 
   defp existing_metadata(%Instance{metadata: metadata}), do: metadata
@@ -758,7 +886,14 @@ defmodule Pleroma.Instances.Instance do
 
   defp fresh_metadata?(%Instance{metadata: metadata, metadata_updated_at: updated_at}, now)
        when not is_nil(updated_at) do
-    metadata_has_software?(metadata) and NaiveDateTime.diff(now, updated_at) < 86_400
+    age = NaiveDateTime.diff(now, updated_at)
+
+    # Successful metadata is refreshed daily. A failed probe is remembered for
+    # six hours so a dead or non-NodeInfo origin cannot be retried by every
+    # outgoing delivery, while still recovering automatically the same day.
+    refresh_after = if metadata_has_software?(metadata), do: 86_400, else: 21_600
+
+    age < refresh_after
   end
 
   defp fresh_metadata?(_, _), do: false
@@ -881,5 +1016,11 @@ defmodule Pleroma.Instances.Instance do
       end)
     end)
     |> Stream.run()
+
+    ReachabilityWorker.delete_jobs_for_host(host)
+    Repo.delete_all(from(i in Instance, where: i.host == ^host))
+    InstanceCache.sync(host, nil)
+
+    :ok
   end
 end

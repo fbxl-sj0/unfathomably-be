@@ -183,6 +183,22 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
     }
   end
 
+  def listen_operation do
+    %Operation{
+      tags: ["Status actions"],
+      summary: "Record listen",
+      security: [%{"oAuth" => ["write:scrobbles"]}],
+      description: "Record a repeatable listening activity for a federated Track or Audio status",
+      operationId: "StatusController.listen",
+      parameters: [id_param()],
+      responses: %{
+        200 => status_response(),
+        404 => Operation.response("Not Found", "application/json", ApiError),
+        422 => Operation.response("Not a track", "application/json", ApiError)
+      }
+    }
+  end
+
   def pin_operation do
     %Operation{
       tags: ["Status actions"],
@@ -251,6 +267,40 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
               "error" => "Record not found"
             }
           })
+      }
+    }
+  end
+
+  def distinguish_operation do
+    %Operation{
+      tags: ["Status actions"],
+      summary: "Distinguish a moderator reply",
+      security: [%{"oAuth" => ["write:statuses"]}],
+      description: "Mark an owned reply to a moderated group discussion as distinguished",
+      operationId: "StatusController.distinguish",
+      parameters: [id_param()],
+      responses: %{
+        200 => status_response(),
+        403 => Operation.response("Forbidden", "application/json", ApiError),
+        404 => Operation.response("Not Found", "application/json", ApiError),
+        422 => Operation.response("Unprocessable Entity", "application/json", ApiError)
+      }
+    }
+  end
+
+  def undistinguish_operation do
+    %Operation{
+      tags: ["Status actions"],
+      summary: "Remove moderator-reply distinction",
+      security: [%{"oAuth" => ["write:statuses"]}],
+      description: "Remove the distinguished marker from an owned group-discussion reply",
+      operationId: "StatusController.undistinguish",
+      parameters: [id_param()],
+      responses: %{
+        200 => status_response(),
+        403 => Operation.response("Forbidden", "application/json", ApiError),
+        404 => Operation.response("Not Found", "application/json", ApiError),
+        422 => Operation.response("Unprocessable Entity", "application/json", ApiError)
       }
     }
   end

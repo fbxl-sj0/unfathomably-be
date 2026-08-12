@@ -198,7 +198,7 @@ defmodule Pleroma.User.BackupTest do
              "inbox" => "http://cofe.io/users/cofe/inbox",
              "likes" => "likes.json",
              "name" => "Cofe",
-             "outbox" => "http://cofe.io/users/cofe/outbox",
+             "outbox" => "outbox.json",
              "preferredUsername" => "cofe",
              "publicKey" => %{
                "id" => "http://cofe.io/users/cofe#main-key",
@@ -362,14 +362,13 @@ defmodule Pleroma.User.BackupTest do
       clear_config([Pleroma.Upload, :uploader], Pleroma.Uploaders.S3)
       clear_config([Pleroma.Uploaders.S3, :streaming_enabled], false)
 
-      with_mock ExAws,
-        request: fn
-          %{http_method: :put} -> {:ok, :ok}
-          %{http_method: :delete} -> {:ok, %{status_code: 204}}
-        end do
-        assert {:ok, %Pleroma.Upload{}} = Backup.upload(backup, path)
-        assert {:ok, _backup} = Backup.delete(backup)
-      end
+      Mox.expect(Pleroma.Uploaders.S3.ExAwsMock, :request, 2, fn
+        %{http_method: :put} -> {:ok, :ok}
+        %{http_method: :delete} -> {:ok, %{status_code: 204}}
+      end)
+
+      assert {:ok, %Pleroma.Upload{}} = Backup.upload(backup, path)
+      assert {:ok, _backup} = Backup.delete(backup)
     end
 
     test "Local", %{path: path, backup: backup} do

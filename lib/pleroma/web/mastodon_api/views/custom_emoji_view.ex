@@ -8,7 +8,9 @@ defmodule Pleroma.Web.MastodonAPI.CustomEmojiView do
   alias Pleroma.Emoji
 
   def render("index.json", %{custom_emojis: custom_emojis}) do
-    render_many(custom_emojis, __MODULE__, "show.json")
+    custom_emojis
+    |> Enum.filter(&Emoji.renderable?/1)
+    |> render_many(__MODULE__, "show.json")
   end
 
   def render("show.json", %{custom_emoji: {shortcode, %Emoji{file: relative_url, tags: tags}}}) do

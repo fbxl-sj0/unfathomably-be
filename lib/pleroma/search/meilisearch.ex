@@ -106,6 +106,7 @@ defmodule Pleroma.Search.Meilisearch do
         |> maybe_fetch(user, query)
         |> order_by([object: obj], desc: obj.data["published"])
         |> Pleroma.Repo.all()
+        |> Enum.filter(&Pleroma.Web.ActivityPub.Visibility.visible_for_user?(&1, user))
       rescue
         _ -> maybe_fetch([], user, query)
       end

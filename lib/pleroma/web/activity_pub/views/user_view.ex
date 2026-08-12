@@ -5,12 +5,17 @@
 defmodule Pleroma.Web.ActivityPub.UserView do
   use Pleroma.Web, :view
 
+  require Logger
+  require Pleroma.Constants
+
   alias Pleroma.GroupMembership
   alias Pleroma.Keys
+  alias Pleroma.Keys.Multikey
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActorExtensions
+  alias Pleroma.Web.ActivityPub.Marketplace
   alias Pleroma.Web.ActivityPub.ObjectView
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.ActivityPub.Utils
@@ -18,6 +23,12 @@ defmodule Pleroma.Web.ActivityPub.UserView do
   alias Pleroma.Web.Router.Helpers
 
   import Ecto.Query
+
+  @fep_844e_context "https://w3id.org/fep/844e"
+  @rfc_9421_capability %{
+    "href" => "https://datatracker.ietf.org/doc/html/rfc9421",
+    "name" => "RFC-9421: HTTP Message Signatures"
+  }
 
   def render("endpoints.json", %{user: %User{nickname: nil, local: true} = _user}) do
     %{"sharedInbox" => Helpers.activity_pub_url(Endpoint, :inbox)}
@@ -51,6 +62,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "summary" =>
         "An internal service actor for this Pleroma instance.  No user-serviceable parts inside.",
       "url" => user.ap_id,
+      "implements" => application_capabilities(),
       "manuallyApprovesFollowers" => false,
       "publicKey" => %{
         "id" => "#{user.ap_id}#main-key",
@@ -61,6 +73,8 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "invisible" => User.invisible?(user)
     }
     |> Map.merge(Utils.make_json_ld_header())
+    |> add_capability_context()
+    |> maybe_put_finalized_fep_fields(user)
   end
 
   # the instance itself is not a Person, but instead an Application
@@ -78,6 +92,47 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "preferredUsername" => nickname,
       "webfinger" => "acct:#{User.full_nickname(user)}"
     })
+  end
+
+  def render("restricted_user.json", %{user: %User{nickname: nil} = user}),
+    do: render("service.json", %{user: user})
+
+  def render("restricted_user.json", %{user: %User{nickname: "internal." <> _} = user}),
+    do: render("user.json", %{user: user})
+
+  # Hybrid authorized fetch exposes only the public key and delivery routes
+  # needed for a peer to retry with a signature. Human-facing profile data,
+  # media, fields, dates, and extension payloads remain available only after
+  # the requester proves its identity.
+  def render("restricted_user.json", %{user: %User{local: true} = user}) do
+    endpoints =
+      "endpoints.json"
+      |> render(%{user: user})
+      |> Map.take(["sharedInbox"])
+
+    %{
+      "id" => user.ap_id,
+      "type" => actor_json_ld_type(user),
+      "following" => User.ap_following(user),
+      "followers" => User.ap_followers(user),
+      "inbox" => "#{user.ap_id}/inbox",
+      "outbox" => user.outbox_address || "#{user.ap_id}/outbox",
+      "featured" => User.ap_featured_collection(user),
+      "preferredUsername" => Marketplace.webfinger_nickname(user),
+      "url" => user.ap_id,
+      "manuallyApprovesFollowers" => user.is_locked,
+      "publicKey" => %{
+        "id" => "#{user.ap_id}#main-key",
+        "owner" => user.ap_id,
+        "publicKeyPem" => public_key_pem(user)
+      },
+      "endpoints" => endpoints,
+      "webfinger" =>
+        "acct:#{Marketplace.webfinger_nickname(user)}@#{Pleroma.Web.WebFinger.domain()}"
+    }
+    |> maybe_put_restricted_group_fields(user)
+    |> Map.merge(Utils.make_json_ld_header())
+    |> maybe_put_finalized_fep_fields(user)
   end
 
   def render("user.json", %{user: user}) do
@@ -112,7 +167,7 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "inbox" => "#{user.ap_id}/inbox",
       "outbox" => user.outbox_address || "#{user.ap_id}/outbox",
       "featured" => User.ap_featured_collection(user),
-      "preferredUsername" => user.nickname,
+      "preferredUsername" => Marketplace.webfinger_nickname(user),
       "name" => user.name,
       "summary" => user.bio,
       "url" => user.ap_id,
@@ -123,18 +178,28 @@ defmodule Pleroma.Web.ActivityPub.UserView do
         "publicKeyPem" => public_key
       },
       "endpoints" => endpoints,
-      "attachment" => fields,
+      "attachment" => fields ++ (user.identity_proofs || []),
       "tag" => emoji_tags,
       # Note: key name is indeed "discoverable" (not an error)
       "discoverable" => user.is_discoverable,
       "indexable" => user.is_indexable,
+      "interactionPolicy" => %{
+        "canFeature" => %{
+          "automaticApproval" => [
+            if(user.is_discoverable, do: Pleroma.Constants.as_public(), else: user.ap_id)
+          ]
+        }
+      },
       "capabilities" => capabilities,
+      "generator" => application_generator(),
       "alsoKnownAs" => user.also_known_as,
       "vcard:bday" => birthday,
       "vcard:Address" => user.location,
-      "webfinger" => "acct:#{User.full_nickname(user)}",
+      "webfinger" =>
+        "acct:#{Marketplace.webfinger_nickname(user)}@#{Pleroma.Web.WebFinger.domain()}",
       "published" => Pleroma.Web.CommonAPI.Utils.to_masto_date(user.inserted_at)
     }
+    |> maybe_put_attribution_domains(user)
     |> Map.merge(group_actor_fields(user))
     |> maybe_put_misskey_summary(user.raw_bio)
     |> Map.merge(
@@ -150,6 +215,8 @@ defmodule Pleroma.Web.ActivityPub.UserView do
     )
     |> Map.merge(Utils.make_json_ld_header())
     |> ActorExtensions.merge_into_actor(user.actor_extensions)
+    |> maybe_keep_local_generator(user)
+    |> maybe_put_finalized_fep_fields(user)
   end
 
   def render("following.json", %{user: user, page: page} = opts) do
@@ -199,7 +266,8 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "totalItems" => total,
       "count" => total,
       "results" => collection_results(first),
-      "first" => first
+      "first" => first,
+      "last" => "#{user.ap_id}/following?page=#{max(div(total + 9, 10), 1)}"
     }
     |> Map.merge(Utils.make_json_ld_header())
   end
@@ -250,37 +318,39 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "type" => "OrderedCollection",
       "count" => total,
       "results" => collection_results(first),
-      "first" => first
+      "first" => first,
+      "last" => "#{user.ap_id}/followers?page=#{max(div(total + 9, 10), 1)}"
     }
     |> maybe_put_total_items(showing_count, total)
     |> Map.merge(Utils.make_json_ld_header())
   end
 
-  def render("activity_collection.json", %{iri: iri}) do
+  def render("activity_collection.json", %{iri: iri} = opts) do
     %{
       "id" => iri,
       "type" => "OrderedCollection",
       "first" => "#{iri}?page=true"
     }
+    |> maybe_put_total_items(is_integer(opts[:total_items]), opts[:total_items])
     |> Map.merge(Utils.make_json_ld_header())
   end
 
-  def render("activity_collection_page.json", %{
-        activities: activities,
-        iri: iri,
-        pagination: pagination
-      }) do
-    collection =
-      Enum.map(activities, fn activity ->
-        {:ok, data} = Transmogrifier.prepare_outgoing(activity.data)
-        data
-      end)
+  def render(
+        "activity_collection_page.json",
+        %{
+          activities: activities,
+          iri: iri,
+          pagination: pagination
+        } = opts
+      ) do
+    collection = Enum.flat_map(activities, &prepare_collection_item/1)
 
     %{
       "type" => "OrderedCollectionPage",
       "partOf" => iri,
       "orderedItems" => collection
     }
+    |> maybe_put_total_items(is_integer(opts[:total_items]), opts[:total_items])
     |> Map.merge(Utils.make_json_ld_header())
     |> Map.merge(pagination)
   end
@@ -321,6 +391,36 @@ defmodule Pleroma.Web.ActivityPub.UserView do
     |> Map.merge(Utils.make_json_ld_header())
   end
 
+  # Historical rows can outlive their actor, object, or a now-supported wire
+  # shape. One such row must not make the complete outbox unavailable to a
+  # remote peer, but it should remain visible to operators as repair signal.
+  defp prepare_collection_item(activity) do
+    case Transmogrifier.prepare_outgoing(activity.data) do
+      {:ok, data} when is_map(data) ->
+        [data]
+
+      result ->
+        log_skipped_collection_item(activity, result)
+        []
+    end
+  rescue
+    exception ->
+      log_skipped_collection_item(activity, {:exception, Exception.message(exception)})
+      []
+  catch
+    kind, reason ->
+      log_skipped_collection_item(activity, {kind, reason})
+      []
+  end
+
+  defp log_skipped_collection_item(activity, reason) do
+    Logger.warning("Skipping an unrenderable ActivityPub collection item",
+      activity_id: Map.get(activity, :id),
+      activity_type: get_in(activity.data || %{}, ["type"]),
+      reason: inspect(reason, limit: 10, printable_limit: 300)
+    )
+  end
+
   defp maybe_put_total_items(map, false, _total), do: map
 
   defp maybe_put_total_items(map, true, total) do
@@ -343,15 +443,72 @@ defmodule Pleroma.Web.ActivityPub.UserView do
       "orderedItems" => if(show_items, do: items, else: [])
     }
 
-    if offset < total do
-      Map.put(map, "next", "#{iri}?page=#{page + 1}")
-    else
-      map
-    end
+    map =
+      if page > 1 do
+        Map.put(map, "prev", "#{iri}?page=#{page - 1}")
+      else
+        map
+      end
+
+    if offset + 10 < total,
+      do: Map.put(map, "next", "#{iri}?page=#{page + 1}"),
+      else: map
   end
 
   defp collection_results(%{"orderedItems" => items}) when is_list(items), do: items
   defp collection_results(_), do: []
+
+  defp maybe_put_restricted_group_fields(data, %User{actor_type: "Group"} = user) do
+    Map.put(
+      data,
+      "attributedTo",
+      user.attributed_to_address || "#{user.ap_id}/collections/moderators"
+    )
+  end
+
+  defp maybe_put_restricted_group_fields(data, _user), do: data
+
+  # FEP-2345 requires the actor to authorize every site that may identify the
+  # actor through a fediverse:creator HTML tag. Remote actor documents retain
+  # their publisher-supplied value through ActorExtensions instead.
+  defp maybe_put_attribution_domains(data, %User{local: true}) do
+    Map.put(data, "attributionDomains", [Pleroma.Web.WebFinger.domain()])
+  end
+
+  defp maybe_put_attribution_domains(data, _user), do: data
+
+  # FEP-844e permits an anonymous partial Application under generator. Only
+  # local actors advertise capabilities here; rendering a cached remote actor
+  # must never make Unfathomably claim authorship of that actor document.
+  defp application_generator do
+    %{
+      "type" => "Application",
+      "name" => "Unfathomably",
+      "implements" => application_capabilities()
+    }
+  end
+
+  defp application_capabilities, do: [@rfc_9421_capability]
+
+  defp maybe_keep_local_generator(data, %User{local: true}) do
+    data
+    |> Map.put("generator", application_generator())
+    |> add_capability_context()
+  end
+
+  defp maybe_keep_local_generator(data, _user) do
+    Map.delete(data, "generator")
+  end
+
+  defp add_capability_context(%{"@context" => context} = data) do
+    context =
+      context
+      |> List.wrap()
+      |> Kernel.++([@fep_844e_context])
+      |> Enum.uniq()
+
+    Map.put(data, "@context", context)
+  end
 
   defp group_actor_fields(%User{actor_type: "Group"} = user) do
     %{
@@ -411,4 +568,59 @@ defmodule Pleroma.Web.ActivityPub.UserView do
   end
 
   defp maybe_put_description(map, _description), do: map
+
+  defp maybe_put_finalized_fep_fields(data, %User{local: true, ap_id: ap_id, keys: keys} = user)
+       when is_binary(ap_id) and is_binary(keys) do
+    data
+    |> maybe_put_assertion_method(ap_id, keys)
+    |> maybe_put_appendable_wall(user)
+  end
+
+  defp maybe_put_finalized_fep_fields(data, _user), do: data
+
+  defp maybe_put_assertion_method(data, ap_id, keys) do
+    case Multikey.rsa_public_key_multibase(keys) do
+      {:ok, public_key_multibase} ->
+        data
+        |> Map.put("assertionMethod", [
+          %{
+            "id" => ap_id <> "#main-key",
+            "type" => "Multikey",
+            "controller" => ap_id,
+            "publicKeyMultibase" => public_key_multibase
+          }
+        ])
+        |> append_json_ld_context("https://www.w3.org/ns/cid/v1")
+
+      _error ->
+        data
+    end
+  end
+
+  defp maybe_put_appendable_wall(data, %User{nickname: nickname} = user)
+       when is_binary(nickname) do
+    if Pleroma.Web.ActivityPub.AppendableCollection.enabled?() do
+      data
+      |> Map.put("wall", Pleroma.Web.ActivityPub.AppendableCollection.collection(user))
+      |> append_json_ld_context(%{
+        "wall" => %{
+          "@id" => "https://w3id.org/fep/400e#wall",
+          "@type" => "@id"
+        }
+      })
+    else
+      data
+    end
+  end
+
+  defp maybe_put_appendable_wall(data, _user), do: data
+
+  defp append_json_ld_context(data, context) do
+    Map.update(data, "@context", [context], fn
+      contexts when is_list(contexts) -> Enum.uniq(contexts ++ [context])
+      existing -> [existing, context]
+    end)
+  end
 end
+
+# end of user_view.ex

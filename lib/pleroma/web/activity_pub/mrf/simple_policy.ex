@@ -7,11 +7,14 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
   @behaviour Pleroma.Web.ActivityPub.MRF.Policy
 
   alias Pleroma.Config
+  alias Pleroma.Formatter
   alias Pleroma.FollowingRelationship
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.MRF
 
   require Pleroma.Constants
+
+  @maximum_content_warning_length 500
 
   defp check_accept(%{host: actor_host} = _actor_info, activity) do
     accepts =
@@ -83,6 +86,38 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
   end
 
   defp check_media_nsfw(_actor_info, activity), do: {:ok, activity}
+
+  defp check_content_warning(
+         %{host: actor_host} = _actor_info,
+         %{"type" => type, "object" => %{} = object} = activity
+       )
+       when type in ["Create", "Update"] do
+    case instance_value(:content_warning, actor_host) do
+      warning when is_binary(warning) ->
+        warning =
+          warning
+          |> String.trim()
+          |> String.slice(0, @maximum_content_warning_length)
+
+        if warning == "" do
+          {:ok, activity}
+        else
+          warning = Formatter.html_escape(warning, "text/plain")
+
+          object =
+            object
+            |> Map.put("summary", prepend_content_warning(warning, object["summary"]))
+            |> Map.put("sensitive", true)
+
+          {:ok, Map.put(activity, "object", object)}
+        end
+
+      _ ->
+        {:ok, activity}
+    end
+  end
+
+  defp check_content_warning(_actor_info, activity), do: {:ok, activity}
 
   defp check_ftl_removal(%{host: actor_host} = _actor_info, activity) do
     timeline_removal =
@@ -192,6 +227,25 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
     |> MRF.instance_list_from_tuples()
   end
 
+  defp instance_value(config_key, actor_host) do
+    Config.get([:mrf_simple, config_key])
+    |> List.wrap()
+    |> MRF.normalize_instance_list()
+    |> Enum.find_value(fn {instance, value} ->
+      matches = instance |> List.wrap() |> MRF.subdomains_regex()
+      if MRF.subdomain_match?(matches, actor_host), do: value
+    end)
+  end
+
+  defp prepend_content_warning(warning, existing) when is_binary(existing) do
+    case String.trim(existing) do
+      "" -> warning
+      existing -> warning <> "; " <> existing
+    end
+  end
+
+  defp prepend_content_warning(warning, _existing), do: warning
+
   defp recipient_list(values) when is_list(values), do: Enum.flat_map(values, &recipient_list/1)
   defp recipient_list(value) when is_binary(value), do: [value]
   defp recipient_list(%{"id" => id}) when is_binary(id), do: [id]
@@ -227,6 +281,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
          {:ok, activity} <- check_reject(actor_info, activity),
          {:ok, activity} <- check_media_removal(actor_info, activity),
          {:ok, activity} <- check_media_nsfw(actor_info, activity),
+         {:ok, activity} <- check_content_warning(actor_info, activity),
          {:ok, activity} <- check_ftl_removal(actor_info, activity),
          {:ok, activity} <- check_followers_only(actor_info, activity),
          {:ok, activity} <- check_report_removal(actor_info, activity),
@@ -330,6 +385,13 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
               "List of instances to tag all media as NSFW (sensitive) from and the reason for doing so"
           },
           %{
+            key: :content_warning,
+            label: "Content warning",
+            value_placeholder: "content warning",
+            description:
+              "List of instances whose posts receive an operator warning, prepended to any author-supplied warning"
+          },
+          %{
             key: :federated_timeline_removal,
             description:
               "List of instances to remove from the Federated (aka The Whole Known Network) Timeline and the reason for doing so"
@@ -368,13 +430,13 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicy do
         ]
         |> Enum.map(fn setting ->
           Map.merge(
-            setting,
             %{
               type: {:list, :tuple},
               key_placeholder: "instance",
               value_placeholder: "reason",
               suggestions: [{"example.com", "Some reason"}, {"*.example.com", "Another reason"}]
-            }
+            },
+            setting
           )
         end)
     }

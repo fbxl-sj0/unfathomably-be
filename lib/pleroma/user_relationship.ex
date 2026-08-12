@@ -64,9 +64,33 @@ defmodule Pleroma.UserRelationship do
   end
 
   def exists?(relationship_type, %User{} = source, %User{} = target) do
+    now = DateTime.utc_now()
+
     UserRelationship
     |> where(relationship_type: ^relationship_type, source_id: ^source.id, target_id: ^target.id)
+    |> where([relationship], is_nil(relationship.expires_at) or relationship.expires_at > ^now)
     |> Repo.exists?()
+  end
+
+  @doc "Returns active relationship targets without relying on delayed expiration cleanup."
+  def active_target_users_query(%User{} = source, relationship_type) do
+    now = DateTime.utc_now()
+
+    from(target in User,
+      join: relationship in UserRelationship,
+      on: relationship.target_id == target.id,
+      where: relationship.source_id == ^source.id,
+      where: relationship.relationship_type == ^relationship_type,
+      where: is_nil(relationship.expires_at) or relationship.expires_at > ^now
+    )
+  end
+
+  @doc "Returns active target actor IDs with expiration data for deadline-aware caches."
+  def active_target_ap_ids_with_expirations(%User{} = source, relationship_type) do
+    source
+    |> active_target_users_query(relationship_type)
+    |> select([target, relationship], {target.ap_id, relationship.expires_at})
+    |> Repo.all()
   end
 
   def get_expire_date(relationship_type, %User{} = source, %User{} = target) do
@@ -129,6 +153,7 @@ defmodule Pleroma.UserRelationship do
         target_to_source_rel_types
       )
       when is_list(source_users) and is_list(target_users) do
+    now = DateTime.utc_now()
     source_user_ids = User.binary_id(source_users)
     target_user_ids = User.binary_id(target_users)
 
@@ -152,6 +177,10 @@ defmodule Pleroma.UserRelationship do
         ^source_user_ids,
         ^target_to_source_rel_types
       )
+    )
+    |> where(
+      [relationship],
+      is_nil(relationship.expires_at) or relationship.expires_at > ^now
     )
     |> select([ur], [ur.relationship_type, ur.source_id, ur.target_id])
     |> Repo.all()

@@ -172,6 +172,10 @@ defmodule Pleroma.Web.ActivityPub.QuotePolicy do
 
   defp blocked?(author, actor), do: User.blocks?(author, actor) or User.blocks?(actor, author)
 
+  defp following_address(%User{following_address: address})
+       when is_binary(address) and address != "",
+       do: address
+
   defp following_address(%User{} = user), do: user.ap_id <> "/following"
 
   defp same_origin?(left, right) do

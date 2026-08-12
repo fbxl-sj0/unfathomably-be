@@ -145,6 +145,30 @@ defmodule Pleroma.Activity.Ir.TopicsTest do
     end
   end
 
+  describe "public Listen activities" do
+    test "produce public, remote, hashtag, and media topics" do
+      activity = %Activity{
+        actor: "https://audio.example/users/listener",
+        local: false,
+        object: %Object{
+          data: %{
+            "attachment" => [%{"type" => "Audio"}],
+            "tag" => [%{"type" => "Hashtag", "name" => "music"}]
+          }
+        },
+        data: %{"type" => "Listen", "to" => [Pleroma.Constants.as_public()]}
+      }
+
+      topics = Topics.get_activity_topics(activity)
+
+      assert "public" in topics
+      assert "public:remote:audio.example" in topics
+      assert "public:media" in topics
+      assert "public:remote:media:audio.example" in topics
+      assert "hashtag:music" in topics
+    end
+  end
+
   describe "public visibility Announces" do
     setup do
       activity = %Activity{

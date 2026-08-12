@@ -39,6 +39,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.JoinValidator do
     |> validate_required([:id, :type, :actor, :to, :cc, :object])
     |> CommonValidations.validate_actor_presence()
     |> validate_join_target()
+    |> CommonValidations.validate_object_visibility()
     |> validate_existing_join()
   end
 

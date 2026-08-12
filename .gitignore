@@ -21,23 +21,31 @@
 # Generated on crash by the VM
 erl_crash.dump
 
-# Files matching config/*.secret.exs pattern contain sensitive
-# data and you should not commit them into version control.
-#
-# Alternatively, you may comment the line below and commit the
-# secrets files as long as you replace their contents by environment
-# variables.
-/config/*.secret.exs
+# Scratch archives may contain source snapshots or local configuration.
+/.strict-*.tar
+
+# Local configuration files may contain credentials. Environment examples
+# remain uploadable because deployment documentation depends on them.
+*.secret.exs
+!/test/fixtures/**/*.secret.exs
 /config/generated_config.exs
 /config/runtime.exs
-/config/*.env
+*.env
+*.env.*
+!*.env.example
 
+# Private key containers must stay local. Public certificates and the
+# repository's tracked test fixtures are not affected by these patterns.
+*.key
+*.p12
+*.pfx
 
 # Database setup file, some may forget to delete it
 /config/setup_db*.psql
 
 .DS_Store
-.env
+Thumbs.db
+Desktop.ini
 
 # Editor config
 /.vscode/
@@ -51,12 +59,27 @@ docs/generated_config.md
 /Elixir.*.coverdata
 /coverage.xml
 
+# Language and package-manager caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
 .idea
 pleroma.iml
 
 # Editor temp files
-/*~
-/*#
+*~
+*#
+.#*
+*.swp
+*.swo
+*.tmp
+*.bak
+*.orig
+*.rej
 soapbox.zip
 InstallationLog.txt
 toolshim

@@ -13,12 +13,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
   alias Pleroma.Bookmark
   alias Pleroma.BookmarkFolder
   alias Pleroma.Language.Translation
+  alias Pleroma.Nostr.Resolver, as: NostrResolver
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.ScheduledActivity
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
-  alias Pleroma.Web.ActivityPub.RemoteReplies
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.MastodonAPI.AccountView
@@ -26,6 +26,9 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
   alias Pleroma.Web.Plugs.OAuthScopesPlug
   alias Pleroma.Web.Plugs.RateLimiter
   alias Pleroma.Web.RichMedia.Card
+  alias Pleroma.Workers.NostrThreadFetchWorker
+  alias Pleroma.Workers.NostrThreadRepairWorker
+  alias Pleroma.Workers.RemoteRepliesFetcherWorker
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate)
 
@@ -58,7 +61,9 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
            :delete,
            :reblog,
            :unreblog,
-           :update
+           :update,
+           :distinguish,
+           :undistinguish
          ]
   )
 
@@ -68,6 +73,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
     OAuthScopesPlug,
     %{scopes: ["write:favourites"]} when action in [:favourite, :unfavourite]
   )
+
+  plug(OAuthScopesPlug, %{scopes: ["write:scrobbles"]} when action == :listen)
 
   plug(
     OAuthScopesPlug,
@@ -91,7 +98,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
     %{scopes: ["write:bookmarks"]} when action in [:bookmark, :unbookmark]
   )
 
-  @rate_limited_status_actions ~w(reblog unreblog favourite unfavourite create delete translate)a
+  @rate_limited_status_actions ~w(reblog unreblog favourite unfavourite listen create delete translate)a
 
   plug(
     RateLimiter,
@@ -116,24 +123,45 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
 
   defp add_link_headers(conn, entries), do: ControllerHelper.add_link_headers(conn, entries)
 
+  # Base62 Flake IDs are substantially shorter than this limit. The additional
+  # headroom keeps imported IDs compatible while bounding work on client input.
+  @max_status_id_length 64
+
+  defp valid_status_id?(id) when is_binary(id) do
+    byte_size(id) <= @max_status_id_length and
+      Regex.match?(~r/\A[0-9A-Za-z]+\z/, id)
+  end
+
+  defp valid_status_id?(_id), do: false
+
   @doc """
   GET `/api/v1/statuses?ids[]=1&ids[]=2`
 
   `ids` query param is required
   """
   def index(%{assigns: %{user: user}} = conn, params) do
-    ids = Map.get(params, :id, Map.get(params, :ids))
+    ids =
+      params
+      |> Map.get(:id, Map.get(params, :ids, []))
+      |> List.wrap()
+      |> Enum.filter(&valid_status_id?/1)
+
     limit = 100
 
     activities =
       ids
       |> Enum.take(limit)
       |> Activity.all_by_ids_with_object()
-      |> Enum.filter(&Visibility.visible_for_user?(&1, user))
+
+    following = if user, do: User.following(user), else: nil
+
+    activities =
+      Enum.filter(activities, &Visibility.visible_for_user?(&1, user, following))
 
     render(conn, "index.json",
       activities: activities,
       for: user,
+      following: following,
       as: :activity,
       with_muted: Map.get(params, :with_muted, false)
     )
@@ -216,6 +244,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
       try_render(conn, "history.json",
         activity: activity,
         for: user,
+        filter_context: "thread",
         with_direct_conversation_id: true,
         with_muted: Map.get(params, :with_muted, false)
       )
@@ -256,16 +285,30 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
         with_muted: Map.get(params, :with_muted, false)
       )
     else
-      {:own_status, _} -> {:error, :forbidden}
-      {:not_event, _} -> {:error, :unprocessable_entity, "Use event update route"}
-      {:pipeline, _} -> {:error, :internal_server_error}
-      _ -> {:error, :not_found}
+      {:own_status, _} ->
+        {:error, :forbidden}
+
+      {:not_event, _} ->
+        {:error, :unprocessable_entity, "Use event update route"}
+
+      {:pipeline, {:error, {:unprocessable_entity, message}}} ->
+        {:error, :unprocessable_entity, message}
+
+      {:pipeline, {:error, message}} when is_binary(message) ->
+        {:error, :unprocessable_entity, message}
+
+      {:pipeline, _} ->
+        {:error, :internal_server_error}
+
+      _ ->
+        {:error, :not_found}
     end
   end
 
   @doc "GET /api/v1/statuses/:id"
   def show(%{assigns: %{user: user}} = conn, %{id: id} = params) do
-    with %Activity{} = activity <- Activity.get_by_id_with_object(id),
+    with %Activity{} = activity <-
+           Activity.get_by_id_with_object(id) || NostrResolver.resolve_activity(id),
          true <- Visibility.visible_for_user?(activity, user) do
       try_render(conn, "show.json",
         activity: activity,
@@ -325,6 +368,20 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
     end
   end
 
+  @doc "POST /api/v1/statuses/:id/listen"
+  def listen(%{assigns: %{user: user}} = conn, %{id: activity_id}) do
+    with {:ok, _listen} <- CommonAPI.listen_to_status(user, activity_id),
+         %Activity{} = activity <- Activity.get_by_id(activity_id) do
+      try_render(conn, "show.json", activity: activity, for: user, as: :activity)
+    else
+      {:error, :not_a_track} ->
+        render_error(conn, :unprocessable_entity, "This status does not represent a track")
+
+      error ->
+        error
+    end
+  end
+
   @doc "POST /api/v1/statuses/:id/pin"
   def pin(%{assigns: %{user: user}} = conn, %{id: ap_id_or_id}) do
     with {:ok, activity} <- CommonAPI.pin(ap_id_or_id, user) do
@@ -360,6 +417,35 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
 
       error ->
         error
+    end
+  end
+
+  @doc "POST /api/v1/statuses/:id/distinguish"
+  def distinguish(%{assigns: %{user: user}} = conn, params) do
+    set_distinguished(conn, user, params, true)
+  end
+
+  @doc "POST /api/v1/statuses/:id/undistinguish"
+  def undistinguish(%{assigns: %{user: user}} = conn, params) do
+    set_distinguished(conn, user, params, false)
+  end
+
+  defp set_distinguished(conn, user, params, value) do
+    id = params[:id] || params["id"]
+
+    with %Activity{} = activity <- Activity.get_by_id_with_object(id),
+         {:ok, %Activity{} = activity} <-
+           CommonAPI.set_distinguished_comment(user, activity, value) do
+      try_render(conn, "show.json", activity: activity, for: user, as: :activity)
+    else
+      {:error, :forbidden} ->
+        {:error, :forbidden, "Only a group moderator can distinguish their group reply"}
+
+      {:error, :invalid_distinguished_comment} ->
+        {:error, :unprocessable_entity, "Only replies can be distinguished"}
+
+      _not_found ->
+        {:error, :not_found, "Record not found"}
     end
   end
 
@@ -522,7 +608,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
 
       conn
       |> add_link_headers(activities)
-      |> render("index.json", activities: activities, for: user, as: :activity)
+      |> render("index.json",
+        activities: activities,
+        for: user,
+        filter_context: "thread",
+        as: :activity
+      )
     else
       nil -> {:error, :not_found}
       false -> {:error, :not_found}
@@ -532,7 +623,34 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
   @doc "GET /api/v1/statuses/:id/context"
   def context(%{assigns: %{user: user}} = conn, %{id: id}) do
     with %Activity{} = activity <- Activity.get_by_id(id) do
-      RemoteReplies.fetch_for_activity(activity)
+      conn =
+        case Object.normalize(activity, fetch: false) do
+          %Object{} = object ->
+            case RemoteRepliesFetcherWorker.enqueue_for_context(object, 1) do
+              :scheduled ->
+                put_resp_header(conn, "x-unfathomably-replies-hydration", "scheduled")
+
+              :ignored ->
+                conn
+            end
+
+          _ ->
+            conn
+        end
+
+      conn =
+        put_nostr_hydration_header(
+          conn,
+          "x-unfathomably-nostr-hydration",
+          NostrThreadFetchWorker.enqueue_for_activity(activity)
+        )
+
+      conn =
+        put_nostr_hydration_header(
+          conn,
+          "x-unfathomably-nostr-thread-repair",
+          NostrThreadRepairWorker.enqueue_for_activity(activity)
+        )
 
       activities =
         ActivityPub.fetch_activities_for_context(activity.data["context"], %{
@@ -541,11 +659,23 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
           exclude_id: activity.id
         })
 
-      render(conn, "context.json", activity: activity, activities: activities, user: user)
+      render(conn, "context.json",
+        activity: activity,
+        activities: activities,
+        user: user,
+        filter_context: "thread"
+      )
     else
       nil -> {:error, :not_found}
     end
   end
+
+  defp put_nostr_hydration_header(conn, header, state)
+       when state in [:scheduled, :pending, :complete, :unavailable] do
+    put_resp_header(conn, header, Atom.to_string(state))
+  end
+
+  defp put_nostr_hydration_header(conn, _header, _state), do: conn
 
   @doc "GET /api/v1/statuses/:id/context/ancestors"
   def context_ancestors(%{assigns: %{user: user}} = conn, %{id: id} = params) do
@@ -558,7 +688,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
 
       conn
       |> ControllerHelper.add_link_headers(activities, %{}, :asc)
-      |> render("index.json", activities: activities, for: user, as: :activity)
+      |> render("index.json",
+        activities: activities,
+        for: user,
+        filter_context: "thread",
+        as: :activity
+      )
     else
       nil -> {:error, :not_found}
     end
@@ -575,7 +710,12 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
 
       conn
       |> ControllerHelper.add_link_headers(activities, %{}, :asc)
-      |> render("index.json", activities: activities, for: user, as: :activity)
+      |> render("index.json",
+        activities: activities,
+        for: user,
+        filter_context: "thread",
+        as: :activity
+      )
     else
       nil -> {:error, :not_found}
     end

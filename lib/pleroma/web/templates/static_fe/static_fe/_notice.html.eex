@@ -16,18 +16,16 @@
     <% else %>
       <div class="e-content"><%= raw @content %></div>
     <% end %>
-    <%= for %{"name" => name, "url" => [url | _]} <- @attachment do %>
+    <%= for media <- Enum.flat_map(@attachment, &List.wrap(attachment_data(&1))) do %>
       <%= if @sensitive do %>
         <details class="nsfw">
           <summary><%= Gettext.gettext("sensitive media") %></summary>
           <div>
-            <%= render("_attachment.html", %{name: name, url: url["href"],
-                                             mediaType: fetch_media_type(url)}) %>
+            <%= render("_attachment.html", media) %>
           </div>
         </details>
       <% else %>
-        <%= render("_attachment.html", %{name: name, url: url["href"],
-                                         mediaType: fetch_media_type(url)}) %>
+        <%= render("_attachment.html", media) %>
       <% end %>
     <% end %>
   </div>

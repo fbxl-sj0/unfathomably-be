@@ -276,14 +276,23 @@ defmodule Pleroma.Web.AdminAPI.AdminAPIController do
 
   @doc "Get a password reset token (base64 string) for given nickname"
   def get_password_reset(conn, %{"nickname" => nickname}) do
-    (%User{local: true} = user) = User.get_cached_by_nickname(nickname)
-    {:ok, token} = Pleroma.PasswordResetToken.create_token(user)
+    with %User{local: true} = user <- User.get_cached_by_nickname(nickname),
+         {:ok, token} <- Pleroma.PasswordResetToken.create_token(user) do
+      json(conn, %{
+        token: token.token,
+        link: Router.Helpers.reset_password_url(Endpoint, :reset, token.token)
+      })
+    else
+      {:error, :password_not_set} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: "This account does not have a local password to reset"})
 
-    conn
-    |> json(%{
-      token: token.token,
-      link: Router.Helpers.reset_password_url(Endpoint, :reset, token.token)
-    })
+      _ ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "User not found"})
+    end
   end
 
   @doc "Force password reset for a given user"

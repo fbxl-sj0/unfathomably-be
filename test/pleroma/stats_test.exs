@@ -7,7 +7,10 @@ defmodule Pleroma.StatsTest do
 
   import Pleroma.Factory
 
+  alias Pleroma.Nostr.Entity
+  alias Pleroma.Repo
   alias Pleroma.Stats
+  alias Pleroma.User
   alias Pleroma.Web.CommonAPI
 
   describe "user count" do
@@ -17,6 +20,24 @@ defmodule Pleroma.StatsTest do
       _internal = Pleroma.Web.ActivityPub.Relay.get_actor()
 
       assert match?(%{stats: %{user_count: 1}}, Stats.calculate_stat_data())
+    end
+
+    test "it ignores externally owned Nostr mirrors" do
+      now = NaiveDateTime.utc_now()
+      _user = insert(:user, local: true, last_active_at: now)
+      mirror = insert(:user, local: true, last_active_at: now)
+
+      %Entity{}
+      |> Entity.changeset(%{
+        user_id: mirror.id,
+        kind: "mirror_profile",
+        pubkey: String.duplicate("b", 64),
+        relay_url: "wss://relay.example"
+      })
+      |> Repo.insert!()
+
+      assert match?(%{stats: %{user_count: 1}}, Stats.calculate_stat_data())
+      assert User.active_user_count() == 1
     end
   end
 

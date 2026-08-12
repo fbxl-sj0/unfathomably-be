@@ -17,6 +17,7 @@ defmodule Pleroma.Web.OAuth.Token do
   alias Pleroma.Web.OAuth.Token.Query
 
   @type t :: %__MODULE__{}
+  @derive {Inspect, except: [:token, :refresh_token]}
 
   schema "oauth_tokens" do
     field(:token, :string)
@@ -58,9 +59,11 @@ defmodule Pleroma.Web.OAuth.Token do
     |> Repo.find_resource()
   end
 
-  @spec exchange_token(App.t(), Authorization.t()) :: {:ok, Token.t()} | {:error, Changeset.t()}
-  def exchange_token(app, auth) do
-    with {:ok, auth} <- Authorization.use_token(auth),
+  @spec exchange_token(App.t(), Authorization.t(), map()) ::
+          {:ok, Token.t()} | {:error, Changeset.t() | atom() | String.t()}
+  def exchange_token(app, auth, params \\ %{}) do
+    with :ok <- Authorization.validate_exchange(auth, params),
+         {:ok, auth} <- Authorization.use_token(auth),
          true <- auth.app_id == app.id do
       user = if auth.user_id, do: User.get_cached_by_id(auth.user_id), else: %User{}
 

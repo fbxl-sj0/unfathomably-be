@@ -6,6 +6,7 @@ defmodule Pleroma.Web.MastodonAPI.DirectoryController do
   use Pleroma.Web, :controller
 
   import Ecto.Query
+  alias Pleroma.Nostr.Entity
   alias Pleroma.Pagination
   alias Pleroma.User
   alias Pleroma.UserRelationship
@@ -50,7 +51,14 @@ defmodule Pleroma.Web.MastodonAPI.DirectoryController do
   end
 
   defp exclude_remote(query, %{local: true}) do
-    where(query, [u], u.local == true)
+    query
+    |> join(:left, [u], entity in Entity,
+      as: :nostr_mirror,
+      on:
+        entity.user_id == u.id and
+          entity.kind in ["mirror_profile", "mirror_group"]
+    )
+    |> where([u, nostr_mirror: entity], u.local == true and is_nil(entity.id))
   end
 
   defp exclude_remote(query, _params) do

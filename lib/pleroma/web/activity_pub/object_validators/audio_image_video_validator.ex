@@ -6,6 +6,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
   use Ecto.Schema
 
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
+  alias Pleroma.Web.ActivityPub.ObjectValidators.AttachmentValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
   alias Pleroma.Web.ActivityPub.Transmogrifier
@@ -14,6 +15,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
 
   require Pleroma.Constants
 
+  @maximum_remote_attachments 32
   @primary_key false
   @derive Jason.Encoder
 
@@ -29,6 +31,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
 
     field(:replies, {:array, ObjectValidators.ObjectID}, default: [])
     field(:replies_collection, ObjectValidators.ObjectID)
+    field(:embedUrl, ObjectValidators.ObjectID)
+    field(:isLiveBroadcast, :boolean, default: false)
+    field(:schedules, {:array, :map}, default: [])
   end
 
   def cast_and_apply(data) do
@@ -48,46 +53,136 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
     |> changeset(data)
   end
 
-  defp find_attachment(url) do
+  defp find_attachment(url, object_type) do
     mpeg_url =
       Enum.find(url, fn
-        %{"mediaType" => mime_type, "tag" => tags} when is_list(tags) ->
+        %{"mediaType" => mime_type, "tag" => tags}
+        when is_binary(mime_type) and is_list(tags) ->
           mime_type == "application/x-mpegURL"
 
         _ ->
           false
       end)
 
-    url
-    |> Enum.concat(mpeg_url["tag"] || [])
-    |> Enum.find(fn
-      %{"mediaType" => mime_type} ->
-        String.starts_with?(mime_type, ["video/", "audio/", "image/"])
+    tagged_urls =
+      case mpeg_url do
+        %{"tag" => tags} when is_list(tags) -> AttachmentValidator.normalize_url_candidates(tags)
+        _ -> []
+      end
 
-      %{"mimeType" => mime_type} ->
-        String.starts_with?(mime_type, ["video/", "audio/", "image/"])
+    candidates = Enum.concat(url, tagged_urls)
 
-      _ ->
-        false
-    end)
+    Enum.find(candidates, &preferred_media_candidate?(&1, object_type)) ||
+      Enum.find(candidates, &media_candidate?/1)
   end
 
-  defp fix_url(%{"url" => url} = data) when is_list(url) do
-    attachment = find_attachment(url)
+  defp fix_url(%{"url" => url} = data) when is_list(url) or is_map(url) do
+    candidates = AttachmentValidator.normalize_url_candidates(List.wrap(url))
+    attachment = find_attachment(candidates, data["type"])
 
     link_element =
-      Enum.find(url, fn
+      Enum.find(candidates, fn
         %{"mediaType" => "text/html"} -> true
         %{"mimeType" => "text/html"} -> true
         _ -> false
       end)
 
     data
-    |> Map.put("attachment", [attachment])
-    |> Map.put("url", link_element["href"])
+    |> put_selected_attachment(attachment)
+    |> put_object_page_url(link_element, data["id"])
   end
 
   defp fix_url(data), do: data
+
+  defp put_selected_attachment(data, attachment) do
+    existing =
+      data
+      |> Map.get("attachment", [])
+      |> List.wrap()
+      |> Enum.filter(&is_map/1)
+
+    attachments =
+      [attachment | existing]
+      |> Enum.filter(&is_map/1)
+      |> Enum.uniq_by(&attachment_identity/1)
+      |> Enum.take(@maximum_remote_attachments)
+
+    Map.put(data, "attachment", attachments)
+  end
+
+  defp preferred_media_candidate?(candidate, "Video") do
+    candidate_media_type(candidate)
+    |> media_type_matches?(["video/", "application/x-mpegurl", "application/vnd.apple.mpegurl"])
+  end
+
+  defp preferred_media_candidate?(candidate, "Audio") do
+    candidate_media_type(candidate)
+    |> media_type_matches?(["audio/"])
+  end
+
+  defp preferred_media_candidate?(candidate, "Image") do
+    candidate_media_type(candidate)
+    |> media_type_matches?(["image/"])
+  end
+
+  defp preferred_media_candidate?(_candidate, _type), do: false
+
+  defp media_candidate?(candidate) do
+    candidate_media_type(candidate)
+    |> media_type_matches?(["video/", "audio/", "image/"])
+  end
+
+  defp candidate_media_type(%{"mediaType" => media_type}) when is_binary(media_type),
+    do: String.downcase(media_type)
+
+  defp candidate_media_type(%{"mimeType" => media_type}) when is_binary(media_type),
+    do: String.downcase(media_type)
+
+  defp candidate_media_type(_candidate), do: nil
+
+  defp media_type_matches?(media_type, prefixes) when is_binary(media_type),
+    do: Enum.any?(prefixes, &String.starts_with?(media_type, &1))
+
+  defp media_type_matches?(_media_type, _prefixes), do: false
+
+  defp attachment_identity(attachment) do
+    {candidate_media_type(attachment), attachment_reference(attachment) || attachment}
+  end
+
+  defp attachment_reference(%{"href" => href}) when is_binary(href), do: href
+
+  defp attachment_reference(%{"url" => url}) do
+    url
+    |> List.wrap()
+    |> Enum.find_value(fn
+      %{"href" => href} when is_binary(href) -> href
+      href when is_binary(href) -> href
+      _candidate -> nil
+    end)
+  end
+
+  defp attachment_reference(_attachment), do: nil
+
+  defp put_object_page_url(data, %{"href" => href}, _fallback), do: Map.put(data, "url", href)
+
+  defp put_object_page_url(data, _link, fallback) do
+    if safe_http_url?(fallback), do: Map.put(data, "url", fallback), else: Map.delete(data, "url")
+  end
+
+  defp safe_http_url?(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host, userinfo: nil}
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        true
+
+      _ ->
+        false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp safe_http_url?(_url), do: false
 
   defp fix_content(%{"mediaType" => "text/markdown", "content" => content} = data)
        when is_binary(content) do
@@ -108,6 +203,49 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
     do: Map.delete(data, "likes")
 
   defp fix_likes_collection(data), do: data
+
+  defp fix_live_video_metadata(%{"type" => "Video"} = data) do
+    data
+    |> normalize_live_embed_url()
+    |> Map.update("schedules", [], &normalize_live_schedules/1)
+  end
+
+  defp fix_live_video_metadata(data) do
+    data
+    |> Map.delete("embedUrl")
+    |> Map.delete("isLiveBroadcast")
+    |> Map.delete("schedules")
+  end
+
+  defp normalize_live_embed_url(%{"embedUrl" => embed_url, "id" => id} = data)
+       when is_binary(embed_url) and is_binary(id) do
+    if same_origin?(embed_url, id), do: data, else: Map.delete(data, "embedUrl")
+  end
+
+  defp normalize_live_embed_url(data), do: Map.delete(data, "embedUrl")
+
+  defp normalize_live_schedules(schedules) when is_list(schedules) do
+    schedules
+    |> Enum.reduce([], fn
+      %{"startDate" => start_date}, normalized when is_binary(start_date) ->
+        if valid_iso8601_datetime?(start_date) do
+          [%{"startDate" => start_date} | normalized]
+        else
+          normalized
+        end
+
+      _schedule, normalized ->
+        normalized
+    end)
+    |> Enum.reverse()
+    |> Enum.take(4)
+  end
+
+  defp normalize_live_schedules(_schedules), do: []
+
+  defp valid_iso8601_datetime?(value) do
+    match?({:ok, _datetime, _offset}, DateTime.from_iso8601(value))
+  end
 
   defp fix_replies_collection(data) do
     collection_id =
@@ -284,6 +422,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
     |> CommonFixes.fix_object_defaults()
     |> CommonFixes.fix_quote_url()
     |> fix_likes_collection()
+    |> fix_live_video_metadata()
     |> CommonFixes.fix_likes()
     |> Transmogrifier.fix_emoji()
     |> fix_url()

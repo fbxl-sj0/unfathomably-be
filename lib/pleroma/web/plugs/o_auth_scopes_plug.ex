@@ -29,6 +29,15 @@ defmodule Pleroma.Web.Plugs.OAuthScopesPlug do
       options[:fallback] == :proceed_unauthenticated ->
         AuthHelper.drop_auth_info(conn)
 
+      is_nil(token) ->
+        error_message = dgettext("errors", "Invalid credentials.")
+
+        conn
+        |> put_resp_header("www-authenticate", ~s(Bearer realm="Unfathomably"))
+        |> put_resp_content_type("application/json")
+        |> send_resp(:unauthorized, Jason.encode!(%{error: error_message}))
+        |> halt()
+
       true ->
         missing_scopes = scopes -- matched_scopes
         permissions = Enum.join(missing_scopes, " #{op} ")

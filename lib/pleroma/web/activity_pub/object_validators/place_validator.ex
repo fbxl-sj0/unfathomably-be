@@ -36,6 +36,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.PlaceValidator do
     |> cast_embed(:address, with: &address_changeset/2)
     |> validate_inclusion(:type, ["Place"])
     |> validate_inclusion(:units, ~w[cm feet inches km m miles])
+    |> validate_number(:latitude, greater_than_or_equal_to: -90, less_than_or_equal_to: 90)
+    |> validate_number(:longitude, greater_than_or_equal_to: -180, less_than_or_equal_to: 180)
     |> validate_number(:accuracy, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
     |> validate_number(:radius, greater_than_or_equal_to: 0)
     |> validate_required([:type, :name])

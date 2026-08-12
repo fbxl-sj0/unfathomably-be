@@ -4,8 +4,10 @@
 
 defmodule Pleroma.Web.Nodeinfo.Nodeinfo do
   alias Pleroma.Config
+  alias Pleroma.FASP.Registration
   alias Pleroma.Stats
   alias Pleroma.User
+  alias Pleroma.Web.Endpoint
   alias Pleroma.Web.Federator.Publisher
   alias Pleroma.Web.MastodonAPI.InstanceView
 
@@ -21,7 +23,7 @@ defmodule Pleroma.Web.Nodeinfo.Nodeinfo do
     federation = InstanceView.federation()
     features = InstanceView.features()
 
-    %{
+    nodeinfo = %{
       version: "2.0",
       software: %{
         name: Pleroma.Application.compat_name() |> String.downcase(),
@@ -79,6 +81,12 @@ defmodule Pleroma.Web.Nodeinfo.Nodeinfo do
         skipThreadContainment: Config.get([:instance, :skip_thread_containment], false)
       }
     }
+
+    if Registration.enabled?() do
+      put_in(nodeinfo, [:metadata, :faspBaseUrl], Endpoint.url() <> "/fasp")
+    else
+      nodeinfo
+    end
   end
 
   def get_nodeinfo("2.1") do
@@ -87,6 +95,7 @@ defmodule Pleroma.Web.Nodeinfo.Nodeinfo do
     updated_software =
       raw_response
       |> Map.get(:software)
+      |> Map.put(:homepage, Pleroma.Application.homepage())
       |> Map.put(:repository, Pleroma.Application.repository())
 
     raw_response

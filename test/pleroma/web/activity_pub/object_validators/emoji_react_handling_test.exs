@@ -32,6 +32,23 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactHandlingTest do
       assert reaction == valid_emoji_react["content"]
     end
 
+    test "it decodes bounded numeric HTML emoji entities", %{
+      valid_emoji_react: valid_emoji_react
+    } do
+      encoded =
+        valid_emoji_react
+        |> Map.put("content", "&#128076;")
+        |> Map.put("_misskey_reaction", "&#x1F44C;")
+
+      assert {:ok, normalized, _meta} = ObjectValidator.validate(encoded, [])
+      assert normalized["content"] == "\u{1F44C}"
+      assert normalized["_misskey_reaction"] == "\u{1F44C}"
+
+      non_emoji = Map.put(valid_emoji_react, "content", "&#60;")
+      assert {:error, changeset} = ObjectValidator.validate(non_emoji, [])
+      assert {:content, {"is not a valid emoji", []}} in changeset.errors
+    end
+
     test "it is not valid without a 'content' field", %{valid_emoji_react: valid_emoji_react} do
       without_content =
         valid_emoji_react
@@ -41,6 +58,18 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactHandlingTest do
 
       refute cng.valid?
       assert {:content, {"can't be blank", [validation: :required]}} in cng.errors
+    end
+
+    test "it rejects reaction names beyond the shared storage bound", %{
+      valid_emoji_react: valid_emoji_react
+    } do
+      oversized =
+        valid_emoji_react
+        |> Map.put("content", ":" <> String.duplicate("a", 100) <> ":")
+        |> Map.put("_misskey_reaction", ":" <> String.duplicate("a", 100) <> ":")
+
+      assert {:error, changeset} = ObjectValidator.validate(oversized, [])
+      assert {:content, {"is too long", []}} in changeset.errors
     end
 
     test "it rejects malformed object references without raising", %{

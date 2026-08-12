@@ -165,6 +165,17 @@ defmodule Pleroma.Web.MediaProxyTest do
       assert String.starts_with?(encoded, base_url)
     end
 
+    test "uses the endpoint listener for internal proxy requests" do
+      clear_config([:media_proxy, :internal_base_url], nil)
+      clear_config([Endpoint, :http], ip: {192, 168, 250, 41}, port: 4000)
+
+      url = "https://remote.example/static/logo.png"
+      encoded = MediaProxy.internal_url(url)
+
+      assert String.starts_with?(encoded, "http://192.168.250.41:4000/proxy/")
+      assert decode_result(encoded) == url
+    end
+
     # Some sites expect ASCII encoded characters in the URL to be preserved even if
     # unnecessary.
     # Issues: https://git.pleroma.social/pleroma/pleroma/issues/580

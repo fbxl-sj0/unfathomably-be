@@ -338,6 +338,19 @@ defmodule Pleroma.Web.AdminAPI.AdminAPIControllerTest do
       assert Regex.match?(~r/(http:\/\/|https:\/\/)/, resp["link"])
     end
 
+    test "it rejects a reset link for an account without a local password", %{conn: conn} do
+      clear_config([:instance, :admin_privileges], [:users_manage_credentials])
+      user = insert(:user, password_hash: nil)
+
+      response =
+        conn
+        |> put_req_header("accept", "application/json")
+        |> get("/api/pleroma/admin/users/#{user.nickname}/password_reset")
+
+      assert %{"error" => "This account does not have a local password to reset"} =
+               json_response(response, :unprocessable_entity)
+    end
+
     test "it requires privileged role :users_manage_credentials", %{conn: conn} do
       clear_config([:instance, :admin_privileges], [])
 

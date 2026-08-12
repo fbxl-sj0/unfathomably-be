@@ -61,6 +61,13 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Account do
             }
           },
           also_known_as: %Schema{type: :array, items: %Schema{type: :string}},
+          moved_to: %Schema{
+            type: :string,
+            format: :uri,
+            nullable: true,
+            description:
+              "Canonical actor URI targeted by the account owner's latest local Move activity"
+          },
           allow_following_move: %Schema{
             type: :boolean,
             description: "whether the user allows automatically follow moved following accounts"
@@ -90,6 +97,39 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Account do
           hide_follows: %Schema{
             type: :boolean,
             description: "whether the user has follow hiding enabled"
+          },
+          identity_proofs: %Schema{
+            type: :array,
+            description:
+              "FEP-c390 identity statements accepted by the backend's cryptographic verifier",
+            items: %Schema{
+              type: :object,
+              required: [:type, :subject, :alsoKnownAs, :proof],
+              properties: %{
+                type: %Schema{type: :string, enum: ["VerifiableIdentityStatement"]},
+                subject: %Schema{type: :string, pattern: "^did:key:"},
+                alsoKnownAs: %Schema{type: :string, format: :uri},
+                proof: %Schema{
+                  type: :object,
+                  required: [
+                    :type,
+                    :cryptosuite,
+                    :created,
+                    :verificationMethod,
+                    :proofPurpose,
+                    :proofValue
+                  ],
+                  properties: %{
+                    type: %Schema{type: :string, enum: ["DataIntegrityProof"]},
+                    cryptosuite: %Schema{type: :string, enum: ["eddsa-jcs-2022"]},
+                    created: %Schema{type: :string, format: "date-time"},
+                    verificationMethod: %Schema{type: :string, pattern: "^did:key:"},
+                    proofPurpose: %Schema{type: :string, enum: ["assertionMethod"]},
+                    proofValue: %Schema{type: :string, pattern: "^z"}
+                  }
+                }
+              }
+            }
           },
           is_admin: %Schema{
             type: :boolean,
@@ -199,6 +239,7 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Account do
         "hide_followers_count" => false,
         "hide_follows" => false,
         "hide_follows_count" => false,
+        "identity_proofs" => [],
         "is_admin" => false,
         "is_moderator" => false,
         "skip_thread_containment" => false,

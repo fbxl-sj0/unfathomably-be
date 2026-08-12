@@ -7,6 +7,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.QuestionOptionsValidator do
 
   import Ecto.Changeset
 
+  alias Pleroma.Web.ActivityPub.ObjectValidators.PollOption
+
   @primary_key false
 
   embedded_schema do
@@ -23,6 +25,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.QuestionOptionsValidator do
   def changeset(struct, data) do
     struct
     |> cast(data, [:name, :type])
+    |> update_change(:name, &PollOption.normalize_name/1)
+    |> PollOption.validate_name()
     |> cast_embed(:replies, with: &replies_changeset/2)
     |> validate_inclusion(:type, ["Note"])
     |> validate_required([:name, :type])

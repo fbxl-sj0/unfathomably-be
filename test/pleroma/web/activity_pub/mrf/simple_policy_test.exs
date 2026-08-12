@@ -12,6 +12,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicyTest do
           clear_config(:mrf_simple,
             media_removal: [],
             media_nsfw: [],
+            content_warning: [],
             federated_timeline_removal: [],
             report_removal: [],
             reject: [],
@@ -21,6 +22,48 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicyTest do
             banner_removal: [],
             reject_deletes: []
           )
+
+  describe "when :content_warning" do
+    test "leaves unmatched and local activities unchanged" do
+      clear_config([:mrf_simple, :content_warning], [{"elsewhere.example", "Review source"}])
+      media_message = build_media_message()
+      local_message = build_local_message()
+
+      assert SimplePolicy.filter(media_message) == {:ok, media_message}
+      assert SimplePolicy.filter(local_message) == {:ok, local_message}
+    end
+
+    test "prepends escaped operator text and marks the object sensitive" do
+      clear_config([:mrf_simple, :content_warning], [
+        {"remote.instance", "Operator <strong>warning</strong>"}
+      ])
+
+      media_message =
+        build_media_message()
+        |> put_in(["object", "summary"], "Author warning")
+
+      assert {:ok, filtered} = SimplePolicy.filter(media_message)
+
+      assert filtered["object"]["summary"] ==
+               "Operator &lt;strong&gt;warning&lt;/strong&gt;; Author warning"
+
+      assert filtered["object"]["sensitive"] == true
+    end
+
+    test "matches wildcard subdomains and applies to Updates" do
+      clear_config([:mrf_simple, :content_warning], [
+        {"*.remote.instance", "Limited domain"}
+      ])
+
+      update =
+        build_media_message(type: "Update")
+        |> put_in(["actor"], "https://social.remote.instance/users/bob")
+
+      assert {:ok, filtered} = SimplePolicy.filter(update)
+      assert filtered["object"]["summary"] == "Limited domain"
+      assert filtered["object"]["sensitive"] == true
+    end
+  end
 
   describe "when :media_removal" do
     test "is empty" do

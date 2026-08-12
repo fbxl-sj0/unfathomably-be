@@ -64,6 +64,30 @@ defmodule Pleroma.HTMLTest do
     end
   end
 
+  describe "strip_non_content/1" do
+    test "removes fallback and invisible markup while preserving authored text" do
+      html = """
+      <p>Authored text
+      <span class="quote-inline">Quoted fallback body</span>
+      <span class="recipients-inline">to hidden recipients</span>
+      <span class="invisible">https://hidden.example/</span>
+      <span class="h-card"><a class="u-url mention">@alice</a></span></p>
+      """
+
+      text = HTML.strip_non_content(html)
+
+      assert text =~ "Authored text"
+      assert text =~ "@alice"
+      refute text =~ "Quoted fallback body"
+      refute text =~ "hidden recipients"
+      refute text =~ "hidden.example"
+    end
+
+    test "falls back to ordinary tag stripping for malformed fragments" do
+      assert HTML.strip_non_content("<p>Visible content") =~ "Visible content"
+    end
+  end
+
   describe "TwitterText scrubber" do
     test "normalizes HTML as expected" do
       expected = """

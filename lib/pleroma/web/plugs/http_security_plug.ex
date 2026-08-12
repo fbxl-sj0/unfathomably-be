@@ -8,9 +8,17 @@ defmodule Pleroma.Web.Plugs.HTTPSecurityPlug do
 
   require Logger
 
+  @non_indexable_roots ~w(api oauth nodeinfo inbox relay socket websocket activities objects)
+  @activitypub_collection_segments ~w(inbox outbox followers following featured)
+
   def init(opts), do: opts
 
   def call(conn, _options) do
+    conn =
+      conn
+      |> register_before_send(&put_error_cache_header/1)
+      |> put_search_index_header()
+
     if Config.get([:http_security, :enabled]) do
       conn
       |> merge_resp_headers(headers())
@@ -18,6 +26,33 @@ defmodule Pleroma.Web.Plugs.HTTPSecurityPlug do
     else
       conn
     end
+  end
+
+  defp put_error_cache_header(%Plug.Conn{status: status} = conn)
+       when is_integer(status) and status >= 400 do
+    put_resp_header(conn, "cache-control", "private, no-store")
+  end
+
+  defp put_error_cache_header(conn), do: conn
+
+  # X-Robots-Tag applies crawler policy to non-HTML protocol responses where a
+  # page-level robots meta tag cannot be used. Public profiles and post pages
+  # remain indexable; only API, authentication, and federation plumbing is
+  # excluded here.
+  defp put_search_index_header(%Plug.Conn{path_info: path_info} = conn) do
+    if non_indexable_path?(path_info) do
+      put_resp_header(conn, "x-robots-tag", "noindex, nofollow")
+    else
+      conn
+    end
+  end
+
+  defp non_indexable_path?([root | _]) when root in @non_indexable_roots, do: true
+  defp non_indexable_path?([".well-known" | _]), do: true
+  defp non_indexable_path?(["pleroma", "admin" | _]), do: true
+
+  defp non_indexable_path?(path_info) do
+    List.last(path_info) in @activitypub_collection_segments
   end
 
   def primary_frontend do

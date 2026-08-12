@@ -115,6 +115,19 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Status do
         nullable: true,
         description: "Primary language of this status"
       },
+      filtered: %Schema{
+        type: :array,
+        description: "Filters which matched this status in the requested timeline context",
+        items: %Schema{
+          type: :object,
+          required: [:filter, :keyword_matches, :status_matches],
+          properties: %{
+            filter: %Schema{type: :object, additionalProperties: true},
+            keyword_matches: %Schema{type: :array, items: %Schema{type: :string}},
+            status_matches: %Schema{type: :array, items: FlakeID}
+          }
+        }
+      },
       media_attachments: %Schema{
         type: :array,
         items: Attachment,
@@ -262,6 +275,11 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Status do
             nullable: true,
             additionalProperties: true,
             description: "The ActivityPub interaction policy advertised by this status"
+          },
+          quote_approval_policy: %Schema{
+            type: :string,
+            enum: ["public", "followers", "following", "manual", "nobody", "legacy", "custom"],
+            description: "Normalized quote policy used when editing an authored status"
           },
           native: %Schema{
             type: :object,

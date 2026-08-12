@@ -43,7 +43,7 @@ defmodule Pleroma.User.Backup do
   end
 
   def new(user) do
-    rand_str = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    rand_str = Pleroma.Crypto.Random.urlsafe(:high)
     datetime = Calendar.NaiveDateTime.Format.iso8601_basic(NaiveDateTime.utc_now())
     name = "archive-#{user.nickname}-#{datetime}-#{rand_str}.zip"
 

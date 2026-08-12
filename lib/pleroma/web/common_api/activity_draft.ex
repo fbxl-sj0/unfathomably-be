@@ -11,7 +11,9 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.Builder
+  alias Pleroma.Web.ActivityPub.ContentLinks
   alias Pleroma.Web.ActivityPub.QuotePolicy
+  alias Pleroma.Web.ActivityPub.ReplyPolicy
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.CommonAPI.Utils
@@ -19,6 +21,9 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   import Pleroma.Web.Gettext
   import Pleroma.Web.Utils.Guards, only: [not_empty_string: 1]
 
+  # A draft carries one status through the CommonAPI validation pipeline. Splitting
+  # this state would obscure the invariant that every stage returns the same draft.
+  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct valid?: true,
             errors: [],
             user: nil,
@@ -63,12 +68,12 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
     |> status()
     |> summary()
     |> with_valid(&attachments/1)
-    |> full_payload()
     |> expires_at()
     |> poll()
     |> with_valid(&in_reply_to/1)
     |> with_valid(&in_reply_to_conversation/1)
     |> with_valid(&quote_post/1)
+    |> with_valid(&full_payload/1)
     |> with_valid(&visibility/1)
     |> with_valid(&quoting_visibility/1)
     |> content()
@@ -165,10 +170,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
     object =
       event_data
       |> Map.put("emoji", emoji)
-      |> Map.put("source", %{
-        "content" => draft.status,
-        "mediaType" => Utils.get_content_type(draft.params[:content_type])
-      })
+      |> Map.put("source", source_representation(draft))
       |> Map.put("generator", draft.params[:generator])
       |> Map.put("content_type", draft.params[:content_type])
       |> Map.put("language", draft.language)
@@ -181,8 +183,12 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
     %__MODULE__{draft | params: params}
   end
 
-  defp status(%__MODULE__{params: %{status: status}} = draft) do
-    %__MODULE__{draft | status: String.trim(status)}
+  defp status(%__MODULE__{params: params} = draft) do
+    case Map.get(params, :status, "") do
+      status when is_binary(status) -> %__MODULE__{draft | status: String.trim(status)}
+      nil -> %__MODULE__{draft | status: ""}
+      _other -> add_error(draft, dgettext("errors", "The status must be text"))
+    end
   end
 
   defp summary(%__MODULE__{params: params} = draft) do
@@ -192,11 +198,28 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   defp full_payload(%__MODULE__{status: status, summary: summary} = draft) do
     full_payload = String.trim(status <> summary)
 
-    case Utils.validate_character_limit(full_payload, draft.attachments) do
+    case Utils.validate_character_limit(
+           full_payload,
+           draft.attachments,
+           structured_content?(draft)
+         ) do
       :ok -> %__MODULE__{draft | full_payload: full_payload}
       {:error, message} -> add_error(draft, message)
     end
   end
+
+  defp structured_content?(%__MODULE__{quote_post: %Activity{}}), do: true
+
+  defp structured_content?(%__MODULE__{extra: extra}) when is_map(extra) do
+    Enum.any?(["oneOf", "anyOf", :oneOf, :anyOf], fn key ->
+      case Map.get(extra, key) do
+        [_first | _rest] -> true
+        _other -> false
+      end
+    end)
+  end
+
+  defp structured_content?(%__MODULE__{}), do: false
 
   defp attachments(%__MODULE__{params: params} = draft) do
     attachments = Utils.attachments_from_ids(params, draft.user)
@@ -214,7 +237,8 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
        when is_binary(id) do
     with %Activity{} = activity <- Activity.get_by_id(id),
          true <- Visibility.visible_for_user?(activity, draft.user),
-         {_, type} when type in ["Create", "Announce"] <- {:type, activity.data["type"]} do
+         {_, type} when type in ["Create", "Announce"] <- {:type, activity.data["type"]},
+         :ok <- ReplyPolicy.allowed?(activity, draft.user) do
       %__MODULE__{draft | in_reply_to: activity}
     else
       nil ->
@@ -230,13 +254,19 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
             type: inspect(type)
           )
         )
+
+      {:error, :locked} ->
+        add_error(draft, dgettext("errors", "The discussion is locked"))
     end
   end
 
   defp in_reply_to(
          %__MODULE__{params: %{in_reply_to_status_id: %Activity{} = in_reply_to}} = draft
        ) do
-    %__MODULE__{draft | in_reply_to: in_reply_to}
+    case ReplyPolicy.allowed?(in_reply_to, draft.user) do
+      :ok -> %__MODULE__{draft | in_reply_to: in_reply_to}
+      {:error, :locked} -> add_error(draft, dgettext("errors", "The discussion is locked"))
+    end
   end
 
   defp in_reply_to(%__MODULE__{} = draft), do: draft
@@ -277,7 +307,12 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
     with %Object{} = object <- Object.normalize(draft.quote_post, fetch: false),
          decision when decision in [:automatic, :manual] <-
            QuotePolicy.decision(object, draft.user) do
-      draft
+      quoted_visibility = Pleroma.Web.ActivityPub.Visibility.get_visibility(object)
+
+      %__MODULE__{
+        draft
+        | visibility: CommonAPI.restrict_visibility(draft.visibility, quoted_visibility)
+      }
     else
       _ -> add_error(draft, dgettext("errors", "This post cannot be quoted"))
     end
@@ -308,23 +343,27 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
     mentioned_ap_ids =
       Enum.map(mentioned_users, fn {_, mentioned_user} -> mentioned_user.ap_id end)
 
-    case Utils.get_addressed_group_ap_ids(draft.params, draft.user) do
-      {:ok, group_ap_ids} ->
-        mentions =
-          mentions
-          |> Kernel.++(mentioned_ap_ids)
-          |> Kernel.++(quote_mentions(draft))
-          |> Utils.get_addressed_users(draft.params[:to])
-          |> Enum.uniq()
+    with {:ok, explicit_group_ap_ids} <-
+           Utils.get_addressed_group_ap_ids(draft.params, draft.user),
+         group_ap_ids <-
+           Enum.uniq(explicit_group_ap_ids ++ replied_to_group_ap_ids(draft)),
+         {:ok, group_ap_ids} <-
+           Utils.validate_addressed_group_ap_ids(group_ap_ids, draft.user) do
+      mentions =
+        mentions
+        |> Kernel.++(mentioned_ap_ids)
+        |> Kernel.++(quote_mentions(draft))
+        |> Utils.get_addressed_users(draft.params[:to])
+        |> Enum.uniq()
 
-        %__MODULE__{
-          draft
-          | content_html: content_html,
-            mentions: mentions,
-            addressed_groups: group_ap_ids,
-            tags: tags
-        }
-
+      %__MODULE__{
+        draft
+        | content_html: content_html,
+          mentions: mentions,
+          addressed_groups: group_ap_ids,
+          tags: tags
+      }
+    else
       {:error, :group_not_found} ->
         add_error(draft, dgettext("errors", "Group target was not found"))
 
@@ -343,6 +382,16 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
   end
 
   defp quote_mentions(%__MODULE__{}), do: []
+
+  defp replied_to_group_ap_ids(%__MODULE__{in_reply_to: %Activity{} = activity}) do
+    with %Object{data: data} <- Object.normalize(activity, fetch: false) do
+      Addressing.addressed_group_ap_ids(data)
+    else
+      _ -> []
+    end
+  end
+
+  defp replied_to_group_ap_ids(%__MODULE__{}), do: []
 
   defp to_and_cc(%__MODULE__{} = draft) do
     {to, cc} = Utils.get_to_and_cc(draft)
@@ -412,10 +461,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
       note_data
       |> Addressing.put_addressed_groups(draft.addressed_groups)
       |> Map.put("emoji", emoji)
-      |> Map.put("source", %{
-        "content" => draft.status,
-        "mediaType" => media_type
-      })
+      |> Map.put("source", source_representation(draft, media_type))
       |> maybe_put("htmlMfm", true, media_type == "text/x.misskeymarkdown")
       |> Map.put("generator", draft.params[:generator])
       |> Map.put("content_type", draft.params[:content_type])
@@ -425,19 +471,57 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraft do
     %__MODULE__{draft | object: object}
   end
 
+  defp source_representation(draft, media_type \\ nil) do
+    media_type = media_type || Utils.get_content_type(draft.params[:content_type])
+
+    %{
+      "content" =>
+        ContentLinks.normalize_source(draft.status, media_type, Pleroma.Web.Endpoint.url()),
+      "mediaType" => media_type
+    }
+  end
+
+  # Threadiverse software expects group roots to have a concise title even
+  # when the local client only supplied body text.
+  @group_root_name_limit 200
+
   defp maybe_put_group_root_post_type(
          object,
          %__MODULE__{addressed_groups: [_ | _] = group_ap_ids}
        )
        when is_map(object) do
-    if is_nil(Map.get(object, "inReplyTo")) and Enum.any?(group_ap_ids, &discourse_group_ap_id?/1) do
-      Map.put(object, "type", "Article")
+    if is_nil(Map.get(object, "inReplyTo")) do
+      object_type =
+        if Enum.any?(group_ap_ids, &discourse_group_ap_id?/1), do: "Article", else: "Page"
+
+      object
+      |> Map.put("type", object_type)
+      |> put_group_root_name()
     else
       object
     end
   end
 
   defp maybe_put_group_root_post_type(object, _draft), do: object
+
+  defp put_group_root_name(object) do
+    name =
+      [object["name"], object["summary"], object["content"]]
+      |> Enum.find_value(&normalize_group_root_name/1)
+
+    if is_binary(name), do: Map.put(object, "name", name), else: object
+  end
+
+  defp normalize_group_root_name(value) when is_binary(value) do
+    value =
+      value
+      |> Pleroma.HTML.strip_non_content()
+      |> String.trim()
+
+    if value == "", do: nil, else: String.slice(value, 0, @group_root_name_limit)
+  end
+
+  defp normalize_group_root_name(_), do: nil
 
   defp discourse_group_ap_id?(ap_id) when is_binary(ap_id) do
     case User.get_cached_by_ap_id(ap_id) do

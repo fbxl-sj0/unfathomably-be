@@ -30,6 +30,7 @@ defmodule Pleroma.HTTP.AdapterHelper.Gun do
     |> AdapterHelper.maybe_add_proxy(proxy)
     |> Keyword.merge(incoming_opts)
     |> put_timeout()
+    |> maybe_stream()
   end
 
   defp add_scheme_opts(opts, %{scheme: "http"}), do: opts
@@ -43,6 +44,14 @@ defmodule Pleroma.HTTP.AdapterHelper.Gun do
     # this is the timeout to receive a message from Gun
     # `:timeout` key is used in Tesla
     Keyword.put(opts, :timeout, recv_timeout)
+  end
+
+  # Keep the pool lease until the caller consumes or cancels the body.
+  defp maybe_stream(opts) do
+    case Keyword.pop(opts, :stream, nil) do
+      {true, opts} -> Keyword.put(opts, :body_as, :chunks)
+      {_, opts} -> opts
+    end
   end
 
   @spec pool_timeout(pool()) :: non_neg_integer()

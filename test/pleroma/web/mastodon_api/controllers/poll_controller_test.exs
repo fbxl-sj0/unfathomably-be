@@ -191,6 +191,31 @@ defmodule Pleroma.Web.MastodonAPI.PollControllerTest do
              end)
     end
 
+    test "does not accept votes after the known poll expiry", %{conn: conn} do
+      other_user = insert(:user)
+
+      {:ok, activity} =
+        CommonAPI.post(other_user, %{
+          status: "This poll has already closed",
+          poll: %{options: ["Yes", "No"], expires_in: 20}
+        })
+
+      object = Object.normalize(activity, fetch: false)
+      closed = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.to_iso8601()
+
+      object =
+        object
+        |> Ecto.Changeset.change(data: Map.put(object.data, "closed", closed))
+        |> Pleroma.Repo.update!()
+
+      Object.set_cache(object)
+
+      assert conn
+             |> put_req_header("content-type", "application/json")
+             |> post("/api/v1/polls/#{object.id}/votes", %{"choices" => [0]})
+             |> json_response_and_validate_schema(422) == %{"error" => "Poll has expired"}
+    end
+
     test "does not allow choice index to be greater than options count", %{conn: conn} do
       other_user = insert(:user)
 

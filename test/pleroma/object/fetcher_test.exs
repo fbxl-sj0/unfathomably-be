@@ -112,7 +112,7 @@ defmodule Pleroma.Object.FetcherTest do
     test "it returns thread depth exceeded error if thread depth is exceeded" do
       clear_config([:instance, :federation_incoming_replies_max_depth], 0)
 
-      assert {:error, "Max thread distance exceeded."} =
+      assert {:error, :allowed_depth} =
                Fetcher.fetch_object_from_id(@ap_id, depth: 1)
     end
 
@@ -144,6 +144,29 @@ defmodule Pleroma.Object.FetcherTest do
   end
 
   describe "fetching an object" do
+    test "does not follow HTML canonical links containing URL credentials" do
+      clear_config([:instance, :federating], true)
+
+      alias_url = "https://frontend.example/comment/1"
+
+      mock(fn
+        %{method: :get, url: ^alias_url} ->
+          %Tesla.Env{
+            status: 200,
+            url: alias_url,
+            headers: [{"content-type", "text/html; charset=utf-8"}],
+            body:
+              ~s(<html><head><link rel="canonical" href="https://user:secret@source.example/post/1"></head></html>)
+          }
+
+        %{method: :get, url: "https://user:secret@source.example/post/1"} ->
+          flunk("credential-bearing canonical URL was fetched")
+      end)
+
+      assert {:error, {:content_type, "text/html; charset=utf-8"}} =
+               Fetcher.resolve_object_reference(alias_url)
+    end
+
     test "does not fetch objects or collections from dormant hosts" do
       clear_config([:instance, :dormant_instance_timeout_days], 1)
 
@@ -265,6 +288,101 @@ defmodule Pleroma.Object.FetcherTest do
                )
     end
 
+    test "it rejects a redirected response that impersonates the requested origin" do
+      id = "https://trusted-fetch.example/objects/1"
+
+      mock(fn
+        %{method: :get, url: ^id} ->
+          %Tesla.Env{
+            url: "https://redirect-attacker.example/objects/1",
+            status: 200,
+            headers: HttpRequestMock.activitypub_object_headers(),
+            body:
+              Jason.encode!(%{
+                "id" => id,
+                "type" => "Note",
+                "attributedTo" => "https://trusted-fetch.example/users/alice",
+                "content" => "not authoritative"
+              })
+          }
+      end)
+
+      assert {:error, _} = Fetcher.fetch_and_contain_remote_object_from_id(id)
+    end
+
+    test "it accepts a same-origin redirect to the canonical object URL" do
+      requested_id = "https://canonical-fetch.example/@alice/posts/1"
+      canonical_id = "https://canonical-fetch.example/objects/1"
+
+      mock(fn
+        %{method: :get, url: ^requested_id} ->
+          %Tesla.Env{
+            url: canonical_id,
+            status: 200,
+            headers: HttpRequestMock.activitypub_object_headers(),
+            body:
+              Jason.encode!(%{
+                "id" => canonical_id,
+                "type" => "Note",
+                "attributedTo" => "https://canonical-fetch.example/users/alice",
+                "content" => "authoritative redirect"
+              })
+          }
+      end)
+
+      assert {:ok, %{"id" => ^canonical_id}} =
+               Fetcher.fetch_and_contain_remote_object_from_id(requested_id)
+    end
+
+    test "it rejects an unadvertised canonical identifier without a redirect" do
+      requested_id = "https://canonical-fetch.example/@alice/posts/1"
+      canonical_id = "https://canonical-fetch.example/objects/1"
+
+      mock(fn
+        %{method: :get, url: ^requested_id} ->
+          %Tesla.Env{
+            url: requested_id,
+            status: 200,
+            headers: HttpRequestMock.activitypub_object_headers(),
+            body:
+              Jason.encode!(%{
+                "id" => canonical_id,
+                "type" => "Note",
+                "attributedTo" => "https://canonical-fetch.example/users/alice",
+                "content" => "unadvertised alias"
+              })
+          }
+      end)
+
+      assert {:error, _reason} =
+               Fetcher.fetch_and_contain_remote_object_from_id(requested_id)
+    end
+
+    test "it accepts a canonical object that advertises the requested permalink" do
+      requested_id = "https://canonical-fetch.example/@alice/posts/1"
+      canonical_id = "https://canonical-fetch.example/objects/1"
+
+      mock(fn
+        %{method: :get, url: ^requested_id} ->
+          %Tesla.Env{
+            url: requested_id,
+            status: 200,
+            headers: HttpRequestMock.activitypub_object_headers(),
+            body:
+              Jason.encode!(%{
+                "id" => canonical_id,
+                "url" => requested_id,
+                "type" => "Note",
+                "attributedTo" => "https://canonical-fetch.example/users/alice",
+                "content" => "advertised alias"
+              })
+          }
+      end)
+
+      assert {:ok, %{"id" => ^canonical_id}} =
+               Fetcher.fetch_and_contain_remote_object_from_id(requested_id)
+    end
+
     test "it resets instance reachability on successful fetch" do
       id = "http://mastodon.example.org/@admin/99541947525187367"
       Instances.set_consistently_unreachable(id)
@@ -274,6 +392,57 @@ defmodule Pleroma.Object.FetcherTest do
         Fetcher.fetch_object_from_id("http://mastodon.example.org/@admin/99541947525187367")
 
       assert Instances.reachable?(id)
+    end
+  end
+
+  describe "remote object surfacing" do
+    test "does not notify for an old status discovered by object fetch" do
+      local_user = insert(:user)
+
+      remote_user =
+        insert(:user,
+          local: false,
+          nickname: "alice@remote.example",
+          ap_id: "https://remote.example/users/alice",
+          follower_address: "https://remote.example/users/alice/followers"
+        )
+
+      object_id = "https://remote.example/users/alice/statuses/old"
+
+      object = %{
+        "id" => object_id,
+        "type" => "Note",
+        "actor" => remote_user.ap_id,
+        "attributedTo" => remote_user.ap_id,
+        "context" => "https://remote.example/contexts/old",
+        "published" => DateTime.utc_now() |> DateTime.add(-26, :hour) |> DateTime.to_iso8601(),
+        "content" => "An old post discovered while loading a thread.",
+        "summary" => "",
+        "to" => [local_user.ap_id],
+        "cc" => [Pleroma.Constants.as_public()],
+        "tag" => [
+          %{
+            "type" => "Mention",
+            "href" => local_user.ap_id,
+            "name" => "@#{local_user.nickname}"
+          }
+        ]
+      }
+
+      mock(fn
+        %{method: :get, url: ^object_id} ->
+          %Tesla.Env{
+            status: 200,
+            headers: HttpRequestMock.activitypub_object_headers(),
+            body: Jason.encode!(object)
+          }
+
+        env ->
+          apply(HttpRequestMock, :request, [env])
+      end)
+
+      assert {:ok, %Object{}} = Fetcher.fetch_object_from_id(object_id)
+      refute Pleroma.Repo.get_by(Pleroma.Notification, user_id: local_user.id)
     end
   end
 

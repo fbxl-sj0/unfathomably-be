@@ -13,6 +13,7 @@ defmodule Pleroma.Web.ActivityPub.Pipeline do
   alias Pleroma.Web.ActivityPub.MRF
   alias Pleroma.Web.ActivityPub.ObjectValidator
   alias Pleroma.Web.ActivityPub.SideEffects
+  alias Pleroma.Web.ActivityPub.SpecializedSideEffects
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.Federator
 
@@ -38,6 +39,10 @@ defmodule Pleroma.Web.ActivityPub.Pipeline do
           |> Keyword.delete(:reused_create_activity_update)
           |> side_effects().handle_after_transaction()
           |> Keyword.delete(:object_cache_refreshes)
+
+        Pleroma.Nostr.maybe_enqueue_activity(activity, clean_meta)
+        Pleroma.ATProto.maybe_enqueue_activity(activity, clean_meta)
+        Pleroma.Diaspora.maybe_enqueue_activity(activity, clean_meta)
 
         {:ok, activity, clean_meta}
 
@@ -68,7 +73,10 @@ defmodule Pleroma.Web.ActivityPub.Pipeline do
            {:compatibility_upgrade, maybe_upgrade_persisted_object(message, meta)},
          {_, {:continue, meta}} <-
            {:persisted_duplicate, maybe_skip_persisted_duplicate(message, meta)},
-         {_, {:ok, message, meta}} <- {:side_effects, side_effects().handle(message, meta)},
+         {_, {:ok, message, meta}} <-
+           {:specialized_side_effects, SpecializedSideEffects.handle(message, meta)},
+         {_, {:ok, message, meta}} <-
+           {:side_effects, maybe_handle_standard_side_effects(message, meta)},
          {_, {:ok, _}} <- {:federation, maybe_federate(message, meta)} do
       {:ok, message, meta}
     else
@@ -208,7 +216,7 @@ defmodule Pleroma.Web.ActivityPub.Pipeline do
   # compatibility/native Create race handling described below.
   #
   @object_mutation_types ~w[
-    Add Announce Create Delete EmojiReact Join Leave Like Lock Remove Update
+    Add Announce ChooseAnswer Create Delete EmojiReact Join Leave Like Lock Remove Update
   ]
 
   defp maybe_lock_mutated_object(%{"type" => "Undo"} = message, meta) do
@@ -349,6 +357,14 @@ defmodule Pleroma.Web.ActivityPub.Pipeline do
     end
   end
 
+  defp maybe_handle_standard_side_effects(message, meta) do
+    if SpecializedSideEffects.specialized?(message) do
+      {:ok, message, meta}
+    else
+      side_effects().handle(message, meta)
+    end
+  end
+
   defp maybe_federate(%Object{}, _), do: {:ok, :not_federated}
 
   defp maybe_federate(%Activity{} = activity, meta) do
@@ -363,8 +379,13 @@ defmodule Pleroma.Web.ActivityPub.Pipeline do
             activity
           end
 
-        federator().publish(activity)
-        {:ok, :federated}
+        case federator().publish(activity) do
+          :ok -> {:ok, :federated}
+          {:ok, :federation_disabled} -> {:ok, :not_federated}
+          {:ok, _job} -> {:ok, :federated}
+          {:error, reason} -> {:error, {:federation_enqueue_failed, reason}}
+          result -> {:error, {:invalid_federation_enqueue_result, result}}
+        end
       else
         {:ok, :not_federated}
       end

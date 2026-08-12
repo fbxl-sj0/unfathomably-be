@@ -223,17 +223,22 @@ defmodule Pleroma.Web.ActivityPub.Utils do
   @doc """
   Enqueues an activity for federation if it's local
   """
-  @spec maybe_federate(any()) :: :ok
+  @spec maybe_federate(any()) :: :ok | {:error, any()}
   def maybe_federate(%Activity{local: true, data: %{"type" => type}} = activity) do
     outgoing_blocks = Config.get([:activitypub, :outgoing_blocks])
 
-    with true <- Config.get!([:instance, :federating]),
+    with true <- Pleroma.Federation.enabled?(),
          true <- type != "Block" || outgoing_blocks,
          false <- Visibility.is_local_public?(activity) do
-      Pleroma.Web.Federator.publish(activity)
+      case Pleroma.Web.Federator.publish(activity) do
+        :ok -> :ok
+        {:ok, _job} -> :ok
+        {:error, reason} -> {:error, {:federation_enqueue_failed, reason}}
+        result -> {:error, {:invalid_federation_enqueue_result, result}}
+      end
+    else
+      _not_federated -> :ok
     end
-
-    :ok
   end
 
   def maybe_federate(_), do: :ok
@@ -685,6 +690,10 @@ defmodule Pleroma.Web.ActivityPub.Utils do
     |> where(actor: ^actor)
     # this is to use the index
     |> Activity.Queries.by_object_id(ap_id)
+    # Legacy group delivery paths could store more than one Announce envelope
+    # for the same actor and object. Callers only need one matching activity.
+    |> order_by([activity], desc: activity.inserted_at, desc: activity.id)
+    |> limit(1)
     |> Repo.one()
   end
 
@@ -860,6 +869,7 @@ defmodule Pleroma.Web.ActivityPub.Utils do
       "rules" => Map.get(params, :rules, nil)
     }
     |> Map.merge(additional)
+    |> Pleroma.Web.ActivityPub.ReportAudience.scope(params)
   end
 
   def make_flag_data(_, _), do: %{}
@@ -1177,18 +1187,155 @@ defmodule Pleroma.Web.ActivityPub.Utils do
     :ok
   end
 
+  @doc """
+  Associates an already-cached public object with a remote group that announces it.
+
+  Forum software can deliver the author's Create before the category actor's
+  Announce. Recording that later assertion on the object and its existing
+  Create envelopes makes group discovery deterministic without changing the
+  author or widening non-public content.
+  """
+  def reconcile_remote_group_announce(
+        %Activity{} = announce,
+        %Object{} = object,
+        %User{actor_type: "Group", local: false, ap_id: group_ap_id}
+      )
+      when is_binary(group_ap_id) do
+    if Visibility.is_public?(announce) and Visibility.is_public?(object) do
+      group_ap_ids =
+        object.data
+        |> Addressing.addressed_group_ap_ids()
+        |> Kernel.++([group_ap_id])
+        |> Enum.uniq()
+
+      object_data = put_late_group_context(object.data, group_ap_ids)
+
+      with {:ok, object} <- maybe_update_group_object(object, object_data),
+           :ok <- update_existing_create_group_context(object.data["id"], group_ap_ids) do
+        {:ok, object}
+      end
+    else
+      {:ok, object}
+    end
+  end
+
+  def reconcile_remote_group_announce(_announce, %Object{} = object, _group),
+    do: {:ok, object}
+
+  defp put_late_group_context(data, group_ap_ids) do
+    existing_audience = Map.get(data, "audience")
+    data = Addressing.put_addressed_groups(data, group_ap_ids)
+
+    case existing_audience do
+      nil -> data
+      audience -> Map.put(data, "audience", Enum.uniq(List.wrap(audience) ++ group_ap_ids))
+    end
+  end
+
+  defp maybe_update_group_object(%Object{data: data} = object, data), do: {:ok, object}
+
+  defp maybe_update_group_object(%Object{} = object, data) do
+    object
+    |> Changeset.change(data: data)
+    |> Object.update_and_set_cache()
+  end
+
+  defp update_existing_create_group_context(object_id, group_ap_ids)
+       when is_binary(object_id) do
+    object_id
+    |> Activity.get_all_create_by_object_ap_id()
+    |> Enum.reduce_while(:ok, fn activity, :ok ->
+      data = put_late_group_context(activity.data, group_ap_ids)
+      recipients = Enum.uniq(List.wrap(activity.recipients) ++ group_ap_ids)
+
+      if data == activity.data and recipients == activity.recipients do
+        {:cont, :ok}
+      else
+        activity
+        |> Activity.change(%{data: data, recipients: recipients})
+        |> Repo.update()
+        |> case do
+          {:ok, _activity} -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end
+    end)
+  end
+
+  defp update_existing_create_group_context(_object_id, _group_ap_ids), do: :ok
+
+  def maybe_handle_group_deletes(
+        %Activity{local: true, data: %{"type" => "Delete", "object" => object_id}} = activity
+      )
+      when is_binary(object_id) do
+    with :ok <- undo_group_announces_for_object(object_id) do
+      activity.data
+      |> Addressing.addressed_group_ap_ids()
+      |> User.get_all_by_ap_id()
+      |> Enum.filter(&match?(%User{actor_type: "Group", local: true}, &1))
+      |> Enum.reduce_while(:ok, fn group, :ok ->
+        case announce_group_delete(group, activity) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
   def maybe_handle_group_deletes(%Activity{data: %{"type" => "Delete", "object" => object_id}})
       when is_binary(object_id) do
+    undo_group_announces_for_object(object_id)
+  end
+
+  def maybe_handle_group_deletes(%Activity{}), do: :ok
+
+  defp announce_group_delete(%User{} = group, %Activity{} = activity) do
+    with {:ok, announce, _meta} <-
+           Pleroma.Web.ActivityPub.Builder.announce(group, activity, public: true),
+         announce <- Map.put(announce, "audience", group.ap_id) do
+      case get_existing_announce(group.ap_id, activity) do
+        %Activity{} = existing ->
+          if group_announce_matches?(existing, announce) do
+            normalize_group_delivery_result(Pleroma.Web.Federator.publish(existing))
+          else
+            {:error, :group_announce_id_collision}
+          end
+
+        nil ->
+          case Pleroma.Web.ActivityPub.Pipeline.common_pipeline(announce, local: true) do
+            {:ok, _announce, _meta} -> :ok
+            {:error, reason} -> {:error, {:group_delete_announce_failed, reason}}
+            result -> {:error, {:invalid_group_delete_announce_result, result}}
+          end
+      end
+    end
+  end
+
+  defp group_announce_matches?(%Activity{data: stored}, expected) do
+    Enum.all?(["id", "type", "actor", "object"], fn key -> stored[key] == expected[key] end)
+  end
+
+  defp normalize_group_delivery_result(:ok), do: :ok
+  defp normalize_group_delivery_result({:ok, _job}), do: :ok
+
+  defp normalize_group_delivery_result({:error, reason}),
+    do: {:error, {:group_announce_enqueue_failed, reason}}
+
+  defp normalize_group_delivery_result(result),
+    do: {:error, {:invalid_group_announce_enqueue_result, result}}
+
+  defp undo_group_announces_for_object(object_id) do
     "Announce"
     |> Activity.Queries.by_type()
     |> Activity.Queries.by_object_id(object_id)
     |> Repo.all()
-    |> Enum.each(&undo_local_group_announce/1)
-
-    :ok
+    |> Enum.reduce_while(:ok, fn announce, :ok ->
+      case undo_local_group_announce(announce) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
-
-  def maybe_handle_group_deletes(%Activity{}), do: :ok
 
   defp undo_local_group_announce(%Activity{actor: actor} = announce) do
     with %User{actor_type: "Group", local: true} = group <- User.get_cached_by_ap_id(actor),
@@ -1196,7 +1343,10 @@ defmodule Pleroma.Web.ActivityPub.Utils do
          {:ok, _, _} <- Pleroma.Web.ActivityPub.Pipeline.common_pipeline(undo, local: true) do
       :ok
     else
-      _ -> :ok
+      nil -> :ok
+      %User{} -> :ok
+      {:error, reason} -> {:error, {:group_announce_undo_failed, reason}}
+      result -> {:error, {:invalid_group_announce_undo_result, result}}
     end
   end
 

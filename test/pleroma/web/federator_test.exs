@@ -133,7 +133,7 @@ defmodule Pleroma.Web.FederatorTest do
       assert {:ok, _activity} = ObanHelpers.perform(job)
 
       assert {:ok, job} = Federator.incoming_ap_doc(params)
-      assert {:cancel, :already_present} = ObanHelpers.perform(job)
+      assert {:ok, :already_present} = ObanHelpers.perform(job)
     end
 
     test "reprocesses a native Create that shares its fallback activity ID" do

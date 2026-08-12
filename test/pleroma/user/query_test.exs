@@ -6,6 +6,9 @@ defmodule Pleroma.User.QueryTest do
   use Pleroma.DataCase, async: false
 
   alias Pleroma.FollowingRelationship
+  alias Pleroma.ATProto.Identity, as: ATProtoIdentity
+  alias Pleroma.Diaspora.Entity, as: DiasporaEntity
+  alias Pleroma.Nostr.Entity, as: NostrEntity
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.User.Query
@@ -44,6 +47,62 @@ defmodule Pleroma.User.QueryTest do
              %{is_suggested: true}
              |> User.Query.build()
              |> Repo.all()
+  end
+
+  describe "account location" do
+    test "treats locally hosted native-protocol mirrors as external accounts" do
+      local_user = insert(:user, local: true)
+      remote_user = insert(:user, local: false)
+      nostr_user = insert(:user, local: true)
+      atproto_user = insert(:user, local: true)
+      diaspora_user = insert(:user, local: true)
+
+      %NostrEntity{}
+      |> NostrEntity.changeset(%{
+        user_id: nostr_user.id,
+        kind: "mirror_profile",
+        pubkey: String.duplicate("a", 64)
+      })
+      |> Repo.insert!()
+
+      %ATProtoIdentity{}
+      |> ATProtoIdentity.changeset(%{user_id: atproto_user.id, did: "did:plc:alice"})
+      |> Repo.insert!()
+
+      %DiasporaEntity{}
+      |> DiasporaEntity.changeset(%{
+        user_id: diaspora_user.id,
+        diaspora_id: "alice@diaspora.example",
+        guid: "0123456789abcdef",
+        pod_url: "https://diaspora.example",
+        public_key: "public-key"
+      })
+      |> Repo.insert!()
+
+      local_ids =
+        %{account_local: true}
+        |> Query.build()
+        |> Repo.all()
+        |> Enum.map(& &1.id)
+
+      external_ids =
+        %{account_external: true}
+        |> Query.build()
+        |> Repo.all()
+        |> Enum.map(& &1.id)
+
+      assert local_user.id in local_ids
+      refute remote_user.id in local_ids
+      refute nostr_user.id in local_ids
+      refute atproto_user.id in local_ids
+      refute diaspora_user.id in local_ids
+
+      assert remote_user.id in external_ids
+      assert nostr_user.id in external_ids
+      assert atproto_user.id in external_ids
+      assert diaspora_user.id in external_ids
+      refute local_user.id in external_ids
+    end
   end
 
   describe "recipients_from_activity param" do

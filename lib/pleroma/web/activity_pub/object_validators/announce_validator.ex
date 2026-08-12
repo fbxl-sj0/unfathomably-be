@@ -17,7 +17,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidator do
 
   require Pleroma.Constants
 
-  @relay_activity_object_types ~w[Add Block Dislike EmojiReact Like Remove]
+  @relay_activity_object_types ~w[Add Block ChooseAnswer Dislike EmojiReact Like Remove]
 
   @primary_key false
 
@@ -93,6 +93,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidator do
     |> validate_non_empty_recipients()
     |> CommonValidations.validate_actor_presence()
     |> maybe_validate_object_presence()
+    |> CommonValidations.validate_object_visibility()
     |> validate_existing_announce()
     |> validate_announcable()
   end

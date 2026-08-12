@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.ApiSpec.Schemas.ScheduledStatus do
   alias OpenApiSpex.Schema
   alias Pleroma.Web.ApiSpec.Schemas.Attachment
+  alias Pleroma.Web.ApiSpec.Schemas.FlakeID
   alias Pleroma.Web.ApiSpec.Schemas.VisibilityScope
   alias Pleroma.Web.ApiSpec.StatusOperation
 
@@ -31,6 +32,13 @@ defmodule Pleroma.Web.ApiSpec.Schemas.ScheduledStatus do
           scheduled_at: %Schema{type: :string, format: :"date-time", nullable: true},
           poll: StatusOperation.poll_params(),
           in_reply_to_id: %Schema{type: :string, nullable: true},
+          quoted_status_id: %Schema{nullable: true, allOf: [FlakeID]},
+          quote_id: %Schema{
+            nullable: true,
+            allOf: [FlakeID],
+            description: "Deprecated alias for quoted_status_id",
+            deprecated: true
+          },
           expires_in: %Schema{type: :integer, nullable: true}
         }
       }
@@ -48,6 +56,8 @@ defmodule Pleroma.Web.ApiSpec.Schemas.ScheduledStatus do
         poll: nil,
         idempotency: nil,
         in_reply_to_id: nil,
+        quoted_status_id: nil,
+        quote_id: nil,
         expires_in: nil
       },
       media_attachments: [Attachment.schema().example]

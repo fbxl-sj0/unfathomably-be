@@ -48,8 +48,10 @@ defmodule Pleroma.Web.ApiSpec do
         # Strip environment from the version
         version: Application.spec(:pleroma, :vsn) |> to_string() |> String.replace(~r/\+.*$/, ""),
         extensions: %{
-          # Logo path should be picked so that the path exists both on Pleroma instances and on api.pleroma.social
-          "x-logo": %{"url" => "/static/logo.svg", "altText" => "Pleroma logo"}
+          "x-logo": %{
+            "url" => "/images/unfathomably-logo.svg",
+            "altText" => "Unfathomably logo"
+          }
         }
       },
       # populate the paths from a phoenix router

@@ -12,6 +12,65 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixesTest do
 
   import Pleroma.Factory
 
+  describe "fix_quote_url/1" do
+    test "does not treat BookWyrm quotation text as an object reference" do
+      quotation = %{
+        "id" => "https://books.example/user/alice/quotation/123",
+        "type" => "Quotation",
+        "quote" => "A passage from the book."
+      }
+
+      assert ^quotation = CommonFixes.fix_quote_url(quotation)
+      refute Map.has_key?(CommonFixes.fix_quote_url(quotation), "quoteUrl")
+    end
+
+    test "continues to normalize Hubzilla quote object references" do
+      quote_url = "https://social.example/objects/quoted"
+
+      fixed =
+        CommonFixes.fix_quote_url(%{
+          "id" => "https://hub.example/item/123",
+          "type" => "Note",
+          "quote" => quote_url
+        })
+
+      assert fixed["quoteUrl"] == quote_url
+    end
+
+    test "normalizes an FEP-e232 quote Link tag" do
+      quote_url = "https://remote.example/objects/quoted"
+
+      fixed =
+        CommonFixes.fix_quote_url(%{
+          "tag" => [
+            %{
+              "type" => "Link",
+              "mediaType" => "application/activity+json",
+              "rel" => ["alternate", "https://misskey-hub.net/ns#_misskey_quote"],
+              "href" => quote_url
+            }
+          ]
+        })
+
+      assert fixed["quoteUrl"] == quote_url
+    end
+
+    test "does not treat an unrelated ActivityPub Link tag as a quote" do
+      data = %{
+        "tag" => [
+          %{
+            "type" => "Link",
+            "mediaType" => "application/activity+json",
+            "rel" => "alternate",
+            "href" => "https://remote.example/objects/unrelated"
+          }
+        ]
+      }
+
+      assert ^data = CommonFixes.fix_quote_url(data)
+    end
+  end
+
   describe "fix_activity_addressing/1" do
     test "normalizes embedded actor objects before recipient fixing" do
       user = insert(:user, local: false)
@@ -97,7 +156,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixesTest do
   end
 
   describe "fix_activity_context/2" do
-    test "leaves activity data unchanged when the object has no context" do
+    test "uses the object id as context when the object has no explicit context" do
       data = %{
         "id" => "https://lemmy.world/activities/announce/like/1",
         "type" => "Like",
@@ -115,7 +174,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixesTest do
         }
       }
 
-      assert ^data = CommonFixes.fix_activity_context(data, object)
+      assert %{"context" => "https://lemmy.example/post/1"} =
+               CommonFixes.fix_activity_context(data, object)
     end
   end
 
@@ -182,7 +242,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixesTest do
 
       fixed = CommonFixes.fix_object_defaults(data)
 
-      assert fixed["audience"] == group.ap_id
+      assert fixed["audience"] == [group.ap_id]
       assert fixed["pleroma_internal"]["addressed_groups"] == [group.ap_id]
     end
 
@@ -211,7 +271,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixesTest do
 
       fixed = CommonFixes.fix_object_defaults(data)
 
-      assert fixed["audience"] == group.ap_id
+      assert fixed["audience"] == [group.ap_id]
       assert fixed["pleroma_internal"]["addressed_groups"] == [group.ap_id]
     end
 
@@ -235,7 +295,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixesTest do
 
       fixed = CommonFixes.fix_object_defaults(data)
 
-      assert fixed["audience"] == group.ap_id
+      assert fixed["audience"] == [group.ap_id]
       assert fixed["pleroma_internal"]["addressed_groups"] == [group.ap_id]
     end
   end

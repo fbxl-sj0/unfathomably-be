@@ -11,6 +11,7 @@ defmodule Pleroma.Workers.ProfileUpdateWorker do
   single ActivityPub Update containing the final actor representation.
   """
 
+  alias Pleroma.Nostr.Bridge, as: NostrBridge
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Builder
@@ -38,7 +39,8 @@ defmodule Pleroma.Workers.ProfileUpdateWorker do
           UserView.render("user.json", user: user)
           |> Map.delete("@context")
 
-        with {:ok, update_data, _meta} <- Builder.update(user, actor),
+        with :ok <- NostrBridge.publish_profile(user),
+             {:ok, update_data, _meta} <- Builder.update(user, actor),
              {:ok, _activity, _meta} <- Pipeline.common_pipeline(update_data, local: true) do
           :ok
         end

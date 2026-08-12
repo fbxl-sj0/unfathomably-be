@@ -75,7 +75,7 @@ SOURCE_CANDIDATES: list[Candidate] = [
     Candidate("source", "mitra", "admin@public.mitra.social", "Public Mitra admin", allow_reply=True),
     Candidate("source", "pixelfed", "stux@pixey.org", "Pixelfed public account", allow_reply=True),
     Candidate("source", "owncast", "https://watch.owncast.online/federation/user/demo", "Owncast demo"),
-    Candidate("source", "misskey", "@ai@misskey.io", "Misskey AI account", allow_reply=True),
+    Candidate("source", "misskey", "@syuilo@misskey.io", "Misskey public account", allow_reply=True),
     Candidate("source", "sharkey", "https://sharkey.ranranhome.info/users/9y9ss045xz", "Sharkey public account", allow_reply=True),
     Candidate("source", "wafrn", "https://app.wafrn.net/fediverse/blog/gabboman", "wafrn public account", allow_reply=True),
 ]

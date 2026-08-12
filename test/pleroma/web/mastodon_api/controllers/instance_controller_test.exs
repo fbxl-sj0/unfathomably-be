@@ -211,6 +211,14 @@ defmodule Pleroma.Web.MastodonAPI.InstanceControllerTest do
 
     assert result["configuration"]["vapid"]["public_key"] ==
              Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key)
+
+    assert result["urls"] == %{
+             "about" => Pleroma.Web.Endpoint.url() <> "/about",
+             "privacy_policy" => nil,
+             "status" => Pleroma.Config.get([:instance, :status_page]),
+             "streaming" => Pleroma.Web.Endpoint.websocket_url(),
+             "terms_of_service" => Pleroma.Web.Endpoint.url() <> "/static/terms-of-service.html"
+           }
   end
 
   describe "instance domain blocks" do

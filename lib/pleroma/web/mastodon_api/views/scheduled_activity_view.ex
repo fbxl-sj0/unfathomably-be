@@ -38,6 +38,8 @@ defmodule Pleroma.Web.MastodonAPI.ScheduledActivityView do
       scheduled_at: params["scheduled_at"],
       poll: params["poll"],
       in_reply_to_id: params["in_reply_to_id"],
+      quoted_status_id: params["quoted_status_id"] || params["quote_id"],
+      quote_id: params["quoted_status_id"] || params["quote_id"],
       expires_in: params["expires_in"]
     }
     |> Pleroma.Maps.put_if_present(:media_ids, params["media_ids"])

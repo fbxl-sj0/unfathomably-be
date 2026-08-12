@@ -176,6 +176,21 @@ defmodule Pleroma.ScheduledActivity do
     delete(%__MODULE__{id: id})
   end
 
+  @doc "Deletes every ScheduledActivity and linked job belonging to a user."
+  @spec delete_all_for_user(User.t()) ::
+          {:ok, non_neg_integer()} | {:error, Ecto.Changeset.t()}
+  def delete_all_for_user(%User{} = user) do
+    user
+    |> for_user_query()
+    |> Repo.all()
+    |> Enum.reduce_while({:ok, 0}, fn scheduled_activity, {:ok, deleted_count} ->
+      case delete(scheduled_activity) do
+        {:ok, _scheduled_activity} -> {:cont, {:ok, deleted_count + 1}}
+        {:error, _changeset} = error -> {:halt, error}
+      end
+    end)
+  end
+
   defp transaction_response(result) do
     case result do
       {:ok, %{scheduled_activity: scheduled_activity}} ->

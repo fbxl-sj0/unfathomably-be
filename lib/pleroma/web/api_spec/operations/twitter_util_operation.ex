@@ -269,6 +269,44 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
     }
   end
 
+  def restart_move_account_operation do
+    %Operation{
+      tags: ["Account credentials"],
+      summary: "Restart account migration delivery",
+      description:
+        "Re-resolves and reauthorizes the latest moved-to account, then re-enqueues bounded Move delivery without resetting the migration cooldown.",
+      security: [%{"oAuth" => ["write:accounts"]}],
+      operationId: "UtilController.restart_move_account",
+      requestBody: request_body("Parameters", restart_move_account_request(), required: true),
+      responses: %{
+        200 =>
+          Operation.response("Success", "application/json", %Schema{
+            type: :object,
+            properties: %{
+              status: %Schema{type: :string, example: "success"},
+              moved_to: %Schema{type: :string, format: :uri}
+            }
+          }),
+        400 => Operation.response("Error", "application/json", ApiError),
+        403 => Operation.response("Error", "application/json", ApiError),
+        404 => Operation.response("Error", "application/json", ApiError),
+        422 => Operation.response("Error", "application/json", ApiError)
+      }
+    }
+  end
+
+  defp restart_move_account_request do
+    %Schema{
+      title: "RestartMoveAccountRequest",
+      description: "POST body for retrying delivery of the latest account migration",
+      type: :object,
+      required: [:password],
+      properties: %{
+        password: %Schema{type: :string, description: "Current password"}
+      }
+    }
+  end
+
   defp move_account_request do
     %Schema{
       title: "MoveAccountRequest",

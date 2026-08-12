@@ -15,9 +15,7 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPI do
   alias Pleroma.Web.CommonAPI
 
   @notification_group_sample_limit 8
-  @notification_group_window_min 160
   @notification_group_window_max 600
-  @notification_group_window_multiplier 10
 
   @spec follow(User.t(), User.t(), map) :: {:ok, User.t()} | {:error, String.t()}
   def follow(follower, followed, params \\ %{}) do
@@ -85,7 +83,7 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPI do
 
     notification_groups =
       query
-      |> notification_group_window(group_limit, order, cursor_filters)
+      |> notification_group_window(group_limit, order, cursor_filters, grouped_types)
       |> Notification.group_notifications(grouped_types)
       |> Enum.take(group_limit)
 
@@ -196,22 +194,48 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPI do
     |> min(80)
   end
 
-  defp notification_group_window(query, group_limit, order, cursor_filters) do
-    result =
+  defp notification_group_window(query, group_limit, order, cursor_filters, grouped_types) do
+    query =
       query
       |> apply_notification_cursor_filters(cursor_filters)
       |> order_notification_window(order)
-      |> limit(^notification_group_window_limit(group_limit))
-      |> Repo.all()
+
+    result =
+      fetch_notification_group_window(
+        query,
+        notification_group_window_limit(group_limit),
+        group_limit,
+        grouped_types
+      )
 
     if order == :asc, do: Enum.reverse(result), else: result
   end
 
   defp notification_group_window_limit(group_limit) do
     group_limit
-    |> Kernel.*(@notification_group_window_multiplier)
-    |> max(@notification_group_window_min)
+    |> Kernel.*(2)
+    |> max(40)
     |> min(@notification_group_window_max)
+  end
+
+  defp fetch_notification_group_window(query, window_limit, group_limit, grouped_types) do
+    result =
+      query
+      |> limit(^window_limit)
+      |> Repo.all()
+
+    group_count =
+      result
+      |> Notification.group_notifications(grouped_types)
+      |> length()
+
+    if length(result) == window_limit and group_count < group_limit and
+         window_limit < @notification_group_window_max do
+      next_limit = min(window_limit * 2, @notification_group_window_max)
+      fetch_notification_group_window(query, next_limit, group_limit, grouped_types)
+    else
+      result
+    end
   end
 
   def unread_notification_group_count(user, params \\ %{}) do
@@ -277,8 +301,17 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPI do
     |> apply_notification_cursor_filters(rest)
   end
 
-  defp order_notification_window(query, :asc), do: order_by(query, [n], asc: n.id)
-  defp order_notification_window(query, :desc), do: order_by(query, [n], desc: n.id)
+  defp order_notification_window(query, :asc) do
+    query
+    |> exclude(:order_by)
+    |> order_by([n], fragment("? asc nulls last", n.id))
+  end
+
+  defp order_notification_window(query, :desc) do
+    query
+    |> exclude(:order_by)
+    |> order_by([n], fragment("? desc nulls last", n.id))
+  end
 
   defp notification_group_keyed_query(query, grouped_types) do
     query

@@ -9,6 +9,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
   alias Pleroma.Repo
   alias Pleroma.User
 
+  import ExUnit.CaptureLog
   import Pleroma.Factory
 
   require Pleroma.Constants
@@ -815,6 +816,29 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
                |> json_response(200)
     end
 
+    test "rejects non-XML feed responses without xmerl fatal output", %{conn: conn} do
+      feed_url = "https://cms.example.org/not-a-feed.xml"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^feed_url} ->
+          %Tesla.Env{status: 200, body: "This is not XML."}
+
+        _request ->
+          %Tesla.Env{status: 404, body: ""}
+      end)
+
+      log =
+        capture_log(fn ->
+          assert [] =
+                   conn
+                   |> get("/api/v1/sources/search?q=#{URI.encode_www_form(feed_url)}")
+                   |> json_response(200)
+        end)
+
+      refute log =~ "expected_element_start_tag"
+      refute log =~ "fatal:"
+    end
+
     test "follows RSS feed redirects and updates an existing source", %{conn: conn} do
       old_url = "https://cms.example.org/old.xml"
       new_url = "https://cms.example.org/fullrss2.xml"
@@ -980,6 +1004,79 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
       assert %{"id" => ^source_id, "following" => false, "requested" => false} =
                conn
                |> post("/api/v1/sources/#{source_id}/unfollow")
+               |> json_response(200)
+    end
+  end
+
+  describe "HTML ActivityPub alternate discovery" do
+    setup do: oauth_access(["read:accounts", "read:follows"])
+
+    test "resolves a relative same-origin alternate against the final response URL", %{conn: conn} do
+      request_url = "https://catalog.example/start"
+      final_url = "https://catalog.example/public/index.html"
+      actor_url = "https://catalog.example/actors/library"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^request_url} ->
+          %Tesla.Env{
+            status: 200,
+            url: final_url,
+            headers: [{"content-type", "text/html"}],
+            body:
+              ~s(<html><head><link rel="alternate" type="application/activity+json" href="../actors/library"></head></html>)
+          }
+
+        %{method: :get, url: ^actor_url} ->
+          %Tesla.Env{
+            status: 200,
+            url: actor_url,
+            headers: [{"content-type", "application/activity+json"}],
+            body:
+              Jason.encode!(%{
+                "@context" => "https://www.w3.org/ns/activitystreams",
+                "id" => actor_url,
+                "type" => "Service",
+                "preferredUsername" => "library",
+                "name" => "Public Library",
+                "inbox" => "https://catalog.example/actors/library/inbox",
+                "outbox" => "https://catalog.example/actors/library/outbox"
+              })
+          }
+
+        %{method: :get} ->
+          %Tesla.Env{status: 404, body: ""}
+      end)
+
+      assert [%{"uri" => ^actor_url, "display_name" => "Public Library"}] =
+               conn
+               |> get("/api/v1/sources/search?q=#{URI.encode_www_form(request_url)}")
+               |> json_response(200)
+    end
+
+    test "does not fetch an off-origin alternate advertised by HTML", %{conn: conn} do
+      request_url = "https://catalog.example/start"
+      off_origin_url = "https://untrusted.example/actors/library"
+
+      Tesla.Mock.mock(fn
+        %{method: :get, url: ^request_url} ->
+          %Tesla.Env{
+            status: 200,
+            url: request_url,
+            headers: [{"content-type", "text/html"}],
+            body:
+              ~s(<html><head><link rel="alternate" type="application/activity+json" href="#{off_origin_url}"></head></html>)
+          }
+
+        %{method: :get, url: ^off_origin_url} ->
+          flunk("off-origin ActivityPub alternate was fetched")
+
+        %{method: :get} ->
+          %Tesla.Env{status: 404, body: ""}
+      end)
+
+      assert [] =
+               conn
+               |> get("/api/v1/sources/search?q=#{URI.encode_www_form(request_url)}")
                |> json_response(200)
     end
   end

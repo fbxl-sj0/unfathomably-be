@@ -49,6 +49,8 @@ defmodule Pleroma.Web.AdminAPI.ReportView do
 
     %{
       id: report.id,
+      actor_ap_id: report.data["actor"],
+      account_ap_id: List.first(report.data["object"] || []),
       account: merge_account_views(account),
       actor: merge_account_views(user),
       content: content,

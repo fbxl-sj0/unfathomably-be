@@ -35,6 +35,7 @@ defmodule Pleroma.Web.OAuth.OAuthController do
   plug(:skip_auth)
 
   plug(RateLimiter, [name: :authentication] when action == :create_authorization)
+  plug(RateLimiter, [name: :oauth_token] when action == :token_exchange)
 
   action_fallback(Pleroma.Web.OAuth.FallbackController)
 
@@ -279,7 +280,7 @@ defmodule Pleroma.Web.OAuth.OAuthController do
          fixed_token = Token.Utils.fix_padding(params["code"]),
          {:ok, auth} <- Authorization.get_by_token(app, fixed_token),
          %User{} = user <- User.get_cached_by_id(auth.user_id),
-         {:ok, token} <- Token.exchange_token(app, auth) do
+         {:ok, token} <- Token.exchange_token(app, auth, params) do
       after_token_exchange(conn, %{user: user, token: token})
     else
       error ->
@@ -465,7 +466,7 @@ defmodule Pleroma.Web.OAuth.OAuthController do
       :error,
       dgettext("errors", "Failed to authenticate: %{message}.", message: message)
     )
-    |> redirect(external: redirect_uri(conn, params["redirect_uri"]))
+    |> redirect(external: callback_redirect_uri(conn, params))
   end
 
   def callback(%Plug.Conn{} = conn, params) do
@@ -495,7 +496,7 @@ defmodule Pleroma.Web.OAuth.OAuthController do
 
         conn
         |> put_flash(:error, dgettext("errors", "Failed to set up user account."))
-        |> redirect(external: redirect_uri(conn, params["redirect_uri"]))
+        |> redirect(external: callback_redirect_uri(conn, params))
     end
   end
 
@@ -507,6 +508,23 @@ defmodule Pleroma.Web.OAuth.OAuthController do
   end
 
   defp callback_params(params), do: params
+
+  # OAuth provider state is supplied by the browser and is not trustworthy
+  # until the callback ties it back to an application's registered URI list.
+  defp callback_redirect_uri(conn, %{
+         "client_id" => client_id,
+         "redirect_uri" => requested_redirect_uri
+       })
+       when is_binary(client_id) and is_binary(requested_redirect_uri) do
+    with %App{} = app <- Repo.get_by(App, client_id: client_id),
+         true <- requested_redirect_uri in String.split(app.redirect_uris) do
+      redirect_uri(conn, requested_redirect_uri)
+    else
+      _ -> "/"
+    end
+  end
+
+  defp callback_redirect_uri(_conn, _params), do: "/"
 
   def registration_details(%Plug.Conn{} = conn, %{"authorization" => auth_attrs}) do
     render(conn, "register.html", %{
@@ -591,16 +609,23 @@ defmodule Pleroma.Web.OAuth.OAuthController do
          %App{} = app <- Repo.get_by(App, client_id: client_id),
          true <- redirect_uri in String.split(app.redirect_uris),
          requested_scopes <- Scopes.fetch_scopes(auth_attrs, app.scopes),
-         {:ok, auth} <- do_create_authorization(user, app, requested_scopes) do
+         authorization_attrs <-
+           Map.take(auth_attrs, ["redirect_uri", "code_challenge", "code_challenge_method"]),
+         {:ok, auth} <-
+           do_create_authorization(user, app, requested_scopes, authorization_attrs) do
       {:ok, auth, user}
     end
   end
 
-  defp do_create_authorization(%User{} = user, %App{} = app, requested_scopes)
+  defp do_create_authorization(%User{} = user, %App{} = app, requested_scopes) do
+    do_create_authorization(user, app, requested_scopes, %{})
+  end
+
+  defp do_create_authorization(%User{} = user, %App{} = app, requested_scopes, attrs)
        when is_list(requested_scopes) do
     with {:account_status, :active} <- {:account_status, User.account_status(user)},
          {:ok, scopes} <- validate_scopes(app, requested_scopes),
-         {:ok, auth} <- Authorization.create_authorization(app, user, scopes) do
+         {:ok, auth} <- Authorization.create_authorization(app, user, scopes, attrs) do
       {:ok, auth}
     end
   end

@@ -41,6 +41,14 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       refute Publisher.should_federate?(false, false)
       refute Publisher.should_federate?("https://%", false)
     end
+
+    test "honors the current reject policy for queued public and private delivery" do
+      clear_config([:mrf_simple, :reject], [{"blocked.example", "operator block"}])
+
+      refute Publisher.should_federate?("https://blocked.example/inbox", true)
+      refute Publisher.should_federate?("https://blocked.example/inbox", false)
+      assert Publisher.should_federate?("https://allowed.example/inbox", true)
+    end
   end
 
   describe "gather_webfinger_links/1" do
@@ -312,6 +320,25 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       refute called(Instances.set_unreachable(inbox))
     end
 
+    test_with_mock "records a 410 response as a gone instance",
+                   Instances,
+                   [:passthrough],
+                   [] do
+      actor = insert(:user)
+      inbox = "http://gone.site/users/nick1/inbox"
+
+      mock(fn
+        %{method: :post, url: ^inbox} ->
+          {:ok, %Tesla.Env{status: 410, body: "gone"}}
+      end)
+
+      assert {:cancel, :gone} =
+               Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 410})
+
+      assert called(Instances.record_gone(inbox, source: "publisher", status: 410))
+      refute called(Instances.set_unreachable(inbox))
+    end
+
     test "cancels terminal delivery responses instead of retrying them" do
       actor = insert(:user)
 
@@ -389,7 +416,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 502})
     end
 
-    test_with_mock "marks the target unreachable on non-terminal delivery response codes",
+    test_with_mock "records delivery backoff on non-terminal response codes",
                    Instances,
                    [:passthrough],
                    [] do
@@ -404,7 +431,12 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       assert {:error, %Tesla.Env{status: 502}} =
                Publisher.publish_one(%{inbox: inbox, json: "{}", actor: actor, id: 502})
 
-      assert called(Instances.set_unreachable(inbox))
+      assert called(
+               Instances.record_delivery_failure(inbox, {:http, 502},
+                 source: "publisher",
+                 status: 502
+               )
+             )
     end
 
     test_with_mock "records a target inbox request error",
@@ -463,6 +495,69 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
   end
 
   describe "publish/2" do
+    test_with_mock "queues direct deliveries before creating the relay Announce",
+                   Pleroma.Web.ActivityPub.Relay,
+                   [:passthrough],
+                   publish: fn activity ->
+                     assert Enum.any?(Pleroma.Repo.all(Oban.Job), fn job ->
+                              get_in(job.args, ["params", "id"]) == activity.data["id"]
+                            end)
+
+                     {:ok, activity}
+                   end do
+      clear_config([:instance, :allow_relay], true)
+
+      follower =
+        insert(:user,
+          local: false,
+          inbox: "https://relay-order.example/users/follower/inbox"
+        )
+
+      actor = insert(:user)
+      {:ok, follower, actor} = Pleroma.User.follow(follower, actor)
+
+      activity =
+        insert(:note_activity,
+          user: actor,
+          recipients: [@as_public, follower.ap_id]
+        )
+
+      assert :ok = Publisher.publish(actor, activity)
+      assert called(Pleroma.Web.ActivityPub.Relay.publish(activity))
+    end
+
+    test_with_mock "does not relay-wrap public activities other than Create",
+                   Pleroma.Web.ActivityPub.Relay,
+                   [:passthrough],
+                   publish: fn _activity -> flunk("non-Create activity reached the relay") end do
+      clear_config([:instance, :allow_relay], true)
+
+      remote_author =
+        insert(:user,
+          local: false,
+          inbox: "https://relay-non-create.example/users/author/inbox"
+        )
+
+      object = insert(:note, user: remote_author)
+      actor = insert(:user)
+
+      like = %Activity{
+        actor: actor.ap_id,
+        recipients: [remote_author.ap_id, @as_public],
+        data: %{
+          "id" => Pleroma.Web.ActivityPub.Utils.generate_activity_id(),
+          "type" => "Like",
+          "actor" => actor.ap_id,
+          "object" => object.data["id"],
+          "to" => [remote_author.ap_id],
+          "cc" => [@as_public]
+        }
+      }
+
+      assert :ok = Publisher.publish(actor, like)
+      refute called(Pleroma.Web.ActivityPub.Relay.publish(:_))
+    end
+
     test_with_mock "uses a prepared native resource audience for inbox selection",
                    Pleroma.Web.Federator.Publisher,
                    [:passthrough],

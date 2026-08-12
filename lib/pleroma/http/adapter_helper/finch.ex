@@ -20,7 +20,22 @@ defmodule Pleroma.HTTP.AdapterHelper.Finch do
     config_opts
     |> Keyword.merge(incoming_opts)
     |> AdapterHelper.maybe_add_proxy(proxy)
+    |> normalize_receive_timeout()
     |> maybe_stream()
+  end
+
+  # Pleroma's adapter-neutral HTTP options call this value recv_timeout.
+  # Finch calls the same per-chunk deadline receive_timeout. Translate it here
+  # so every Finch request observes the timeout selected by its caller instead
+  # of silently falling back to Tesla's longer adapter default.
+  defp normalize_receive_timeout(opts) do
+    {recv_timeout, opts} = Keyword.pop(opts, :recv_timeout)
+
+    if is_integer(recv_timeout) and recv_timeout > 0 do
+      Keyword.put_new(opts, :receive_timeout, recv_timeout)
+    else
+      opts
+    end
   end
 
   # Tesla Finch adapter uses response: :stream.

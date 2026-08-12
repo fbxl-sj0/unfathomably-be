@@ -33,7 +33,14 @@ defmodule Pleroma.Workers.Cron.NewUsersDigestWorkerTest do
     assert email.html_body =~ user.nickname
     assert email.html_body =~ user2.nickname
     assert email.html_body =~ "cofe"
-    assert email.html_body =~ "#{Pleroma.Web.Endpoint.url()}/static/logo.svg"
+
+    logo_url =
+      Pleroma.Helpers.UriHelper.maybe_add_base(
+        Pleroma.Config.get([:frontend_configurations, :pleroma_fe, :logo]),
+        Pleroma.Web.Endpoint.url()
+      )
+
+    assert email.html_body =~ logo_url
   end
 
   test "it doesn't fail when admin has no email" do

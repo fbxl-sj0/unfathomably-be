@@ -29,6 +29,7 @@ defmodule Pleroma.Activity do
   schema "activities" do
     field(:data, :map)
     field(:local, :boolean, default: true)
+    field(:federated, :boolean, default: false)
     field(:actor, :string)
     field(:recipients, {:array, :string}, default: [])
     field(:thread_muted?, :boolean, virtual: true)
@@ -145,6 +146,51 @@ defmodule Pleroma.Activity do
     ap_id
     |> Queries.by_ap_id()
     |> Repo.one()
+  end
+
+  @doc """
+  Records that at least one peer successfully accepted an outbound activity.
+
+  New local activities start with `federated: false`. Existing activities are
+  backfilled as federated by the migration because their historical delivery
+  outcome cannot be reconstructed safely.
+  """
+  @spec mark_federated(String.t()) :: :ok
+  def mark_federated(ap_id) when is_binary(ap_id) do
+    Activity
+    |> where([activity], activity.local == true)
+    |> where([activity], fragment("?->>'id' = ?", activity.data, ^ap_id))
+    |> where([activity], activity.federated == false)
+    |> Repo.update_all(set: [federated: true])
+
+    :ok
+  end
+
+  @doc """
+  Records delivery of an object-bearing Update against its original Create.
+
+  Some peers first learn an object through an Update. Such a peer must still
+  receive a later Delete even if the original Create never reached it.
+  """
+  @spec mark_object_federated(String.t()) :: :ok
+  def mark_object_federated(object_ap_id) when is_binary(object_ap_id) do
+    Activity
+    |> where([activity], activity.local == true)
+    |> where([activity], fragment("?->>'type' = 'Create'", activity.data))
+    |> where(
+      [activity],
+      fragment(
+        "(?->>'object' = ? OR ?->'object'->>'id' = ?)",
+        activity.data,
+        ^object_ap_id,
+        activity.data,
+        ^object_ap_id
+      )
+    )
+    |> where([activity], activity.federated == false)
+    |> Repo.update_all(set: [federated: true])
+
+    :ok
   end
 
   def get_bookmark(%Activity{} = activity, %User{} = user) do

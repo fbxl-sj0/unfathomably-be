@@ -614,6 +614,15 @@ config :pleroma, :config_description, [
         ]
       },
       %{
+        key: :following_cache_ttl,
+        type: :integer,
+        description:
+          "Milliseconds to cache followed actor collection addresses. Follow and unfollow changes invalidate this cache immediately.",
+        suggestions: [
+          900_000
+        ]
+      },
+      %{
         key: :contact_username,
         type: :string,
         description: "Instance owner username",
@@ -641,6 +650,15 @@ config :pleroma, :config_description, [
         description: "Hard character limit beyond which remote posts will be dropped",
         suggestions: [
           100_000
+        ]
+      },
+      %{
+        key: :remote_media_attachment_limit,
+        type: :integer,
+        description:
+          "Maximum number of remote post attachments retained as structured media; an equal number of overflow attachments are preserved as links",
+        suggestions: [
+          32
         ]
       },
       %{
@@ -890,6 +908,19 @@ config :pleroma, :config_description, [
         key: :attachment_links,
         type: :boolean,
         description: "Enable to automatically add attachment link text to statuses"
+      },
+      %{
+        key: :max_account_filters,
+        type: :integer,
+        description: "The maximum number of content filters one account may create. Default: 20.",
+        suggestions: [20]
+      },
+      %{
+        key: :max_filter_phrase_length,
+        type: :integer,
+        description:
+          "The maximum length of a content-filter phrase, capped at the database-safe limit of 255 characters. Default: 255.",
+        suggestions: [255]
       },
       %{
         key: :max_report_comment_size,
@@ -1320,9 +1351,9 @@ config :pleroma, :config_description, [
             hideSitename: false,
             hideUserStats: false,
             loginMethod: "password",
-            logo: "/static/logo.svg",
+            logo: "/images/unfathomably-logo.svg",
             logoMargin: ".1em",
-            logoMask: true,
+            logoMask: false,
             minimalScopesMode: false,
             noAttachmentLinks: false,
             nsfwCensorImage: "/static/img/nsfw.74818f9.png",
@@ -1399,8 +1430,8 @@ config :pleroma, :config_description, [
           %{
             key: :logo,
             type: {:string, :image},
-            description: "URL of the logo, defaults to Pleroma's logo",
-            suggestions: ["/static/logo.svg"]
+            description: "URL of the logo, defaults to the packaged favicon",
+            suggestions: ["/favicon.png"]
           },
           %{
             key: :logoMargin,
@@ -1553,16 +1584,17 @@ config :pleroma, :config_description, [
     group: :pleroma,
     key: :manifest,
     type: :group,
-    description:
-      "This section describe PWA manifest instance-specific values. Currently this option relate only for MastoFE.",
+    description: "Controls instance-specific values for the installable web app manifest.",
     children: [
       %{
         key: :icons,
         type: {:list, :map},
-        description: "Describe the icons of the app",
+        description:
+          "Icons for the installed app. When empty, the configured instance favicon is used.",
         suggestion: [
           %{
-            src: "/static/logo.png"
+            src: "/favicon.png",
+            type: "image/png"
           },
           %{
             src: "/static/icon.png",
@@ -1708,6 +1740,12 @@ config :pleroma, :config_description, [
         type: :integer,
         description:
           "Min content length (in bytes) to perform preview. Media smaller in size will be served without thumbnailing."
+      },
+      %{
+        key: :operation_timeout,
+        type: :integer,
+        description:
+          "Maximum time in milliseconds for each remote fetch or thumbnail helper operation. Slow failures are cached briefly so browser timelines do not repeat the work."
       }
     ]
   },
@@ -1823,15 +1861,27 @@ config :pleroma, :config_description, [
         description: "Sign object fetches with HTTP signatures"
       },
       %{
-        key: :authorized_fetch_mode,
+        key: :sign_query_part,
         type: :boolean,
-        description: "Require HTTP signatures for AP fetches"
+        description:
+          "Include query parameters in outgoing HTTP Signature request targets. Disable only for compatibility with a peer that requires the historical path-only form."
+      },
+      %{
+        key: :authorized_fetch_mode,
+        type: {:dropdown, :atom},
+        description:
+          "Controls HTTP signatures for ActivityPub fetches. Hybrid mode exposes only the actor routing and public-key metadata needed to bootstrap signed requests.",
+        suggestions: [
+          %{label: "Disabled", value: :disabled},
+          %{label: "Hybrid (essential actor metadata)", value: :essential},
+          %{label: "Strict (all ActivityPub fetches)", value: :strict}
+        ]
       },
       %{
         key: :authorized_fetch_mode_exceptions,
         type: {:list, :string},
         description:
-          "List of IPs, CIDR format accepted, to exempt from HTTP signatures when authorized_fetch_mode is enabled. This is mainly useful for controlled internal debugging."
+          "List of IPs, CIDR format accepted, to exempt from HTTP signatures when authorized_fetch_mode is strict or hybrid. This is mainly useful for controlled internal debugging."
       },
       %{
         key: :fetch_actor_origin,
@@ -2118,7 +2168,7 @@ config :pleroma, :config_description, [
           {"*/10 * * * *", Pleroma.Workers.Cron.AppCleanupWorker},
           {"17 * * * *", Pleroma.Workers.Cron.ObanCleanupWorker},
           {"0 3 * * *", Pleroma.Workers.Cron.ScheduleReachabilityWorker},
-          {"0 4 * * *", Pleroma.Workers.Cron.RemotePostCleanupWorker},
+          {"7 4 * * *", Pleroma.Workers.Cron.RemotePostCleanupWorker},
           {"30 4 * * *", Pleroma.Workers.Cron.GroupDiscussionCleanupWorker}
         ]
       }
@@ -2223,6 +2273,13 @@ config :pleroma, :config_description, [
         description:
           "Remote group discussions older than this many days may be purged when no local user has interacted with them.",
         suggestions: [183]
+      },
+      %{
+        key: :followed_group_max_age_days,
+        type: :integer,
+        description:
+          "Remote discussions in groups followed by a local user are retained for this many days before untouched-discussion cleanup may purge them.",
+        suggestions: [730, 1_095]
       },
       %{
         key: :batch_size,
@@ -2690,7 +2747,8 @@ config :pleroma, :config_description, [
       %{
         key: :logo,
         type: {:string, :image},
-        description: "A path to a custom logo. Set it to `nil` to use the default Pleroma logo.",
+        description:
+          "A path to a custom logo. Set it to `nil` to use the packaged Unfathomably logo.",
         suggestions: ["some/path/logo.png"]
       },
       %{
@@ -2845,9 +2903,8 @@ config :pleroma, :config_description, [
         key: :federated_target_search,
         label: "Federated target search",
         type: [:tuple, {:list, :tuple}],
-        description:
-          "For explicit group, feed, actor handle, and remote URL discovery requests",
-        suggestions: [{60_000, 3}, [{60_000, 3}, {60_000, 12}]]
+        description: "For explicit group, feed, actor handle, and remote URL discovery requests",
+        suggestions: [{60_000, 3}, [{60_000, 3}, {60_000, 30}]]
       },
       %{
         key: :timeline,
@@ -3762,6 +3819,12 @@ config :pleroma, :config_description, [
         key: :update_nickname_on_user_fetch,
         type: :boolean,
         description: "Update nickname according to host-meta, when refetching the user"
+      },
+      %{
+        key: :actor_alias_max_age,
+        type: :integer,
+        description:
+          "Maximum age in seconds for a verified remote WebFinger handle before resolving it again"
       }
     ]
   },

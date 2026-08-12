@@ -149,6 +149,32 @@ defmodule Pleroma.Instances.InstanceTest do
       assert instance.metadata.last_status == "reachable"
       refute instance.metadata.backoff_until
     end
+
+    test "does not rewrite an already healthy delivery endpoint" do
+      inbox = "https://delivery.example/users/alice/inbox"
+
+      assert {:ok, first} = Instance.record_delivery_success(inbox, source: "test")
+      assert {:ok, second} = Instance.record_delivery_success(inbox, source: "test")
+
+      assert second.updated_at == first.updated_at
+      assert second.metadata.last_success_at == first.metadata.last_success_at
+      assert second.metadata.delivery_endpoints == first.metadata.delivery_endpoints
+    end
+
+    test "records a successful transition after a delivery failure" do
+      inbox = "https://recovered-delivery.example/users/alice/inbox"
+
+      assert {:ok, failed} = Instance.record_delivery_failure(inbox, :timeout, source: "test")
+      assert failed.unreachable_since
+
+      assert {:ok, recovered} = Instance.record_delivery_success(inbox, source: "test")
+
+      refute recovered.unreachable_since
+      assert recovered.metadata.failure_count == 0
+
+      assert [%{"failure_count" => 0, "last_status" => "success", "url" => ^inbox}] =
+               recovered.metadata.delivery_endpoints
+    end
   end
 
   describe "get_or_update_favicon/1" do
@@ -341,6 +367,6 @@ defmodule Pleroma.Instances.InstanceTest do
 
     assert [nil, nil, %{}] = Repo.reload([post1, post2, post3])
     refute Repo.get_by(Instance, host: "mushroom.kingdom")
-    refute Repo.get(Oban.Job, reachability_job.id)
+    assert %{state: "cancelled"} = Repo.get(Oban.Job, reachability_job.id)
   end
 end

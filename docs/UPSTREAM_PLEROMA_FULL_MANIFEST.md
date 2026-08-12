@@ -17009,8 +17009,8 @@ Rows marked `todo` below must receive a durable commit-level disposition before 
 | 16147 | `backported` | `legacy-batch-reviewed` | 2024-05-16 | `d07d49227` | Mark Felder | Pleroma notification read endpoint now returns a simple OK payload instead of rendering marked notifications. |  |
 | 16148 | `not-applicable` | `legacy-batch-reviewed` | 2024-05-19 | `401aca254` | lain | Merge-only row for notification read response behavior covered by row 16147. |  |
 | 16149 | `not-applicable` | `legacy-batch-reviewed` | 2024-05-19 | `cc1321ea2` | Lain Soykaf | Qdrant feature-branch synchronization merge; subsystem remains deferred. |  |
-| 16150 | `deferred` | `legacy-batch-reviewed` | 2024-05-19 | `72ec261a6` | Lain Soykaf | Qdrant OpenAI-compatible embedding API support belongs to the deferred vector-search subsystem. |  |
-| 16151 | `deferred` | `legacy-batch-reviewed` | 2024-05-19 | `b9af017a4` | Lain Soykaf | FastEmbed OpenAI-compatible API and model switching belong to the deferred vector-search subsystem. |  |
+| 16150 | `deferred` | `legacy-batch-reviewed` | 2024-05-19 | `72ec261a6` | Lain Soykaf | Qdrant external embedding API support belongs to the deferred vector-search subsystem. |  |
+| 16151 | `deferred` | `legacy-batch-reviewed` | 2024-05-19 | `b9af017a4` | Lain Soykaf | FastEmbed external API and model switching belong to the deferred vector-search subsystem. |  |
 | 16152 | `deferred` | `legacy-batch-reviewed` | 2024-05-19 | `c139a9f38` | Lain Soykaf | Default Qdrant embedder configuration belongs to the deferred vector-search subsystem. |  |
 | 16153 | `deferred` | `legacy-batch-reviewed` | 2024-05-19 | `e142ea400` | Lain Soykaf | Qdrant/FastEmbed documentation belongs to the deferred vector-search subsystem. |  |
 | 16154 | `deferred` | `legacy-batch-reviewed` | 2024-05-19 | `dd4881018` | Lain Soykaf | FastEmbed API tree move belongs to the deferred vector-search subsystem. |  |

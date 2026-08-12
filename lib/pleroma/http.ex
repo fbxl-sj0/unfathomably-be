@@ -13,6 +13,8 @@ defmodule Pleroma.HTTP do
   alias Tesla.Client
   alias Tesla.Env
 
+  require Logger
+
   @type t :: __MODULE__
   @type method() :: :get | :post | :put | :delete | :head
 
@@ -73,12 +75,24 @@ defmodule Pleroma.HTTP do
     client =
       Tesla.client(adapter_middlewares(adapter, redirect_middleware, extra_middleware), adapter)
 
-    maybe_limit(
-      fn ->
-        request(client, request)
-      end,
+    result =
+      maybe_limit(
+        fn ->
+          request(client, request)
+        end,
+        adapter,
+        adapter_opts
+      )
+
+    maybe_retry_tls_compatibility(
+      result,
       adapter,
-      adapter_opts
+      method,
+      request,
+      adapter_opts,
+      redirect_middleware,
+      extra_middleware,
+      uri
     )
   end
 
@@ -115,8 +129,56 @@ defmodule Pleroma.HTTP do
     fun.()
   end
 
+  defp maybe_retry_tls_compatibility(
+         {:error, {:tls_alert, {:handshake_failure, _detail}}},
+         Tesla.Adapter.Gun,
+         method,
+         request,
+         adapter_opts,
+         redirect_middleware,
+         extra_middleware,
+         %URI{host: host}
+       )
+       when method in [:get, :head] do
+    Logger.info("Retrying HTTP #{method} to #{host} with the TLS 1.2 compatibility pool")
+
+    fallback_adapter = Tesla.Adapter.Gun
+
+    fallback_opts =
+      adapter_opts
+      |> Keyword.put(:tls_opts, versions: [:"tlsv1.2"])
+      |> Keyword.put(:tls_compatibility, :tls12)
+
+    fallback_request = put_in(request, [:opts, :adapter], fallback_opts)
+
+    fallback_client =
+      Tesla.client(
+        adapter_middlewares(fallback_adapter, redirect_middleware, extra_middleware),
+        fallback_adapter
+      )
+
+    maybe_limit(
+      fn -> request(fallback_client, fallback_request) end,
+      fallback_adapter,
+      fallback_opts
+    )
+  end
+
+  defp maybe_retry_tls_compatibility(
+         result,
+         _adapter,
+         _method,
+         _request,
+         _adapter_opts,
+         _redirect_middleware,
+         _extra_middleware,
+         _uri
+       ),
+       do: result
+
   defp adapter_middlewares(Tesla.Adapter.Gun, redirect_middleware, extra_middleware) do
-    List.wrap(redirect_middleware) ++ [Pleroma.Tesla.Middleware.ConnectionPool] ++
+    List.wrap(redirect_middleware) ++
+      [Pleroma.Tesla.Middleware.ConnectionPool] ++
       extra_middleware
   end
 

@@ -304,7 +304,7 @@ defmodule Pleroma.Emails.UserEmail do
 
         logo_path =
           if is_nil(logo) do
-            Path.join(:code.priv_dir(:pleroma), "static/static/logo.svg")
+            Path.join(:code.priv_dir(:pleroma), "static/images/unfathomably-logo.svg")
           else
             Path.join(Config.get([:instance, :static_dir]), logo)
           end

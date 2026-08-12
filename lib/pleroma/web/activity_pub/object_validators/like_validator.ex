@@ -74,6 +74,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.LikeValidator do
     |> validate_required([:id, :type, :object, :actor, :context, :to, :cc])
     |> CommonValidations.validate_actor_presence()
     |> CommonValidations.validate_object_presence()
+    |> CommonValidations.validate_object_visibility()
     |> validate_existing_like()
   end
 

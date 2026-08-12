@@ -8,6 +8,7 @@ defmodule Pleroma.Search.DatabaseSearch do
   alias Pleroma.Object.Fetcher
   alias Pleroma.Pagination
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.ActivityPub.Visibility
 
   require Pleroma.Constants
@@ -180,13 +181,83 @@ defmodule Pleroma.Search.DatabaseSearch do
   defp restrict_local(q), do: where(q, local: true)
 
   def maybe_fetch(activities, user, search_query) do
-    with true <- Regex.match?(~r/https?:/, search_query),
-         {:ok, object} <- Fetcher.fetch_object_from_id(search_query),
-         %Activity{} = activity <- Activity.get_create_by_object_ap_id(object.data["id"]),
-         true <- Visibility.visible_for_user?(activity, user) do
-      [activity | activities]
+    if Regex.match?(~r/https?:/, search_query) do
+      case Fetcher.fetch_object_from_id(search_query) do
+        {:ok, object} ->
+          prepend_visible_activity(activities, user, fetched_search_activity(object))
+
+        _ ->
+          maybe_fetch_public_event(activities, user, search_query)
+      end
+    else
+      activities
+    end
+  end
+
+  # Some event platforms expose a public Event object at its canonical URL but
+  # do not publish the matching Create activity. Search normally renders
+  # statuses from Create activities, so accept this narrow compatibility form
+  # only after the normal incoming pipeline verifies the actor, containment,
+  # recipients, and object schema. Arbitrary object-only URLs must never gain
+  # a synthetic status through this path.
+  defp fetched_search_activity(%{data: %{"id" => object_id} = object})
+       when is_binary(object_id) do
+    Activity.get_create_by_object_ap_id(object_id) ||
+      maybe_create_public_event_activity(object)
+  end
+
+  defp fetched_search_activity(_object), do: nil
+
+  defp maybe_fetch_public_event(activities, user, event_url) do
+    with {:ok, event} <- Fetcher.fetch_and_contain_remote_object_from_id(event_url) do
+      prepend_visible_activity(activities, user, maybe_create_public_event_activity(event))
     else
       _ -> activities
     end
   end
+
+  defp prepend_visible_activity(activities, user, %Activity{} = activity) do
+    if Visibility.visible_for_user?(activity, user), do: [activity | activities], else: activities
+  end
+
+  defp prepend_visible_activity(activities, _user, _activity), do: activities
+
+  defp maybe_create_public_event_activity(
+         %{"id" => object_id, "type" => "Event", "actor" => actor} = object
+       )
+       when is_binary(object_id) and is_binary(actor) do
+    with true <- public_event?(object),
+         %{} = create <- public_event_create_activity(object, actor),
+         {:ok, %Activity{}} <- Transmogrifier.handle_incoming(create) do
+      Activity.get_create_by_object_ap_id(object_id)
+    else
+      _ -> nil
+    end
+  end
+
+  defp maybe_create_public_event_activity(_object), do: nil
+
+  defp public_event_create_activity(%{"id" => _object_id} = object, actor) do
+    object =
+      object
+      |> Map.put("actor", actor)
+      |> Map.put("attributedTo", actor)
+
+    %{
+      "type" => "Create",
+      "actor" => actor,
+      "object" => object,
+      "to" => event_recipients(object["to"]),
+      "cc" => event_recipients(object["cc"])
+    }
+  end
+
+  defp public_event?(object) do
+    recipients = event_recipients(object["to"]) ++ event_recipients(object["cc"])
+    Pleroma.Constants.as_public() in recipients
+  end
+
+  defp event_recipients(value) when is_binary(value), do: [value]
+  defp event_recipients(value) when is_list(value), do: Enum.filter(value, &is_binary/1)
+  defp event_recipients(_value), do: []
 end

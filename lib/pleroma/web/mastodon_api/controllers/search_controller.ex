@@ -71,7 +71,51 @@ defmodule Pleroma.Web.MastodonAPI.SearchController do
           acc
       end)
 
-    json(conn, result)
+    conn
+    |> add_search_link_header(params, result)
+    |> json(result)
+  end
+
+  defp add_search_link_header(conn, params, result) do
+    limit = params[:limit] || 20
+    limit = limit |> min(@search_limit) |> max(1)
+    offset = params[:offset] || 0
+
+    links =
+      []
+      |> maybe_add_next_search_link(conn, result, params[:type], offset, limit)
+      |> maybe_add_previous_search_link(conn, offset, limit)
+
+    case links do
+      [] -> conn
+      links -> put_resp_header(conn, "link", Enum.join(links, ", "))
+    end
+  end
+
+  defp maybe_add_next_search_link(links, conn, result, type, offset, limit) do
+    page_full? =
+      case type do
+        nil -> Enum.any?(result, fn {_resource, entries} -> length(entries) >= limit end)
+        type -> length(Map.get(result, type, [])) >= limit
+      end
+
+    if page_full?,
+      do: [search_link(conn, offset + limit, "next") | links],
+      else: links
+  end
+
+  defp maybe_add_previous_search_link(links, conn, offset, limit) when offset > 0,
+    do: [search_link(conn, max(offset - limit, 0), "prev") | links]
+
+  defp maybe_add_previous_search_link(links, _conn, _offset, _limit), do: links
+
+  defp search_link(conn, offset, relation) do
+    query =
+      conn.query_params
+      |> Map.put("offset", Integer.to_string(offset))
+      |> Plug.Conn.Query.encode()
+
+    "<#{Endpoint.url()}#{conn.request_path}?#{query}>; rel=\"#{relation}\""
   end
 
   defp search_options(params, user) do

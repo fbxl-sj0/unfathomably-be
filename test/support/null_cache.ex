@@ -21,10 +21,22 @@ defmodule Pleroma.NullCache do
   def get(_, _), do: {:ok, nil}
 
   @impl true
+  def fetch(_, key, func) do
+    case run_fallback(func, key) do
+      {:commit, value, _options} -> {:commit, value}
+      {status, value} when status in [:commit, :ignore, :error] -> {status, value}
+      value -> {:commit, value}
+    end
+  end
+
+  @impl true
   def fetch!(_, key, func) do
-    case func.(key) do
-      {_, res} -> res
-      res -> res
+    case fetch(nil, key, func) do
+      {status, value} when status in [:ok, :commit, :ignore] ->
+        value
+
+      {:error, reason} ->
+        raise Cachex.Error, message: "Cache fetch failed: #{inspect(reason)}"
     end
   end
 
@@ -49,4 +61,7 @@ defmodule Pleroma.NullCache do
 
   @impl true
   def del(_, _), do: {:ok, true}
+
+  defp run_fallback(func, _key) when is_function(func, 0), do: func.()
+  defp run_fallback(func, key) when is_function(func, 1), do: func.(key)
 end

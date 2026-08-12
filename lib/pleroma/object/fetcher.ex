@@ -3,15 +3,26 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Object.Fetcher do
+  defmodule PrefetchedObject do
+    @moduledoc false
+
+    @enforce_keys [:requested_id, :data]
+    defstruct [:requested_id, :data]
+
+    @opaque t :: %__MODULE__{requested_id: String.t(), data: map()}
+  end
+
+  alias Pleroma.ATProto.BridgyCompat
   alias Pleroma.HTTP
   alias Pleroma.Instances
   alias Pleroma.Maps
+  alias Pleroma.Nostr.MostrCompat
   alias Pleroma.Object
   alias Pleroma.Object.Containment
   alias Pleroma.Signature
   alias Pleroma.User
-  alias Pleroma.Web.ActivityPub.InternalFetchActor
   alias Pleroma.Web.ActivityPub.CustomObject
+  alias Pleroma.Web.ActivityPub.InternalFetchActor
   alias Pleroma.Web.ActivityPub.MRF
   alias Pleroma.Web.ActivityPub.ObjectValidator
   alias Pleroma.Web.ActivityPub.Pipeline
@@ -21,20 +32,38 @@ defmodule Pleroma.Object.Fetcher do
   alias Pleroma.Web.Federator
 
   require Logger
+  require Pleroma.Constants
 
   @activity_types ~w(Accept Add Announce Block Create Delete Dislike EmojiReact Flag Follow Join Leave Like Listen Lock Move Reject Remove Undo Update)
   @collection_types ~w(Collection OrderedCollection CollectionPage OrderedCollectionPage)
+  @max_canonical_html_bytes 1_048_576
+  @max_canonical_url_bytes 2048
+  # Existing objects arrive here without their enclosing Update activity.
+  # Reconstructing that envelope lets activity-shaped MRF policies apply the
+  # same media, visibility, and moderation rules used for inbox delivery.
+  defp filter_reinjected_object(%{"actor" => actor} = object) when is_binary(actor) do
+    update =
+      object
+      |> Map.take(["to", "cc", "bto", "bcc"])
+      |> Map.merge(%{"type" => "Update", "actor" => actor, "object" => object})
+
+    with {:ok, %{"object" => %{} = filtered_object}} <- MRF.filter(update) do
+      {:ok, filtered_object}
+    end
+  end
+
+  defp filter_reinjected_object(object), do: MRF.filter(object)
 
   @spec reinject_object(struct(), map()) :: {:ok, Object.t()} | {:error, any()}
   defp reinject_object(%Object{data: %{}} = object, new_data) do
-    Logger.debug("Reinjecting object #{new_data["id"]}")
+    Logger.debug("Reinjecting object #{Pleroma.Helpers.UriHelper.log_safe_url(new_data["id"])}")
 
     with {:ok, new_data, _} <-
            ObjectValidator.validate(new_data,
              local: false,
              fetched_from: object.data["id"]
            ),
-         {:ok, new_data} <- MRF.filter(new_data),
+         {:ok, new_data} <- filter_reinjected_object(new_data),
          {:ok, new_object, _} <-
            Object.Updater.do_update_and_invalidate_cache(
              object,
@@ -65,28 +94,78 @@ defmodule Pleroma.Object.Fetcher do
   end
 
   def refetch_object(%Object{data: %{"id" => id}} = object) do
-    with {:local, false} <- {:local, Object.local?(object)},
-         {:ok, new_data} <- fetch_and_contain_remote_object_from_id(id),
-         {:ok, object} <- reinject_object(object, new_data) do
-      {:ok, object}
-    else
-      {:local, true} -> {:ok, object}
-      e -> {:error, e}
+    case fetch_native_bridge_object(id) do
+      {:ok, %Object{} = native_object} ->
+        {:ok, native_object}
+
+      result when result in [:miss, :not_applicable] ->
+        with {:local, false} <- {:local, Object.local?(object)},
+             {:ok, new_data} <- fetch_and_contain_remote_object_from_id(id),
+             {:ok, object} <- reinject_object(object, new_data) do
+          {:ok, object}
+        else
+          {:local, true} -> {:ok, object}
+          e -> {:error, e}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   @typep fetcher_errors ::
            :error | :reject | :allowed_depth | :fetch | :containment | :transmogrifier
 
+  @transient_transport_errors [
+    :closed,
+    :connect_timeout,
+    :econnrefused,
+    :ehostunreach,
+    :enetunreach,
+    :enotconn,
+    :nxdomain,
+    :recv_body_timeout,
+    :recv_chunk_timeout,
+    :recv_response_timeout,
+    :timeout
+  ]
+
   # Note: will create a Create activity, which we need internally at the moment.
   @spec fetch_object_from_id(String.t(), list()) ::
           {:ok, Object.t()} | {fetcher_errors(), any()} | Pipeline.errors()
   def fetch_object_from_id(id, options \\ []) do
-    {prefetched_data, options} = Keyword.pop(options, :prefetched_data)
+    case fetch_native_bridge_object(id) do
+      {:ok, %Object{} = object} -> {:ok, object}
+      result when result in [:miss, :not_applicable] -> do_fetch_object_from_id(id, options)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Resolves an object action target, including a bounded HTML canonical hint.
+
+  Some alternate frontends publish their own URL in federated reactions while
+  advertising the source ActivityPub object through `rel=canonical`. The hint
+  is never ingested directly: its target must pass the normal remote object
+  fetch, containment, identifier, actor-origin, validation, and MRF checks.
+  """
+  @spec resolve_object_reference(String.t(), list()) ::
+          {:ok, Object.t()} | {fetcher_errors(), any()} | Pipeline.errors()
+  def resolve_object_reference(id, options \\ [])
+
+  def resolve_object_reference(id, options) when is_binary(id) do
+    fetch_object_from_id(id, Keyword.put(options, :resolve_html_canonical, true))
+  end
+
+  def resolve_object_reference(_id, _options), do: {:error, "id must be a string"}
+
+  defp do_fetch_object_from_id(id, options) do
+    {prefetched_object, options} = Keyword.pop(options, :prefetched_object)
+    {resolve_html_canonical?, options} = Keyword.pop(options, :resolve_html_canonical, false)
 
     with {_, nil} <- {:fetch_object, Object.get_cached_by_ap_id(id)},
          {_, true} <- {:allowed_depth, Federator.allowed_thread_distance?(options[:depth])},
-         {_, {:ok, data}} <- {:fetch, fetch_object_data(id, prefetched_data)},
+         {_, {:ok, data}} <- {:fetch, fetch_object_data(id, prefetched_object)},
          data <- RemoteReplies.maybe_inline_reply_ids(data, options),
          {_, nil} <- {:normalize, Object.normalize(data, fetch: false)},
          params <- prepare_activity_params(data),
@@ -104,11 +183,17 @@ defmodule Pleroma.Object.Fetcher do
         {:error, "Object containment failed."}
 
       {:transmogrifier, {:error, {:reject, e}}} ->
-        Logger.info("Rejected #{id} while fetching: #{inspect(e)}")
+        Logger.info(
+          "Rejected #{Pleroma.Helpers.UriHelper.log_safe_url(id)} while fetching: #{Pleroma.Helpers.UriHelper.log_safe_text(e)}"
+        )
+
         {:reject, e}
 
       {:transmogrifier, {:reject, e}} ->
-        Logger.info("Rejected #{id} while fetching: #{inspect(e)}")
+        Logger.info(
+          "Rejected #{Pleroma.Helpers.UriHelper.log_safe_url(id)} while fetching: #{Pleroma.Helpers.UriHelper.log_safe_text(e)}"
+        )
+
         {:reject, e}
 
       {:transmogrifier, {:error, {:persist, {:error, %Ecto.Changeset{} = changeset}}} = error} ->
@@ -126,6 +211,10 @@ defmodule Pleroma.Object.Fetcher do
       {:fetch_object, %Object{} = object} ->
         {:ok, object}
 
+      {:fetch, {:error, {:content_type, _content_type} = error}}
+      when resolve_html_canonical? ->
+        resolve_html_canonical_object(id, options, error)
+
       {:fetch, {:error, error}} ->
         log_fetch_error(id, {:error, error})
         {:error, error}
@@ -137,15 +226,21 @@ defmodule Pleroma.Object.Fetcher do
   end
 
   # Reply-thread discovery must inspect a remote object before its ancestors
-  # can be stored in order.  Recheck containment here so that discovery can
-  # pass that already-downloaded payload through the normal object pipeline
-  # without weakening the fetcher's origin boundary or issuing a second GET.
-  defp fetch_object_data(id, %{} = prefetched_data) do
+  # can be stored in order. Recheck containment here and require an ID-bound
+  # fetch result so a raw map or caller-controlled option cannot bypass the
+  # canonical HTTP fetch and identifier checks.
+  defp fetch_object_data(
+         id,
+         %PrefetchedObject{requested_id: id, data: %{} = prefetched_data}
+       ) do
     case Containment.contain_origin_from_id(id, prefetched_data) do
       :ok -> {:ok, prefetched_data}
       error -> {:error, error}
     end
   end
+
+  defp fetch_object_data(_id, %PrefetchedObject{}),
+    do: {:error, :prefetched_object_id_mismatch}
 
   defp fetch_object_data(id, _prefetched_data) do
     fetch_and_contain_remote_object_from_id(id)
@@ -210,7 +305,12 @@ defmodule Pleroma.Object.Fetcher do
         {:reject, _reason} = error -> error
       end
     else
-      Transmogrifier.handle_incoming(params, options)
+      BridgyCompat.handle_incoming(params, fn reconciled ->
+        MostrCompat.handle_incoming(
+          reconciled,
+          &Transmogrifier.handle_incoming(&1, Keyword.put(options, :fetched_from, id))
+        )
+      end)
     end
   end
 
@@ -263,19 +363,33 @@ defmodule Pleroma.Object.Fetcher do
   defp put_object_fetch_actor(data, _actor), do: data
 
   defp log_fetch_error(id, {:error, {:http, code}}) when code in [401, 403, 404, 410] do
-    Logger.debug("Remote object #{id} returned HTTP #{code} while fetching")
+    Logger.debug(
+      "Remote object #{Pleroma.Helpers.UriHelper.log_safe_url(id)} returned HTTP #{code} while fetching"
+    )
+  end
+
+  defp log_fetch_error(id, {:error, error}) when error in @transient_transport_errors do
+    Logger.debug(
+      "Transient error while fetching #{Pleroma.Helpers.UriHelper.log_safe_url(id)}: #{Pleroma.Helpers.UriHelper.log_safe_text(error)}"
+    )
   end
 
   defp log_fetch_error(id, {:error, {:http, code}}) do
-    Logger.warning("Remote object #{id} returned HTTP #{code} while fetching")
+    Logger.warning(
+      "Remote object #{Pleroma.Helpers.UriHelper.log_safe_url(id)} returned HTTP #{code} while fetching"
+    )
   end
 
   defp log_fetch_error(id, {:error, :not_found}) do
-    Logger.info("Remote object #{id} was not found while fetching")
+    Logger.info(
+      "Remote object #{Pleroma.Helpers.UriHelper.log_safe_url(id)} was not found while fetching"
+    )
   end
 
   defp log_fetch_error(id, {:error, :forbidden}) do
-    Logger.info("Remote object #{id} refused access while fetching")
+    Logger.info(
+      "Remote object #{Pleroma.Helpers.UriHelper.log_safe_url(id)} refused access while fetching"
+    )
   end
 
   defp log_fetch_error(id, e) do
@@ -286,7 +400,9 @@ defmodule Pleroma.Object.Fetcher do
         )
 
       :noop ->
-        Logger.warning("Error while fetching #{id}: #{inspect(e)}")
+        Logger.warning(
+          "Error while fetching #{Pleroma.Helpers.UriHelper.log_safe_url(id)}: #{Pleroma.Helpers.UriHelper.log_safe_text(e)}"
+        )
     end
   end
 
@@ -382,14 +498,57 @@ defmodule Pleroma.Object.Fetcher do
     do: fetch_and_contain_remote_object_from_id(id)
 
   def fetch_and_contain_remote_object_from_id(id) when is_binary(id) do
-    Logger.debug("Fetching object #{id} via AP")
+    case fetch_native_bridge_object(id) do
+      {:ok, %Object{data: data}} -> {:ok, data}
+      result when result in [:miss, :not_applicable] -> fetch_activitypub_object(id)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def fetch_and_contain_remote_object_from_id(_id),
+    do: {:error, "id must be a string"}
+
+  @doc """
+  Fetches and contains a remote object for one subsequent internal ingestion.
+
+  The returned value is bound to the requested identifier. It deliberately is
+  not a boolean `skip_checks` option: callers cannot pass arbitrary decoded
+  input through the prefetched path, and ingestion still repeats containment.
+  """
+  @spec fetch_prefetched_remote_object_from_id(String.t()) ::
+          {:ok, PrefetchedObject.t()} | {:error, any()}
+  def fetch_prefetched_remote_object_from_id(id) when is_binary(id) do
+    with {:ok, %{} = data} <- fetch_and_contain_remote_object_from_id(id) do
+      {:ok, %PrefetchedObject{requested_id: id, data: data}}
+    end
+  end
+
+  def fetch_prefetched_remote_object_from_id(_id),
+    do: {:error, "id must be a string"}
+
+  @spec prefetched_object_data(PrefetchedObject.t()) :: {:ok, map()} | {:error, :invalid}
+  def prefetched_object_data(%PrefetchedObject{data: %{} = data}), do: {:ok, data}
+  def prefetched_object_data(_prefetched_object), do: {:error, :invalid}
+
+  defp fetch_activitypub_object(id) do
+    if Pleroma.Federation.enabled?() do
+      do_fetch_activitypub_object(id)
+    else
+      {:error, :federation_disabled}
+    end
+  end
+
+  defp do_fetch_activitypub_object(id) do
+    Logger.debug("Fetching object #{Pleroma.Helpers.UriHelper.log_safe_url(id)} via AP")
 
     with {:scheme, true} <- {:scheme, String.starts_with?(id, "http")},
          {:mrf, true} <- {:mrf, MRF.id_filter(id)},
          {:dormant, false} <- {:dormant, Instances.dormant?(id)},
-         {:ok, body} <- get_object(id),
+         {:ok, body, final_url} <- get_object(id),
          {:ok, data} <- safe_json_decode(body),
-         :ok <- Containment.contain_origin_from_id(id, data) do
+         :ok <- contain_final_response_origin(id, final_url, data),
+         :ok <- contain_fetched_identifier(id, final_url, data),
+         :ok <- contain_object_origin(id, data) do
       if not Instances.reachable?(id) do
         Instances.set_reachable(id)
       end
@@ -406,6 +565,7 @@ defmodule Pleroma.Object.Fetcher do
         {:error, {:reject, "Filtered by id"}}
 
       {:error, e} ->
+        maybe_record_transient_fetch_failure(id, e)
         {:error, e}
 
       e ->
@@ -413,16 +573,40 @@ defmodule Pleroma.Object.Fetcher do
     end
   end
 
-  def fetch_and_contain_remote_object_from_id(_id),
+  def fetch_and_contain_remote_collection_from_id(id) when is_binary(id) do
+    cond do
+      MostrCompat.legacy_reference?(id) -> {:error, :native_nostr_required}
+      BridgyCompat.legacy_reference?(id) -> {:error, :native_atproto_required}
+      true -> fetch_activitypub_collection(id)
+    end
+  end
+
+  def fetch_and_contain_remote_collection_from_id(_id),
     do: {:error, "id must be a string"}
 
-  def fetch_and_contain_remote_collection_from_id(id) when is_binary(id) do
-    Logger.debug("Fetching collection #{id} via AP")
+  defp fetch_native_bridge_object(id) do
+    case BridgyCompat.fetch_native_object(id) do
+      result when result in [:miss, :not_applicable] -> MostrCompat.fetch_native_object(id)
+      result -> result
+    end
+  end
+
+  defp fetch_activitypub_collection(id) do
+    if Pleroma.Federation.enabled?() do
+      do_fetch_activitypub_collection(id)
+    else
+      {:error, :federation_disabled}
+    end
+  end
+
+  defp do_fetch_activitypub_collection(id) do
+    Logger.debug("Fetching collection #{Pleroma.Helpers.UriHelper.log_safe_url(id)} via AP")
 
     with {:scheme, true} <- {:scheme, String.starts_with?(id, "http")},
          {:dormant, false} <- {:dormant, Instances.dormant?(id)},
-         {:ok, body} <- get_object(id),
+         {:ok, body, final_url} <- get_object(id),
          {:ok, data} <- safe_json_decode(body),
+         :ok <- contain_final_response_origin(id, final_url, data),
          :ok <- contain_collection_origin(id, data) do
       if not Instances.reachable?(id) do
         Instances.set_reachable(id)
@@ -437,6 +621,7 @@ defmodule Pleroma.Object.Fetcher do
         {:error, :unreachable_host}
 
       {:error, e} ->
+        maybe_record_transient_fetch_failure(id, e)
         {:error, e}
 
       e ->
@@ -444,23 +629,82 @@ defmodule Pleroma.Object.Fetcher do
     end
   end
 
-  def fetch_and_contain_remote_collection_from_id(_id),
-    do: {:error, "id must be a string"}
+  defp maybe_record_transient_fetch_failure(id, error)
+       when error in @transient_transport_errors do
+    Instances.record_failure(id, error, source: "object_fetch")
+  end
+
+  defp maybe_record_transient_fetch_failure(_id, _error), do: :ok
+
+  defp contain_fetched_identifier(id, _final_url, %{"id" => id}), do: :ok
+
+  # A redirect to the object's own canonical identifier is authoritative
+  # evidence for a human permalink alias. A same-origin document that merely
+  # claims a different id is not: without a redirect or advertised `url`, that
+  # behavior could turn any JSON endpoint into an object-identity alias.
+  defp contain_fetched_identifier(id, final_url, %{"id" => canonical_id} = data)
+       when is_binary(final_url) and is_binary(canonical_id) do
+    advertised_alias? = advertised_identifier?(data["url"], id)
+
+    canonical_redirect? =
+      same_origin?(id, canonical_id) and same_resource_url?(final_url, canonical_id)
+
+    if advertised_alias? or canonical_redirect?,
+      do: :ok,
+      else: {:error, :object_identifier_mismatch}
+  end
+
+  defp contain_fetched_identifier(id, _final_url, %{"url" => url}) do
+    if advertised_identifier?(url, id),
+      do: :ok,
+      else: {:error, :object_identifier_mismatch}
+  end
+
+  defp contain_fetched_identifier(_id, _final_url, _data),
+    do: {:error, :object_identifier_mismatch}
+
+  defp advertised_identifier?(identifier, expected) when is_binary(identifier),
+    do: identifier == expected
+
+  defp advertised_identifier?(identifiers, expected) when is_list(identifiers),
+    do: Enum.any?(identifiers, &advertised_identifier?(&1, expected))
+
+  defp advertised_identifier?(%{"href" => identifier}, expected),
+    do: advertised_identifier?(identifier, expected)
+
+  defp advertised_identifier?(%{"id" => identifier}, expected),
+    do: advertised_identifier?(identifier, expected)
+
+  defp advertised_identifier?(_identifier, _expected), do: false
+
+  defp contain_object_origin(id, data) do
+    case Containment.contain_origin_from_id(id, data) do
+      :ok -> :ok
+      _ -> {:error, :object_origin_mismatch}
+    end
+  end
 
   defp contain_collection_origin(id, %{"id" => _} = data) do
-    Containment.contain_origin_from_id(id, data)
+    case Containment.contain_origin_from_id(id, data) do
+      :ok -> :ok
+      _ -> {:error, :collection_origin_mismatch}
+    end
   end
 
   defp contain_collection_origin(id, %{"partOf" => part_of, "type" => type})
        when is_binary(part_of) and type in @collection_types do
-    if same_origin?(id, part_of), do: :ok, else: :error
+    if same_origin?(id, part_of),
+      do: :ok,
+      else: {:error, :collection_origin_mismatch}
   end
 
   defp contain_collection_origin(_id, %{"type" => type} = data) when type in @collection_types do
-    if collection_shape?(data), do: :ok, else: :error
+    if collection_shape?(data),
+      do: :ok,
+      else: {:error, :collection_origin_mismatch}
   end
 
-  defp contain_collection_origin(_id, _data), do: :error
+  defp contain_collection_origin(_id, _data), do: {:error, :collection_origin_mismatch}
 
   defp collection_shape?(data) do
     Enum.any?(~w(first items orderedItems totalItems partOf), &Map.has_key?(data, &1))
@@ -470,9 +714,59 @@ defmodule Pleroma.Object.Fetcher do
     left_uri = URI.parse(left)
     right_uri = URI.parse(right)
 
-    left_uri.scheme == right_uri.scheme and
+    valid_http_origin?(left_uri) and
+      valid_http_origin?(right_uri) and
+      left_uri.scheme == right_uri.scheme and
       normalize_host(left_uri.host) == normalize_host(right_uri.host) and
       effective_port(left_uri) == effective_port(right_uri)
+  end
+
+  defp valid_http_origin?(%URI{scheme: scheme, host: host}) do
+    scheme in ["http", "https"] and is_binary(host) and host != ""
+  end
+
+  defp contain_final_response_origin(request_url, final_url, data)
+       when is_binary(request_url) and is_binary(final_url) and is_map(data) do
+    if same_resource_url?(request_url, final_url) do
+      :ok
+    else
+      case authoritative_response_identifier(data) do
+        identifier when is_binary(identifier) ->
+          if same_origin?(final_url, identifier),
+            do: :ok,
+            else: {:error, :final_response_origin_mismatch}
+
+        _ ->
+          {:error, :final_response_origin_mismatch}
+      end
+    end
+  end
+
+  defp contain_final_response_origin(_request_url, _final_url, _data),
+    do: {:error, :final_response_origin_mismatch}
+
+  defp authoritative_response_identifier(%{"id" => id}) when is_binary(id), do: id
+
+  defp authoritative_response_identifier(%{"partOf" => part_of}) when is_binary(part_of),
+    do: part_of
+
+  defp authoritative_response_identifier(%{"url" => url}) when is_binary(url), do: url
+
+  defp authoritative_response_identifier(%{"url" => %{"href" => url}}) when is_binary(url),
+    do: url
+
+  defp authoritative_response_identifier(%{"url" => %{"id" => url}}) when is_binary(url), do: url
+  defp authoritative_response_identifier(_data), do: nil
+
+  defp same_resource_url?(left, right) do
+    normalize_resource_url(left) == normalize_resource_url(right)
+  end
+
+  defp normalize_resource_url(url) when is_binary(url) do
+    url
+    |> URI.parse()
+    |> Map.put(:fragment, nil)
+    |> URI.to_string()
   end
 
   defp normalize_host(host) when is_binary(host), do: String.downcase(host)
@@ -481,27 +775,126 @@ defmodule Pleroma.Object.Fetcher do
   defp effective_port(%URI{port: nil, scheme: scheme}), do: URI.default_port(scheme)
   defp effective_port(%URI{port: port}), do: port
 
+  defp resolve_html_canonical_object(id, options, original_error) do
+    case fetch_html_canonical_url(id) do
+      {:ok, canonical_id} ->
+        fetch_object_from_id(canonical_id, options)
+
+      _ ->
+        log_fetch_error(id, {:error, original_error})
+        {:error, original_error}
+    end
+  end
+
+  defp fetch_html_canonical_url(id) do
+    headers = [{"accept", "text/html, application/xhtml+xml;q=0.9"}]
+
+    with {:ok, %{status: status, body: body, headers: response_headers} = response}
+         when status in 200..299 and is_binary(body) <-
+           HTTP.get(id, headers, signed_fetch_options()),
+         true <- html_response?(response_headers),
+         true <- byte_size(body) <= @max_canonical_html_bytes,
+         final_url <- response_url(response, id),
+         true <- same_origin?(id, final_url),
+         canonical when is_binary(canonical) <- html_canonical_url(final_url, body),
+         true <- safe_html_canonical_url?(canonical, id, final_url) do
+      {:ok, canonical}
+    else
+      _ -> {:error, :canonical_not_found}
+    end
+  end
+
+  defp html_response?(headers) when is_list(headers) do
+    case List.keyfind(headers, "content-type", 0) do
+      {_, content_type} ->
+        not is_nil(
+          Pleroma.Web.MediaType.match(content_type, [
+            {"text", "html"},
+            {"application", "xhtml+xml"}
+          ])
+        )
+
+      _ ->
+        false
+    end
+  end
+
+  defp html_response?(_headers), do: false
+
+  defp html_canonical_url(base_url, body) do
+    ~r/<link\b[^>]*>/i
+    |> Regex.scan(body)
+    |> Enum.find_value(fn [tag] ->
+      rel = html_attribute(tag, "rel") || ""
+      href = html_attribute(tag, "href")
+
+      if is_binary(href) and canonical_relation?(rel) do
+        base_url
+        |> URI.merge(href)
+        |> to_string()
+      end
+    end)
+  rescue
+    _ -> nil
+  end
+
+  defp canonical_relation?(rel) do
+    rel
+    |> String.downcase()
+    |> String.split(~r/\s+/, trim: true)
+    |> Enum.member?("canonical")
+  end
+
+  defp html_attribute(tag, attribute) do
+    case Regex.run(~r/\b#{Regex.escape(attribute)}\s*=\s*(['"])(.*?)\1/i, tag) do
+      [_all, _quote, value] -> HtmlEntities.decode(value)
+      _ -> nil
+    end
+  end
+
+  defp safe_html_canonical_url?(canonical, request_url, final_url) do
+    with true <- byte_size(canonical) <= @max_canonical_url_bytes,
+         %URI{scheme: request_scheme} <- URI.parse(request_url),
+         %URI{scheme: scheme, host: host, userinfo: nil, fragment: nil}
+         when scheme in ["http", "https"] and is_binary(host) and host != "" <-
+           URI.parse(canonical),
+         false <- request_scheme == "https" and scheme != "https",
+         false <- same_resource_url?(canonical, request_url),
+         false <- same_resource_url?(canonical, final_url),
+         true <- MRF.id_filter(canonical) do
+      true
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
   defp get_object(id) do
     date = Pleroma.Signature.signed_date()
 
     headers =
-      [{"accept", "application/activity+json"}]
+      [
+        {"accept", Pleroma.Constants.activity_json_accept_header()}
+      ]
       |> maybe_date_fetch(date)
       |> sign_fetch(id, date)
 
     case HTTP.get(id, headers, signed_fetch_options()) do
-      {:ok, %{body: body, status: code, headers: headers}} when code in 200..299 ->
+      {:ok, %{body: body, status: code, headers: headers} = response} when code in 200..299 ->
         case List.keyfind(headers, "content-type", 0) do
           {_, content_type} ->
-            case Plug.Conn.Utils.media_type(content_type) do
-              {:ok, "application", "activity+json", _} ->
-                {:ok, body}
+            case Pleroma.Web.MediaType.match(content_type, [
+                   {"application", "activity+json"},
+                   {"application", "ld+json"},
+                   {"application", "json"}
+                 ]) do
+              {"application", _subtype, _params} ->
+                # Generic JSON and JSON-LD remain acceptable because decoded
+                # documents still pass containment, validation, and MRF.
+                {:ok, body, response_url(response, id)}
 
-              {:ok, "application", "ld+json",
-               %{"profile" => "https://www.w3.org/ns/activitystreams"}} ->
-                {:ok, body}
-
-              _ ->
+              nil ->
                 {:error, {:content_type, content_type}}
             end
 
@@ -525,6 +918,9 @@ defmodule Pleroma.Object.Fetcher do
         {:error, e}
     end
   end
+
+  defp response_url(%{url: url}, _request_url) when is_binary(url) and url != "", do: url
+  defp response_url(_response, request_url), do: request_url
 
   defp safe_json_decode(nil), do: {:ok, nil}
   defp safe_json_decode(json), do: Jason.decode(json)

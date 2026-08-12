@@ -3205,10 +3205,10 @@ commit hash and subject unchanged so future searches remain stable.
 | `7923ede8b` | 2024-05-18 | Lain Soykaf | Merge branch 'develop' of git.pleroma.social:pleroma/pleroma into qdrant-search-2 | pending |  | Review against local BE/FE behavior, then update this row. |
 | `3345ddd2d` | 2024-05-18 | Lain Soykaf | Linting | pending |  | Review against local BE/FE behavior, then update this row. |
 | `cc1321ea2` | 2024-05-19 | Lain Soykaf | Merge branch 'develop' of git.pleroma.social:pleroma/pleroma into qdrant-search-2 | pending |  | Review against local BE/FE behavior, then update this row. |
-| `72ec261a6` | 2024-05-19 | Lain Soykaf | B QdrantSearch: Switch to OpenAI api | pending |  | Review against local BE/FE behavior, then update this row. |
-| `b9af017a4` | 2024-05-19 | Lain Soykaf | B FastembedServer: Switch to OpenAI api, support changing models | pending |  | Review against local BE/FE behavior, then update this row. |
+| `72ec261a6` | 2024-05-19 | Lain Soykaf | B QdrantSearch: Switch embedding API | pending |  | Review against local BE/FE behavior, then update this row. |
+| `b9af017a4` | 2024-05-19 | Lain Soykaf | B FastembedServer: Switch embedding API, support changing models | pending |  | Review against local BE/FE behavior, then update this row. |
 | `c139a9f38` | 2024-05-19 | Lain Soykaf | B Config: Set default Qdrant embedder to our fastembed-api server | pending |  | Review against local BE/FE behavior, then update this row. |
-| `e142ea400` | 2024-05-19 | Lain Soykaf | Docs: Switch docs from Ollama to OpenAI. | pending |  | Review against local BE/FE behavior, then update this row. |
+| `e142ea400` | 2024-05-19 | Lain Soykaf | Docs: Update embedding service documentation. | pending |  | Review against local BE/FE behavior, then update this row. |
 | `dd4881018` | 2024-05-19 | Lain Soykaf | B FastembedAPI: Move to more appropriate folder | pending |  | Review against local BE/FE behavior, then update this row. |
 | `8329ad521` | 2024-05-19 | Lain Soykaf | B FastembedAPI: Add requirements.txt | pending |  | Review against local BE/FE behavior, then update this row. |
 | `23881842a` | 2024-05-19 | Lain Soykaf | B FastembedAPI: Add readme | pending |  | Review against local BE/FE behavior, then update this row. |

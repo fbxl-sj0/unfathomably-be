@@ -28,7 +28,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.QuoteToLinkTagPolicyTest do
              %{
                "type" => "Link",
                "href" => quote_url,
-               "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type()
+               "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type(),
+               "rel" => "https://misskey-hub.net/ns#_misskey_quote"
              }
            ]
   end
@@ -54,7 +55,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.QuoteToLinkTagPolicyTest do
     assert tag == %{
              "type" => "Link",
              "href" => quote_url,
-             "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type()
+             "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type(),
+             "rel" => "https://misskey-hub.net/ns#_misskey_quote"
            }
   end
 
@@ -80,7 +82,8 @@ defmodule Pleroma.Web.ActivityPub.MRF.QuoteToLinkTagPolicyTest do
     assert tag == %{
              "type" => "Link",
              "href" => quote_url,
-             "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type()
+             "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type(),
+             "rel" => "https://misskey-hub.net/ns#_misskey_quote"
            }
   end
 
@@ -106,8 +109,28 @@ defmodule Pleroma.Web.ActivityPub.MRF.QuoteToLinkTagPolicyTest do
     assert tag == %{
              "type" => "Link",
              "href" => quote_url,
-             "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type()
+             "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type(),
+             "rel" => "https://misskey-hub.net/ns#_misskey_quote"
            }
+  end
+
+  test "does not duplicate an existing FEP-e232 quote Link tag" do
+    quote_url = "https://gleasonator.com/objects/1234"
+
+    quote_tag = %{
+      "type" => "Link",
+      "href" => quote_url,
+      "mediaType" => Pleroma.Constants.activity_json_canonical_mime_type(),
+      "rel" => "https://misskey-hub.net/ns#_misskey_quote"
+    }
+
+    activity = %{
+      "type" => "Create",
+      "object" => %{"type" => "Note", "quoteUrl" => quote_url, "tag" => [quote_tag]}
+    }
+
+    assert {:ok, %{"object" => %{"tag" => [^quote_tag]}}} =
+             QuoteToLinkTagPolicy.filter(activity)
   end
 
   test "Bypass posts without quoteUrl" do

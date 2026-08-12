@@ -10,6 +10,7 @@ defmodule Pleroma.Webhook do
 
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Repo
+  alias Pleroma.Webhook.Crypto
 
   @event_types [:"account.created", :"report.created"]
 
@@ -27,7 +28,7 @@ defmodule Pleroma.Webhook do
 
   def get_by_type(type) do
     __MODULE__
-    |> where([w], ^type in w.events)
+    |> where([w], w.enabled and ^type in w.events)
     |> Repo.all()
   end
 
@@ -37,7 +38,6 @@ defmodule Pleroma.Webhook do
     |> validate_required([:url, :events])
     |> unique_constraint(:url)
     |> strip_events()
-    |> put_secret()
   end
 
   def update_changeset(%__MODULE__{} = webhook, params \\ %{}) do
@@ -49,9 +49,15 @@ defmodule Pleroma.Webhook do
 
   def create(params) do
     {:ok, webhook} =
-      %__MODULE__{}
-      |> changeset(params)
-      |> Repo.insert()
+      Repo.transaction(fn ->
+        {:ok, webhook} =
+          %__MODULE__{}
+          |> changeset(params)
+          |> Repo.insert()
+
+        {:ok, webhook} = persist_secret(webhook, generate_secret())
+        webhook
+      end)
 
     webhook
   end
@@ -68,11 +74,10 @@ defmodule Pleroma.Webhook do
   def delete(webhook), do: webhook |> Repo.delete()
 
   def rotate_secret(%__MODULE__{} = webhook) do
-    webhook
-    |> cast(%{}, [])
-    |> put_secret()
-    |> Repo.update()
+    persist_secret(webhook, generate_secret())
   end
+
+  def signing_secret(%__MODULE__{id: id, secret: secret}), do: Crypto.decrypt(secret, id)
 
   def set_enabled(%__MODULE__{} = webhook, enabled) do
     webhook
@@ -89,9 +94,12 @@ defmodule Pleroma.Webhook do
     end
   end
 
-  defp put_secret(changeset) do
-    changeset
-    |> put_change(:secret, generate_secret())
+  defp persist_secret(%__MODULE__{} = webhook, secret) do
+    with {:ok, ciphertext} <- Crypto.encrypt(secret, webhook.id) do
+      webhook
+      |> change(secret: ciphertext)
+      |> Repo.update()
+    end
   end
 
   defp generate_secret do

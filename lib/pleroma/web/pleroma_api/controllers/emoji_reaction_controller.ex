@@ -13,8 +13,8 @@ defmodule Pleroma.Web.PleromaAPI.EmojiReactionController do
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI
-  alias Pleroma.Web.MastodonAPI.StatusView
   alias Pleroma.Web.MastodonAPI.AccountView
+  alias Pleroma.Web.MastodonAPI.StatusView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
 
   plug(Pleroma.Web.ApiSpec.CastAndValidate)

@@ -21,8 +21,6 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
   alias Pleroma.Web.ActivityPub.CustomActivity
   alias Pleroma.Web.ActivityPub.CustomObject
   alias Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator
-  alias Pleroma.Web.ActivityPub.ObjectValidators.QuoteAuthorizationDeleteValidator
-  alias Pleroma.Web.ActivityPub.ObjectValidators.QuoteRequestValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.AnnounceValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.AnswerValidator
@@ -30,6 +28,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
   alias Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.BlockValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.ChatMessageValidator
+  alias Pleroma.Web.ActivityPub.ObjectValidators.ChooseAnswerValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.CreateChatMessageValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.CustomActivityValidator
@@ -37,12 +36,15 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
   alias Pleroma.Web.ActivityPub.ObjectValidators.DeleteValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.EventValidator
+  alias Pleroma.Web.ActivityPub.ObjectValidators.FeatureRequestValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.FollowValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.JoinValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.LeaveValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.LikeValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.LockValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.QuestionValidator
+  alias Pleroma.Web.ActivityPub.ObjectValidators.QuoteAuthorizationDeleteValidator
+  alias Pleroma.Web.ActivityPub.ObjectValidators.QuoteRequestValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.UndoValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator
 
@@ -55,6 +57,15 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
     with {:ok, object} <-
            object
            |> QuoteRequestValidator.cast_and_validate()
+           |> Ecto.Changeset.apply_action(:insert) do
+      {:ok, stringify_keys(object), meta}
+    end
+  end
+
+  def validate(%{"type" => "FeatureRequest"} = object, meta) do
+    with {:ok, object} <-
+           object
+           |> FeatureRequestValidator.cast_and_validate()
            |> Ecto.Changeset.apply_action(:insert) do
       {:ok, stringify_keys(object), meta}
     end
@@ -91,6 +102,15 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
     end
   end
 
+  def validate(
+        %{"type" => "Undo", "object" => %{"type" => "ChooseAnswer"}} = object,
+        meta
+      ) do
+    with {:ok, object} <- ChooseAnswerValidator.validate_undo(object) do
+      {:ok, object, meta}
+    end
+  end
+
   def validate(%{"type" => "Undo"} = object, meta) do
     with {:ok, object} <-
            object
@@ -119,6 +139,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
          do_not_federate <- DeleteValidator.do_not_federate?(cng),
          {:ok, object} <- Ecto.Changeset.apply_action(cng, :insert) do
       object = stringify_keys(object)
+      object = preserve_empty_delete_summary(object, original_object)
 
       meta =
         meta
@@ -206,6 +227,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
            end) do
       {:ok, object, meta}
     end
+  end
+
+  # NodeBB can represent deletion as Update(Tombstone). Normalize that wire
+  # shape into the existing Delete pipeline so the usual actor-ownership
+  # checks, idempotency rules, and deletion side effects remain authoritative.
+  def validate(
+        %{
+          "type" => "Update",
+          "object" => %{"type" => "Tombstone", "id" => object_id}
+        } = update_activity,
+        meta
+      )
+      when is_binary(object_id) do
+    delete_activity =
+      update_activity
+      |> Map.put("type", "Delete")
+      |> Map.put("object", object_id)
+
+    validate(delete_activity, Keyword.put(meta, :normalized_update_tombstone, true))
   end
 
   def validate(
@@ -310,6 +350,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
            |> AddRemoveValidator.cast_and_validate()
            |> Ecto.Changeset.apply_action(:insert) do
       object = stringify_keys(object)
+      {:ok, object, meta}
+    end
+  end
+
+  def validate(%{"type" => "ChooseAnswer"} = object, meta) do
+    with {:ok, object} <- ChooseAnswerValidator.validate(object) do
       {:ok, object, meta}
     end
   end
@@ -645,6 +691,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
   defp for_each_history_item(_, _object, _fun) do
     {:error, :invalid_history}
   end
+
+  defp preserve_empty_delete_summary(object, %{"summary" => ""}) do
+    Map.put(object, "summary", "")
+  end
+
+  defp preserve_empty_delete_summary(object, _original_object), do: object
 
   # fun is (object -> {:ok, validated_object_with_string_keys})
   defp do_separate_with_history(object, fun) do

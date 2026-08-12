@@ -19,13 +19,16 @@ defmodule Pleroma.Web.Metadata.Providers.OpenGraph do
         user: user
       }) do
     attachments = build_attachments(object)
-    scrubbed_content = Utils.scrub_html_and_truncate(object)
+    hide_sensitive? = Metadata.activity_nsfw?(object)
+    scrubbed_content = Utils.scrub_html_and_truncate_for_preview(object, hide_sensitive?)
+    title = object_preview_title(object, user)
+    object_type = object_open_graph_type(object)
 
     [
       {:meta,
        [
          property: "og:title",
-         content: Utils.user_name_string(user)
+         content: title
        ], []},
       {:meta, [property: "og:url", content: url], []},
       {:meta,
@@ -33,9 +36,9 @@ defmodule Pleroma.Web.Metadata.Providers.OpenGraph do
          property: "og:description",
          content: scrubbed_content
        ], []},
-      {:meta, [property: "og:type", content: "article"], []}
+      {:meta, [property: "og:type", content: object_type], []}
     ] ++
-      if attachments == [] or Metadata.activity_nsfw?(object) do
+      if attachments == [] or hide_sensitive? do
         [
           {:meta, [property: "og:image", content: MediaProxy.preview_url(User.avatar_url(user))],
            []},
@@ -113,6 +116,24 @@ defmodule Pleroma.Web.Metadata.Providers.OpenGraph do
   end
 
   defp build_attachments(_), do: []
+
+  defp object_preview_title(%{data: data}, user) when is_map(data) do
+    name = data["name"]
+
+    if event_type?(data["type"]) and is_binary(name) and String.trim(name) != "" do
+      Utils.scrub_html_and_truncate(name)
+    else
+      Utils.user_name_string(user)
+    end
+  end
+
+  defp object_open_graph_type(%{data: data}) when is_map(data) do
+    if event_type?(data["type"]), do: "event", else: "article"
+  end
+
+  defp event_type?("Event"), do: true
+  defp event_type?(types) when is_list(types), do: "Event" in types
+  defp event_type?(_type), do: false
 
   defp attachment_urls(%{"url" => urls}) when is_list(urls), do: urls
   defp attachment_urls(%{"url" => url}) when is_map(url), do: [url]

@@ -60,6 +60,8 @@
 <%= hidden_input f, :response_type, value: @response_type %>
 <%= hidden_input f, :redirect_uri, value: @redirect_uri %>
 <%= hidden_input f, :state, value: @state %>
+<%= hidden_input f, :code_challenge, value: @params["code_challenge"] %>
+<%= hidden_input f, :code_challenge_method, value: @params["code_challenge_method"] %>
 <% end %>
 
 <%= if Pleroma.Config.oauth_consumer_enabled?() do %>

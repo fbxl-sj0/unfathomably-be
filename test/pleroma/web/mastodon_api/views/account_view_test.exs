@@ -8,6 +8,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
   alias Pleroma.FederationStatus
   alias Pleroma.FollowingRelationship
   alias Pleroma.Instances
+  alias Pleroma.Instances.Instance
+  alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.UserRelationship
   alias Pleroma.Web.CommonAPI
@@ -45,6 +47,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
 
     expected = %{
       id: to_string(user.id),
+      local: true,
       username: "shp",
       acct: user.nickname,
       display_name: user.name,
@@ -77,7 +80,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         pleroma: %{
           actor_type: "Person",
           actor_types: [],
-          discoverable: true
+          discoverable: true,
+          indexable: nil
         },
         fields: []
       },
@@ -91,7 +95,9 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         background_image: "https://example.com/images/asuka_hospital.png",
         favicon: nil,
         header_description: "",
+        identity_proofs: [],
         is_confirmed: true,
+        is_local: true,
         tags: [],
         is_admin: false,
         is_moderator: false,
@@ -219,11 +225,25 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
 
   describe "favicon" do
     setup do
-      [user: insert(:user)]
+      [
+        user:
+          insert(:user,
+            local: false,
+            nickname: "shp@shitposter.club",
+            ap_id: "https://shitposter.club/users/shp"
+          )
+      ]
     end
 
     test "is parsed when :instance_favicons is enabled", %{user: user} do
       clear_config([:instances_favicons, :enabled], true)
+
+      Repo.insert!(%Instance{
+        host: "shitposter.club",
+        favicon:
+          "https://shitposter.club/plugins/Qvitter/img/gnusocial-favicons/favicon-16x16.png",
+        favicon_updated_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+      })
 
       assert %{
                pleroma: %{
@@ -236,6 +256,30 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
     test "is nil when :instances_favicons is disabled", %{user: user} do
       assert %{pleroma: %{favicon: nil}} =
                AccountView.render("show.json", %{user: user, skip_visibility_check: true})
+    end
+
+    test "repairs and proxies malformed remote favicon URLs" do
+      clear_config([:instances_favicons, :enabled], true)
+      clear_config([:media_proxy, :enabled], true)
+
+      user =
+        insert(:user,
+          local: false,
+          nickname: "reader@sakurajima.social",
+          ap_id: "https://sakurajima.social/users/reader"
+        )
+
+      Repo.insert!(%Instance{
+        host: "sakurajima.social",
+        favicon: "https:///media.sakurajima.social/sakura-new.png",
+        favicon_updated_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+      })
+
+      assert %{pleroma: %{favicon: favicon}} =
+               AccountView.render("show.json", %{user: user, skip_visibility_check: true})
+
+      assert String.starts_with?(favicon, Pleroma.Web.Endpoint.url() <> "/proxy/")
+      refute String.contains?(favicon, "https:///media.sakurajima.social")
     end
   end
 
@@ -269,6 +313,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
 
     expected = %{
       id: to_string(user.id),
+      local: true,
       username: "shp",
       acct: user.nickname,
       display_name: user.name,
@@ -294,7 +339,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         pleroma: %{
           actor_type: "Service",
           actor_types: [],
-          discoverable: true
+          discoverable: true,
+          indexable: nil
         },
         fields: []
       },
@@ -308,7 +354,9 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
         background_image: nil,
         favicon: nil,
         header_description: "",
+        identity_proofs: [],
         is_confirmed: true,
+        is_local: true,
         tags: [],
         is_admin: false,
         is_moderator: false,
@@ -330,6 +378,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
   end
 
   test "Represent a Funkwhale channel" do
+    clear_config([:instance, :federating], true)
+
     {:ok, user} =
       User.get_or_fetch_by_ap_id(
         "https://channels.tests.funkwhale.audio/federation/actors/compositions"
@@ -362,6 +412,34 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
            ]
 
     assert represented.pleroma.actor_types == ["Repository", "TicketTracker", "PatchTracker"]
+  end
+
+  test "Represent verified linked identities as public profile metadata" do
+    identity_proofs = [
+      %{
+        "type" => "VerifiableIdentityStatement",
+        "subject" => "did:key:z6Mkexample",
+        "alsoKnownAs" => "https://remote.example/users/alice",
+        "proof" => %{
+          "type" => "DataIntegrityProof",
+          "cryptosuite" => "eddsa-jcs-2022",
+          "created" => "2026-08-10T12:00:00Z",
+          "verificationMethod" => "did:key:z6Mkexample",
+          "proofPurpose" => "assertionMethod",
+          "proofValue" => "zexample"
+        }
+      }
+    ]
+
+    user =
+      insert(:user,
+        local: false,
+        ap_id: "https://remote.example/users/alice",
+        identity_proofs: identity_proofs
+      )
+
+    assert %{pleroma: %{identity_proofs: ^identity_proofs}} =
+             AccountView.render("show.json", %{user: user, for: nil})
   end
 
   test "Represent a Manyfold model actor with native presentation metadata" do
@@ -408,10 +486,46 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
       id: to_string(user.id),
       acct: user.nickname,
       username: user.nickname,
-      url: user.ap_id
+      url: user.ap_id,
+      actor_type: user.actor_type
     }
 
     assert expected == AccountView.render("mention.json", %{user: user})
+  end
+
+  test "uses the native AT Protocol handle as a mention label" do
+    user = insert(:user)
+
+    %Pleroma.ATProto.Identity{}
+    |> Pleroma.ATProto.Identity.changeset(%{
+      user_id: user.id,
+      did: "did:plc:mentionlabel",
+      handle: "alice.bsky.social"
+    })
+    |> Pleroma.Repo.insert!()
+
+    mention = AccountView.render("mention.json", %{user: user})
+
+    assert mention.acct == user.nickname
+    assert mention.username == "alice.bsky.social"
+  end
+
+  test "uses the portable Nostr identity as a mention label" do
+    user = insert(:user)
+
+    %Pleroma.Nostr.Entity{}
+    |> Pleroma.Nostr.Entity.changeset(%{
+      user_id: user.id,
+      kind: "mirror_profile",
+      pubkey: String.duplicate("c", 64),
+      relay_url: "wss://nostr.example"
+    })
+    |> Pleroma.Repo.insert!()
+
+    mention = AccountView.render("mention.json", %{user: user})
+
+    assert mention.acct == user.nickname
+    assert String.starts_with?(mention.username, "npub1")
   end
 
   test "demands :for or :skip_visibility_check option for account rendering" do
@@ -705,7 +819,11 @@ defmodule Pleroma.Web.MastodonAPI.AccountViewTest do
 
     test "shows unread_count only to the account owner" do
       user = insert(:user)
-      insert_list(7, :notification, user: user, activity: insert(:note_activity))
+
+      for _index <- 1..7 do
+        insert(:notification, user: user, activity: insert(:note_activity))
+      end
+
       other_user = insert(:user)
 
       user = User.get_cached_by_ap_id(user.ap_id)

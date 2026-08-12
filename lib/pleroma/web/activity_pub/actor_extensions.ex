@@ -38,6 +38,7 @@ defmodule Pleroma.Web.ActivityPub.ActorExtensions do
       actor
       |> Map.drop(@mapped_actor_fields)
       |> retain_unmapped_items("attachment", "PropertyValue")
+      |> retain_unmapped_items("attachment", "VerifiableIdentityStatement")
       |> retain_unmapped_items("tag", "Emoji")
       |> reject_empty_values()
     else
@@ -105,6 +106,26 @@ defmodule Pleroma.Web.ActivityPub.ActorExtensions do
   end
 
   def concrete_type(_extensions), do: nil
+
+  @doc "Returns an actor's explicit GoToSocial unauthenticated-web visibility policy."
+  @spec unauthenticated_web_visibility(map()) ::
+          %{public: boolean(), unlisted: boolean()} | nil
+  def unauthenticated_web_visibility(%{} = extensions) do
+    hides_public_key = "hidesToPublicFromUnauthedWeb"
+    hides_unlisted_key = "hidesCcPublicFromUnauthedWeb"
+
+    if Map.has_key?(extensions, hides_public_key) or
+         Map.has_key?(extensions, hides_unlisted_key) do
+      %{
+        public: extensions[hides_public_key] != true,
+        unlisted: extensions[hides_unlisted_key] == false
+      }
+    else
+      nil
+    end
+  end
+
+  def unauthenticated_web_visibility(_extensions), do: nil
 
   defp retain_unmapped_items(actor, field, mapped_type) do
     items =

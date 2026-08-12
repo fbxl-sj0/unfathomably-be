@@ -32,6 +32,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.QuoteRequestValidator do
     |> validate_required([:id, :type, :actor, :object, :instrument, :to])
     |> validate_inclusion(:type, ["QuoteRequest"])
     |> CommonValidations.validate_actor_presence()
+    |> CommonValidations.validate_object_visibility()
     |> validate_relationship()
   end
 

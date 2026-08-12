@@ -17,11 +17,15 @@ Environment="MIX_ENV=prod"
 ; Make sure that all paths fit your installation.
 ; Path to the home directory of the user running the Pleroma service.
 Environment="HOME=/var/lib/pleroma"
+; Tell Phoenix to serve endpoints when the precompiled application starts.
+Environment="PHX_SERVER=true"
 ; Path to the folder containing the Pleroma installation.
 WorkingDirectory=/opt/pleroma
 ; Path to the Mix binary.
 Environment="PATH=/var/lib/pleroma/.asdf/shims:/var/lib/pleroma/.asdf/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=/var/lib/pleroma/.asdf/shims/mix phx.server
+; Compile and migrate before restarting. Runtime compilation can race native or
+; vendored dependency clean steps and should never be part of service startup.
+ExecStart=/var/lib/pleroma/.asdf/shims/mix run --no-halt --no-compile --no-deps-check
 
 ; Some security directives.
 ; Use private /tmp and /var/tmp folders inside a new file system namespace, which are discarded after the process stops.

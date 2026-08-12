@@ -24,6 +24,7 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
     clear_config([RemotePostCleanupWorker, :max_age_days], 365)
     clear_config([RemotePostCleanupWorker, :batch_size], 50)
     clear_config([RemotePostCleanupWorker, :candidate_scan_limit], 100)
+    clear_config([RemotePostCleanupWorker, :candidate_query_chunk_size], 50)
     clear_config([RemotePostCleanupWorker, :max_scan_pages], 4)
     clear_config([RemotePostCleanupWorker, :query_timeout_ms], 60_000)
     clear_config([RemotePostCleanupWorker, :keep_threads_with_local_activity], true)
@@ -189,6 +190,21 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
       |> Enum.count(&(Object.get_by_ap_id(&1.data["id"]) == nil))
 
     assert pruned_count == 1
+  end
+
+  test "checks candidate pages in bounded query chunks" do
+    clear_config([RemotePostCleanupWorker, :batch_size], 2)
+    clear_config([RemotePostCleanupWorker, :candidate_scan_limit], 2)
+    clear_config([RemotePostCleanupWorker, :candidate_query_chunk_size], 1)
+    clear_config([RemotePostCleanupWorker, :max_scan_pages], 1)
+
+    first = remote_public_post()
+    second = remote_public_post()
+
+    assert {:ok, 2} = RemotePostCleanupWorker.perform(%Oban.Job{})
+
+    refute Object.get_by_ap_id(first.object.data["id"])
+    refute Object.get_by_ap_id(second.object.data["id"])
   end
 
   test "keeps scanning when the first old candidate window is protected" do

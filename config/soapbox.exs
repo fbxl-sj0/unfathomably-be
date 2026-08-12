@@ -49,7 +49,8 @@ config :pleroma, :instance,
   name: "Unfathomably",
   description: "A federated social platform powered by unfathomably-be and unfathomably-fe.",
   instance_thumbnail: "/instance/thumbnail.png",
-  stats_refresh_interval: :timer.minutes(15)
+  stats_refresh_interval: :timer.minutes(15),
+  following_cache_ttl: :timer.minutes(15)
 
 config :pleroma, :frontend_configurations,
   soapbox_fe: %{

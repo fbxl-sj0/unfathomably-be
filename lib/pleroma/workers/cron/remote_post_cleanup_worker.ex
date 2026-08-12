@@ -34,12 +34,14 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
   @default_max_age_days 365
   @default_batch_size 50
   @default_candidate_scan_limit 250
+  @default_candidate_query_chunk_size 10
   @default_max_scan_pages 10
-  @default_query_timeout_ms 60_000
+  @default_query_timeout_ms 30_000
   @default_remote_actor_max_age_days 730
   @default_remote_actor_batch_size 50
   @max_batch_size 500
   @max_candidate_scan_limit 500
+  @max_candidate_query_chunk_size 100
   @seconds_per_day 86_400
   @prunable_object_types ~w(Note Article Page Question Event Audio Video)
 
@@ -97,7 +99,10 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
     prune_object(object, count)
   rescue
     error ->
-      Logger.warning("Remote post cleanup skipped object #{object.id}: #{Exception.message(error)}")
+      Logger.warning(
+        "Remote post cleanup skipped object #{object.id}: #{Exception.message(error)}"
+      )
+
       count
   catch
     kind, reason ->
@@ -177,9 +182,13 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
         remaining_count = batch_size - length(objects)
 
         page_result =
-          object_ids
-          |> candidates_query(cutoff, remaining_count, keep_threads?, keep_direct?)
-          |> safe_repo_all()
+          candidate_page_object_ids(
+            object_ids,
+            cutoff,
+            remaining_count,
+            keep_threads?,
+            keep_direct?
+          )
 
         case page_result do
           {:ok, page_object_ids} ->
@@ -203,6 +212,37 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # The protection query is deliberately rich because it must not prune posts
+  # retained by any local interaction. Run bounded slices of a candidate page
+  # so a cold scan cannot hold one database connection for the full timeout.
+  defp candidate_page_object_ids(
+         object_ids,
+         cutoff,
+         remaining_count,
+         keep_threads?,
+         keep_direct?
+       ) do
+    object_ids
+    |> Enum.chunk_every(candidate_query_chunk_size())
+    |> Enum.reduce_while({:ok, []}, fn object_id_chunk, {:ok, selected_ids} ->
+      remaining_count = remaining_count - length(selected_ids)
+
+      if remaining_count <= 0 do
+        {:halt, {:ok, selected_ids}}
+      else
+        result =
+          object_id_chunk
+          |> candidates_query(cutoff, remaining_count, keep_threads?, keep_direct?)
+          |> safe_repo_all()
+
+        case result do
+          {:ok, chunk_ids} -> {:cont, {:ok, selected_ids ++ chunk_ids}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end
+    end)
   end
 
   defp candidate_object_rows(cutoff, after_cursor) do
@@ -692,6 +732,13 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorker do
     config_integer(:candidate_scan_limit, @default_candidate_scan_limit)
     |> max(batch_size())
     |> min(@max_candidate_scan_limit)
+  end
+
+  defp candidate_query_chunk_size do
+    config_integer(:candidate_query_chunk_size, @default_candidate_query_chunk_size)
+    |> max(1)
+    |> min(@max_candidate_query_chunk_size)
+    |> min(candidate_scan_limit())
   end
 
   defp max_scan_pages do

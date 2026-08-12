@@ -8,6 +8,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnswerValidator do
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+  alias Pleroma.Web.ActivityPub.ObjectValidators.PollOption
 
   import Ecto.Changeset
 
@@ -57,6 +58,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnswerValidator do
 
     struct
     |> cast(data, __schema__(:fields))
+    |> update_change(:name, &PollOption.normalize_name/1)
+    |> PollOption.validate_name()
   end
 
   defp validate_data(data_cng) do
@@ -66,6 +69,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AnswerValidator do
     |> CommonValidations.validate_any_presence([:cc, :to])
     |> CommonValidations.validate_fields_match([:actor, :attributedTo])
     |> CommonValidations.validate_actor_presence()
+    |> CommonValidations.validate_object_visibility(field_name: :inReplyTo)
     |> CommonValidations.validate_host_match()
   end
 end

@@ -17,6 +17,7 @@ defmodule Pleroma.Web.Push.Impl do
   import Ecto.Query
 
   @types ["Create", "Follow", "Announce", "Like", "Move", "EmojiReact", "Update", "Join"]
+  @title_character_limit 80
   @body_character_limit 80
 
   @doc "Performs sending notifications for user subscriptions"
@@ -119,6 +120,7 @@ defmodule Pleroma.Web.Push.Impl do
         mastodon_type
       ) do
     %{body: format_title(notification, mastodon_type)}
+    |> sanitize_push_content()
   end
 
   def build_content(notification, actor, object, mastodon_type) do
@@ -128,6 +130,23 @@ defmodule Pleroma.Web.Push.Impl do
       title: format_title(notification, mastodon_type),
       body: format_body(notification, actor, object, mastodon_type)
     }
+    |> sanitize_push_content()
+  end
+
+  # Push payloads are rendered outside the application UI. Enforce plaintext
+  # and length bounds at this final boundary so a newly added formatter cannot
+  # accidentally expose remote HTML, compatibility markup, or oversized text.
+  defp sanitize_push_content(content) do
+    [{:title, @title_character_limit}, {:body, @body_character_limit}]
+    |> Enum.reduce(content, fn {field, limit}, content ->
+      case Map.fetch(content, field) do
+        {:ok, value} when is_binary(value) ->
+          Map.put(content, field, Utils.scrub_html_and_truncate(value, limit))
+
+        _value ->
+          content
+      end
+    end)
   end
 
   def format_body(activity, actor, object, mastodon_type \\ nil)

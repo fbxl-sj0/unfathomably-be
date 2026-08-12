@@ -13,10 +13,18 @@ defmodule Pleroma.Workers.Cron.RssSourceIngestWorker do
   remote Article activities addressed to the feed's follower collection.
   """
 
-  use Oban.Worker, queue: "background", max_attempts: 1
+  use Oban.Worker,
+    queue: "background",
+    max_attempts: 1,
+    unique: [
+      period: 300,
+      states: :incomplete,
+      keys: [:source_id]
+    ]
 
   import Ecto.Query
 
+  alias Pleroma.AutomatedSourcePacer
   alias Pleroma.Config
   alias Pleroma.Repo
   alias Pleroma.User
@@ -70,26 +78,40 @@ defmodule Pleroma.Workers.Cron.RssSourceIngestWorker do
   def timeout(_job), do: :timer.minutes(3)
 
   defp ingest_source(%User{} = source) do
-    case FederatedTarget.source_items_result(source, %{"limit" => item_limit()}, nil) do
-      {:ok, %{items: items}} when is_list(items) ->
-        length(items)
-
-      {:error, reason} ->
-        Logger.debug("RSS source ingest skipped #{inspect(source.ap_id)}: #{inspect(reason)}")
-        0
+    case AutomatedSourcePacer.reserve(
+           {:rss_source, source.id},
+           config_integer(:source_min_interval_ms, 300_000)
+         ) do
+      :ok -> do_ingest_source(source)
+      {:wait, _wait_ms} -> 0
     end
-  rescue
-    error ->
-      Logger.warning("RSS source ingest failed for #{inspect(source.ap_id)}: #{inspect(error)}")
-      0
-  catch
-    :exit, reason ->
-      Logger.warning("RSS source ingest exited for #{inspect(source.ap_id)}: #{inspect(reason)}")
-
-      0
   end
 
   defp ingest_source(_), do: 0
+
+  defp do_ingest_source(%User{} = source) do
+    safe_source = Pleroma.Helpers.UriHelper.log_safe_url(source.ap_id)
+
+    try do
+      case FederatedTarget.source_items_result(source, %{"limit" => item_limit()}, nil) do
+        {:ok, %{items: items}} when is_list(items) ->
+          length(items)
+
+        {:error, reason} ->
+          Logger.debug("RSS source ingest skipped #{safe_source}: #{inspect(reason)}")
+          0
+      end
+    rescue
+      error ->
+        Logger.warning("RSS source ingest failed for #{safe_source}: #{inspect(error)}")
+        0
+    catch
+      :exit, reason ->
+        Logger.warning("RSS source ingest exited for #{safe_source}: #{inspect(reason)}")
+
+        0
+    end
+  end
 
   defp result_for_one(0), do: {:ok, %{sources: 0, items: 0}}
   defp result_for_one(items), do: {:ok, %{sources: 1, items: items}}

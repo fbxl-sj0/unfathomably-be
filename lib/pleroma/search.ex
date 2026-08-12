@@ -63,9 +63,18 @@ defmodule Pleroma.Search do
     to = Map.get(data, "to", [])
     cc = Map.get(data, "cc", [])
 
-    Pleroma.Constants.as_public() in List.wrap(to) or
-      Pleroma.Constants.as_public() in List.wrap(cc)
+    not discovery_opted_out?(data) and
+      (Pleroma.Constants.as_public() in List.wrap(to) or
+         Pleroma.Constants.as_public() in List.wrap(cc))
   end
 
   defp search_indexable_object?(_), do: false
+
+  # FEP-5feb is primarily an actor-level indexing preference, but specialized
+  # publishers such as Manyfold also attach the Mastodon `indexable` term to
+  # individual objects. Direct resolution remains available; only discovery
+  # and full-text indexing are suppressed.
+  defp discovery_opted_out?(data) do
+    data["indexable"] == false or data["discoverable"] == false
+  end
 end

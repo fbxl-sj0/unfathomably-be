@@ -10,6 +10,11 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AttachmentValidator do
   import Ecto.Changeset
 
   @primary_key false
+  # Remote objects occasionally contain very large representation arrays. A
+  # status renderer needs a small set of usable alternatives, not an unbounded
+  # copy of peer-controlled metadata.
+  @max_url_candidates 32
+
   embedded_schema do
     field(:id, :string)
     field(:type, :string, default: "Link")
@@ -81,15 +86,69 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AttachmentValidator do
   defp fix_url(data) do
     cond do
       is_binary(data["url"]) ->
-        Map.put(data, "url", handle_href(data["url"], data["mediaType"], data))
+        Map.put(
+          data,
+          "url",
+          normalize_url_candidates(handle_href(data["url"], data["mediaType"], data))
+        )
 
       is_binary(data["href"]) and data["url"] == nil ->
-        Map.put(data, "url", handle_href(data["href"], data["mediaType"], data))
+        Map.put(
+          data,
+          "url",
+          normalize_url_candidates(handle_href(data["href"], data["mediaType"], data))
+        )
+
+      is_list(data["url"]) ->
+        Map.put(data, "url", normalize_url_candidates(data["url"]))
 
       true ->
         data
     end
   end
+
+  @doc false
+  def normalize_url_candidates(candidates) when is_list(candidates) do
+    candidates
+    |> Enum.take(@max_url_candidates)
+    |> Enum.reduce([], fn
+      %{} = candidate, normalized ->
+        href = candidate["href"] || candidate["url"]
+
+        if safe_http_url?(href) do
+          candidate =
+            candidate
+            |> Map.put("href", href)
+            |> Map.delete("url")
+            |> Map.put("type", "Link")
+
+          [candidate | normalized]
+        else
+          normalized
+        end
+
+      _candidate, normalized ->
+        normalized
+    end)
+    |> Enum.reverse()
+  end
+
+  def normalize_url_candidates(_candidates), do: []
+
+  defp safe_http_url?(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host, userinfo: nil}
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        true
+
+      _ ->
+        false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp safe_http_url?(_url), do: false
 
   defp validate_data(cng) do
     cng

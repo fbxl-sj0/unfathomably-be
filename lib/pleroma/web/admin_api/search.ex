@@ -15,6 +15,7 @@ defmodule Pleroma.Web.AdminAPI.Search do
     query =
       params
       |> Map.drop([:page, :page_size])
+      |> account_location_params()
       |> Map.put(:invisible, false)
       |> User.Query.build()
       |> order_by(desc: :id)
@@ -26,5 +27,21 @@ defmodule Pleroma.Web.AdminAPI.Search do
 
     results = Repo.all(paginated_query)
     {:ok, results, count}
+  end
+
+  defp account_location_params(params) do
+    params
+    |> rename_location_param(:local, :account_local)
+    |> rename_location_param(:external, :account_external)
+  end
+
+  defp rename_location_param(params, source, target) do
+    if Map.has_key?(params, source) do
+      params
+      |> Map.delete(source)
+      |> Map.put(target, true)
+    else
+      params
+    end
   end
 end

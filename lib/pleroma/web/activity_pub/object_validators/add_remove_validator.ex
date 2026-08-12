@@ -13,6 +13,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
 
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.AppendableCollection
+  alias Pleroma.Web.ActivityPub.ReadingCollectionMembership
 
   @primary_key false
 
@@ -75,7 +77,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
     |> validate_inclusion(:type, ~w(Add Remove))
     |> CommonValidations.validate_actor_presence()
     |> validate_collection_belongs_to_actor(actor)
-    |> CommonValidations.validate_object_or_user_presence()
+    |> validate_collection_object_presence(actor)
   end
 
   defp validate_collection_belongs_to_actor(changeset, %User{} = actor) do
@@ -90,6 +92,16 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
         group_collection_target?(target) ->
           []
 
+        ReadingCollectionMembership.authorized?(
+          target,
+          actor,
+          get_field(changeset, :object)
+        ) ->
+          []
+
+        AppendableCollection.authorized?(target, actor, get_field(changeset, :object)) ->
+          []
+
         true ->
           [target: "collection doesn't belong to actor or a known group"]
       end
@@ -98,6 +110,27 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AddRemoveValidator do
 
   defp validate_collection_belongs_to_actor(changeset, _actor) do
     changeset
+  end
+
+  defp validate_collection_object_presence(changeset, %User{} = actor) do
+    if ReadingCollectionMembership.authorized?(
+         get_field(changeset, :target),
+         actor,
+         get_field(changeset, :object)
+       ) or
+         AppendableCollection.authorized?(
+           get_field(changeset, :target),
+           actor,
+           get_field(changeset, :object)
+         ) do
+      changeset
+    else
+      CommonValidations.validate_object_or_user_presence(changeset)
+    end
+  end
+
+  defp validate_collection_object_presence(changeset, _actor) do
+    CommonValidations.validate_object_or_user_presence(changeset)
   end
 
   defp collection_owner(target) when is_binary(target) do

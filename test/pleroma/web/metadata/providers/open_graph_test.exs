@@ -89,6 +89,7 @@ defmodule Pleroma.Web.Metadata.Providers.OpenGraphTest do
           "actor" => user.ap_id,
           "id" => "https://pleroma.gov/objects/whatever",
           "content" => "#cuteposting #nsfw #hambaga",
+          "summary" => "Sensitive photograph",
           "tag" => ["cuteposting", "nsfw", "hambaga"],
           "sensitive" => true,
           "attachment" => [
@@ -105,7 +106,11 @@ defmodule Pleroma.Web.Metadata.Providers.OpenGraphTest do
 
     assert {:meta, [property: "og:image", content: "https://pleroma.gov/tenshi.png"], []} in result
 
+    assert {:meta, [property: "og:description", content: "Sensitive photograph"], []} in result
+
     refute {:meta, [property: "og:image", content: "https://misskey.microsoft/corndog.png"], []} in result
+
+    refute {:meta, [property: "og:description", content: "#cuteposting #nsfw #hambaga"], []} in result
   end
 
   test "video attachments have image thumbnail with WxH metadata with Preview Proxy enabled" do
@@ -186,5 +191,26 @@ defmodule Pleroma.Web.Metadata.Providers.OpenGraphTest do
               content:
                 "http://localhost:4001/proxy/preview/LzAnlke-l5oZbNzWsrHfprX1rGw/aHR0cHM6Ly9wbGVyb21hLmdvdi9hYm91dC9qdWNoZS53ZWJt/juche.webm"
             ], []} in result
+  end
+
+  test "event previews use the event identity instead of the organizer identity" do
+    user = insert(:user, name: "Community organizer")
+
+    event =
+      insert(:note, %{
+        data: %{
+          "actor" => user.ap_id,
+          "id" => "https://events.example/events/summer-picnic",
+          "type" => "Event",
+          "name" => "<b>Summer picnic</b>",
+          "content" => "Meet at the park",
+          "attachment" => []
+        }
+      })
+
+    result = OpenGraph.build_tags(%{object: event, url: event.data["id"], user: user})
+
+    assert {:meta, [property: "og:title", content: "Summer picnic"], []} in result
+    assert {:meta, [property: "og:type", content: "event"], []} in result
   end
 end

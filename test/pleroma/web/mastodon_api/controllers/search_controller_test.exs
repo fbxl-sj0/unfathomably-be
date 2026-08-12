@@ -211,6 +211,35 @@ defmodule Pleroma.Web.MastodonAPI.SearchControllerTest do
              ]
     end
 
+    test "pagination links preserve the active search query and filters", %{conn: conn} do
+      conn =
+        get(
+          conn,
+          "/api/v2/search?#{URI.encode_query(%{q: "#some #text #with #hashtags", type: "hashtags", limit: 2, offset: 1, resolve: true})}"
+        )
+
+      [link_header] = get_resp_header(conn, "link")
+
+      links =
+        ~r/<([^>]+)>; rel="([^"]+)"/
+        |> Regex.scan(link_header, capture: :all_but_first)
+        |> Map.new(fn [url, relation] -> {relation, url} end)
+
+      next_query = links["next"] |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+      previous_query = links["prev"] |> URI.parse() |> Map.fetch!(:query) |> URI.decode_query()
+
+      assert next_query == %{
+               "limit" => "2",
+               "offset" => "3",
+               "q" => "#some #text #with #hashtags",
+               "resolve" => "true",
+               "type" => "hashtags"
+             }
+
+      assert previous_query["offset"] == "0"
+      assert Map.drop(previous_query, ["offset"]) == Map.drop(next_query, ["offset"])
+    end
+
     test "excludes a blocked users from search results", %{conn: conn} do
       user = insert(:user)
       user_smith = insert(:user, %{nickname: "Agent", name: "I love 2hu"})

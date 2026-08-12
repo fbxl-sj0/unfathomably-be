@@ -190,6 +190,34 @@ defmodule Pleroma.Web.OAuth.OAuthControllerTest do
       assert conn.assigns.flash["error"] == "Failed to authenticate: (error description)."
     end
 
+    test "on authentication error, GET /oauth/<provider>/callback rejects an unlisted redirect URI",
+         %{
+           app: app,
+           conn: conn
+         } do
+      state_params = %{
+        "scope" => Enum.join(app.scopes, " "),
+        "client_id" => app.client_id,
+        "redirect_uri" => "https://unlisted.example/callback",
+        "state" => ""
+      }
+
+      conn =
+        conn
+        |> assign(:ueberauth_failure, %{errors: [%{message: "(error description)"}]})
+        |> get(
+          "/oauth/twitter/callback",
+          %{
+            "provider" => "twitter",
+            "state" => Jason.encode!(state_params)
+          }
+        )
+
+      assert html_response(conn, 302)
+      assert redirected_to(conn) == "/"
+      assert conn.assigns.flash["error"] == "Failed to authenticate: (error description)."
+    end
+
     test "GET /oauth/registration_details renders registration details form", %{
       app: app,
       conn: conn
@@ -809,6 +837,51 @@ defmodule Pleroma.Web.OAuth.OAuthControllerTest do
       # Verify app has an associated user now
       user_id = user.id
       assert %Pleroma.Web.OAuth.App{user_id: ^user_id} = Repo.get_by(App, %{id: app.id})
+    end
+
+    test "binds an authorization code to its PKCE verifier and redirect URI" do
+      user = insert(:user)
+      app = insert(:oauth_app, scopes: ["read"])
+      redirect_uri = OAuthController.default_redirect_uri(app)
+      verifier = String.duplicate("a", 43)
+
+      challenge =
+        :crypto.hash(:sha256, verifier)
+        |> Base.url_encode64(padding: false)
+
+      {:ok, auth} =
+        Authorization.create_authorization(app, user, ["read"], %{
+          redirect_uri: redirect_uri,
+          code_challenge: challenge,
+          code_challenge_method: "S256"
+        })
+
+      conn =
+        build_conn()
+        |> post("/oauth/token", %{
+          "grant_type" => "authorization_code",
+          "code" => auth.token,
+          "redirect_uri" => redirect_uri,
+          "code_verifier" => String.duplicate("b", 43),
+          "client_id" => app.client_id,
+          "client_secret" => app.client_secret
+        })
+
+      assert %{"error" => _} = json_response(conn, 400)
+      refute Repo.get!(Authorization, auth.id).used
+
+      conn =
+        build_conn()
+        |> post("/oauth/token", %{
+          "grant_type" => "authorization_code",
+          "code" => auth.token,
+          "redirect_uri" => redirect_uri,
+          "code_verifier" => verifier,
+          "client_id" => app.client_id,
+          "client_secret" => app.client_secret
+        })
+
+      assert %{"access_token" => _} = json_response(conn, 200)
     end
 
     test "issues a token for `password` grant_type with valid credentials, with full permissions by default" do

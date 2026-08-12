@@ -23,7 +23,11 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifierTest do
   end
 
   test "does not authorize a private activity" do
-    canonical = put_in(canonical_activity()["cc"], [@forwarder])
+    canonical =
+      canonical_activity()
+      |> put_in(["cc"], [@forwarder])
+      |> put_in(["object", "cc"], [@forwarder])
+
     fetcher = fn @activity_id -> {:ok, canonical} end
 
     assert {:error, :non_public_activity} =
@@ -34,16 +38,52 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifierTest do
              )
   end
 
-  test "requires the HTTP signing forwarder to be addressed by the origin" do
-    canonical = put_in(canonical_activity()["cc"], [@public])
+  test "accepts a canonical public activity when its forwarder is not explicitly addressed" do
+    canonical =
+      canonical_activity()
+      |> put_in(["cc"], [@public])
+      |> put_in(["object", "cc"], [@public])
+
     fetcher = fn @activity_id -> {:ok, canonical} end
 
-    assert {:error, :forwarder_not_addressed} =
+    assert {:ok, ^canonical} =
              ForwardedActivityVerifier.verify_and_fetch(
                forwarded_activity(),
                @forwarder,
                fetcher
              )
+  end
+
+  test "returns a canonical public actor Update" do
+    actor_update = %{
+      "id" => @actor <> "#updates/1",
+      "type" => "Update",
+      "actor" => @actor,
+      "to" => [@public],
+      "object" => %{"id" => @actor, "type" => "Person", "name" => "Alice"}
+    }
+
+    forwarded = Map.put(actor_update, "signature", legacy_signature())
+    fetcher = fn _activity_id -> {:ok, actor_update} end
+
+    assert {:ok, ^actor_update} =
+             ForwardedActivityVerifier.verify_and_fetch(forwarded, @forwarder, fetcher)
+  end
+
+  test "returns a canonical public Delete without trusting the embedded proof alone" do
+    delete = %{
+      "id" => @activity_id <> "#delete",
+      "type" => "Delete",
+      "actor" => @actor,
+      "to" => [@public],
+      "object" => %{"id" => @object_id, "type" => "Tombstone"}
+    }
+
+    forwarded = Map.put(delete, "signature", legacy_signature())
+    fetcher = fn _activity_id -> {:ok, delete} end
+
+    assert {:ok, ^delete} =
+             ForwardedActivityVerifier.verify_and_fetch(forwarded, @forwarder, fetcher)
   end
 
   test "rejects a relay body that names a different canonical object" do
@@ -73,14 +113,46 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifierTest do
              end)
   end
 
+  test "rejects a legacy signature with a conflicting verification method" do
+    forwarded =
+      put_in(
+        forwarded_activity()["signature"]["verificationMethod"],
+        @forwarder <> "#main-key"
+      )
+
+    assert {:error, :invalid_legacy_signature} =
+             ForwardedActivityVerifier.verify_and_fetch(forwarded, @forwarder, fn _ ->
+               flunk("the origin must not be fetched for an ambiguous signature envelope")
+             end)
+  end
+
+  test "accepts a matching creator and verification method" do
+    forwarded =
+      put_in(
+        forwarded_activity()["signature"]["verificationMethod"],
+        @actor <> "#main-key"
+      )
+
+    canonical = canonical_activity()
+
+    assert {:ok, ^canonical} =
+             ForwardedActivityVerifier.verify_and_fetch(forwarded, @forwarder, fn @activity_id ->
+               {:ok, canonical}
+             end)
+  end
+
   defp forwarded_activity do
     canonical_activity()
-    |> Map.put("signature", %{
+    |> Map.put("signature", legacy_signature())
+  end
+
+  defp legacy_signature do
+    %{
       "type" => "RsaSignature2017",
       "creator" => @actor <> "#main-key",
       "created" => DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.to_iso8601(),
       "signatureValue" => Base.encode64(:crypto.strong_rand_bytes(256))
-    })
+    }
   end
 
   defp canonical_activity do

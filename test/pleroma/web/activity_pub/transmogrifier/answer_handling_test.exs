@@ -53,6 +53,42 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AnswerHandlingTest do
            )
   end
 
+  test "incoming, rewrites PieFed PollVote to Answer" do
+    user = insert(:user)
+    voter = insert(:user, local: false, ap_id: "https://remote.example/users/voter")
+
+    {:ok, poll_activity} =
+      CommonAPI.post(user, %{
+        status: "suya...",
+        poll: %{options: ["suya", "suya.", "suya.."], expires_in: 10}
+      })
+
+    poll = Object.normalize(poll_activity, fetch: false)
+
+    data = %{
+      "id" => "https://remote.example/activities/poll-vote/1",
+      "type" => "PollVote",
+      "actor" => voter.ap_id,
+      "object" => poll.data["id"],
+      "choice_text" => "suya..",
+      "audience" => user.ap_id
+    }
+
+    assert {:ok, %Activity{local: false} = activity} = Transmogrifier.handle_incoming(data)
+
+    answer = Object.normalize(activity, fetch: false)
+    assert answer.data["type"] == "Answer"
+    assert answer.data["name"] == "suya.."
+    assert answer.data["inReplyTo"] == poll.data["id"]
+
+    updated_poll = Object.get_by_ap_id(poll.data["id"])
+
+    assert Enum.any?(updated_poll.data["oneOf"], fn
+             %{"name" => "suya..", "replies" => %{"totalItems" => 1}} -> true
+             _ -> false
+           end)
+  end
+
   test "outgoing, rewrites Answer to Note" do
     user = insert(:user)
     voter = insert(:user)

@@ -38,6 +38,52 @@ defmodule Pleroma.Web.OAuth.AuthorizationTest do
     end
   end
 
+  test "stores and validates an S256 PKCE challenge", %{app: app} do
+    user = insert(:user)
+    verifier = String.duplicate("a", 43)
+
+    challenge =
+      :crypto.hash(:sha256, verifier)
+      |> Base.url_encode64(padding: false)
+
+    {:ok, auth} =
+      Authorization.create_authorization(app, user, ["read"], %{
+        redirect_uri: "url",
+        code_challenge: challenge,
+        code_challenge_method: "S256"
+      })
+
+    assert :ok ==
+             Authorization.validate_exchange(auth, %{
+               "redirect_uri" => "url",
+               "code_verifier" => verifier
+             })
+
+    assert {:error, :invalid_code_verifier} ==
+             Authorization.validate_exchange(auth, %{
+               "redirect_uri" => "url",
+               "code_verifier" => String.duplicate("b", 43)
+             })
+
+    assert {:error, :redirect_uri_mismatch} ==
+             Authorization.validate_exchange(auth, %{
+               "redirect_uri" => "different",
+               "code_verifier" => verifier
+             })
+  end
+
+  test "rejects malformed PKCE authorization values", %{app: app} do
+    user = insert(:user)
+
+    assert {:error, changeset} =
+             Authorization.create_authorization(app, user, nil, %{
+               code_challenge: "short",
+               code_challenge_method: "S256"
+             })
+
+    assert "must be a valid RFC 7636 challenge" in errors_on(changeset).code_challenge
+  end
+
   test "use up a token", %{app: app} do
     user = insert(:user)
 

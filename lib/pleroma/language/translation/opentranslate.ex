@@ -12,6 +12,9 @@ defmodule Pleroma.Language.Translation.Opentranslate do
   @behaviour Provider
 
   @name "OpenTranslate"
+  @default_request_timeout 15_000
+  @minimum_request_timeout 1_000
+  @maximum_request_timeout 60_000
 
   @impl Provider
   def configured?, do: not_empty_string(base_url())
@@ -32,7 +35,7 @@ defmodule Pleroma.Language.Translation.Opentranslate do
   def supported_languages(:target), do: {:ok, ["en"]}
 
   def supported_languages(:source) do
-    case Pleroma.HTTP.get(endpoint("/languages")) do
+    case Pleroma.HTTP.get(endpoint("/languages"), [], request_options()) do
       {:ok, %{status: 200} = res} ->
         with {:ok, languages} <- decode_languages(res.body) do
           {:ok, add_auto_language(languages)}
@@ -84,7 +87,8 @@ defmodule Pleroma.Language.Translation.Opentranslate do
     case Pleroma.HTTP.post(
            endpoint("/translate"),
            request_body(content, source_language, target_language),
-           [{"Content-Type", "application/json"}]
+           [{"Content-Type", "application/json"}],
+           request_options()
          ) do
       {:ok, %{status: 429}} ->
         {:error, :too_many_requests}
@@ -219,5 +223,27 @@ defmodule Pleroma.Language.Translation.Opentranslate do
 
   defp api_key do
     Pleroma.Config.get([__MODULE__, :api_key])
+  end
+
+  defp request_options do
+    timeout = request_timeout()
+
+    [
+      pool: :default,
+      connect_timeout: min(timeout, 5_000),
+      recv_timeout: timeout
+    ]
+  end
+
+  defp request_timeout do
+    case Pleroma.Config.get([__MODULE__, :timeout_ms], @default_request_timeout) do
+      timeout when is_integer(timeout) ->
+        timeout
+        |> max(@minimum_request_timeout)
+        |> min(@maximum_request_timeout)
+
+      _ ->
+        @default_request_timeout
+    end
   end
 end

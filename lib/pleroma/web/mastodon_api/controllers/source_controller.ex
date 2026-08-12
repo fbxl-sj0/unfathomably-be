@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.MastodonAPI.SourceController do
   use Pleroma.Web, :controller
 
+  alias Pleroma.FederationStatus
   alias Pleroma.FollowingRelationship
   alias Pleroma.Repo
   alias Pleroma.User
@@ -131,9 +132,15 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
 
   @doc "POST /api/v1/sources/:id/follow"
   def follow(%{assigns: %{user: user}} = conn, %{"id" => id}) do
-    case FederatedTarget.resolve_source(id) do
-      {:ok, %User{} = source} -> follow_source(conn, user, source)
-      {:error, :not_found} -> render_error(conn, :not_found, "Record not found")
+    with {:ok, %User{} = source} <- FederatedTarget.resolve_source(id),
+         :ok <- ensure_federation_follow_allowed(source) do
+      follow_source(conn, user, source)
+    else
+      {:error, :not_found} ->
+        render_error(conn, :not_found, "Record not found")
+
+      {:error, {:federation_blocked, message}} ->
+        Pleroma.Web.ControllerHelper.json_response(conn, :forbidden, %{error: message})
     end
   end
 
@@ -215,6 +222,14 @@ defmodule Pleroma.Web.MastodonAPI.SourceController do
     conn
     |> put_view(FederatedTargetView)
     |> render("source_relationship.json", user: user, source: source)
+  end
+
+  defp ensure_federation_follow_allowed(%User{} = source) do
+    if FederationStatus.defederated?(source) do
+      {:error, {:federation_blocked, FederationStatus.message(source)}}
+    else
+      :ok
+    end
   end
 
   defp schedule_rss_source_ingest(source) do

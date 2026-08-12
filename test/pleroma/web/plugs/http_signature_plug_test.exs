@@ -8,9 +8,101 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlugTest do
   alias Pleroma.StubbedHTTPSignaturesMock, as: HTTPSignaturesMock
   alias Pleroma.Web.Plugs.HTTPSignaturePlug
 
+  import ExUnit.CaptureLog
   import Mox
   import Plug.Conn
   import Phoenix.Controller, only: [put_format: 2]
+
+  test "logs activity context when a signing key is temporarily unavailable" do
+    conn =
+      build_conn(:post, "/inbox", %{
+        "actor" => "https://remote.example/users/alice",
+        "id" => "https://remote.example/activities/1",
+        "type" => "Create"
+      })
+      |> put_format("activity+json")
+      |> assign(:signature_error, :key_unavailable)
+      |> assign(:actor_id, "https://remote.example/users/alice")
+
+    log =
+      capture_log(fn ->
+        conn = HTTPSignaturePlug.call(conn, %{})
+
+        assert conn.halted
+        assert conn.status == 503
+        assert conn.resp_body == "Signing key temporarily unavailable"
+      end)
+
+    assert log =~ "Signing key temporarily unavailable"
+    assert log =~ "claimed_actor=\"https://remote.example/users/alice\""
+    assert log =~ "activity_id=\"https://remote.example/activities/1\""
+  end
+
+  test "logs activity context when a malformed signature is rejected" do
+    conn =
+      build_conn(:post, "/inbox", %{
+        "actor" => "https://remote.example/users/alice",
+        "id" => "https://remote.example/activities/malformed",
+        "type" => "Create"
+      })
+      |> put_format("activity+json")
+      |> assign(:signature_error, :malformed_signature)
+      |> assign(:actor_id, "https://remote.example/users/alice")
+
+    log =
+      capture_log(fn ->
+        conn = HTTPSignaturePlug.call(conn, %{})
+
+        assert conn.halted
+        assert conn.status == 400
+        assert conn.resp_body == "Malformed HTTP Signature"
+      end)
+
+    assert log =~ "Malformed HTTP Signature"
+    assert log =~ "reason=:malformed_signature"
+    assert log =~ "claimed_actor=\"https://remote.example/users/alice\""
+    assert log =~ "activity_id=\"https://remote.example/activities/malformed\""
+  end
+
+  test "acknowledges an unavailable-key self-delete for an unknown actor" do
+    actor = "https://remote.example/users/deleted"
+
+    conn =
+      build_conn(:post, "/inbox", %{
+        "actor" => actor,
+        "id" => actor <> "#delete",
+        "object" => actor,
+        "type" => "Delete"
+      })
+      |> put_format("activity+json")
+      |> assign(:signature_error, :key_unavailable)
+      |> assign(:actor_id, actor)
+      |> HTTPSignaturePlug.call(%{})
+
+    assert conn.halted
+    assert conn.status == 202
+    assert conn.resp_body == "Delete acknowledged for unknown actor"
+  end
+
+  test "does not acknowledge an unavailable-key Delete for another object" do
+    actor = "https://remote.example/users/deleted"
+
+    conn =
+      build_conn(:post, "/inbox", %{
+        "actor" => actor,
+        "id" => actor <> "#delete",
+        "object" => "https://remote.example/users/someone-else",
+        "type" => "Delete"
+      })
+      |> put_format("activity+json")
+      |> assign(:signature_error, :key_unavailable)
+      |> assign(:actor_id, actor)
+      |> HTTPSignaturePlug.call(%{})
+
+    assert conn.halted
+    assert conn.status == 503
+    assert conn.resp_body == "Signing key temporarily unavailable"
+  end
 
   test "it call HTTPSignatures to check validity if the actor sighed it" do
     params = %{"actor" => "http://mastodon.example.org/users/admin"}
@@ -91,6 +183,55 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlugTest do
         |> HTTPSignaturePlug.call(%{})
 
       refute conn.halted
+    end
+  end
+
+  describe "hybrid authorized fetch" do
+    setup do
+      clear_config([:activitypub, :authorized_fetch_mode], :essential)
+      :ok
+    end
+
+    test "allows an unsigned actor root only as a restricted representation" do
+      conn =
+        build_conn(:get, "/users/alice")
+        |> put_format("activity+json")
+        |> HTTPSignaturePlug.call(%{})
+
+      refute conn.halted
+      assert conn.assigns.authorized_fetch_redacted
+      assert get_resp_header(conn, "cache-control") == ["private, no-store"]
+      assert get_resp_header(conn, "vary") == ["Accept, Authorization, Signature"]
+    end
+
+    test "continues to require signatures for objects and actor collections" do
+      for path <- ["/objects/123", "/users/alice/outbox", "/users/alice/followers"] do
+        conn =
+          build_conn(:get, path)
+          |> put_format("activity+json")
+          |> HTTPSignaturePlug.call(%{})
+
+        assert conn.halted
+        assert conn.status == 401
+        assert conn.resp_body == "Request not signed"
+      end
+    end
+
+    test "returns the full representation marker for a valid signed actor fetch" do
+      expect(HTTPSignaturesMock, :validate_conn, fn _ -> true end)
+
+      conn =
+        build_conn(:get, "/users/alice")
+        |> put_format("activity+json")
+        |> put_req_header(
+          "signature",
+          "keyId=\"http://mastodon.example.org/users/admin#main-key\""
+        )
+        |> HTTPSignaturePlug.call(%{})
+
+      refute conn.halted
+      assert conn.assigns.valid_signature
+      refute conn.assigns[:authorized_fetch_redacted]
     end
   end
 end

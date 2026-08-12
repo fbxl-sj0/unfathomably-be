@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Webhook.Notify do
+  require Logger
+
   alias Phoenix.View
   alias Pleroma.Activity
   alias Pleroma.User
@@ -51,19 +53,28 @@ defmodule Pleroma.Webhook.Notify do
     deliver(webhook, object, :"account.created")
   end
 
-  defp deliver(%Webhook{url: url, secret: secret}, object, type) do
-    body =
-      View.render_to_string(Pleroma.Web.AdminAPI.WebhookView, "event.json",
-        type: type,
-        object: object
-      )
+  defp deliver(%Webhook{url: url} = webhook, object, type) do
+    with {:ok, secret} <- Webhook.signing_secret(webhook) do
+      body =
+        View.render_to_string(Pleroma.Web.AdminAPI.WebhookView, "event.json",
+          type: type,
+          object: object
+        )
 
-    headers = [
-      {"Content-Type", "application/json"},
-      {"X-Hub-Signature", "sha256=#{signature(body, secret)}"}
-    ]
+      headers = [
+        {"Content-Type", "application/json"},
+        {"X-Hub-Signature", "sha256=#{signature(body, secret)}"}
+      ]
 
-    Pleroma.HTTP.post(url, body, headers)
+      Pleroma.HTTP.post(url, body, headers)
+    else
+      {:error, reason} ->
+        Logger.error(
+          "Skipping webhook #{webhook.id}: signing secret could not be decrypted: #{inspect(reason)}"
+        )
+
+        {:error, reason}
+    end
   end
 
   defp signature(body, secret) do

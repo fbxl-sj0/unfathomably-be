@@ -3,13 +3,27 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.Plugs.SetFormatPlug do
-  import Plug.Conn, only: [assign: 3, fetch_query_params: 1, get_req_header: 2, put_private: 3]
+  alias Pleroma.Web.MediaType
+
+  import Plug.Conn,
+    only: [
+      assign: 3,
+      fetch_query_params: 1,
+      get_req_header: 2,
+      get_resp_header: 2,
+      put_private: 3,
+      put_resp_header: 3,
+      register_before_send: 2
+    ]
 
   @known_formats ["html", "xml", "rss", "atom", "activity+json", "json"]
+  @activity_pub_media_types [{"application", "activity+json"}, {"application", "ld+json"}]
+  @html_media_types [{"text", "html"}]
 
   def init(_), do: nil
 
   def call(conn, _) do
+    conn = register_before_send(conn, &vary_on_accept/1)
     {conn, format} = normalize_remote_profile_format(conn, get_format(conn))
 
     case format do
@@ -34,20 +48,31 @@ defmodule Pleroma.Web.Plugs.SetFormatPlug do
   end
 
   defp activity_pub_accept_format(conn) do
-    conn
-    |> get_req_header("accept")
-    |> Enum.any?(&activity_pub_accept?/1)
-    |> case do
-      true -> "activity+json"
-      false -> nil
+    case MediaType.match(get_req_header(conn, "accept"), @activity_pub_media_types) do
+      nil -> nil
+      _match -> "activity+json"
     end
   end
 
-  defp activity_pub_accept?(accept) do
-    accept = String.downcase(accept)
+  # The same profile and object URLs can render HTML or ActivityPub JSON.
+  # Preserve variation added by authorized fetch while preventing an
+  # intermediary from serving one representation for a different Accept value.
+  defp vary_on_accept(conn) do
+    vary =
+      conn
+      |> get_resp_header("vary")
+      |> Enum.flat_map(&String.split(&1, ","))
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
 
-    String.contains?(accept, "application/activity+json") ||
-      String.contains?(accept, "application/ld+json")
+    vary =
+      if Enum.any?(vary, &(String.downcase(&1) == "accept")) do
+        vary
+      else
+        vary ++ ["Accept"]
+      end
+
+    put_resp_header(conn, "vary", Enum.join(vary, ", "))
   end
 
   defp normalize_remote_profile_format(
@@ -70,8 +95,6 @@ defmodule Pleroma.Web.Plugs.SetFormatPlug do
   defp normalize_remote_profile_format(conn, format), do: {conn, format}
 
   defp accepts_html?(conn) do
-    conn
-    |> get_req_header("accept")
-    |> Enum.any?(fn accept -> String.contains?(String.downcase(accept), "text/html") end)
+    MediaType.match(get_req_header(conn, "accept"), @html_media_types) != nil
   end
 end

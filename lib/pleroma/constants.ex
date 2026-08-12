@@ -116,11 +116,13 @@ defmodule Pleroma.Constants do
       "Assign",
       "Block",
       "ChatMessage",
+      "ChooseAnswer",
       "Create",
       "Delete",
       "Dislike",
       "EmojiReact",
       "Edit",
+      "FeatureRequest",
       "Flag",
       "Follow",
       "Grant",
@@ -133,6 +135,7 @@ defmodule Pleroma.Constants do
       "Move",
       "Offer",
       "Push",
+      "QuoteRequest",
       "Read",
       "Reject",
       "Remove",
@@ -172,6 +175,11 @@ defmodule Pleroma.Constants do
 
   const(activity_json_canonical_mime_type,
     do: "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""
+  )
+
+  const(activity_json_accept_header,
+    do:
+      "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", application/activity+json, application/json"
   )
 
   const(activity_json_mime_types,

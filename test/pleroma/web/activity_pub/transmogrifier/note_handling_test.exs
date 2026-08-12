@@ -312,6 +312,51 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
       assert object.data["audience"] == [group.ap_id]
     end
 
+    test "it records NodeBB group actors from target as audience" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "support@forums.example",
+          ap_id: "https://forums.example/category/support"
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          nickname: "bob@forums.example",
+          ap_id: "https://forums.example/uid/8"
+        )
+
+      data = %{
+        "id" => "https://forums.example/activity/target-1",
+        "type" => "Create",
+        "actor" => author.ap_id,
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [author.follower_address],
+        "object" => %{
+          "id" => "https://forums.example/post/target-1",
+          "type" => "Note",
+          "attributedTo" => author.ap_id,
+          "target" => group.ap_id,
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [author.follower_address],
+          "content" => "<p>NodeBB-style target category.</p>",
+          "published" => "2026-08-08T12:00:00Z"
+        }
+      }
+
+      assert {:ok, %Activity{recipients: recipients} = activity} =
+               Transmogrifier.handle_incoming(data)
+
+      object = Object.normalize(activity, fetch: false)
+
+      assert group.ap_id in recipients
+      assert object.data["actor"] == author.ap_id
+      assert object.data["attributedTo"] == author.ap_id
+      assert object.data["audience"] == [group.ap_id]
+    end
+
     test "it uses target collection ids as context when explicit context is absent" do
       author =
         insert(:user,
@@ -1054,13 +1099,21 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
     test "returns object with emoji when object contains list tags" do
       assert Transmogrifier.fix_emoji(%{
                "tag" => [
-                 %{"type" => "Emoji", "name" => ":bib:", "icon" => %{"url" => "/test"}},
+                 %{
+                   "type" => "Emoji",
+                   "name" => ":bib:",
+                   "icon" => %{"url" => "https://example.com/test"}
+                 },
                  %{"type" => "Hashtag"}
                ]
              }) == %{
-               "emoji" => %{"bib" => "/test"},
+               "emoji" => %{"bib" => "https://example.com/test"},
                "tag" => [
-                 %{"icon" => %{"url" => "/test"}, "name" => ":bib:", "type" => "Emoji"},
+                 %{
+                   "icon" => %{"url" => "https://example.com/test"},
+                   "name" => ":bib:",
+                   "type" => "Emoji"
+                 },
                  %{"type" => "Hashtag"}
                ]
              }
@@ -1068,10 +1121,18 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
 
     test "returns object with emoji when object contains map tag" do
       assert Transmogrifier.fix_emoji(%{
-               "tag" => %{"type" => "Emoji", "name" => ":bib:", "icon" => %{"url" => "/test"}}
+               "tag" => %{
+                 "type" => "Emoji",
+                 "name" => ":bib:",
+                 "icon" => %{"url" => "https://example.com/test"}
+               }
              }) == %{
-               "emoji" => %{"bib" => "/test"},
-               "tag" => %{"icon" => %{"url" => "/test"}, "name" => ":bib:", "type" => "Emoji"}
+               "emoji" => %{"bib" => "https://example.com/test"},
+               "tag" => %{
+                 "icon" => %{"url" => "https://example.com/test"},
+                 "name" => ":bib:",
+                 "type" => "Emoji"
+               }
              }
     end
 
@@ -1092,7 +1153,6 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
       assert Transmogrifier.fix_emoji(%{
                "tag" => %{"type" => "Emoji", "name" => ":missing_icon:"}
              }) == %{
-               "emoji" => %{},
                "tag" => %{"name" => ":missing_icon:", "type" => "Emoji"}
              }
     end

@@ -5,7 +5,6 @@
 defmodule Pleroma.Web.Preload.Providers.Instance do
   alias Pleroma.Web.MastodonAPI.InstanceView
   alias Pleroma.Web.Nodeinfo.Nodeinfo
-  alias Pleroma.Web.Plugs.InstanceStatic
   alias Pleroma.Web.Preload.Providers.Provider
   alias Pleroma.Web.TwitterAPI.UtilView
 
@@ -31,7 +30,9 @@ defmodule Pleroma.Web.Preload.Providers.Instance do
   end
 
   defp build_panel_tag(acc) do
-    instance_path = InstanceStatic.file_path(@panel_url |> to_string())
+    instance_path =
+      Pleroma.Config.get([:instance, :static_dir], "instance/static/")
+      |> Path.join(String.trim_leading(@panel_url, "/"))
 
     if File.exists?(instance_path) do
       panel_data = File.read!(instance_path)

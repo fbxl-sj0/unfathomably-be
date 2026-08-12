@@ -6,6 +6,8 @@ defmodule Pleroma.Web.AdminAPI.SearchTest do
   use Pleroma.Web.ConnCase, async: true
 
   alias Pleroma.Web.AdminAPI.Search
+  alias Pleroma.Nostr.Entity
+  alias Pleroma.Repo
 
   import Pleroma.Factory
 
@@ -26,24 +28,35 @@ defmodule Pleroma.Web.AdminAPI.SearchTest do
     end
 
     test "it returns local/external users" do
-      insert(:user, local: true)
+      local_user = insert(:user, local: true)
+      mirror_user = insert(:user, local: true)
       insert(:user, local: false)
       insert(:user, local: false)
 
-      {:ok, _results, local_count} =
+      %Entity{}
+      |> Entity.changeset(%{
+        user_id: mirror_user.id,
+        kind: "mirror_profile",
+        pubkey: String.duplicate("b", 64)
+      })
+      |> Repo.insert!()
+
+      {:ok, local_results, local_count} =
         Search.user(%{
           query: "",
           local: true
         })
 
-      {:ok, _results, external_count} =
+      {:ok, external_results, external_count} =
         Search.user(%{
           query: "",
           external: true
         })
 
       assert local_count == 1
-      assert external_count == 2
+      assert local_results == [local_user]
+      assert external_count == 3
+      assert mirror_user in external_results
     end
 
     test "it returns active/deactivated users" do

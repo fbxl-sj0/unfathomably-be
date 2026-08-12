@@ -166,19 +166,25 @@ defmodule Pleroma.Web.MastodonAPI.Admin.AccountController do
   end
 
   defp maybe_filter_local(criteria, %{local: true} = _params),
-    do: Map.put(criteria, :local, true)
+    do: Map.put(criteria, :account_local, true)
 
   defp maybe_filter_local(criteria, %{local: false} = _params),
-    do: Map.put(criteria, :external, true)
+    do: Map.put(criteria, :account_external, true)
 
   defp maybe_filter_external(criteria, %{remote: true} = _params),
-    do: Map.put(criteria, :external, true)
+    do: Map.put(criteria, :account_external, true)
 
   defp maybe_filter_external(criteria, %{remote: false} = _params),
-    do: Map.put(criteria, :local, true)
+    do: Map.put(criteria, :account_local, true)
 
   defp maybe_filter_active(criteria, %{active: active} = _params),
     do: Map.put(criteria, :active, active)
+
+  defp maybe_filter_needing_approval(criteria, %{pending: true} = _params) do
+    criteria
+    |> Map.put(:need_approval, true)
+    |> Map.put(:account_local, true)
+  end
 
   defp maybe_filter_needing_approval(criteria, %{pending: need_approval} = _params),
     do: Map.put(criteria, :need_approval, need_approval)

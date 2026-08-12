@@ -89,6 +89,33 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
     end
   end
 
+  describe "quote_request/3" do
+    test "inlines a federation-ready local quote instrument" do
+      actor = insert(:user)
+      quoted_object = insert(:note)
+
+      quote_object =
+        insert(:note,
+          user: actor,
+          data: %{
+            "id" => "https://local.example/objects/quote",
+            "type" => "Note",
+            "actor" => actor.ap_id,
+            "content" => "Quoted commentary",
+            "quoteUrl" => quoted_object.data["id"],
+            "likes" => [actor.ap_id]
+          }
+        )
+
+      assert {:ok, data, []} = Builder.quote_request(actor, quote_object, quoted_object)
+      assert data["type"] == "QuoteRequest"
+      assert data["object"] == quoted_object.data["id"]
+      assert data["instrument"]["id"] == quote_object.data["id"]
+      assert data["instrument"]["quoteUrl"] == quoted_object.data["id"]
+      refute Map.has_key?(data["instrument"], "likes")
+    end
+  end
+
   describe "emoji_react/3" do
     test "does not crash when the target object has malformed addressing" do
       actor = insert(:user)
@@ -109,6 +136,25 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
       assert data["to"] == [object.data["actor"]]
       assert data["cc"] == []
     end
+
+    test "does not address the Public collection" do
+      actor = insert(:user)
+      remote_author = "https://remote.example/users/alice"
+
+      object = %Pleroma.Object{
+        data: %{
+          "id" => "https://remote.example/objects/public-note",
+          "actor" => remote_author,
+          "type" => "Note",
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => []
+        }
+      }
+
+      assert {:ok, data, []} = Builder.emoji_react(actor, object, "\u{1F44D}")
+      refute Pleroma.Constants.as_public() in (data["to"] ++ data["cc"])
+      assert remote_author in data["to"]
+    end
   end
 
   describe "like/2" do
@@ -127,6 +173,7 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
 
       assert {:ok, data, []} = Builder.like(actor, object)
       assert data["context"] == object.data["id"]
+      refute Pleroma.Constants.as_public() in (data["to"] ++ data["cc"])
     end
 
     test "addresses an alien resource authority when it has no actor field" do
@@ -149,6 +196,26 @@ defmodule Pleroma.Web.ActivityPub.BuilderTest do
   end
 
   describe "delete/2" do
+    test "event joins explicitly address a remote organizer" do
+      attendee = insert(:user)
+      organizer = "https://friendica.example/profile/organizer"
+
+      event = %Pleroma.Object{
+        data: %{
+          "id" => "https://friendica.example/events/community-picnic",
+          "actor" => %{"id" => organizer, "type" => "Person"},
+          "type" => "Event",
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => []
+        }
+      }
+
+      assert {:ok, data, []} = Builder.join(attendee, event, "Going")
+      assert data["type"] == "Join"
+      assert data["participationMessage"] == "Going"
+      assert organizer in data["to"]
+    end
+
     test "does not crash when the deleted object has malformed addressing" do
       actor = insert(:user)
       mentioned = insert(:user)

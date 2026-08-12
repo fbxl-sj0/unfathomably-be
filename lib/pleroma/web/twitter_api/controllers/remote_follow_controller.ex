@@ -126,9 +126,17 @@ defmodule Pleroma.Web.TwitterAPI.RemoteFollowController do
   # GET /authorize_interaction
   #
   def authorize_interaction(conn, %{"uri" => uri}) do
+    uri = normalize_external_interaction_uri(uri)
+
     conn
     |> redirect(to: Routes.remote_follow_path(conn, :follow, %{acct: uri}))
   end
+
+  # Browsers pass the complete custom-protocol URI through the `%s` placeholder
+  # registered in the web manifest. The ordinary remote-interaction pipeline
+  # expects the embedded ActivityPub URL, not the `web+ap:` wrapper.
+  defp normalize_external_interaction_uri("web+ap:" <> uri), do: uri
+  defp normalize_external_interaction_uri(uri), do: uri
 
   defp handle_follow_error(conn, {:mfa_token, followee, _} = _) do
     render(conn, "follow_login.html", %{error: "Wrong username or password", followee: followee})

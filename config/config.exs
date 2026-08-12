@@ -50,6 +50,16 @@ config :mime, :extensions, %{
 # General application configuration
 config :pleroma, ecto_repos: [Pleroma.Repo]
 
+# memsup's legacy system alarm compares total memory with strictly free memory.
+# Linux deliberately uses otherwise-free RAM for reclaimable filesystem cache,
+# so Unfathomably monitors available_memory instead.
+config :os_mon, system_memory_high_watermark: 1.0
+
+config :pleroma, Pleroma.SystemMemoryMonitor,
+  check_interval: :timer.minutes(1),
+  alarm_threshold: 0.10,
+  clear_threshold: 0.15
+
 config :pleroma, Pleroma.Repo,
   telemetry_event: [Pleroma.Repo.Instrumenter],
   migration_lock: nil
@@ -136,13 +146,55 @@ config :pleroma, Pleroma.Web.Endpoint,
 config :logger, :console,
   level: :debug,
   format: "\n$time $metadata[$level] $message\n",
-  metadata: [:actor, :path, :type, :user]
+  metadata: [
+    :activity,
+    :activity_id,
+    :activity_type,
+    :actor,
+    :delay_ms,
+    :event_id,
+    :failed,
+    :group,
+    :inbox,
+    :path,
+    :pubkey,
+    :reason,
+    :reasons,
+    :rejected,
+    :relay,
+    :status,
+    :subscription,
+    :target,
+    :type,
+    :user
+  ]
 
 config :logger, :ex_syslogger,
   level: :debug,
   ident: "unfathomably-be",
   format: "$metadata[$level] $message",
-  metadata: [:actor, :path, :type, :user]
+  metadata: [
+    :activity,
+    :activity_id,
+    :activity_type,
+    :actor,
+    :delay_ms,
+    :event_id,
+    :failed,
+    :group,
+    :inbox,
+    :path,
+    :pubkey,
+    :reason,
+    :reasons,
+    :rejected,
+    :relay,
+    :status,
+    :subscription,
+    :target,
+    :type,
+    :user
+  ]
 
 config :mime, :types, %{
   "application/xml" => ["xml"],
@@ -152,9 +204,11 @@ config :mime, :types, %{
   "application/ld+json" => ["activity+json", "jsonld"]
 }
 
-config :tesla, adapter: Tesla.Adapter.Gun
+config :tesla, adapter: Tesla.Adapter.Gun, disable_deprecated_builder_warning: true
 
 config :hackney, tls_session_resumption: false
+
+config :pleroma, :cachex, provider: Pleroma.CachexProxy
 
 # Configures http settings, upstream proxy etc.
 config :pleroma, :http,
@@ -170,12 +224,14 @@ config :pleroma, :instance,
   description: "A flexible fediverse server powered by unfathomably-be.",
   short_description: "",
   stats_refresh_interval: :timer.minutes(5),
+  following_cache_ttl: :timer.minutes(15),
   background_image: "/images/city.jpg",
   instance_thumbnail: "/instance/thumbnail.png",
   favicon: "/favicon.png",
   limit: 5_000,
   description_limit: 5_000,
   remote_limit: 100_000,
+  remote_media_attachment_limit: 32,
   upload_limit: 16_000_000,
   avatar_upload_limit: 2_000_000,
   background_upload_limit: 4_000_000,
@@ -214,6 +270,8 @@ config :pleroma, :instance,
   max_pinned_statuses: 1,
   attachment_links: false,
   max_report_comment_size: 1000,
+  max_account_filters: 20,
+  max_filter_phrase_length: 255,
   report_strip_status: true,
   safe_dm_mentions: false,
   healthcheck: false,
@@ -334,9 +392,9 @@ config :pleroma, :frontend_configurations,
     hideSitename: false,
     hideUserStats: false,
     loginMethod: "password",
-    logo: "/static/logo.svg",
+    logo: "/images/unfathomably-logo.svg",
     logoMargin: ".1em",
-    logoMask: true,
+    logoMask: false,
     minimalScopesMode: false,
     noAttachmentLinks: false,
     nsfwCensorImage: "",
@@ -366,12 +424,7 @@ config :pleroma, :assets,
   default_mascot: :pleroma_fox_tan
 
 config :pleroma, :manifest,
-  icons: [
-    %{
-      src: "/static/logo.svg",
-      type: "image/svg+xml"
-    }
-  ],
+  icons: [],
   theme_color: "#282c37",
   background_color: "#191b22"
 
@@ -382,7 +435,8 @@ config :pleroma, :activitypub,
   follow_handshake_timeout: 500,
   note_replies_output_limit: 5,
   sign_object_fetches: true,
-  authorized_fetch_mode: false,
+  sign_query_part: true,
+  authorized_fetch_mode: :disabled,
   fetch_actor_origin: nil,
   allow_http_fetch_actor_origin: false
 
@@ -405,6 +459,7 @@ config :pleroma, :mrf_hellthread,
 config :pleroma, :mrf_simple,
   media_removal: [],
   media_nsfw: [],
+  content_warning: [],
   federated_timeline_removal: [],
   report_removal: [],
   reject: [],
@@ -524,7 +579,8 @@ config :pleroma, :media_preview_proxy,
   thumbnail_max_width: 600,
   thumbnail_max_height: 600,
   image_quality: 85,
-  min_content_length: 100 * 1024
+  min_content_length: 100 * 1024,
+  operation_timeout: 2_000
 
 config :pleroma, :shout,
   enabled: false,
@@ -544,7 +600,8 @@ config :pleroma, :gopher,
 config :pleroma, Pleroma.Web.Metadata,
   providers: [
     Pleroma.Web.Metadata.Providers.OpenGraph,
-    Pleroma.Web.Metadata.Providers.TwitterCard
+    Pleroma.Web.Metadata.Providers.TwitterCard,
+    Pleroma.Web.Metadata.Providers.SchemaOrg
   ],
   unfurl_nsfw: false
 
@@ -636,6 +693,9 @@ config :pleroma, Oban,
     background: 20,
     reachability: 3,
     remote_fetcher: 5,
+    nostr: 4,
+    atproto: 4,
+    diaspora: 2,
     attachments_cleanup: 1,
     mute_expire: 2,
     slow: 5,
@@ -646,15 +706,77 @@ config :pleroma, Oban,
   # value or it cannot enforce uniqueness.
   plugins: [{Oban.Plugins.Pruner, max_age: 900}, Oban.Plugins.Lifeline],
   crontab: [
+    {"*/5 * * * *", Pleroma.Workers.ATProtoSyncWorker},
+    {"*/30 * * * *", Pleroma.Workers.NostrCommunityDiscoveryWorker},
     {"0 0 * * 0", Pleroma.Workers.Cron.DigestEmailsWorker},
     {"0 0 * * *", Pleroma.Workers.Cron.NewUsersDigestWorker},
     {"*/10 * * * *", Pleroma.Workers.Cron.AppCleanupWorker},
     {"17 * * * *", Pleroma.Workers.Cron.ObanCleanupWorker},
     {"*/15 * * * *", Pleroma.Workers.Cron.RssSourceIngestWorker},
     {"0 3 * * *", Pleroma.Workers.Cron.ScheduleReachabilityWorker},
-    {"0 4 * * *", Pleroma.Workers.Cron.RemotePostCleanupWorker},
+    {"7 4 * * *", Pleroma.Workers.Cron.RemotePostCleanupWorker},
     {"30 4 * * *", Pleroma.Workers.Cron.GroupDiscussionCleanupWorker}
   ]
+
+config :pleroma, Pleroma.Nostr,
+  enabled: false,
+  relay_path: "/relay",
+  relay_url: nil,
+  bridge_secret: System.get_env("NOSTR_BRIDGE_SECRET"),
+  external_relays: [
+    "wss://relay.nostr.com",
+    "wss://nostr.mom",
+    "wss://relay.primal.net"
+  ],
+  discovery_relays: [],
+  group_relays: [],
+  profile_discovery_relays: [],
+  search_relays: [],
+  allow_user_relays: false,
+  publish_public_posts: true,
+  relay_publish_timeout_ms: 10_000,
+  max_event_bytes: 65_536,
+  max_content_bytes: 50_000,
+  max_tags: 128,
+  max_contact_tags: 1_024,
+  max_relay_tags: 1_024,
+  max_group_list_tags: 1_024,
+  max_tag_values: 16,
+  max_tag_value_bytes: 2_048,
+  max_subscriptions: 20,
+  max_filters: 10,
+  max_filter_values: 500,
+  max_filter_limit: 500,
+  max_query_candidates: 2_000,
+  max_search_candidates: 10_000,
+  future_tolerance_seconds: 900,
+  oldest_event_unix: 1_230_768_000,
+  mostr_native_lookup_max_relays: 3,
+  mostr_native_lookup_timeout_ms: 1_200,
+  relay_info_timeout_ms: 3_000,
+  search_max_relays: 3,
+  search_min_query_chars: 3,
+  search_timeout_ms: 1_500,
+  relay_refresh_interval_ms: 60_000
+
+config :pleroma, Pleroma.ATProto,
+  enabled: Mix.env() == :prod,
+  appview_url: "https://public.api.bsky.app",
+  bridge_hosts: ["bsky.brid.gy"],
+  request_timeout_ms: 10_000,
+  identity_cache_seconds: 900,
+  future_tolerance_seconds: 900,
+  local_pds_enabled: false,
+  local_pds_url: nil,
+  local_handle_domain: nil,
+  local_pds_admin_password: nil,
+  local_pds_admin_password_file: nil,
+  blob_timeout_ms: 30_000,
+  blob_allowed_hosts: [],
+  oauth_scope:
+    "atproto repo:app.bsky.feed.post repo:app.bsky.feed.like repo:app.bsky.feed.repost repo:app.bsky.graph.follow blob:image/* blob:video/*"
+
+config :pleroma, Pleroma.Diaspora, enabled: Mix.env() == :prod
 
 config :pleroma, Pleroma.Workers.Cron.RemotePostCleanupWorker,
   enabled: true,
@@ -669,6 +791,7 @@ config :pleroma, Pleroma.Workers.Cron.RemotePostCleanupWorker,
 config :pleroma, Pleroma.Workers.Cron.GroupDiscussionCleanupWorker,
   enabled: true,
   max_age_days: 183,
+  followed_group_max_age_days: 730,
   batch_size: 100,
   candidate_scan_limit: 1_000,
   max_scan_pages: 10,
@@ -680,7 +803,20 @@ config :pleroma, Pleroma.Workers.ReceiverWorker, timeout_ms: 90_000
 config :pleroma, Pleroma.Workers.Cron.RssSourceIngestWorker,
   enabled: true,
   source_limit: 200,
-  item_limit: 20
+  item_limit: 20,
+  source_min_interval_ms: 300_000
+
+config :pleroma, Pleroma.Web.ActivityPub.FediBuzzConnector,
+  enabled: false,
+  url: "https://fedi.buzz/api/v1/streaming/public",
+  reconnect_min_ms: 1_000,
+  reconnect_max_ms: 60_000,
+  receive_timeout_ms: 90_000,
+  subscription_refresh_ms: 300_000,
+  max_event_bytes: 262_144,
+  max_buffer_bytes: 524_288,
+  max_events_per_minute: 120,
+  min_host_interval_ms: 1_000
 
 config :pleroma, :workers,
   retries: [
@@ -787,11 +923,50 @@ config :pleroma, :env, Mix.env()
 config :http_signatures,
   adapter: Pleroma.Signature
 
+config :pleroma, :native_discovery,
+  # This project-operated PeerTube server is the explicit video discovery
+  # bridge. Its accepted-peer graph bounds community discovery to servers with
+  # an established PeerTube federation relationship.
+  peertube_indexes: ["https://vid.fbxl.net"],
+  mobilizon_indexes: [],
+  mobilizon_search_indexes: ["https://search.mobilizon.fr"],
+  gancio_indexes: [],
+  # Additional reviewed communities can be listed here when their ecosystem
+  # has no common directory. Each entry is a passive HTTPS link, for example:
+  # %{family: "development", platform: "forgefed", title: "Example Forge",
+  #   workflow: "Browse projects and issue activity.", url: "https://forge.example"}
+  # Use entry_type: "guide" for an official ecosystem status or implementation
+  # page that is not itself a followable community or a public directory.
+  # Built-in entry points cover official guides for ecosystems without a safe
+  # directory and official opt-in directories for several mature platforms. A
+  # matching operator card takes precedence when a local workflow is clearer.
+  community_catalog: [],
+  funkwhale_indexes: [],
+  neodb_indexes: [],
+  bookwyrm_indexes: [],
+  # Castling is queried only after an authenticated user explicitly loads Games.
+  castling_indexes: ["https://castling.club"],
+  forge_indexes: ["https://codeberg.org"],
+  # Manyfold searches are made only after an authenticated user submits a
+  # query. The public 3dprint.social catalogue is the ecosystem's current
+  # discovery hub; model follows still resolve through WebFinger/ActivityPub.
+  manyfold_indexes: ["https://3dprint.social"],
+  flohmarkt_indexes: [],
+  wanderer_indexes: [],
+  owncast_directory_indexes: ["https://owncast.directory/api/iptv"],
+  bonfire_communities: []
+
+config :pleroma, :fasp,
+  enabled: true,
+  max_pending_registrations: 100
+
 config :pleroma, :rate_limit,
   authentication: {60_000, 15},
+  oauth_token: [{60_000, 10}, {3_600_000, 60}],
+  fasp_registration: {3_600_000, 5},
   timeline: {500, 3},
   search: [{1000, 10}, {1000, 30}],
-  federated_target_search: [{60_000, 3}, {60_000, 12}],
+  federated_target_search: [{60_000, 3}, {60_000, 30}],
   app_account_creation: {1_800_000, 25},
   oauth_app_creation: {900_000, 5},
   relations_actions: {10_000, 10},
@@ -895,7 +1070,7 @@ config :pleroma, configurable_from_database: false
 config :pleroma, Pleroma.Web.Plugs.MetricsPredicate, auth_token: nil
 
 config :pleroma, Pleroma.Repo,
-  parameters: [gin_fuzzy_search_limit: "500", jit: "off"],
+  parameters: [jit: "off"],
   prepare: :unnamed
 
 config :pleroma, :connections_pool,
@@ -1002,7 +1177,10 @@ config :pleroma, ConcurrentLimiter, [
   {Pleroma.Webhook.Notify, [max_running: 5, max_waiting: 200]}
 ]
 
-config :pleroma, Pleroma.Web.WebFinger, domain: nil, update_nickname_on_user_fetch: false
+config :pleroma, Pleroma.Web.WebFinger,
+  domain: nil,
+  update_nickname_on_user_fetch: false,
+  actor_alias_max_age: 86_400
 
 config :pleroma, Pleroma.Language.Translation, allow_unauthenticated: false, allow_remote: true
 

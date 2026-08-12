@@ -37,4 +37,50 @@ defmodule Pleroma.Web.Plugs.SetFormatPlugTest do
 
     refute conn.assigns[:format]
   end
+
+  test "varies negotiated responses on Accept" do
+    conn =
+      :get
+      |> conn("/cofe")
+      |> SetFormatPlug.call([])
+      |> send_resp(200, "")
+
+    assert get_resp_header(conn, "vary") == ["Accept"]
+  end
+
+  test "preserves existing response variation" do
+    conn =
+      :get
+      |> conn("/cofe")
+      |> put_resp_header("vary", "Authorization, Signature")
+      |> SetFormatPlug.call([])
+      |> send_resp(200, "")
+
+    assert get_resp_header(conn, "vary") == ["Authorization, Signature, Accept"]
+  end
+
+  test "selects ActivityPub from a parameterized Accept list" do
+    conn =
+      :get
+      |> conn("/cofe")
+      |> put_private(:phoenix_format, "html")
+      |> put_req_header(
+        "accept",
+        "text/html;q=0, application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\";q=0.8"
+      )
+      |> SetFormatPlug.call([])
+
+    assert conn.assigns.format == "activity+json"
+  end
+
+  test "does not select an explicitly unacceptable ActivityPub range" do
+    conn =
+      :get
+      |> conn("/cofe")
+      |> put_private(:phoenix_format, "html")
+      |> put_req_header("accept", "application/activity+json;q=0, text/html;q=1")
+      |> SetFormatPlug.call([])
+
+    assert conn.assigns.format == "html"
+  end
 end

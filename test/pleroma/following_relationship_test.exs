@@ -11,6 +11,7 @@ defmodule Pleroma.FollowingRelationshipTest do
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.InternalFetchActor
   alias Pleroma.Web.ActivityPub.Relay
+  alias Pleroma.Workers.InstanceMetadataWorker
 
   import Ecto.Query
   import Pleroma.Factory
@@ -81,6 +82,52 @@ defmodule Pleroma.FollowingRelationshipTest do
 
       FollowingRelationship.unfollow(user, followed)
       assert User.get_cached_user_friends_ap_ids(user) == []
+    end
+  end
+
+  describe "remote instance discovery" do
+    test "accepted inbound follows enqueue one host metadata refresh" do
+      local_user = insert(:user)
+
+      remote_follower =
+        insert(:user,
+          local: false,
+          nickname: "visitor@new-peer.example",
+          ap_id: "https://new-peer.example/users/visitor"
+        )
+
+      pending_follower =
+        insert(:user,
+          local: false,
+          nickname: "pending@pending-peer.example",
+          ap_id: "https://pending-peer.example/users/pending"
+        )
+
+      outbound_target =
+        insert(:user,
+          local: false,
+          nickname: "outbound@outbound-peer.example",
+          ap_id: "https://outbound-peer.example/users/outbound"
+        )
+
+      assert {:ok, _, _} =
+               FollowingRelationship.follow(remote_follower, local_user, :follow_accept)
+
+      assert {:ok, _, _} =
+               FollowingRelationship.follow(pending_follower, local_user, :follow_pending)
+
+      assert {:ok, _, _} =
+               FollowingRelationship.follow(local_user, outbound_target, :follow_accept)
+
+      assert_enqueued(
+        worker: InstanceMetadataWorker,
+        args: %{
+          "url" => "https://new-peer.example/users/visitor",
+          "host" => "new-peer.example"
+        }
+      )
+
+      assert [%Oban.Job{}] = all_enqueued(worker: InstanceMetadataWorker)
     end
   end
 

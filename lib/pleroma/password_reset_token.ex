@@ -19,8 +19,9 @@ defmodule Pleroma.PasswordResetToken do
     timestamps()
   end
 
-  def create_token(%User{} = user) do
-    token = :crypto.strong_rand_bytes(32) |> Base.url_encode64()
+  def create_token(%User{local: true, password_hash: password_hash} = user)
+      when is_binary(password_hash) and byte_size(password_hash) > 0 do
+    token = Pleroma.Crypto.Random.urlsafe(:high)
 
     token = %PasswordResetToken{
       user_id: user.id,
@@ -30,6 +31,8 @@ defmodule Pleroma.PasswordResetToken do
 
     Repo.insert(token)
   end
+
+  def create_token(%User{}), do: {:error, :password_not_set}
 
   def used_changeset(struct) do
     struct

@@ -25,7 +25,9 @@ defmodule Pleroma.Web.ActivityPub.MRF.MediaProxyWarmingPolicy do
       # If preview proxy is enabled, it'll also hit media proxy (so we're caching both requests)
       prefetch_url = MediaProxy.preview_url(url)
 
-      Logger.debug("Prefetching #{inspect(url)} as #{inspect(prefetch_url)}")
+      Logger.debug(
+        "Prefetching #{Pleroma.Helpers.UriHelper.log_safe_url(url)} as #{Pleroma.Helpers.UriHelper.log_safe_url(prefetch_url)}"
+      )
 
       fetch(prefetch_url)
     end

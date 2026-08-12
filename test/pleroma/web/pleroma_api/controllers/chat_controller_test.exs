@@ -281,7 +281,7 @@ defmodule Pleroma.Web.PleromaAPI.ChatControllerTest do
       [next, prev] = get_resp_header(response, "link") |> hd() |> String.split(", ")
 
       assert_pagination_link(next, chat.id, "next", ["max_id"])
-      assert_pagination_link(prev, chat.id, "prev", ["max_id", "min_id"])
+      assert_pagination_link(prev, chat.id, "prev", ["min_id"])
 
       assert length(result) == 10
     end

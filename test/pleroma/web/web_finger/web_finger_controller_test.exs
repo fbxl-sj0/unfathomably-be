@@ -56,6 +56,20 @@ defmodule Pleroma.Web.WebFinger.WebFingerControllerTest do
            ]
   end
 
+  test "Webfinger JRD accepts a Unicode local account name" do
+    user = insert(:user, nickname: "éloïse")
+
+    response =
+      build_conn()
+      |> put_req_header("accept", "application/jrd+json")
+      |> get("/.well-known/webfinger", %{
+        "resource" => "acct:#{user.nickname}@localhost"
+      })
+      |> json_response(200)
+
+    assert response["subject"] == "acct:#{user.nickname}@localhost"
+  end
+
   test "reach user on tld, while pleroma is ran on subdomain" do
     Pleroma.Web.Endpoint.config_change(
       [{Pleroma.Web.Endpoint, url: [host: "sub.example.com"]}],

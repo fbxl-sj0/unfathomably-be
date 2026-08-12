@@ -14,6 +14,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
 
   @primary_key false
+  @max_reaction_length 100
+  @max_reaction_bytes 400
+  @numeric_emoji_entity ~r/\A&#(?:[0-9]{1,7}|[xX][0-9A-Fa-f]{1,6});\z/
 
   embedded_schema do
     quote do
@@ -37,6 +40,14 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
     |> validate_data()
   end
 
+  @doc "Returns true when a reaction name fits the shared wire and storage bounds."
+  def valid_reaction_name?(value) when is_binary(value) do
+    String.valid?(value) and String.length(value) <= @max_reaction_length and
+      byte_size(value) <= @max_reaction_bytes
+  end
+
+  def valid_reaction_name?(_value), do: false
+
   def cast_data(data) do
     data =
       data
@@ -55,6 +66,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
   defp fix(data) do
     data =
       data
+      |> decode_numeric_emoji_entities()
       |> fix_emoji_qualification()
       |> CommonFixes.fix_actor()
       |> CommonFixes.fix_activity_addressing()
@@ -79,7 +91,44 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
 
   defp normalize_object_reference(_object), do: nil
 
-  defp fix_emoji_qualification(%{"content" => emoji} = data) do
+  defp decode_numeric_emoji_entities(data) do
+    Enum.reduce(["content", "_misskey_reaction"], data, fn field, data ->
+      case data[field] do
+        value when is_binary(value) ->
+          Map.put(data, field, decode_numeric_emoji_entity(value))
+
+        _value ->
+          data
+      end
+    end)
+  end
+
+  defp decode_numeric_emoji_entity(value) do
+    if Regex.match?(@numeric_emoji_entity, value) do
+      decoded = HtmlEntities.decode(value)
+
+      if single_grapheme?(decoded) and Emoji.is_unicode_emoji?(decoded) do
+        decoded
+      else
+        value
+      end
+    else
+      value
+    end
+  rescue
+    _error -> value
+  end
+
+  defp single_grapheme?(value) when is_binary(value) do
+    case String.next_grapheme(value) do
+      {_grapheme, ""} -> true
+      _other -> false
+    end
+  end
+
+  defp single_grapheme?(_value), do: false
+
+  defp fix_emoji_qualification(%{"content" => emoji} = data) when is_binary(emoji) do
     new_emoji = Pleroma.Emoji.fully_qualify_emoji(emoji)
 
     cond do
@@ -127,13 +176,32 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EmojiReactValidator do
     end
   end
 
+  defp validate_reaction_lengths(changeset) do
+    [:content, :_misskey_reaction]
+    |> Enum.reduce(changeset, fn field, changeset ->
+      case get_field(changeset, field) do
+        nil ->
+          changeset
+
+        value ->
+          if valid_reaction_name?(value) do
+            changeset
+          else
+            add_error(changeset, field, "is too long")
+          end
+      end
+    end)
+  end
+
   defp validate_data(data_cng) do
     data_cng
     |> validate_inclusion(:type, ["EmojiReact"])
     |> validate_inclusion(:_pleroma_reaction_type, ["Dislike"], allow_nil: true)
     |> validate_required([:id, :type, :object, :actor, :context, :to, :cc, :content])
+    |> validate_reaction_lengths()
     |> CommonValidations.validate_actor_presence()
     |> CommonValidations.validate_object_presence()
+    |> CommonValidations.validate_object_visibility()
     |> validate_emoji()
     |> maybe_validate_tag_presence()
   end

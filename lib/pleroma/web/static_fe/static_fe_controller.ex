@@ -181,7 +181,7 @@ defmodule Pleroma.Web.StaticFE.StaticFEController do
       user: User.sanitize_html(user),
       title: get_title(activity.object) || "",
       content: content || "",
-      attachment: data["attachment"] || [],
+      attachment: List.wrap(data["attachment"]),
       link: link,
       published: published_at(activity, data),
       sensitive: data["sensitive"] || false,

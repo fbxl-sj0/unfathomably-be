@@ -26,8 +26,29 @@ defmodule Pleroma.Web.Metadata.Providers.ActivityPubTest do
 
     assert [
              {:link,
-              [rel: "alternate", type: "application/activity+json", href: object.data["id"]], []}
+              [rel: "alternate", type: "application/activity+json", href: object.data["id"]], []},
+             {:meta, [name: "fediverse:creator", content: "@#{Pleroma.User.full_nickname(user)}"],
+              []}
            ] == result
+  end
+
+  test "it does not attribute a locally rendered remote post to an unverified creator" do
+    user = insert(:user, local: false, nickname: "remote@example.com")
+
+    result =
+      ActivityPub.build_tags(%{
+        object: %{data: %{"id" => "https://example.com/objects/1"}},
+        user: user
+      })
+
+    assert result == [
+             {:link,
+              [
+                rel: "alternate",
+                type: "application/activity+json",
+                href: "https://example.com/objects/1"
+              ], []}
+           ]
   end
 
   test "it returns no tags without a usable ActivityPub id" do

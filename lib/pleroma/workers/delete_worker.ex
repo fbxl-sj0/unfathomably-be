@@ -8,19 +8,24 @@ defmodule Pleroma.Workers.DeleteWorker do
   """
 
   alias Pleroma.Instances.Instance
+  alias Pleroma.ScheduledActivity
   alias Pleroma.User
 
-  use Pleroma.Workers.WorkerHelper, queue: "slow"
+  use Pleroma.Workers.WorkerHelper,
+    queue: "slow",
+    unique: [period: :infinity, states: :incomplete]
 
   defguardp valid_job_id(id) when (is_binary(id) and byte_size(id) > 0) or is_integer(id)
 
   @impl Oban.Worker
   def perform(%Job{args: %{"op" => "delete_user", "user_id" => user_id}})
       when valid_job_id(user_id) do
-    with %User{} = user <- get_cached_user(user_id) do
+    with %User{} = user <- get_cached_user(user_id),
+         {:ok, _deleted_count} <- ScheduledActivity.delete_all_for_user(user) do
       User.perform(:delete, user)
     else
       nil -> {:cancel, :user_not_found}
+      {:error, _changeset} = error -> error
     end
   end
 

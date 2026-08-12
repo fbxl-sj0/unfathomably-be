@@ -7,6 +7,17 @@ defmodule Pleroma.Web.Plugs.HTTPSecurityPlugTest do
 
   alias Plug.Conn
 
+  test "it prevents error responses from being cached", %{conn: conn} do
+    clear_config([:http_security, :enabled], false)
+
+    conn =
+      conn
+      |> Pleroma.Web.Plugs.HTTPSecurityPlug.call([])
+      |> Conn.send_resp(500, "error")
+
+    assert Conn.get_resp_header(conn, "cache-control") == ["private, no-store"]
+  end
+
   describe "http security enabled" do
     setup do: clear_config([:http_security, :enabled], true)
 
@@ -20,6 +31,32 @@ defmodule Pleroma.Web.Plugs.HTTPSecurityPlugTest do
       refute Conn.get_resp_header(conn, "x-download-options") == []
       refute Conn.get_resp_header(conn, "referrer-policy") == []
       refute Conn.get_resp_header(conn, "content-security-policy") == []
+    end
+
+    test "it discourages indexing API and federation infrastructure" do
+      for path <- [
+            "/api/v1/instance",
+            "/.well-known/nodeinfo",
+            "/nodeinfo/2.1",
+            "/users/alice/outbox",
+            "/users/alice/inbox"
+          ] do
+        conn =
+          :get
+          |> Plug.Test.conn(path)
+          |> Pleroma.Web.Plugs.HTTPSecurityPlug.call([])
+
+        assert Conn.get_resp_header(conn, "x-robots-tag") == ["noindex, nofollow"]
+      end
+    end
+
+    test "it leaves browser-facing pages indexable" do
+      conn =
+        :get
+        |> Plug.Test.conn("/@alice")
+        |> Pleroma.Web.Plugs.HTTPSecurityPlug.call([])
+
+      assert Conn.get_resp_header(conn, "x-robots-tag") == []
     end
 
     test "it sends STS headers when enabled", %{conn: conn} do

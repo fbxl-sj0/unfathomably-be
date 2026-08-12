@@ -32,7 +32,6 @@ defmodule Pleroma.User.Query do
   alias Pleroma.Config
   alias Pleroma.FollowingRelationship
   alias Pleroma.Instances
-  alias Pleroma.Instances.Instance
   alias Pleroma.User
 
   @type criteria ::
@@ -42,6 +41,8 @@ defmodule Pleroma.User.Query do
             name: String.t(),
             email: String.t(),
             local: boolean(),
+            account_local: boolean(),
+            account_external: boolean(),
             external: boolean(),
             active: boolean(),
             deactivated: boolean(),
@@ -182,6 +183,10 @@ defmodule Pleroma.User.Query do
     end
   end
 
+  defp compose_query({:account_local, _}, query), do: account_location_query(query, true)
+
+  defp compose_query({:account_external, _}, query), do: account_location_query(query, false)
+
   defp compose_query({:local, _}, query), do: location_query(query, true)
 
   defp compose_query({:external, _}, query), do: location_query(query, false)
@@ -259,17 +264,29 @@ defmodule Pleroma.User.Query do
   defp compose_query({:recipients_from_activity, to}, query) do
     to = recipient_ap_ids(to)
 
+    direct_query =
+      from(u in User,
+        where: u.ap_id in ^to,
+        select: %{id: u.id}
+      )
+
     following_query =
       from(u in User,
         join: f in FollowingRelationship,
         on: u.id == f.following_id,
         where: f.state == ^:follow_accept,
         where: u.follower_address in ^to,
-        select: f.follower_id
+        select: %{id: f.follower_id}
       )
 
+    # Keep direct recipients and follower expansion as separate indexed paths.
+    # Combining them with OR makes PostgreSQL scan every local user before it
+    # can apply either lookup, which is expensive on federation-heavy servers.
+    recipient_query = union(direct_query, ^following_query)
+
     from(u in query,
-      where: u.ap_id in ^to or u.id in subquery(following_query)
+      join: recipient in subquery(recipient_query),
+      on: recipient.id == u.id
     )
   end
 
@@ -329,19 +346,76 @@ defmodule Pleroma.User.Query do
   defp without_dormant_remote_users(query) do
     dormant_datetime_threshold = Instances.dormant_datetime_threshold()
 
+    # Keep reachability filtering correlated with each remote actor instead of
+    # expanding the main query through an instances join. Missing host rows
+    # and recent failures remain visible; only old unreachable hosts match.
     query
-    |> join(:left, [u], i in Instance,
-      as: :dormant_instance,
-      on: fragment("lower(?) = ap_id_host(?)", i.host, u.ap_id)
-    )
     |> where(
-      [u, dormant_instance: i],
-      u.local == true or is_nil(i.unreachable_since) or
-        i.unreachable_since > ^dormant_datetime_threshold
+      [u],
+      u.local == true or
+        fragment(
+          """
+          NOT EXISTS (
+            SELECT 1
+            FROM instances AS dormant_instance
+            WHERE lower(dormant_instance.host) = ap_id_host(?)
+              AND dormant_instance.unreachable_since <= ?
+          )
+          """,
+          u.ap_id,
+          ^dormant_datetime_threshold
+        )
     )
   end
 
   defp location_query(query, local) do
     where(query, [u], u.local == ^local)
+  end
+
+  defp account_location_query(query, local) do
+    mirror_kinds = ["mirror_profile", "mirror_group"]
+
+    query =
+      join(
+        query,
+        :left,
+        [u],
+        entity in Pleroma.Nostr.Entity,
+        as: :nostr_account_origin,
+        on: entity.user_id == u.id and entity.kind in ^mirror_kinds
+      )
+      |> join(:left, [u], identity in Pleroma.ATProto.Identity,
+        as: :atproto_account_origin,
+        on: identity.user_id == u.id
+      )
+      |> join(:left, [u], entity in Pleroma.Diaspora.Entity,
+        as: :diaspora_account_origin,
+        on: entity.user_id == u.id
+      )
+
+    if local do
+      where(
+        query,
+        [
+          u,
+          nostr_account_origin: nostr,
+          atproto_account_origin: atproto,
+          diaspora_account_origin: diaspora
+        ],
+        u.local == true and is_nil(nostr.id) and is_nil(atproto.id) and is_nil(diaspora.id)
+      )
+    else
+      where(
+        query,
+        [
+          u,
+          nostr_account_origin: nostr,
+          atproto_account_origin: atproto,
+          diaspora_account_origin: diaspora
+        ],
+        u.local == false or not is_nil(nostr.id) or not is_nil(atproto.id) or
+          not is_nil(diaspora.id)
+      )
+    end
   end
 end

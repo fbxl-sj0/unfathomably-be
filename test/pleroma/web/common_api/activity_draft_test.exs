@@ -59,6 +59,41 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraftTest do
       assert draft.object["inReplyTo"] == root.object.data["id"]
       refute Map.has_key?(draft.object, "name")
     end
+
+    test "inherits the canonical group when an ordinary client replies without group_id" do
+      author = insert(:user)
+      replier = insert(:user)
+      group = insert(:user, actor_type: "Group", local: false)
+
+      {:ok, root} =
+        CommonAPI.post(author, %{
+          status: "A remote group root",
+          group_id: group.ap_id,
+          visibility: "public"
+        })
+
+      assert {:ok, draft} =
+               ActivityDraft.create(replier, %{
+                 status: "A client reply without Unfathomably group fields",
+                 in_reply_to_status_id: root.id,
+                 visibility: "public"
+               })
+
+      assert draft.object["audience"] == group.ap_id
+      assert draft.object["inReplyTo"] == root.object.data["id"]
+      assert group.ap_id in Enum.uniq(draft.to ++ draft.cc)
+
+      assert {:ok, reply} =
+               CommonAPI.post(replier, %{
+                 status: "The persisted client reply",
+                 in_reply_to_status_id: root.id,
+                 visibility: "public"
+               })
+
+      assert reply.object.data["audience"] == group.ap_id
+      assert reply.data["audience"] == group.ap_id
+      assert group.ap_id in reply.recipients
+    end
   end
 
   test "create/2 with a quote post" do

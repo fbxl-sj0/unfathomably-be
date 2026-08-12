@@ -9,6 +9,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.EventHandlingTest do
   require Pleroma.Constants
 
   alias Pleroma.Object.Fetcher
+  alias Pleroma.Web.ActivityPub.ObjectValidators.EventValidator
 
   test "Mobilizon Event object" do
     Tesla.Mock.mock(fn
@@ -42,6 +43,36 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.EventHandlingTest do
     assert object.data["name"] == "Mobilizon Launching Party"
     assert object.data["startTime"] == "2019-12-18T13:00:00Z"
     assert object.data["endTime"] == "2019-12-18T14:00:00Z"
+  end
+
+  test "Mobilizon Image featured media is preserved as a standard attachment" do
+    actor_id = "https://mobilizon.example/@organizer"
+    image_url = "https://mobilizon.example/media/event-banner.jpg"
+    insert(:user, local: false, ap_id: actor_id)
+
+    event = %{
+      "id" => "https://mobilizon.example/events/featured-image",
+      "type" => "Event",
+      "actor" => actor_id,
+      "attributedTo" => actor_id,
+      "context" => "https://mobilizon.example/events/featured-image",
+      "to" => [Pleroma.Constants.as_public()],
+      "image" => %{
+        "type" => "Image",
+        "mediaType" => "image/jpeg",
+        "name" => "Event banner",
+        "url" => image_url
+      },
+      "attachment" => [%{"type" => "Image", "url" => image_url}]
+    }
+
+    assert {:ok, normalized} = EventValidator.cast_and_apply(event)
+    refute Map.has_key?(normalized, :image)
+
+    assert [attachment] = normalized.attachment
+    assert attachment.type == "Image"
+    assert attachment.mediaType == "image/jpeg"
+    assert [%{href: ^image_url}] = attachment.url
   end
 
   test "Gancio Event object with a string place address" do

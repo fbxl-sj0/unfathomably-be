@@ -7,6 +7,8 @@ defmodule Pleroma.Caching do
   @callback get(Cachex.cache(), any()) :: {atom(), any()}
   @callback put(Cachex.cache(), any(), any(), Keyword.t()) :: {Cachex.status(), boolean()}
   @callback put(Cachex.cache(), any(), any()) :: {Cachex.status(), boolean()}
+  @callback fetch(Cachex.cache(), any(), function() | nil) ::
+              {:ok | :commit | :ignore, any()} | {:error, any()}
   @callback fetch!(Cachex.cache(), any(), function() | nil) :: any()
   # @callback del(Cachex.cache(), any(), Keyword.t()) :: {Cachex.status(), boolean()}
   @callback del(Cachex.cache(), any()) :: {Cachex.status(), boolean()}

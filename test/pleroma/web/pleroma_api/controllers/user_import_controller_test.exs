@@ -393,16 +393,52 @@ defmodule Pleroma.Web.PleromaAPI.UserImportControllerTest do
         args: %{"op" => "fetch_remote", "id" => parent_id, "depth" => 1, "thread" => true}
       )
     end
+
+    test "accepts actor and outbox files beneath one archive root", %{user: user} do
+      import = post_archive_import(user, [], root: "mastodon-export")
+
+      assert {:ok, import} = PostArchiveImport.process(import)
+      assert import.state == :complete
+      assert import.total_items == 0
+      assert import.original_actor == "https://old.example/users/alice"
+    end
+
+    test "rejects ambiguous or traversing archive roots", %{user: user} do
+      ambiguous =
+        post_archive_import(user, [],
+          root: "first-export",
+          extra_files: [
+            {~c"second-export/actor.json",
+             Jason.encode!(%{"id" => "https://other.example/users/alice"})},
+            {~c"second-export/outbox.json",
+             Jason.encode!(%{"type" => "OrderedCollection", "orderedItems" => []})}
+          ]
+        )
+
+      assert {:ok, ambiguous} = PostArchiveImport.process(ambiguous)
+      assert ambiguous.state == :failed
+      assert ambiguous.error =~ "ambiguous_archive_root"
+
+      traversing =
+        post_archive_import(user, [],
+          root: "valid-export",
+          extra_files: [{~c"../actor.json", Jason.encode!(%{"id" => "https://invalid"})}]
+        )
+
+      assert {:ok, traversing} = PostArchiveImport.process(traversing)
+      assert traversing.state == :failed
+      assert traversing.error =~ "invalid_archive_path"
+    end
   end
 
-  defp post_archive_import(user, items) do
+  defp post_archive_import(user, items, opts \\ []) do
     dir = temp_post_archive_dir("post-archive-import-process-test")
     clear_config([PostArchiveImport, :dir], dir)
 
     file_name = "archive.zip"
     path = PostArchiveImport.path(file_name)
 
-    write_post_archive!(path, items)
+    write_post_archive!(path, items, opts)
 
     on_exit(fn -> File.rm_rf(dir) end)
 
@@ -429,13 +465,22 @@ defmodule Pleroma.Web.PleromaAPI.UserImportControllerTest do
     Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive])}")
   end
 
-  defp write_post_archive!(path, items) do
+  defp write_post_archive!(path, items, opts \\ []) do
     File.mkdir_p!(Path.dirname(path))
 
-    files = [
-      {~c"actor.json", Jason.encode!(%{"id" => "https://old.example/users/alice"})},
-      {~c"outbox.json", Jason.encode!(%{"type" => "OrderedCollection", "orderedItems" => items})}
-    ]
+    prefix =
+      case Keyword.get(opts, :root) do
+        root when is_binary(root) and root != "" -> root <> "/"
+        _ -> ""
+      end
+
+    files =
+      [
+        {String.to_charlist(prefix <> "actor.json"),
+         Jason.encode!(%{"id" => "https://old.example/users/alice"})},
+        {String.to_charlist(prefix <> "outbox.json"),
+         Jason.encode!(%{"type" => "OrderedCollection", "orderedItems" => items})}
+      ] ++ Keyword.get(opts, :extra_files, [])
 
     {:ok, _} = :zip.create(String.to_charlist(path), files)
 

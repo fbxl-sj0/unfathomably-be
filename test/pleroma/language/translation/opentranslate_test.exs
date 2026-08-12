@@ -5,6 +5,7 @@
 defmodule Pleroma.Language.Translation.OpentranslateTest do
   use Pleroma.Web.ConnCase
 
+  import Mock
   import Pleroma.Factory
 
   alias Pleroma.Language.Translation
@@ -16,15 +17,16 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
 
     clear_config(
       [Pleroma.Language.Translation.Opentranslate, :base_url],
-      "http://192.168.250.99:5000"
+      "http://opentranslate.example:5000"
     )
 
     clear_config([Pleroma.Language.Translation.Opentranslate, :api_key], nil)
+    clear_config([Pleroma.Language.Translation.Opentranslate, :timeout_ms], 15_000)
 
     :ok
   end
 
-  test "it is configured with only an internal base URL" do
+  test "it is configured with a base URL" do
     assert Opentranslate.configured?()
   end
 
@@ -41,6 +43,25 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
              detected_source_language: "fr",
              provider: "OpenTranslate"
            } = res
+  end
+
+  test "it isolates translation requests from the federation pool" do
+    with_mock Pleroma.HTTP,
+      post: fn _url, _body, _headers, options ->
+        assert options[:pool] == :default
+        assert options[:connect_timeout] == 5_000
+        assert options[:recv_timeout] == 15_000
+
+        {:ok,
+         %Tesla.Env{
+           status: 200,
+           body: ~s({"translatedText":"Hello world"}),
+           headers: [{"content-type", "application/json"}]
+         }}
+      end do
+      assert {:ok, %{content: "Hello world"}} =
+               Opentranslate.translate("Bonjour le monde", "fr", "en")
+    end
   end
 
   test "it asks OpenTranslate to auto-detect unknown source languages" do
@@ -62,7 +83,7 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
     Tesla.Mock.mock_global(fn
       %Tesla.Env{
         method: :post,
-        url: "http://192.168.250.99:5000/translate",
+        url: "http://opentranslate.example:5000/translate",
         body: body
       } ->
         assert %{
@@ -101,7 +122,7 @@ defmodule Pleroma.Language.Translation.OpentranslateTest do
     Tesla.Mock.mock_global(fn
       %Tesla.Env{
         method: :post,
-        url: "http://192.168.250.99:5000/translate",
+        url: "http://opentranslate.example:5000/translate",
         body: body
       } ->
         case Jason.decode!(body) do

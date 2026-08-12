@@ -14,6 +14,12 @@ defmodule Pleroma.Workers.ReachabilityWorkerTest do
     clear_config([:instance, :federation_reachability_timeout_days], 1)
   end
 
+  test "leaves failed probe scheduling to the persistent instance backoff" do
+    job = ReachabilityWorker.new(%{"domain" => "backoff.example"})
+
+    assert Ecto.Changeset.get_field(job, :max_attempts) == 1
+  end
+
   test "marks instances reachable when NodeInfo answers" do
     Instances.set_unreachable("nodeinfo.example", Instances.reachability_datetime_threshold())
 
@@ -72,6 +78,29 @@ defmodule Pleroma.Workers.ReachabilityWorkerTest do
              ReachabilityWorker.perform(%Oban.Job{args: %{"domain" => "webfinger.example"}})
 
     assert Instances.reachable?("webfinger.example")
+  end
+
+  test "does not repeat a NodeInfo transport failure as a WebFinger probe" do
+    insert(:user,
+      local: false,
+      nickname: "alice@offline.example",
+      ap_id: "https://offline.example/users/alice"
+    )
+
+    Instances.set_unreachable("offline.example", Instances.reachability_datetime_threshold())
+
+    Tesla.Mock.mock(fn
+      %{url: "https://offline.example/.well-known/nodeinfo"} ->
+        {:error, :timeout}
+
+      %{url: "https://offline.example/.well-known/webfinger?resource=" <> _} ->
+        flunk("transport failures should enter backoff without a second probe")
+    end)
+
+    assert {:error, :unreachable} =
+             ReachabilityWorker.perform(%Oban.Job{args: %{"domain" => "offline.example"}})
+
+    refute Instances.reachable?("offline.example")
   end
 
   test "does not mark parked-domain HTML as reachable" do

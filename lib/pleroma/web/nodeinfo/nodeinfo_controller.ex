@@ -10,19 +10,32 @@ defmodule Pleroma.Web.Nodeinfo.NodeinfoController do
 
   @nodeinfo_versions ["2.1", "2.0"]
   @schema_base "http://nodeinfo.diaspora.software/ns/schema"
+  @schema_base_https "https://nodeinfo.diaspora.software/ns/schema"
+  @application_actor_rel "https://www.w3.org/ns/activitystreams#Application"
+  @cache_control "public, max-age=300, stale-while-revalidate=60"
 
   def schemas(conn, _params) do
     response = %{
       links:
-        Enum.map(@nodeinfo_versions, fn version ->
-          %{
-            rel: schema_rel(version),
-            href: Endpoint.url() <> "/nodeinfo/#{version}.json"
-          }
-        end)
+        Enum.flat_map(@nodeinfo_versions, fn version ->
+          href = Endpoint.url() <> "/nodeinfo/#{version}.json"
+
+          [
+            %{rel: schema_rel(version), href: href},
+            %{rel: schema_rel_https(version), href: href}
+          ]
+        end) ++
+          [
+            %{
+              rel: @application_actor_rel,
+              href: Endpoint.url() <> "/users/instance"
+            }
+          ]
     }
 
-    json(conn, response)
+    conn
+    |> put_nodeinfo_cache_header()
+    |> json(response)
   end
 
   # Schema definition: https://github.com/jhass/nodeinfo/blob/master/schemas/2.0/schema.json
@@ -36,6 +49,7 @@ defmodule Pleroma.Web.Nodeinfo.NodeinfoController do
 
       node_info ->
         conn
+        |> put_nodeinfo_cache_header()
         |> put_resp_header(
           "content-type",
           "application/json; profile=#{schema_rel(version)}#; charset=utf-8"
@@ -54,4 +68,6 @@ defmodule Pleroma.Web.Nodeinfo.NodeinfoController do
   defp normalize_version(_conn, version), do: version
 
   defp schema_rel(version), do: "#{@schema_base}/#{version}"
+  defp schema_rel_https(version), do: "#{@schema_base_https}/#{version}"
+  defp put_nodeinfo_cache_header(conn), do: put_resp_header(conn, "cache-control", @cache_control)
 end

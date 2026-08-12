@@ -7,6 +7,7 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorkerTest do
 
   alias Pleroma.Activity
   alias Pleroma.Bookmark
+  alias Pleroma.FollowingRelationship
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.Web.CommonAPI
@@ -19,7 +20,12 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorkerTest do
   setup do
     clear_config([GroupDiscussionCleanupWorker, :enabled], true)
     clear_config([GroupDiscussionCleanupWorker, :max_age_days], 183)
+    clear_config([GroupDiscussionCleanupWorker, :followed_group_max_age_days], 730)
     clear_config([GroupDiscussionCleanupWorker, :batch_size], 50)
+    clear_config([GroupDiscussionCleanupWorker, :candidate_scan_limit], 100)
+    clear_config([GroupDiscussionCleanupWorker, :candidate_query_chunk_size], 50)
+    clear_config([GroupDiscussionCleanupWorker, :max_scan_pages], 4)
+    clear_config([GroupDiscussionCleanupWorker, :query_timeout_ms], 60_000)
   end
 
   test "purges old remote group discussions without local user interaction" do
@@ -71,22 +77,71 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorkerTest do
     assert Repo.get(Activity, activity.id)
   end
 
-  defp remote_group_discussion do
+  test "keeps recent history from a remote group followed by a local user" do
+    %{activity: activity, object: object, group: group} = remote_group_discussion()
+    user = insert(:user)
+
+    assert {:ok, _follower, _following} = FollowingRelationship.follow(user, group)
+    assert {:ok, 0} = GroupDiscussionCleanupWorker.perform(%Oban.Job{})
+
+    assert %Object{data: %{"type" => "Note"}} = Object.get_by_ap_id(object.data["id"])
+    assert Repo.get(Activity, activity.id)
+  end
+
+  test "eventually prunes untouched history from a followed remote group" do
+    # The janitor advances retained rows by touching updated_at. The immutable
+    # insertion age must therefore control the longer follow-aware horizon.
+    %{object: object, group: group} = remote_group_discussion(800, 200)
+    user = insert(:user)
+
+    assert {:ok, _follower, _following} = FollowingRelationship.follow(user, group)
+    assert {:ok, 1} = GroupDiscussionCleanupWorker.perform(%Oban.Job{})
+
+    assert %Object{data: %{"type" => "Tombstone"}} = Object.get_by_ap_id(object.data["id"])
+  end
+
+  test "checks stale candidates in bounded query chunks" do
+    clear_config([GroupDiscussionCleanupWorker, :batch_size], 2)
+    clear_config([GroupDiscussionCleanupWorker, :candidate_scan_limit], 2)
+    clear_config([GroupDiscussionCleanupWorker, :candidate_query_chunk_size], 1)
+    clear_config([GroupDiscussionCleanupWorker, :max_scan_pages], 1)
+
+    first = remote_group_discussion()
+    second = remote_group_discussion()
+
+    assert {:ok, 2} = GroupDiscussionCleanupWorker.perform(%Oban.Job{})
+
+    assert %Object{data: %{"type" => "Tombstone"}} =
+             Object.get_by_ap_id(first.object.data["id"])
+
+    assert %Object{data: %{"type" => "Tombstone"}} =
+             Object.get_by_ap_id(second.object.data["id"])
+  end
+
+  defp remote_group_discussion(age_days \\ 200, updated_age_days \\ nil) do
+    remote_id = System.unique_integer([:positive])
+    updated_age_days = updated_age_days || age_days
+
     old_inserted_at =
       NaiveDateTime.utc_now()
-      |> NaiveDateTime.add(-200 * 86_400, :second)
+      |> NaiveDateTime.add(-age_days * 86_400, :second)
+      |> NaiveDateTime.truncate(:second)
+
+    old_updated_at =
+      NaiveDateTime.utc_now()
+      |> NaiveDateTime.add(-updated_age_days * 86_400, :second)
       |> NaiveDateTime.truncate(:second)
 
     group =
       insert(:user,
         local: false,
         actor_type: "Group",
-        ap_id: "https://lemmy.example/c/3dprinting",
-        follower_address: "https://lemmy.example/c/3dprinting/followers"
+        ap_id: "https://lemmy.example/c/3dprinting-#{remote_id}",
+        follower_address: "https://lemmy.example/c/3dprinting-#{remote_id}/followers"
       )
 
     poster = insert(:user, local: false, domain: "lemmy.example")
-    context = "https://lemmy.example/post/abc"
+    context = "https://lemmy.example/post/#{remote_id}"
 
     object =
       insert(:note,
@@ -96,10 +151,12 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorkerTest do
           "cc" => [group.follower_address],
           "context" => context,
           "published" =>
-            DateTime.utc_now() |> DateTime.add(-200 * 86_400, :second) |> DateTime.to_iso8601()
+            DateTime.utc_now()
+            |> DateTime.add(-age_days * 86_400, :second)
+            |> DateTime.to_iso8601()
         }
       )
-      |> Ecto.Changeset.change(inserted_at: old_inserted_at, updated_at: old_inserted_at)
+      |> Ecto.Changeset.change(inserted_at: old_inserted_at, updated_at: old_updated_at)
       |> Repo.update!()
 
     activity =

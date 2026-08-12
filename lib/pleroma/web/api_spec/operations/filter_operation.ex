@@ -99,7 +99,12 @@ defmodule Pleroma.Web.ApiSpec.FilterOperation do
       type: :object,
       properties: %{
         id: %Schema{type: :string},
-        phrase: %Schema{type: :string, description: "The text to be filtered"},
+        phrase: %Schema{
+          type: :string,
+          minLength: 1,
+          maxLength: 255,
+          description: "The text to be filtered; the instance may configure a lower limit"
+        },
         context: %Schema{
           type: :array,
           items: %Schema{type: :string, enum: ["home", "notifications", "public", "thread"]},
@@ -201,7 +206,12 @@ defmodule Pleroma.Web.ApiSpec.FilterOperation do
       title: "FilterUpdateRequest",
       type: :object,
       properties: %{
-        phrase: %Schema{type: :string, description: "The text to be filtered"},
+        phrase: %Schema{
+          type: :string,
+          minLength: 1,
+          maxLength: 255,
+          description: "The text to be filtered; the instance may configure a lower limit"
+        },
         context: %Schema{
           type: :array,
           items: %Schema{type: :string, enum: ["home", "notifications", "public", "thread"]},

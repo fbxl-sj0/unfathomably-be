@@ -5,6 +5,9 @@
 # credo:disable-for-this-file Credo.Check.Readability.PredicateFunctionNames
 
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
+  @dcterms_subject_keys ["dcterms:subject", "http://purl.org/dc/terms/subject"]
+  @misskey_quote_rel "https://misskey-hub.net/ns#_misskey_quote"
+
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Maps
   alias Pleroma.Object
@@ -61,7 +64,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
   defp normalize_public_recipient(value), do: value
 
   def fix_object_defaults(data) do
-    data = Maps.filter_empty_values(data)
+    data = data |> normalize_dcterms_subject() |> Maps.filter_empty_values()
 
     context =
       Utils.maybe_create_context(
@@ -71,8 +74,33 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
     data
     |> Map.put("context", context)
+    |> Addressing.put_replied_to_groups()
+    |> Addressing.put_mentioned_groups()
     |> fix_object_recipients(User.get_cached_by_ap_id(data["attributedTo"]))
   end
+
+  # WordPress ActivityPub mirrors a content warning through dcterms:subject.
+  # Prefer the standard summary when both forms are present, but retain the
+  # alternate vocabulary as a fallback for implementations that emit only it.
+  defp normalize_dcterms_subject(%{} = data) do
+    if meaningful_text?(data["summary"]) do
+      data
+    else
+      case Enum.find_value(@dcterms_subject_keys, &meaningful_subject(data[&1])) do
+        nil -> data
+        subject -> Map.put(data, "summary", subject)
+      end
+    end
+  end
+
+  defp meaningful_subject(value) when is_binary(value) do
+    if meaningful_text?(value), do: value
+  end
+
+  defp meaningful_subject(_value), do: nil
+
+  defp meaningful_text?(value) when is_binary(value), do: String.trim(value) != ""
+  defp meaningful_text?(_value), do: false
 
   defp fix_object_recipients(data, %User{follower_address: follower_collection}) do
     data
@@ -235,6 +263,18 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
     Map.put(data, "quoteUrl", quote_url)
   end
 
+  # BookWyrm quotation objects use `quote` for the quoted passage itself. It
+  # is not an ActivityPub object reference and must not enter quote hydration
+  # or authorization merely because the passage happens to be a string.
+  def fix_quote_url(%{"id" => id, "quote" => quote_url} = data)
+      when is_binary(id) and is_binary(quote_url) do
+    if bookwyrm_quotation_id?(id) do
+      data
+    else
+      Map.put(data, "quoteUrl", quote_url)
+    end
+  end
+
   # Hubzilla compatibility.
   def fix_quote_url(%{"quote" => quote_url} = data) when is_binary(quote_url) do
     Map.put(data, "quoteUrl", quote_url)
@@ -253,10 +293,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
   def fix_quote_url(data), do: data
 
-  # Mastodon can send "likes" as an ActivityStreams Collection with totals
-  # on edited objects. Locally this field is an internal list/count pair, so
-  # wire-level collections must be dropped before validation.
-  def fix_likes(%{"likes" => likes} = data) when is_map(likes), do: Map.delete(data, "likes")
+  defp bookwyrm_quotation_id?(id) do
+    case URI.parse(id) do
+      %URI{scheme: scheme, host: host, path: path}
+      when scheme in ["http", "https"] and is_binary(host) and is_binary(path) ->
+        String.contains?(path, "/quotation/")
+
+      _ ->
+        false
+    end
+  rescue
+    URI.Error -> false
+  end
+
+  # Mastodon can send "likes" as an inlined ActivityStreams Collection or as
+  # a linked collection URI. Locally this field is an internal list/count
+  # pair, so remote-owned collection representations must be dropped before
+  # validation.
+  def fix_likes(%{"likes" => likes} = data) when is_map(likes) or is_binary(likes),
+    do: Map.delete(data, "likes")
 
   def fix_likes(data), do: data
 
@@ -264,11 +319,20 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
   def is_object_link_tag(%{
         "type" => "Link",
         "mediaType" => media_type,
-        "href" => href
+        "href" => href,
+        "rel" => rel
       })
       when media_type in Pleroma.Constants.activity_json_mime_types() and is_binary(href) do
-    true
+    quote_link_rel?(rel)
   end
 
   def is_object_link_tag(_), do: false
+
+  defp quote_link_rel?(rel) when is_binary(rel), do: rel == @misskey_quote_rel
+
+  defp quote_link_rel?(rels) when is_list(rels) do
+    Enum.any?(rels, &(&1 == @misskey_quote_rel))
+  end
+
+  defp quote_link_rel?(_), do: false
 end

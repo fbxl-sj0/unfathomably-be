@@ -7,8 +7,10 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
   alias Pleroma.EctoType.ActivityPub.ObjectValidators.ObjectID
   alias Pleroma.Object
   alias Pleroma.Object.Fetcher
+  alias Pleroma.Repo
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.Federator
+  alias Pleroma.Workers.NativeThreadHydration
   alias Pleroma.Workers.RemoteFetcherWorker
 
   use Oban.Worker,
@@ -30,7 +32,10 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
     ]
 
   @op "refresh_replies"
+  @context_discovery_op "discover_context_replies"
+  @context_refresh_index "context"
   @triggered_refresh_index "triggered"
+  @terminal_transport_errors [:nxdomain, :recv_response_timeout, :timeout]
   @default_config [
     enabled: true,
     schedule: [15 * 60, 60 * 60, 6 * 60 * 60],
@@ -45,19 +50,58 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
         depth
       )
       when is_binary(collection_id) do
+    _ = NativeThreadHydration.enqueue_for_object(object)
+
     if enabled?() and not Object.local?(object) and Visibility.is_public?(object) and
          Federator.allowed_thread_distance?(depth) and same_origin?(object_id, collection_id) do
       refresh_schedule()
       |> Enum.with_index()
-      |> Enum.each(fn {delay, refresh_index} ->
-        enqueue_refresh(object_id, collection_id, depth, refresh_index, delay)
-      end)
+      |> List.first()
+      |> enqueue_initial_refresh(object_id, collection_id, depth)
     end
 
     :ok
   end
 
   def enqueue_for_object(_, _), do: :ok
+
+  def enqueue_for_context(
+        %Object{data: %{"id" => object_id, "replies_collection" => collection_id}} = object,
+        depth
+      )
+      when is_binary(collection_id) do
+    if enabled?() and not Object.local?(object) and Visibility.is_public?(object) and
+         Federator.allowed_thread_distance?(depth) and same_origin?(object_id, collection_id) do
+      case enqueue_refresh(object_id, collection_id, depth, @context_refresh_index, 0) do
+        {:ok, _job} -> :scheduled
+        _error -> :ignored
+      end
+    else
+      :ignored
+    end
+  end
+
+  def enqueue_for_context(%Object{data: %{"id" => object_id}} = object, depth)
+      when is_binary(object_id) do
+    _ = NativeThreadHydration.enqueue_for_object(object)
+
+    if context_refresh_allowed?(object, depth) do
+      case %{
+             "op" => @context_discovery_op,
+             "object_id" => object_id,
+             "depth" => depth
+           }
+           |> new()
+           |> Oban.insert() do
+        {:ok, _job} -> :scheduled
+        _error -> :ignored
+      end
+    else
+      :ignored
+    end
+  end
+
+  def enqueue_for_context(_, _), do: :ignored
 
   def enqueue_for_reply_ancestors(%Object{} = object, depth) do
     if enabled?() and not Object.local?(object) and Visibility.is_public?(object) do
@@ -90,15 +134,22 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
   def enqueue_for_reply_ancestors(_, _), do: :ok
 
   @impl true
-  def perform(%Oban.Job{
-        args: %{
-          "op" => @op,
-          "object_id" => object_id,
-          "collection_id" => collection_id,
-          "depth" => depth
-        }
-      })
-      when is_binary(object_id) and is_binary(collection_id) and is_integer(depth) do
+  def perform(%Oban.Job{} = job) do
+    if Pleroma.Federation.enabled?(),
+      do: perform_enabled(job),
+      else: {:cancel, :federation_disabled}
+  end
+
+  defp perform_enabled(%Oban.Job{
+         args:
+           %{
+             "op" => @op,
+             "object_id" => object_id,
+             "collection_id" => collection_id,
+             "depth" => depth
+           } = args
+       })
+       when is_binary(object_id) and is_binary(collection_id) and is_integer(depth) do
     with {:parent, %Object{} = object} <- {:parent, Object.get_cached_by_ap_id(object_id)},
          {:local, false} <- {:local, Object.local?(object)},
          {:public, true} <- {:public, Visibility.is_public?(object)},
@@ -111,7 +162,7 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
       |> Enum.reject(&Object.get_cached_by_ap_id/1)
       |> Enum.each(&enqueue_reply_fetch(&1, depth))
 
-      :ok
+      enqueue_next_refresh(object_id, collection_id, depth, args["refresh_index"])
     else
       {:parent, nil} -> {:cancel, :parent_not_found}
       {:local, true} -> {:cancel, :local}
@@ -124,9 +175,42 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
     end
   end
 
-  def perform(%Oban.Job{args: %{"op" => @op}}), do: {:cancel, :bad_request}
+  defp perform_enabled(%Oban.Job{
+         args: %{
+           "op" => @context_discovery_op,
+           "object_id" => object_id,
+           "depth" => depth
+         }
+       })
+       when is_binary(object_id) and is_integer(depth) do
+    with {:parent, %Object{} = object} <- {:parent, Object.get_cached_by_ap_id(object_id)},
+         {:allowed, true} <- {:allowed, context_refresh_allowed?(object, depth)},
+         {:ok, data} <- Fetcher.fetch_and_contain_remote_object_from_id(object_id),
+         {:collection, collection_id} when is_binary(collection_id) <-
+           {:collection, remote_replies_collection_id(data)},
+         {:collection_origin, true} <-
+           {:collection_origin, same_origin?(object_id, collection_id)},
+         {:ok, _object} <-
+           Object.update_data(object, %{"replies_collection" => collection_id}),
+         {:ok, _job} <-
+           enqueue_refresh(object_id, collection_id, depth, @context_refresh_index, 0) do
+      :ok
+    else
+      {:parent, nil} -> {:cancel, :parent_not_found}
+      {:allowed, false} -> {:cancel, :not_public}
+      {:collection, _} -> {:cancel, :collection_not_found}
+      {:collection_origin, false} -> {:cancel, :collection_origin}
+      {:error, reason} -> handle_fetch_error(reason)
+      error -> {:cancel, error}
+    end
+  end
 
-  def perform(%Oban.Job{}), do: {:cancel, :bad_request}
+  defp perform_enabled(%Oban.Job{args: %{"op" => @op}}), do: {:cancel, :bad_request}
+
+  defp perform_enabled(%Oban.Job{args: %{"op" => @context_discovery_op}}),
+    do: {:cancel, :bad_request}
+
+  defp perform_enabled(%Oban.Job{}), do: {:cancel, :bad_request}
 
   @impl Oban.Worker
   def backoff(%Oban.Job{attempt: attempt}), do: min(900, 300 * max(attempt, 1))
@@ -162,7 +246,7 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
         fetch_pages(rest, opts, reply_ids, seen, pages_seen)
 
       true ->
-        with {:ok, data} <- Fetcher.fetch_and_contain_remote_object_from_id(page_id) do
+        with {:ok, data} <- Fetcher.fetch_and_contain_remote_collection_from_id(page_id) do
           remaining = opts.max_items - length(reply_ids)
           {page_reply_ids, next_page_ids} = parse_collection_page(data, remaining)
 
@@ -252,11 +336,34 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
     |> Oban.insert()
   end
 
-  defp enqueue_refresh(object_id, collection_id, depth, refresh_index, delay) do
-    opts =
-      [scheduled_at: DateTime.add(DateTime.utc_now(), delay, :second)]
-      |> Keyword.merge(replace_opts(refresh_index))
+  defp enqueue_refresh(
+         object_id,
+         collection_id,
+         depth,
+         @triggered_refresh_index = refresh_index,
+         delay
+       ) do
+    opts = refresh_options(refresh_index, delay)
+    scheduled_at = Keyword.get(opts, :scheduled_at, DateTime.utc_now())
 
+    case accelerate_numeric_refresh(object_id, scheduled_at) do
+      {:ok, true} -> {:ok, :merged}
+      {:ok, false} -> insert_refresh(object_id, collection_id, depth, refresh_index, opts)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp enqueue_refresh(object_id, collection_id, depth, refresh_index, delay) do
+    insert_refresh(
+      object_id,
+      collection_id,
+      depth,
+      refresh_index,
+      refresh_options(refresh_index, delay)
+    )
+  end
+
+  defp insert_refresh(object_id, collection_id, depth, refresh_index, opts) do
     %{
       "op" => @op,
       "object_id" => object_id,
@@ -268,8 +375,120 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
     |> Oban.insert()
   end
 
+  defp refresh_options(refresh_index, delay) do
+    opts =
+      if(delay > 0,
+        do: [scheduled_at: DateTime.add(DateTime.utc_now(), delay, :second)],
+        else: []
+      )
+      |> Keyword.merge(replace_opts(refresh_index))
+
+    opts
+  end
+
+  # A reply is stronger evidence than the timer attached to the current
+  # scheduled stage. Reuse that stage rather than creating a second network
+  # request for the same collection. Available, executing, retryable, or
+  # suspended stages already represent pending work and need no acceleration.
+  defp accelerate_numeric_refresh(object_id, scheduled_at) do
+    query = """
+    WITH candidate AS MATERIALIZED (
+      SELECT id, state
+      FROM oban_jobs
+      WHERE worker = $1
+        AND state IN ('available', 'scheduled', 'retryable', 'executing', 'suspended')
+        AND args->>'object_id' = $2
+        AND coalesce(args->>'refresh_index', '') ~ '^[0-9]+$'
+      ORDER BY
+        CASE state
+          WHEN 'executing' THEN 0
+          WHEN 'available' THEN 1
+          WHEN 'scheduled' THEN 2
+          WHEN 'retryable' THEN 3
+          WHEN 'suspended' THEN 4
+          ELSE 5
+        END,
+        scheduled_at,
+        id
+      LIMIT 1
+    ), accelerated AS (
+      UPDATE oban_jobs AS job
+      SET scheduled_at = LEAST(job.scheduled_at, $3)
+      FROM candidate
+      WHERE job.id = candidate.id
+        AND job.state = 'scheduled'
+      RETURNING job.id
+    )
+    SELECT EXISTS(SELECT 1 FROM candidate)
+    """
+
+    case Repo.query(query, [inspect(__MODULE__), object_id, scheduled_at]) do
+      {:ok, %{rows: [[found?]]}} when is_boolean(found?) -> {:ok, found?}
+      {:ok, result} -> {:error, {:unexpected_acceleration_result, result}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp enqueue_initial_refresh(nil, _object_id, _collection_id, _depth), do: :ok
+
+  defp enqueue_initial_refresh(
+         {delay, refresh_index},
+         object_id,
+         collection_id,
+         depth
+       ) do
+    enqueue_refresh(object_id, collection_id, depth, refresh_index, delay)
+  end
+
+  # Only one stage is kept in Oban at a time. A successful collection fetch
+  # schedules the next configured stage, while terminal responses naturally
+  # stop the series instead of leaving later network requests behind.
+  defp enqueue_next_refresh(object_id, collection_id, depth, refresh_index)
+       when is_integer(refresh_index) do
+    schedule = refresh_schedule()
+    current_delay = Enum.at(schedule, refresh_index)
+    next_delay = Enum.at(schedule, refresh_index + 1)
+
+    if is_integer(current_delay) and is_integer(next_delay) do
+      object_id
+      |> enqueue_refresh(
+        collection_id,
+        depth,
+        refresh_index + 1,
+        max(next_delay - current_delay, 0)
+      )
+      |> normalize_enqueue_result()
+    else
+      :ok
+    end
+  end
+
+  defp enqueue_next_refresh(_object_id, _collection_id, _depth, _refresh_index), do: :ok
+
+  defp normalize_enqueue_result({:ok, _job}), do: :ok
+  defp normalize_enqueue_result({:error, reason}), do: {:error, reason}
+
   defp replace_opts(@triggered_refresh_index), do: [replace: [scheduled: [:args, :scheduled_at]]]
   defp replace_opts(_), do: []
+
+  defp context_refresh_allowed?(%Object{} = object, depth) do
+    enabled?() and not Object.local?(object) and Visibility.is_public?(object) and
+      Federator.allowed_thread_distance?(depth)
+  end
+
+  defp remote_replies_collection_id(%{} = data) do
+    collection_id(data["contextHistory"]) ||
+      collection_id(data["replies_collection"]) ||
+      collection_id(data["replies"]) ||
+      collection_id(data["comments"])
+  end
+
+  defp remote_replies_collection_id(_), do: nil
+
+  defp collection_id(id) when is_binary(id), do: id
+  defp collection_id(%{"id" => id}) when is_binary(id), do: id
+  defp collection_id(%{"first" => %{"partOf" => id}}) when is_binary(id), do: id
+  defp collection_id(_), do: nil
 
   defp reply_ancestors(%Object{} = object, limit, depth) when limit > 0 do
     object
@@ -367,6 +586,13 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorker do
   defp handle_fetch_error({:http, 501}), do: {:cancel, :not_implemented}
   defp handle_fetch_error({:content_type, _} = reason), do: {:cancel, reason}
   defp handle_fetch_error(:unreachable_host), do: {:cancel, :unreachable_host}
+
+  # Every remote object already receives later scheduled collection refreshes.
+  # Retrying the same timed-out request immediately adds pressure to a slow host
+  # without improving discovery, while the later stages still provide recovery.
+  defp handle_fetch_error(reason) when reason in @terminal_transport_errors,
+    do: {:cancel, reason}
+
   defp handle_fetch_error(reason), do: {:error, reason}
 
   defp same_origin?(left, right) when is_binary(left) and is_binary(right) do

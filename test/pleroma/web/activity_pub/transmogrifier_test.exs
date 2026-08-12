@@ -89,6 +89,60 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       assert activity.data["cc"] == [user.ap_id]
     end
 
+    test "it retains a late group Announce for an existing unassociated Create" do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          ap_id: "https://nodebb.example/category/1"
+        )
+
+      poster =
+        insert(:user,
+          local: false,
+          domain: "nodebb.example",
+          ap_id: "https://nodebb.example/user/alice"
+        )
+
+      object =
+        insert(:note,
+          user: poster,
+          data: %{
+            "id" => "https://nodebb.example/post/1",
+            "to" => [Pleroma.Constants.as_public()],
+            "cc" => [],
+            "attributedTo" => poster.ap_id
+          }
+        )
+
+      create =
+        insert(:note_activity,
+          user: poster,
+          note: object,
+          local: false,
+          data_attrs: %{
+            "id" => "https://nodebb.example/activity/create/1",
+            "to" => object.data["to"],
+            "cc" => []
+          }
+        )
+
+      announce = %{
+        "id" => "https://nodebb.example/activity/announce/1",
+        "type" => "Announce",
+        "actor" => group.ap_id,
+        "object" => Map.put(create.data, "object", object.data),
+        "to" => [Pleroma.Constants.as_public()],
+        "cc" => [],
+        "published" => object.data["published"]
+      }
+
+      assert {:ok, %Activity{data: data}} = Transmogrifier.handle_incoming(announce)
+      assert data["type"] == "Announce"
+      assert data["actor"] == group.ap_id
+      assert data["object"] == object.data["id"]
+    end
+
     test "it unwraps Mbin group announces around Flag activities" do
       user = insert(:user)
       reporter = insert(:user, local: false)
@@ -178,7 +232,7 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
 
     test "it accepts Move activities" do
       old_user = insert(:user)
-      new_user = insert(:user)
+      new_user = insert(:user, also_known_as: nil)
 
       message = %{
         "@context" => "https://www.w3.org/ns/activitystreams",
@@ -707,6 +761,40 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       assert modified["object"]["quoteUrl"] == quote_id
       assert modified["object"]["quoteUri"] == quote_id
       assert modified["object"]["_misskey_quote"] == quote_id
+      assert modified["object"]["content"] =~ ~s(class="quote-inline")
+      assert modified["object"]["content"] =~ quote_id
+    end
+
+    test "adds one visible quote fallback to an empty serialized body" do
+      user = insert(:user)
+      quote_id = "https://remote.example/objects/quoted"
+
+      modified =
+        Transmogrifier.set_quote_url(%{
+          "actor" => user.ap_id,
+          "content" => "",
+          "quoteUrl" => quote_id
+        })
+
+      assert modified["content"] =~ ~s(class="quote-inline")
+      assert modified["content"] =~ quote_id
+
+      assert modified
+             |> Transmogrifier.set_quote_url()
+             |> Map.fetch!("content") == modified["content"]
+    end
+
+    test "does not add a fallback while forwarding a remote quote object" do
+      remote = insert(:user, local: false)
+
+      modified =
+        Transmogrifier.set_quote_url(%{
+          "actor" => remote.ap_id,
+          "content" => "Remote content",
+          "quoteUrl" => "https://remote.example/objects/quoted"
+        })
+
+      assert modified["content"] == "Remote content"
     end
   end
 
@@ -718,6 +806,31 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
 
       rewritten = Transmogrifier.maybe_fix_user_object(data)
       assert rewritten["url"] == "http://example.com"
+    end
+  end
+
+  describe "fix_addressing_list/2" do
+    test "normalizes compact public collection aliases and wrapped recipients" do
+      object = %{
+        "to" => ["Public", "as:Public", %{"id" => "https://example.com/users/alice"}],
+        "cc" => %{"href" => "https://example.com/users/alice/followers"},
+        "bto" => [nil, 42, %{}]
+      }
+
+      object =
+        object
+        |> Transmogrifier.fix_addressing_list("to")
+        |> Transmogrifier.fix_addressing_list("cc")
+        |> Transmogrifier.fix_addressing_list("bto")
+
+      assert object["to"] == [
+               Pleroma.Constants.as_public(),
+               Pleroma.Constants.as_public(),
+               "https://example.com/users/alice"
+             ]
+
+      assert object["cc"] == ["https://example.com/users/alice/followers"]
+      assert object["bto"] == []
     end
   end
 
@@ -824,6 +937,21 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       assert Transmogrifier.fix_summary(%{"summary" => nil}) == %{"summary" => ""}
       assert Transmogrifier.fix_summary(%{"summary" => "ok"}) == %{"summary" => "ok"}
       assert Transmogrifier.fix_summary(%{}) == %{"summary" => ""}
+    end
+  end
+
+  describe "fix_placeholder_title/1" do
+    test "drops PieFed's internal untitled-post sentinel" do
+      assert Transmogrifier.fix_placeholder_title(%{
+               "name" => "(content in post body)",
+               "content" => "The actual post"
+             }) == %{"content" => "The actual post"}
+    end
+
+    test "preserves genuine titles" do
+      assert Transmogrifier.fix_placeholder_title(%{"name" => "A real title"}) == %{
+               "name" => "A real title"
+             }
     end
   end
 

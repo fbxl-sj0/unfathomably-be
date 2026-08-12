@@ -250,7 +250,7 @@ defmodule HttpRequestMock do
         "https://hubzilla.example.org/channel/kaniini",
         _,
         _,
-        [{"accept", "application/activity+json"}]
+        _
       ) do
     {:ok,
      %Tesla.Env{
@@ -289,7 +289,7 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def get("https://puckipedia.com/", _, _, [{"accept", "application/activity+json"}]) do
+  def get("https://puckipedia.com/", _, _, _) do
     {:ok,
      %Tesla.Env{
        status: 200,
@@ -370,9 +370,7 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def get("https://mobilizon.org/events/252d5816-00a3-4a89-a66f-15bf65c33e39", _, _, [
-        {"accept", "application/activity+json"}
-      ]) do
+  def get("https://mobilizon.org/events/252d5816-00a3-4a89-a66f-15bf65c33e39", _, _, _) do
     {:ok,
      %Tesla.Env{
        status: 200,
@@ -381,7 +379,7 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def get("https://mobilizon.org/@tcit", _, _, [{"accept", "application/activity+json"}]) do
+  def get("https://mobilizon.org/@tcit", _, _, _) do
     {:ok,
      %Tesla.Env{
        status: 200,
@@ -435,9 +433,7 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def get("http://mastodon.example.org/users/relay", _, _, [
-        {"accept", "application/activity+json"}
-      ]) do
+  def get("http://mastodon.example.org/users/relay", _, _, _) do
     {:ok,
      %Tesla.Env{
        status: 200,
@@ -621,7 +617,7 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def get("https://mstdn.io/users/mayuutann", _, _, [{"accept", "application/activity+json"}]) do
+  def get("https://mstdn.io/users/mayuutann", _, _, _) do
     {:ok,
      %Tesla.Env{
        status: 200,
@@ -634,7 +630,7 @@ defmodule HttpRequestMock do
         "https://mstdn.io/users/mayuutann/statuses/99568293732299394",
         _,
         _,
-        [{"accept", "application/activity+json"}]
+        _
       ) do
     {:ok,
      %Tesla.Env{
@@ -1354,6 +1350,10 @@ defmodule HttpRequestMock do
 
   def get("http://example.com/rel_me/link", _, _, _) do
     {:ok, %Tesla.Env{status: 200, body: File.read!("test/fixtures/rel_me_link.html")}}
+  end
+
+  def get("http://example.com/rel_me/profile-uri", _, _, _) do
+    {:ok, %Tesla.Env{status: 200, body: File.read!("test/fixtures/rel_me_profile_uri.html")}}
   end
 
   def get("http://example.com/rel_me/null", _, _, _) do

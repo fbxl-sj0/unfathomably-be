@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.ActivityPub.ActivityPubController do
   use Pleroma.Web, :controller
 
+  plug(Pleroma.Web.Plugs.ActivityPubProblemDetailsPlug)
+
   alias Pleroma.Activity
   alias Pleroma.Delivery
   alias Pleroma.Object
@@ -12,6 +14,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.InternalFetchActor
+  alias Pleroma.Web.ActivityPub.Marketplace
   alias Pleroma.Web.ActivityPub.ObjectView
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Relay
@@ -31,8 +34,13 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
 
   @federating_only_actions [:internal_fetch, :relay, :relay_following, :relay_followers]
   @object_replies_known_param_keys ["page", "min_id", "max_id", "since_id", "limit"]
+  @outbox_total_cache_ttl :timer.seconds(10)
+  @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
 
-  plug(FederatingPlug when action in @federating_only_actions)
+  # Disabling ActivityPub is a network boundary, not an authentication mode.
+  # Apply the runtime gate to every C2S and S2S route before any action can
+  # advertise, accept, or fetch protocol data.
+  plug(FederatingPlug)
 
   plug(
     :ensure_authenticated,
@@ -71,15 +79,102 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
     end
   end
 
+  # The marketplace actor uses an internal nickname only for local collection
+  # helpers. Its public ActivityPub identity is fixed at `/users/instance`.
+  # Serving the internal nickname here would publish two profile routes for the
+  # same actor and let remote implementations cache a noncanonical identity.
   def user(conn, %{"nickname" => nickname}) do
-    with %User{local: true} = user <- User.get_cached_by_nickname(nickname) do
+    if nickname == Marketplace.service_actor_nickname() do
+      {:error, :not_found}
+    else
+      with %User{local: true} = user <- User.get_cached_by_nickname(nickname) do
+        conn
+        |> put_resp_content_type("application/activity+json")
+        |> put_view(UserView)
+        |> render(user_document_template(conn), %{user: user})
+      else
+        nil -> {:error, :not_found}
+        %User{local: false, ap_id: ap_id} -> redirect_remote_actor(conn, ap_id)
+      end
+    end
+  end
+
+  # A qualified nickname such as `community@example.org` may resolve to a
+  # cached remote actor. The cached row is useful for discovery, but this
+  # server must not republish it as though it owned that actor. Direct peers to
+  # the authoritative ActivityPub identifier instead. Restricting redirects to
+  # HTTP(S) actor IDs keeps this compatibility route from becoming an open
+  # redirect for malformed legacy rows.
+  defp redirect_remote_actor(conn, ap_id) when is_binary(ap_id) do
+    case URI.parse(ap_id) do
+      %URI{scheme: scheme, host: host}
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        redirect(conn, external: ap_id)
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp redirect_remote_actor(_conn, _ap_id), do: {:error, :not_found}
+
+  defp user_document_template(%{assigns: %{authorized_fetch_redacted: true}}),
+    do: "restricted_user.json"
+
+  defp user_document_template(_conn), do: "user.json"
+
+  def marketplace_service(conn, _params) do
+    case Marketplace.get_service_actor() do
+      {:ok, service_actor} ->
+        actor_ap_id = Marketplace.service_actor_ap_id()
+
+        document =
+          UserView.render(user_document_template(conn), %{user: service_actor})
+          |> Map.put("featured", actor_ap_id <> "/collections/featured")
+          |> Map.put("following", actor_ap_id <> "/following")
+          |> Map.put("type", "Application")
+          |> Map.put("url", actor_ap_id)
+
+        conn
+        |> put_resp_content_type("application/activity+json")
+        |> json(document)
+
+      {:error, :not_found} ->
+        send_resp(conn, :not_found, "")
+    end
+  end
+
+  def marketplace_outbox(conn, params) do
+    outbox(conn, Map.put(params, "nickname", Marketplace.service_actor_nickname()))
+  end
+
+  def marketplace_followers(conn, params) do
+    followers(conn, Map.put(params, "nickname", Marketplace.service_actor_nickname()))
+  end
+
+  def marketplace_following(conn, params) do
+    following(conn, Map.put(params, "nickname", Marketplace.service_actor_nickname()))
+  end
+
+  def marketplace_featured(conn, params) do
+    pinned(conn, Map.put(params, "nickname", Marketplace.service_actor_nickname()))
+  end
+
+  def marketplace_inbox(conn, params) do
+    inbox(conn, Map.put(params, "nickname", Marketplace.service_actor_nickname()))
+  end
+
+  def marketplace_item(%{assigns: assigns} = conn, %{"nickname" => nickname, "uuid" => uuid}) do
+    with %User{local: true} = seller <- User.get_cached_by_nickname(nickname),
+         %Object{} = object <- Object.get_cached_by_ap_id(Endpoint.url() <> "/objects/" <> uuid),
+         true <- object.data["actor"] == seller.ap_id,
+         true <- Visibility.visible_for_user?(object, Map.get(assigns, :user)),
+         {:ok, flohmarkt_object} <- Marketplace.flohmarkt_object(object, seller) do
       conn
       |> put_resp_content_type("application/activity+json")
-      |> put_view(UserView)
-      |> render("user.json", %{user: user})
+      |> json(flohmarkt_object)
     else
-      nil -> {:error, :not_found}
-      %{local: false} -> {:error, :not_found}
+      _ -> {:error, :not_found}
     end
   end
 
@@ -355,14 +450,17 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
         |> Map.drop(["nickname", "page"])
         |> Map.put("include_poll_votes", true)
         |> Map.new(fn {k, v} -> {String.to_existing_atom(k), v} end)
+        |> Map.put(:total, true)
 
-      activities = ActivityPub.fetch_user_activities(user, for_user, params)
+      result = ActivityPub.fetch_user_activities(user, for_user, params)
+      activities = result[:items]
 
       conn
       |> put_resp_content_type("application/activity+json")
       |> put_view(UserView)
       |> render("activity_collection_page.json", %{
         activities: activities,
+        total_items: result[:total],
         pagination: ControllerHelper.get_pagination_fields(conn, activities),
         iri: "#{user.ap_id}/outbox"
       })
@@ -371,12 +469,48 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
 
   def outbox(conn, %{"nickname" => nickname}) do
     with %User{} = user <- User.get_cached_by_nickname(nickname) do
+      total_items = outbox_total(user, conn.assigns[:user])
+
       conn
       |> put_resp_content_type("application/activity+json")
       |> put_view(UserView)
-      |> render("activity_collection.json", %{iri: "#{user.ap_id}/outbox"})
+      |> render("activity_collection.json", %{
+        iri: "#{user.ap_id}/outbox",
+        total_items: total_items
+      })
     end
   end
+
+  # Collection roots are commonly fetched in synchronized discovery bursts.
+  # Cachex Courier collapses concurrent misses in production while this short
+  # TTL keeps totalItems close to the exact visibility-aware database count.
+  defp outbox_total(%User{} = user, reading_user) do
+    key = {:activity_pub_outbox_total, user.id, outbox_reader_id(reading_user)}
+
+    case @cachex.fetch(:web_resp_cache, key, fn _key ->
+           {:commit, calculate_outbox_total(user, reading_user), expire: @outbox_total_cache_ttl}
+         end) do
+      {status, total_items} when status in [:ok, :commit, :ignore] ->
+        total_items
+
+      {:error, reason} ->
+        Logger.debug("Outbox total cache unavailable: #{inspect(reason)}")
+        calculate_outbox_total(user, reading_user)
+    end
+  end
+
+  defp calculate_outbox_total(user, reading_user) do
+    user
+    |> ActivityPub.fetch_user_activities(reading_user, %{
+      include_poll_votes: true,
+      limit: 1,
+      total: true
+    })
+    |> Keyword.fetch!(:total)
+  end
+
+  defp outbox_reader_id(%User{id: id}), do: id
+  defp outbox_reader_id(_reading_user), do: nil
 
   def inbox(%{assigns: %{valid_signature: true, valid_host_header: false}} = conn, _params) do
     conn
@@ -394,7 +528,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
          {:ok, %User{is_active: true} = actor} <- User.get_or_fetch_by_ap_id(params["actor"]),
          true <- Utils.recipient_in_message(recipient, actor, params),
          params <- Utils.maybe_splice_recipient(recipient.ap_id, params) do
-      Federator.incoming_ap_doc(params)
+      Pleroma.Web.ActivityPub.FollowersSynchronization.maybe_enqueue(conn, params)
+      Federator.incoming_ap_doc(%{params: params, req_headers: conn.req_headers})
       json(conn, "ok")
     else
       nil ->
@@ -418,7 +553,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
   end
 
   def inbox(%{assigns: %{valid_signature: true, valid_host_header: true}} = conn, params) do
-    Federator.incoming_ap_doc(params)
+    Pleroma.Web.ActivityPub.FollowersSynchronization.maybe_enqueue(conn, params)
+    Federator.incoming_ap_doc(%{params: params, req_headers: conn.req_headers})
     json(conn, "ok")
   end
 
@@ -471,7 +607,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
     conn
     |> put_resp_content_type("application/activity+json")
     |> put_view(UserView)
-    |> render("user.json", %{user: user})
+    |> render(user_document_template(conn), %{user: user})
   end
 
   defp represent_service_actor(nil, _), do: {:error, :not_found}

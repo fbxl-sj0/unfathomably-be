@@ -57,8 +57,7 @@ defmodule Pleroma.Web.OAuth.Token.Utils do
   def generate_token(opts \\ []) do
     opts
     |> Keyword.get(:size, 32)
-    |> :crypto.strong_rand_bytes()
-    |> Base.url_encode64(padding: false)
+    |> Pleroma.Crypto.Random.urlsafe_bytes()
   end
 
   # XXX - for whatever reason our token arrives urlencoded, but Plug.Conn should be

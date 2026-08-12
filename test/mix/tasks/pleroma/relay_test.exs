@@ -171,7 +171,7 @@ defmodule Mix.Tasks.Pleroma.RelayTest do
 
       ["http://mastodon.example.org/users/admin", "https://mstdn.io/users/mayuutann"]
       |> Enum.each(fn ap_id ->
-        {:ok, user} = User.get_or_fetch_by_ap_id(ap_id)
+        user = insert(:user, local: false, ap_id: ap_id)
         User.follow(relay_user, user)
       end)
 

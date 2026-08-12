@@ -1,5 +1,5 @@
 # Pleroma: A lightweight social networking server
-# Copyright © 2017-2022 Pleroma Authors <https://pleroma.social/>
+# Copyright (c) 2017-2022 Pleroma Authors <https://pleroma.social/>
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.Fallback.RedirectController do
@@ -42,7 +42,7 @@ defmodule Pleroma.Web.Fallback.RedirectController do
         redirector_with_meta(conn, %{user: user})
       else
         nil ->
-          redirector(conn, params)
+          redirector_with_preload(conn, params)
       end
     end
   end
@@ -65,6 +65,7 @@ defmodule Pleroma.Web.Fallback.RedirectController do
     else
       index_content = read_index_content()
 
+      keys = maybe_drop_existing_manifest(keys, index_content)
       meta = compose_meta(conn, params, keys)
 
       response =
@@ -75,6 +76,14 @@ defmodule Pleroma.Web.Fallback.RedirectController do
       |> put_resp_content_type("text/html")
       |> send_resp(code, response)
     end
+  end
+
+  defp maybe_drop_existing_manifest(keys, index_content) do
+    has_manifest? =
+      String.contains?(index_content, "rel=\"manifest\"") or
+        String.contains?(index_content, "rel='manifest'")
+
+    if has_manifest?, do: List.delete(keys, :manifest), else: keys
   end
 
   def registration_page(conn, params) do
@@ -172,7 +181,14 @@ defmodule Pleroma.Web.Fallback.RedirectController do
   end
 
   defp build_meta(:title, _) do
-    "<title>#{Pleroma.Config.get([:instance, :name])}</title>"
+    instance_name =
+      Pleroma.Config.get([:instance, :name])
+      |> to_string()
+      |> Phoenix.HTML.html_escape()
+      |> Phoenix.HTML.safe_to_string()
+
+    "<title>#{instance_name}</title>" <>
+      "<meta name=\"application-name\" content=\"#{instance_name}\">"
   end
 
   defp build_meta(:favicon, _) do

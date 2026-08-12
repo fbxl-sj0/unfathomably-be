@@ -150,16 +150,21 @@ defmodule Pleroma.Web.PleromaAPI.TwoFactorAuthenticationControllerTest do
       token = insert(:oauth_token, scopes: ["write", "follow"], user: user)
       token2 = insert(:oauth_token, scopes: ["read"])
 
-      assert conn
-             |> put_req_header("authorization", "Bearer #{token.token}")
-             |> post("/api/pleroma/accounts/mfa/confirm/totp", %{password: "test", code: code})
-             |> json_response(:ok)
+      response =
+        conn
+        |> put_req_header("authorization", "Bearer #{token.token}")
+        |> post("/api/pleroma/accounts/mfa/confirm/totp", %{password: "test", code: code})
+        |> json_response(:ok)
+
+      assert [<<_::bytes-size(6)>>, <<_::bytes-size(6)>>] = response["codes"]
 
       settings = refresh_record(user).multi_factor_authentication_settings
       assert settings.enabled
       assert settings.totp.secret == secret
       assert settings.totp.confirmed
-      assert settings.backup_codes == ["1", "2", "3"]
+      refute settings.backup_codes == ["1", "2", "3"]
+      refute settings.backup_codes == response["codes"]
+      assert length(settings.backup_codes) == length(response["codes"])
 
       assert conn
              |> put_req_header("authorization", "Bearer #{token2.token}")

@@ -15,6 +15,14 @@ defmodule Pleroma.Web.PleromaAPI.EventControllerTest do
 
   import Pleroma.Factory
 
+  defp set_event_capacity(activity, capacity) do
+    event = Object.get_by_ap_id(activity.data["object"])
+
+    event
+    |> Ecto.Changeset.change(data: Map.put(event.data, "maximumAttendeeCapacity", capacity))
+    |> Repo.update!()
+  end
+
   describe "POST /api/v1/pleroma/events" do
     setup do
       user = insert(:user)
@@ -201,6 +209,27 @@ defmodule Pleroma.Web.PleromaAPI.EventControllerTest do
              } = Object.get_by_ap_id(activity.data["object"])
     end
 
+    test "does not exceed a federated event's attendee capacity", %{conn: conn} do
+      [owner, participant] = insert_pair(:user)
+
+      {:ok, activity} =
+        CommonAPI.event(owner, %{
+          name: "small event",
+          status: "",
+          join_mode: "free",
+          start_time: DateTime.from_iso8601("2023-01-01T01:00:00.000Z") |> elem(1)
+        })
+
+      set_event_capacity(activity, 2)
+      assert {:ok, _activity} = CommonAPI.join(participant, activity.id)
+
+      conn = post(conn, "/api/v1/pleroma/events/#{activity.id}/join")
+
+      assert json_response_and_validate_schema(conn, :bad_request) == %{
+               "error" => "This event is full"
+             }
+    end
+
     test "can't join your own event", %{conn: conn, user: user} do
       {:ok, activity} =
         CommonAPI.event(user, %{
@@ -322,6 +351,42 @@ defmodule Pleroma.Web.PleromaAPI.EventControllerTest do
 
       assert %{data: %{"state" => "accept"}} =
                Utils.get_existing_join(other_user.ap_id, activity.data["object"])
+    end
+
+    test "does not approve a restricted event after capacity is full", %{
+      user: user,
+      conn: conn
+    } do
+      [accepted_user, waiting_user] = insert_pair(:user)
+
+      {:ok, activity} =
+        CommonAPI.event(user, %{
+          name: "small restricted event",
+          status: "",
+          join_mode: "restricted",
+          start_time: DateTime.from_iso8601("2023-01-01T01:00:00.000Z") |> elem(1)
+        })
+
+      set_event_capacity(activity, 2)
+      assert {:ok, _request} = CommonAPI.join(accepted_user, activity.id)
+      assert {:ok, _request} = CommonAPI.join(waiting_user, activity.id)
+
+      assert {:ok, _participant} =
+               CommonAPI.accept_join_request(
+                 user,
+                 accepted_user,
+                 activity.data["object"]
+               )
+
+      conn =
+        post(
+          conn,
+          "/api/v1/pleroma/events/#{activity.id}/participation_requests/#{waiting_user.id}/authorize"
+        )
+
+      assert json_response_and_validate_schema(conn, :bad_request) == %{
+               "error" => "This event is full"
+             }
     end
 
     test "it refuses to accept a request when event is not by the user", %{conn: conn} do

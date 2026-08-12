@@ -573,6 +573,8 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
       conn: conn,
       user: user
     } do
+      refute Pleroma.Web.OAuth.Token.get_user_tokens(user) == []
+
       conn =
         conn
         |> put_req_header("content-type", "multipart/form-data")
@@ -588,6 +590,7 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
       assert json_response_and_validate_schema(conn, 200) == %{"status" => "success"}
       fetched_user = User.get_cached_by_id(user.id)
       assert Pleroma.Password.Pbkdf2.verify_pass("newpass", fetched_user.password_hash) == true
+      assert Pleroma.Web.OAuth.Token.get_user_tokens(user) == []
     end
   end
 
@@ -920,6 +923,27 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
         |> post("/api/pleroma/move_account", %{password: "test", target_account: target_nick})
 
       assert json_response_and_validate_schema(conn, 200) == %{"status" => "success"}
+    end
+
+    test "restarts the latest migration without resetting its cooldown", %{
+      conn: conn,
+      user: user
+    } do
+      target_user = insert(:user, also_known_as: [user.ap_id])
+
+      assert {:ok, _activity} =
+               Pleroma.Web.ActivityPub.ActivityPub.move(user, target_user)
+
+      last_move_at = User.get_by_id(user.id).last_move_at
+
+      response =
+        conn
+        |> put_req_header("content-type", "multipart/form-data")
+        |> post("/api/pleroma/move_account/restart", %{password: "test"})
+        |> json_response_and_validate_schema(200)
+
+      assert response == %{"status" => "success", "moved_to" => target_user.ap_id}
+      assert User.get_by_id(user.id).last_move_at == last_move_at
     end
   end
 

@@ -5,10 +5,13 @@
 defmodule Pleroma.Web.MastodonAPI.TimelineControllerTest do
   use Pleroma.Web.ConnCase
 
+  require Pleroma.Constants
+
   import Pleroma.Factory
   import Tesla.Mock
 
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.NativeObject
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Workers.Cron.RssSourceIngestWorker
 
@@ -176,6 +179,56 @@ defmodule Pleroma.Web.MastodonAPI.TimelineControllerTest do
       assert [%{"id" => ^activity2_id}] = response
     end
 
+    test "group membership stays in the groups timeline instead of leaking into home", %{
+      user: user,
+      conn: conn
+    } do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "nostrord@groups.example",
+          ap_id: "https://groups.example/groups/nostrord"
+        )
+
+      author = insert(:user, local: false)
+      {:ok, _user, _group} = User.follow(user, group)
+
+      note =
+        insert(:note,
+          user: author,
+          data: %{
+            "content" => "A group-only discussion root",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      activity =
+        insert(:note_activity,
+          user: author,
+          note: note,
+          local: false,
+          data_attrs: %{
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      home_ids =
+        conn
+        |> get("/api/v1/timelines/home")
+        |> json_response_and_validate_schema(200)
+        |> Enum.map(& &1["id"])
+
+      group_ids =
+        conn
+        |> get("/api/v1/timelines/groups")
+        |> json_response(200)
+        |> Enum.map(& &1["id"])
+
+      refute to_string(activity.id) in home_ids
+      assert to_string(activity.id) in group_ids
+    end
+
     test "home timeline includes public posts for followed hashtags", %{user: user, conn: conn} do
       other_user = insert(:user)
       hashtag = insert(:hashtag, name: "jubjub")
@@ -316,6 +369,33 @@ defmodule Pleroma.Web.MastodonAPI.TimelineControllerTest do
                conn
                |> get("/api/v1/timelines/public?local=true")
                |> json_response_and_validate_schema(:ok)
+    end
+
+    test "only_native returns validated native objects without scanning ordinary posts", %{
+      conn: conn
+    } do
+      user = insert(:user)
+      {:ok, ordinary} = CommonAPI.post(user, %{status: "ordinary post"})
+      clear_config([:native_discovery, :bookwyrm_indexes], ["https://books.example"])
+
+      {:ok, native} =
+        NativeObject.create(user, %{
+          "content" => "A useful review",
+          "fields" => %{"author" => "Octavia Butler", "rating" => "5"},
+          "reference_url" => "https://books.example/book/parable-of-the-sower",
+          "template" => "books",
+          "title" => "Parable of the Sower",
+          "visibility" => "public"
+        })
+
+      ids =
+        conn
+        |> get("/api/v1/timelines/public?only_native=true")
+        |> json_response_and_validate_schema(:ok)
+        |> Enum.map(& &1["id"])
+
+      assert native.id in ids
+      refute ordinary.id in ids
     end
 
     test "the public timeline includes only public statuses for an authenticated user" do

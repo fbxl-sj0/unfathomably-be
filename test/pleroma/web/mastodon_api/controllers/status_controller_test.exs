@@ -20,6 +20,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
   alias Pleroma.Workers.ScheduledActivityWorker
 
   import Pleroma.Factory
+  require Pleroma.Constants
 
   setup do: clear_config([:instance, :federating])
   setup do: clear_config([:instance, :allow_relay])
@@ -688,6 +689,23 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
       assert error == "Poll options cannot be longer than #{limit} characters each"
     end
 
+    test "local poll options are normalized to unique plain text", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/api/v1/statuses", %{
+          "status" => "Choose one",
+          "poll" => %{
+            "options" => ["<b>Cats</b>", "Cats", "&lt;i&gt;Dogs&lt;/i&gt;"],
+            "expires_in" => 300
+          }
+        })
+
+      response = json_response_and_validate_schema(conn, 200)
+
+      assert Enum.map(response["poll"]["options"], & &1["title"]) == ["Cats", "Dogs"]
+    end
+
     test "minimal date limit is enforced", %{conn: conn} do
       limit = Config.get([:instance, :poll_limits, :min_expiration])
 
@@ -983,6 +1001,19 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
 
     assert [%{"id" => ^id1}, %{"id" => ^id2}] =
              Enum.sort_by(json_response_and_validate_schema(conn, :ok), & &1["id"])
+  end
+
+  test "get statuses by IDs ignores malformed IDs" do
+    %{conn: conn} = oauth_access(["read:statuses"])
+    %{id: valid_id} = insert(:note_activity)
+
+    conn =
+      get(
+        conn,
+        "/api/v1/statuses/?id[]=#{valid_id}&id[]=0000019f-ae9a-f43a-dd34-d596da9b0000"
+      )
+
+    assert [%{"id" => ^valid_id}] = json_response_and_validate_schema(conn, :ok)
   end
 
   describe "getting statuses by ids with restricted unauthenticated for local and remote" do
@@ -1559,6 +1590,63 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
         |> post("/api/v1/statuses/1/unfavourite")
 
       assert json_response_and_validate_schema(conn, 404) == %{"error" => "Record not found"}
+    end
+  end
+
+  describe "recording a listen" do
+    setup do: oauth_access(["write:scrobbles"])
+
+    test "records a listen for an Audio status and returns the original status", %{conn: conn} do
+      actor = insert(:user, local: false, ap_id: "https://audio.example/actors/library")
+      track_ap_id = "https://audio.example/library/tracks/789"
+
+      object =
+        insert(:note,
+          user: actor,
+          data: %{
+            "actor" => actor.ap_id,
+            "id" => track_ap_id,
+            "name" => "API track",
+            "to" => [Pleroma.Constants.as_public()],
+            "type" => "Audio"
+          }
+        )
+
+      activity =
+        insert(:note_activity,
+          local: false,
+          user: actor,
+          note: object,
+          data_attrs: %{
+            "id" => "https://audio.example/activities/789",
+            "type" => "Create"
+          }
+        )
+
+      response =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/api/v1/statuses/#{activity.id}/listen")
+        |> json_response_and_validate_schema(200)
+
+      assert response["id"] == activity.id
+
+      assert Enum.any?(Repo.all(Activity), fn activity ->
+               activity.actor == conn.assigns.user.ap_id and activity.data["type"] == "Listen"
+             end)
+    end
+
+    test "rejects an ordinary status", %{conn: conn} do
+      activity = insert(:note_activity)
+
+      response =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/api/v1/statuses/#{activity.id}/listen")
+
+      assert json_response_and_validate_schema(response, 422) == %{
+               "error" => "This status does not represent a track"
+             }
     end
   end
 
@@ -2274,6 +2362,52 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
              |> json_response_and_validate_schema(:ok)
   end
 
+  test "paginated context preserves visibility and blocks without remote hydration" do
+    %{conn: conn, user: reader} = oauth_access(["read:statuses"])
+    author = insert(:user)
+    blocked_author = insert(:user)
+    direct_recipient = insert(:user)
+
+    {:ok, root} = CommonAPI.post(author, %{status: "root"})
+
+    {:ok, visible_reply} =
+      CommonAPI.post(author, %{status: "visible", in_reply_to_status_id: root.id})
+
+    {:ok, blocked_reply} =
+      CommonAPI.post(blocked_author, %{status: "blocked", in_reply_to_status_id: root.id})
+
+    {:ok, direct_reply} =
+      CommonAPI.post(author, %{
+        status: "@#{direct_recipient.nickname} private",
+        visibility: "direct",
+        in_reply_to_status_id: root.id
+      })
+
+    {:ok, _relationship} = User.block(reader, blocked_author)
+
+    descendant_ids =
+      conn
+      |> get("/api/v1/statuses/#{root.id}/context/descendants?limit=40")
+      |> json_response_and_validate_schema(:ok)
+      |> Enum.map(& &1["id"])
+
+    assert visible_reply.id in descendant_ids
+    refute root.id in descendant_ids
+    refute blocked_reply.id in descendant_ids
+    refute direct_reply.id in descendant_ids
+
+    ancestor_ids =
+      conn
+      |> get("/api/v1/statuses/#{visible_reply.id}/context/ancestors?limit=40")
+      |> json_response_and_validate_schema(:ok)
+      |> Enum.map(& &1["id"])
+
+    assert root.id in ancestor_ids
+    refute visible_reply.id in ancestor_ids
+
+    refute_enqueued(worker: Pleroma.Workers.RemoteRepliesFetcherWorker)
+  end
+
   test "context returns not found for a missing status" do
     build_conn()
     |> get("/api/v1/statuses/#{Ecto.UUID.generate()}/context")
@@ -2362,6 +2496,17 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
             })
         }
     end)
+
+    conn =
+      build_conn()
+      |> get("/api/v1/statuses/#{parent_activity.id}/context")
+
+    assert get_resp_header(conn, "x-unfathomably-replies-hydration") == ["scheduled"]
+    assert %{"descendants" => []} = json_response_and_validate_schema(conn, :ok)
+
+    assert [:ok] = Pleroma.Tests.ObanHelpers.perform_all()
+    assert [:ok] = Pleroma.Tests.ObanHelpers.perform_all()
+    assert [:ok] = Pleroma.Tests.ObanHelpers.perform_all()
 
     response =
       build_conn()
@@ -2700,6 +2845,27 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
         |> json_response_and_validate_schema(200)
 
       assert [%{"id" => ^attachment_id}] = response["media_attachments"]
+    end
+
+    test "it reports incompatible structured edits as client errors", %{conn: conn, user: user} do
+      attachment = insert(:attachment, user: user)
+
+      {:ok, activity} =
+        CommonAPI.post(user, %{
+          status: "media",
+          media_ids: [to_string(attachment.id)]
+        })
+
+      response =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put("/api/v1/statuses/#{activity.id}", %{
+          "status" => "poll",
+          "poll" => %{"options" => ["one", "two"], "expires_in" => 3600}
+        })
+        |> json_response_and_validate_schema(:unprocessable_entity)
+
+      assert response["error"] =~ "media status cannot be replaced with a poll"
     end
 
     test "it does not update visibility", %{conn: conn, user: user} do

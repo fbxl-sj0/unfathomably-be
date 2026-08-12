@@ -8,6 +8,7 @@ defmodule Pleroma.Object.UpdaterTest do
 
   import Pleroma.Factory
 
+  alias Pleroma.Object
   alias Pleroma.Object.Updater
 
   describe "make_update_object_data/3" do
@@ -98,6 +99,55 @@ defmodule Pleroma.Object.UpdaterTest do
         Updater.make_new_object_data_from_update_object(original_data, update_data)
 
       assert updated_data["oneOf"] == original_data["oneOf"]
+    end
+
+    test "metadata-only updates do not create edit history or replace edited_at" do
+      original_data = %{
+        "id" => "https://example.test/objects/note",
+        "type" => "Note",
+        "published" => "2026-06-29T00:00:00Z",
+        "updated" => "2026-06-29T00:01:00Z",
+        "content" => "unchanged",
+        "tag" => []
+      }
+
+      update_data =
+        original_data
+        |> Map.put("updated", "2026-06-29T00:02:00Z")
+        |> Map.put("tag", [%{"type" => "Hashtag", "name" => "#metadata"}])
+
+      %{updated_data: updated_data, updated: updated} =
+        Updater.make_new_object_data_from_update_object(original_data, update_data)
+
+      assert updated
+      assert updated_data["tag"] == update_data["tag"]
+      assert updated_data["updated"] == original_data["updated"]
+      refute Map.has_key?(updated_data, "formerRepresentations")
+    end
+  end
+
+  describe "do_update_and_invalidate_cache/3" do
+    test "reloads a stale object before deciding whether an edit is newer" do
+      original = insert(:note)
+      {:ok, published, _offset} = DateTime.from_iso8601(original.data["published"])
+
+      older_update =
+        original.data
+        |> Map.put("content", "older edit")
+        |> Map.put("updated", published |> DateTime.add(1, :second) |> DateTime.to_iso8601())
+
+      newer_update =
+        original.data
+        |> Map.put("content", "newer edit")
+        |> Map.put("updated", published |> DateTime.add(2, :second) |> DateTime.to_iso8601())
+
+      assert {:ok, _object, true} =
+               Updater.do_update_and_invalidate_cache(original, newer_update)
+
+      assert {:ok, _object, false} =
+               Updater.do_update_and_invalidate_cache(original, older_update)
+
+      assert Object.get_by_id(original.id).data["content"] == "newer edit"
     end
   end
 end

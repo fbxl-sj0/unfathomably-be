@@ -11,6 +11,10 @@
                 "@id": "ostatus:conversation",
                 "@type": "@id"
             },
+            "attributionDomains": {
+                "@id": "https://joinmastodon.org/ns#attributionDomains",
+                "@container": "@set"
+            },
             "discoverable": "toot:discoverable",
             "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
             "capabilities": "litepub:capabilities",
@@ -40,6 +44,10 @@
                 "@id": "https://w3id.org/fep/044f#quoteAuthorization",
                 "@type": "@id"
             },
+            "replyAuthorization": {
+                "@id": "gts:replyAuthorization",
+                "@type": "@id"
+            },
             "QuoteRequest": "https://w3id.org/fep/044f#QuoteRequest",
             "QuoteAuthorization": "https://w3id.org/fep/044f#QuoteAuthorization",
             "interactionPolicy": {
@@ -48,6 +56,22 @@
             },
             "canQuote": {
                 "@id": "gts:canQuote",
+                "@type": "@id"
+            },
+            "canFeature": {
+                "@id": "gts:canFeature",
+                "@type": "@id"
+            },
+            "canLike": {
+                "@id": "gts:canLike",
+                "@type": "@id"
+            },
+            "canReply": {
+                "@id": "gts:canReply",
+                "@type": "@id"
+            },
+            "canAnnounce": {
+                "@id": "gts:canAnnounce",
                 "@type": "@id"
             },
             "automaticApproval": {

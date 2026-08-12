@@ -4,15 +4,17 @@
 
 defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifier do
   @moduledoc """
-  Authenticates narrowly scoped inbox-forwarded Create activities.
+  Authenticates narrowly scoped inbox-forwarded public activities.
 
   Legacy `RsaSignature2017` proofs require obsolete JSON-LD processing whose
   behavior differs between implementations. The embedded proof is therefore
   used only as a forwarding marker. Authorization comes from fetching the
   canonical activity from its HTTPS origin and applying strict actor, object,
-  audience, and forwarder checks before that canonical document is processed.
+  and audience checks before that canonical document is processed.
 
-  This intentionally does not authorize destructive or private activities.
+  Destructive activities are accepted only when the origin still exposes the
+  canonical activity document. The embedded proof never authorizes a mutation
+  by itself.
   """
 
   alias Pleroma.Object.Fetcher
@@ -22,20 +24,39 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifier do
 
   @legacy_signature_type "RsaSignature2017"
   @public "https://www.w3.org/ns/activitystreams#Public"
-  @allowed_types ["Create"]
+  @allowed_types ["Create", "Delete", "Update"]
   @clock_skew_seconds 300
   @maximum_age_seconds 7 * 24 * 60 * 60
   @maximum_uri_bytes 2_048
   @minimum_rsa_signature_bytes 128
   @maximum_rsa_signature_bytes 1_024
+  @rsa_signature_size_range @minimum_rsa_signature_bytes..@maximum_rsa_signature_bytes
 
   @type verification_error ::
           :invalid_forwarded_activity
           | :invalid_legacy_signature
-          | :forwarder_not_addressed
           | :non_public_activity
           | :origin_mismatch
           | {:origin_fetch, term()}
+
+  @doc """
+  Returns whether an activity is safe to pass through an inbox forwarder.
+
+  This is deliberately only an envelope check. The receiving server must
+  still authenticate the canonical activity at its origin before applying it.
+  """
+  @spec forwardable?(map()) :: boolean()
+  def forwardable?(%{} = data) do
+    with :ok <- validate_forwarded_envelope(data),
+         :ok <- validate_legacy_signature(data["signature"], data["actor"]),
+         true <- @public in delivery_targets(data) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  def forwardable?(_data), do: false
 
   @spec verify_and_fetch(map(), String.t(), (String.t() -> {:ok, map()} | {:error, term()})) ::
           {:ok, map()} | {:error, verification_error()}
@@ -50,9 +71,9 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifier do
     with :ok <- validate_forwarded_envelope(data),
          :ok <- validate_legacy_signature(data["signature"], data["actor"]),
          {:ok, canonical} <- fetch_origin(fetcher, data["id"]),
-         :ok <- validate_canonical_activity(data, canonical, signature_actor_id) do
+         :ok <- validate_canonical_activity(data, canonical) do
       Logger.info(
-        "Accepted origin-authenticated forwarded Create activity " <>
+        "Accepted origin-authenticated forwarded activity " <>
           "activity_id=#{inspect(canonical["id"])} " <>
           "actor=#{inspect(canonical["actor"])} " <>
           "forwarder=#{inspect(signature_actor_id)}"
@@ -70,7 +91,7 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifier do
          "actor" => actor_id,
          "object" => object
        })
-       when type in @allowed_types and is_map(object) do
+       when type in @allowed_types do
     object_id = Utils.get_ap_id(object)
 
     with :ok <- validate_https_uri(activity_id),
@@ -78,7 +99,7 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifier do
          :ok <- validate_https_uri(object_id),
          true <- same_origin?(activity_id, actor_id),
          true <- same_origin?(activity_id, object_id),
-         true <- actor_id in ids(object["attributedTo"] || object["actor"]) do
+         :ok <- validate_object_actor(type, object, actor_id) do
       :ok
     else
       _ -> {:error, :origin_mismatch}
@@ -99,9 +120,10 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifier do
        when is_binary(creator) and is_binary(created) and is_binary(signature_value) and
               is_binary(actor_id) do
     with true <- creator_for_actor?(creator, actor_id),
+         :ok <- validate_verification_method(signature["verificationMethod"], creator),
+         :ok <- validate_proof_purpose(signature["proofPurpose"]),
          {:ok, decoded_signature} <- Base.decode64(signature_value),
-         true <-
-           byte_size(decoded_signature) in @minimum_rsa_signature_bytes..@maximum_rsa_signature_bytes,
+         true <- byte_size(decoded_signature) in @rsa_signature_size_range,
          {:ok, created_at, _offset} <- DateTime.from_iso8601(created),
          :ok <- validate_created_at(created_at),
          :ok <- validate_expiry(signature["expires"]) do
@@ -112,6 +134,16 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifier do
   end
 
   defp validate_legacy_signature(_, _), do: {:error, :invalid_legacy_signature}
+
+  defp validate_verification_method(nil, _creator), do: :ok
+  defp validate_verification_method(creator, creator), do: :ok
+
+  defp validate_verification_method(_verification_method, _creator),
+    do: {:error, :invalid_legacy_signature}
+
+  defp validate_proof_purpose(nil), do: :ok
+  defp validate_proof_purpose(value) when is_binary(value), do: :ok
+  defp validate_proof_purpose(_value), do: {:error, :invalid_legacy_signature}
 
   defp validate_created_at(created_at) do
     now = DateTime.utc_now()
@@ -145,7 +177,7 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifier do
     end
   end
 
-  defp validate_canonical_activity(forwarded, canonical, signature_actor_id) do
+  defp validate_canonical_activity(forwarded, canonical) do
     forwarded_object_id = Utils.get_ap_id(forwarded["object"])
     canonical_object = canonical["object"]
     canonical_object_id = Utils.get_ap_id(canonical_object)
@@ -155,20 +187,38 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifier do
     with true <- canonical["id"] == forwarded["id"],
          true <- canonical["type"] == forwarded["type"],
          true <- actor_id == forwarded["actor"],
-         true <- is_map(canonical_object),
          true <- canonical_object_id == forwarded_object_id,
-         true <- actor_id in ids(canonical_object["attributedTo"] || canonical_object["actor"]),
+         :ok <- validate_object_actor(canonical["type"], canonical_object, actor_id),
          true <- same_origin?(canonical["id"], actor_id),
          true <- same_origin?(canonical["id"], canonical_object_id) do
-      cond do
-        @public not in targets -> {:error, :non_public_activity}
-        signature_actor_id not in targets -> {:error, :forwarder_not_addressed}
-        true -> :ok
-      end
+      if @public in targets, do: :ok, else: {:error, :non_public_activity}
     else
       _ -> {:error, :origin_mismatch}
     end
   end
+
+  defp validate_object_actor("Create", %{} = object, actor_id) do
+    if actor_id in ids(object["attributedTo"] || object["actor"]),
+      do: :ok,
+      else: {:error, :origin_mismatch}
+  end
+
+  defp validate_object_actor("Update", %{} = object, actor_id) do
+    object_actor_ids = ids(object["attributedTo"] || object["actor"])
+
+    if Utils.get_ap_id(object) == actor_id or actor_id in object_actor_ids,
+      do: :ok,
+      else: {:error, :origin_mismatch}
+  end
+
+  defp validate_object_actor("Delete", object, _actor_id) do
+    if is_binary(Utils.get_ap_id(object)),
+      do: :ok,
+      else: {:error, :origin_mismatch}
+  end
+
+  defp validate_object_actor(_type, _object, _actor_id),
+    do: {:error, :origin_mismatch}
 
   defp delivery_targets(activity) do
     object = if is_map(activity["object"]), do: activity["object"], else: %{}

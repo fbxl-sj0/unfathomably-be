@@ -1,7 +1,20 @@
+<!--
+  Project: Unfathomably BE
+  File: priv/static/index.html
+
+  Purpose:
+    Provide a useful landing page before a production frontend is installed.
+
+  Responsibilities:
+    - identify the installed backend
+    - direct operators to the matching frontend project
+
+  This file intentionally does NOT contain instance-specific branding.
+-->
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <title>Welcome to Rebased</title>
+    <title>Welcome to Unfathomably BE</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
     <style type="text/css">
@@ -24,8 +37,10 @@
       }
 
       .logo {
-        width: 100%;
+        width: 160px;
+        height: 160px;
         display: block;
+        margin: 0 auto;
       }
 
       h2 {
@@ -60,15 +75,15 @@
   </head>
   <body>
     <main>
-      <img class="logo" src="/images/rebased-wide.svg" alt="Rebased" />
+      <img class="logo" src="/images/unfathomably-logo.svg" alt="Unfathomably">
       <h2>Almost done...</h2>
-      <p>Congrats! 🎉 You've installed Rebased. Now you just need to install a frontend.</p>
-      <h2>Installing Soapbox</h2>
-      <p>To install <a href="https://gitlab.com/soapbox-pub/soapbox" target="_blank">Soapbox</a>, SSH into the server and download a .zip of the latest build:</p>
-      <code>curl -L https://gitlab.com/soapbox-pub/soapbox/-/jobs/artifacts/develop/download?job=build-production -o soapbox.zip</code>
-      <p>Then unpack it into the <code class="inline">instance</code> directory:</p>
-      <code>busybox unzip soapbox.zip -o -d /opt/pleroma/instance</code>
+      <p>Congratulations! You've installed Unfathomably BE. Now you just need to install a frontend.</p>
+      <h2>Installing Unfathomably FE</h2>
+      <p>Download a production build from the <a href="https://github.com/fbxl-sj0/unfathomably-fe" target="_blank" rel="noopener noreferrer">Unfathomably FE project</a>.</p>
+      <p>Then unpack it into the <code class="inline">instance</code> directory.</p>
       <p><strong>That's it!</strong> Just refresh this page.</p>
     </main>
   </body>
 </html>
+
+<!-- end of priv/static/index.html -->

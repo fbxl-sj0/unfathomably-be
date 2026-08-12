@@ -10,6 +10,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   import Ecto.Query, only: [where: 3]
 
   alias Pleroma.Activity
+  alias Pleroma.Filter
   alias Pleroma.HTML
   alias Pleroma.Maps
   alias Pleroma.Object
@@ -19,18 +20,23 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   alias Pleroma.UserRelationship
   alias Pleroma.Web.ActivityPub.Addressing
   alias Pleroma.Web.ActivityPub.CustomObject
+  alias Pleroma.Web.ActivityPub.QuotePolicy
+  alias Pleroma.Web.ActivityPub.ReplyPolicy
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.CommonAPI.Utils
   alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.AccountView
   alias Pleroma.Web.MastodonAPI.FederatedTargetView
+  alias Pleroma.Web.MastodonAPI.FilterView
+  alias Pleroma.Web.MastodonAPI.LocalReference
   alias Pleroma.Web.MastodonAPI.PollView
   alias Pleroma.Web.MastodonAPI.StatusView
   alias Pleroma.Web.MediaProxy
   alias Pleroma.Web.PleromaAPI.EmojiReactionController
   alias Pleroma.Web.RichMedia.Card
 
-  import Pleroma.Web.ActivityPub.Visibility, only: [get_visibility: 1, visible_for_user?: 2]
+  import Pleroma.Web.ActivityPub.Visibility,
+    only: [get_visibility: 1, visible_for_user?: 3]
 
   # This is a naive way to do this, just spawning a process per activity
   # to fetch the preview. However it should be fine considering
@@ -159,6 +165,49 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     |> Enum.find(&FederatedTarget.group?/1)
   end
 
+  def get_mention_users(activities) when is_list(activities) do
+    ap_ids =
+      activities
+      |> Enum.flat_map(&mention_candidate_ap_ids/1)
+      |> Enum.uniq()
+
+    case ap_ids do
+      [] ->
+        %{}
+
+      ap_ids ->
+        User
+        |> where([user], user.ap_id in ^ap_ids)
+        |> Repo.all()
+        |> Map.new(&{&1.ap_id, &1})
+    end
+  end
+
+  defp mention_candidate_ap_ids(%Activity{} = activity) do
+    object_data =
+      case Object.normalize(activity, fetch: false) do
+        %Object{data: data} -> data
+        _ -> %{}
+      end
+
+    tag_mentions =
+      object_data
+      |> Map.get("tag", [])
+      |> List.wrap()
+      |> Enum.flat_map(fn
+        %{"type" => "Mention", "href" => href} when is_binary(href) -> [href]
+        _ -> []
+      end)
+
+    activity.recipients
+    |> List.wrap()
+    |> Kernel.++(List.wrap(object_data["to"]))
+    |> Kernel.++(tag_mentions)
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp mention_candidate_ap_ids(_activity), do: []
+
   defp status_group_candidate_ap_ids(%Activity{} = activity) do
     object = Object.normalize(activity, fetch: false)
     status_group_candidate_ap_ids(activity, object)
@@ -267,7 +316,15 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
         :groups_by_address,
         get_status_groups_by_address(activities ++ parent_activities, reading_user)
       )
+      |> Map.put(
+        :local_references_by_activity,
+        local_references_by_activity(activities ++ parent_activities, reading_user)
+      )
       |> Map.put(:relationships, relationships_opt)
+      |> Map.put_new(
+        :status_filters,
+        get_filters_for_context(reading_user, opts[:filter_context])
+      )
 
     safe_render_many(activities, StatusView, "show.json", opts)
   end
@@ -303,7 +360,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
 
     mentions =
       activity.recipients
-      |> Enum.map(fn ap_id -> User.get_cached_by_ap_id(ap_id) end)
+      |> Enum.map(&mention_user(&1, opts))
       |> Enum.filter(& &1)
       |> Enum.map(fn user -> AccountView.render("mention.json", %{user: user}) end)
 
@@ -313,11 +370,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       id: to_string(activity.id),
       uri: object.data["id"],
       url: object.data["id"],
-      account:
-        AccountView.render("show.json", %{
-          user: user,
-          for: opts[:for]
-        }),
+      account: rendered_account(user, opts),
       in_reply_to_id: nil,
       in_reply_to_account_id: nil,
       reblog: reblogged,
@@ -340,11 +393,16 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       application: build_application(object.data["generator"]),
       language: get_language(object),
       emojis: [],
+      filtered: reblogged[:filtered] || [],
       group: reblogged[:group] || status_group(activity, object, opts),
       pleroma: %{
         local: activity.local,
+        local_references: get_in(reblogged, [:pleroma, :local_references]) || %{},
         native: get_in(reblogged, [:pleroma, :native]),
-        comments_enabled: object.data["commentsEnabled"] != false,
+        nostr: get_in(reblogged, [:pleroma, :nostr]),
+        atproto: get_in(reblogged, [:pleroma, :atproto]),
+        diaspora: get_in(reblogged, [:pleroma, :diaspora]),
+        comments_enabled: ReplyPolicy.open?(object),
         pinned_at: pinned_at,
         bookmark_folder: bookmark_folder
       }
@@ -437,7 +495,11 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
 
   defp render_status_with_object(activity, %Object{} = object, opts) do
     actor = object.data["actor"] || activity.actor
-    user = CommonAPI.get_user(actor)
+
+    user =
+      Map.get(opts[:users_by_ap_id] || %{}, actor) ||
+        CommonAPI.get_user(actor)
+
     user_follower_address = user.follower_address
 
     like_count = object.data["like_count"] || 0
@@ -455,17 +517,27 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
 
     mentions =
       object.data["to"]
-      |> Addressing.filter_implicit_mention_ap_ids(object.data)
+      |> Addressing.filter_implicit_mention_ap_ids(object.data, opts[:mention_users])
       |> Kernel.++(tag_mentions)
       |> Enum.uniq()
       |> Enum.map(fn
-        Pleroma.Constants.as_public() -> nil
-        ^user_follower_address -> nil
-        ap_id -> User.get_cached_by_ap_id(ap_id)
+        Pleroma.Constants.as_public() ->
+          nil
+
+        ^user_follower_address ->
+          nil
+
+        ap_id ->
+          case mention_user(ap_id, opts) do
+            nil -> nil
+            user -> {ap_id, user}
+          end
       end)
       |> Enum.filter(& &1)
-      |> Enum.reject(&FederatedTarget.group?/1)
-      |> Enum.map(fn user -> AccountView.render("mention.json", %{user: user}) end)
+      |> Enum.reject(fn {ap_id, user} ->
+        FederatedTarget.group?(user) and ap_id not in tag_mentions
+      end)
+      |> Enum.map(fn {_ap_id, user} -> AccountView.render("mention.json", %{user: user}) end)
 
     favorited = opts[:for] && opts[:for].ap_id in (object.data["likes"] || [])
 
@@ -491,7 +563,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
         true -> CommonAPI.thread_muted?(opts[:for], activity)
       end
 
-    attachment_data = object.data["attachment"] || []
+    attachment_data = media_attachment_data(object.data["attachment"])
     attachments = render_many(attachment_data, StatusView, "attachment.json", as: :attachment)
 
     created_at = Utils.to_masto_date(object.data["published"])
@@ -518,34 +590,20 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       end
 
     quote_post =
-      if visible_for_user?(quote_activity, opts[:for]) and opts[:show_quote] != false do
+      if visible_for_user?(quote_activity, opts[:for], opts[:following]) and
+           opts[:show_quote] != false do
         quote_rendering_opts = Map.merge(opts, %{activity: quote_activity, show_quote: false})
         render("show.json", quote_rendering_opts)
       else
         nil
       end
 
-    history_len =
-      1 +
-        (Object.Updater.history_for(object.data)
-         |> Map.get("orderedItems")
-         |> length())
-
-    # See render("history.json", ...) for more details
-    # Here the implicit index of the current content is 0
-    chrono_order = history_len - 1
-
     content =
       object
       |> render_content()
 
-    content_html =
-      content
-      |> Activity.HTML.get_cached_scrubbed_html_for_activity(
-        User.html_filter_policy(opts[:for]),
-        activity,
-        "mastoapi:content:#{chrono_order}"
-      )
+    chrono_order = current_chrono_order(object)
+    content_html = cached_content_html(content, object, activity, opts[:for])
 
     content_plaintext =
       content
@@ -555,6 +613,18 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       )
 
     summary = object.data["summary"] || ""
+
+    summary_plaintext =
+      summary
+      |> Activity.HTML.get_cached_stripped_html_for_activity(
+        activity,
+        "mastoapi:summary:#{chrono_order}"
+      )
+
+    filter_text =
+      [content_plaintext, summary_plaintext | poll_option_labels(object.data)]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join("\n")
 
     card =
       case Card.get_by_activity(activity, Map.put(opts, :stream, false)) do
@@ -614,11 +684,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       id: to_string(activity.id),
       uri: object.data["id"],
       url: url,
-      account:
-        AccountView.render("show.json", %{
-          user: user,
-          for: opts[:for]
-        }),
+      account: rendered_account(user, opts),
       in_reply_to_id: reply_to && to_string(reply_to.id),
       in_reply_to_account_id: reply_to_user && to_string(reply_to_user.id),
       reblog: nil,
@@ -647,42 +713,132 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
       application: build_application(object.data["generator"]),
       language: get_language(object),
       emojis: build_emojis(object.data["emoji"]),
+      filtered: render_filter_results(opts, filter_text),
       quotes_count: object.data["quotesCount"] || 0,
       group: status_group(activity, object, opts),
       pleroma: %{
         local: activity.local,
+        local_references: local_references_for_activity(activity, opts),
         conversation_id: get_context_id(activity),
         context: object.data["context"],
         in_reply_to_account_acct: reply_to_user && reply_to_user.nickname,
         quote: quote_post,
         quote_id: quote_id,
         quote_url: object.data["quoteUrl"],
-        quote_visible: visible_for_user?(quote_activity, opts[:for]),
+        quote_visible: visible_for_user?(quote_activity, opts[:for], opts[:following]),
         quote_state: object.data["quoteState"],
         quote_authorization: object.data["quoteAuthorization"],
         quote_approval_required: object.data["quoteState"] == "pending",
+        quote_approval_policy: QuotePolicy.name(object.data["interactionPolicy"], object),
         quote_manageable: QuoteAuthorization.manageable?(object, opts[:for]),
         quote_allowed: Pleroma.Web.ActivityPub.QuotePolicy.allowed?(object, opts[:for]),
         interaction_policy: object.data["interactionPolicy"],
-        comments_enabled: object.data["commentsEnabled"] != false,
+        comments_enabled: ReplyPolicy.open?(object),
+        distinguished: object.data["distinguished"] == true,
+        answer: object.data["answer"] == true,
         content: %{"text/plain" => content_plaintext},
-        spoiler_text: %{"text/plain" => summary},
+        spoiler_text: %{"text/plain" => summary_plaintext},
         expires_at: expires_at,
         direct_conversation_id: direct_conversation_id,
         thread_muted: thread_muted?,
         emoji_reactions: emoji_reactions,
-        parent_visible: visible_for_user?(reply_to, opts[:for]),
+        parent_visible: visible_for_user?(reply_to, opts[:for], opts[:following]),
         pinned_at: pinned_at,
         bookmark_folder: bookmark_folder,
         content_type: opts[:with_source] && (object.data["content_type"] || "text/plain"),
         quotes_count: object.data["quotesCount"] || 0,
         event: build_event(object.data, opts[:for], attachments),
-        native: CustomObject.presentation(object.data)
+        native: CustomObject.presentation(object.data),
+        nostr: nostr_provenance(object.data["unfathomably:nostr"]),
+        atproto: atproto_provenance(object.data["unfathomably:atproto"]),
+        diaspora: diaspora_provenance(object.data["unfathomably:diaspora"])
       }
     }
   end
 
   defp render_status_with_object(_activity, _object, _opts), do: nil
+
+  @filter_contexts ~w(home notifications public thread)
+
+  def get_filters_for_context(%User{} = user, context) when context in @filter_contexts do
+    Filter
+    |> Filter.get_active()
+    |> Filter.get_filters(user)
+  end
+
+  def get_filters_for_context(_user, _context), do: []
+
+  defp render_filter_results(%{for: %User{}, filter_context: context} = opts, text)
+       when context in @filter_contexts do
+    filters =
+      case opts[:status_filters] do
+        filters when is_list(filters) -> filters
+        _ -> get_filters_for_context(opts[:for], context)
+      end
+
+    filters
+    |> Filter.matching(text, context)
+    |> Enum.map(fn {filter, match} ->
+      %{
+        filter: FilterView.render("show.json", %{filter: filter}),
+        keyword_matches: [match],
+        status_matches: []
+      }
+    end)
+  end
+
+  defp render_filter_results(_opts, _text), do: []
+
+  defp poll_option_labels(data) do
+    [data["oneOf"], data["anyOf"]]
+    |> Enum.flat_map(&List.wrap/1)
+    |> Enum.flat_map(fn
+      %{"name" => name} when is_binary(name) -> [name]
+      _option -> []
+    end)
+  end
+
+  defp mention_user(ap_id, %{mention_users: mention_users}) when is_map(mention_users) do
+    Map.get(mention_users, ap_id)
+  end
+
+  defp mention_user(ap_id, _opts), do: User.get_cached_by_ap_id(ap_id)
+
+  defp rendered_account(user, opts) do
+    Map.get(opts[:rendered_accounts] || %{}, user.id) ||
+      AccountView.render("show.json", %{user: user, for: opts[:for]})
+  end
+
+  defp nostr_provenance(%{"event_id" => event_id, "pubkey" => pubkey, "relay" => relay})
+       when is_binary(event_id) and is_binary(pubkey) and is_binary(relay) do
+    relay_uri = URI.parse(relay)
+
+    if Regex.match?(~r/\A[0-9a-fA-F]{64}\z/, event_id) and
+         Regex.match?(~r/\A[0-9a-fA-F]{64}\z/, pubkey) and
+         relay_uri.scheme in ["ws", "wss"] and is_binary(relay_uri.host) do
+      %{
+        event_id: String.downcase(event_id),
+        pubkey: String.downcase(pubkey),
+        relay: relay
+      }
+    end
+  end
+
+  defp nostr_provenance(_provenance), do: nil
+
+  defp atproto_provenance(%{"uri" => "at://" <> _rest = uri, "cid" => cid} = provenance)
+       when is_binary(cid) do
+    %{uri: uri, cid: cid, url: provenance["url"]}
+  end
+
+  defp atproto_provenance(_provenance), do: nil
+
+  defp diaspora_provenance(%{"guid" => guid, "author" => author})
+       when is_binary(guid) and is_binary(author) do
+    %{guid: guid, author: author}
+  end
+
+  defp diaspora_provenance(_provenance), do: nil
 
   defp render_history(%{activity: %{data: %{"object" => _object}} = activity} = opts) do
     object = Object.normalize(activity, fetch: false)
@@ -731,7 +887,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
        ) do
     sensitive = object.data["sensitive"] || Enum.member?(hashtags, "nsfw")
 
-    attachment_data = object.data["attachment"] || []
+    attachment_data = media_attachment_data(object.data["attachment"])
     attachments = render_many(attachment_data, StatusView, "attachment.json", as: :attachment)
 
     created_at = Utils.to_masto_date(object.data["updated"] || object.data["published"])
@@ -751,11 +907,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     summary = object.data["summary"] || ""
 
     %{
-      account:
-        AccountView.render("show.json", %{
-          user: user,
-          for: opts[:for]
-        }),
+      account: rendered_account(user, opts),
       content: content_html,
       sensitive: sensitive,
       spoiler_text: summary,
@@ -806,6 +958,63 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     }
   end
 
+  defp media_attachment_data(attachments) when is_list(attachments) do
+    Enum.reject(attachments, &link_attachment?/1)
+  end
+
+  defp media_attachment_data(_), do: []
+
+  defp local_references_by_activity(activities, reading_user) do
+    activities
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.flat_map(fn activity ->
+      case Object.normalize(activity, fetch: false) do
+        %Object{} = object ->
+          content = render_content(object)
+          [{activity, cached_content_html(content, object, activity, reading_user)}]
+
+        _missing_object ->
+          []
+      end
+    end)
+    |> LocalReference.for_statuses(reading_user)
+  end
+
+  defp local_references_for_activity(%Activity{id: activity_id} = activity, opts) do
+    case opts[:local_references_by_activity] do
+      references when is_map(references) ->
+        Map.get(references, activity_id, %{})
+
+      _not_preloaded ->
+        [activity]
+        |> local_references_by_activity(opts[:for])
+        |> Map.get(activity_id, %{})
+    end
+  end
+
+  defp cached_content_html(content, object, activity, reading_user) do
+    Activity.HTML.get_cached_scrubbed_html_for_activity(
+      content,
+      User.html_filter_policy(reading_user),
+      activity,
+      "mastoapi:content:#{current_chrono_order(object)}"
+    )
+  end
+
+  # Current content has implicit history index zero, so its chronological
+  # cache position is the number of stored prior revisions.
+  defp current_chrono_order(%Object{data: data}) do
+    case Map.get(Object.Updater.history_for(data), "orderedItems") do
+      items when is_list(items) -> length(items)
+      _missing_or_invalid_history -> 0
+    end
+  end
+
+  defp link_attachment?(%{"type" => "Link", "href" => href}) when is_binary(href),
+    do: href != ""
+
+  defp link_attachment?(_), do: false
+
   defp render_attachment(%{attachment: attachment}) do
     [attachment_url | _] = attachment["url"]
     href_remote = attachment_url["href"]
@@ -823,6 +1032,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
         String.contains?(media_type, "image") -> "image"
         String.contains?(media_type, "video") -> "video"
         String.contains?(media_type, "audio") -> "audio"
+        attachment["type"] == "Image" -> "image"
         true -> "unknown"
       end
 
@@ -837,18 +1047,14 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
           to_string(attachment["id"] || hash_id)
       end
 
-    description =
-      if attachment["summary"] do
-        HTML.strip_tags(attachment["summary"])
-      else
-        attachment["name"]
-      end
-
-    name = if attachment["summary"], do: attachment["name"]
+    summary = present_attachment_text(attachment["summary"])
+    description = HTML.strip_tags(summary || attachment["name"] || "")
+    name = if summary, do: attachment["name"]
 
     pleroma =
       %{mime_type: media_type}
       |> Maps.put_if_present(:name, name)
+      |> Maps.put_if_present(:license, attachment_license(attachment, attachment_url))
 
     %{
       id: attachment_id,
@@ -864,11 +1070,53 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     |> Maps.put_if_present(:meta, meta)
   end
 
+  defp present_attachment_text(value) when is_binary(value) do
+    if String.trim(value) == "", do: nil, else: value
+  end
+
+  defp present_attachment_text(_value), do: nil
+
+  defp attachment_license(attachment, attachment_url) do
+    value =
+      attachment["license"] ||
+        attachment["licence"] ||
+        attachment["spdx:license"] ||
+        attachment_url["license"] ||
+        attachment_url["licence"] ||
+        attachment_url["spdx:license"]
+
+    attachment_license_value(value)
+  end
+
+  defp attachment_license_value(value) when is_binary(value) do
+    value =
+      value
+      |> HTML.strip_tags()
+      |> String.replace(~r/[\x00-\x1F\x7F]/u, " ")
+      |> String.trim()
+
+    if value != "" and byte_size(value) <= 2_048, do: value
+  end
+
+  defp attachment_license_value(%{} = value) do
+    license = value["spdx:licenseId"] || value["name"] || value["id"] || value["@id"]
+    attachment_license_value(license)
+  end
+
+  defp attachment_license_value(values) when is_list(values) do
+    Enum.find_value(values, &attachment_license_value/1)
+  end
+
+  defp attachment_license_value(_value), do: nil
+
   defp render_attachment_meta(%{
          attachment: %{"url" => [%{"width" => width, "height" => height} | _]}
        })
        when is_integer(width) and is_integer(height) and height > 0 do
     %{
+      width: width,
+      height: height,
+      aspect: width / height,
       original: %{
         width: width,
         height: height,
@@ -882,6 +1130,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
        })
        when is_integer(width) and is_integer(height) do
     %{
+      width: width,
+      height: height,
       original: %{
         width: width,
         height: height
@@ -891,20 +1141,118 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
 
   defp render_attachment_meta(_), do: nil
 
-  defp render_context(%{activity: activity, activities: activities, user: user}) do
-    %{ancestors: ancestors, descendants: descendants} =
+  defp render_context(%{activity: activity, activities: activities, user: user} = opts) do
+    root_object_id = context_object_id(activity)
+
+    activities =
       activities
-      |> Enum.reverse()
-      |> Enum.group_by(fn %{id: id} ->
-        if id < activity.id, do: :ancestors, else: :descendants
+      |> Enum.reject(fn candidate ->
+        candidate.id == activity.id or
+          (is_binary(root_object_id) and context_object_id(candidate) == root_object_id)
       end)
-      |> Map.put_new(:ancestors, [])
-      |> Map.put_new(:descendants, [])
+      |> Enum.sort_by(&context_activity_sort_key/1)
+      |> Enum.uniq_by(&context_activity_identity/1)
+
+    activities_by_object_id = context_activities_by_object_id(activities)
+    ancestor_ids = context_ancestor_ids(activity, activities_by_object_id)
+    ancestor_id_set = MapSet.new(ancestor_ids)
+
+    ancestors =
+      Enum.flat_map(ancestor_ids, fn object_id ->
+        case Map.get(activities_by_object_id, object_id) do
+          nil -> []
+          ancestor -> [ancestor]
+        end
+      end)
+
+    descendants =
+      Enum.reject(activities, fn descendant ->
+        case context_object_id(descendant) do
+          nil -> false
+          object_id -> MapSet.member?(ancestor_id_set, object_id)
+        end
+      end)
+
+    render_opts =
+      opts
+      |> Map.take([:filter_context, :status_filters])
+      |> Map.merge(%{for: user, as: :activity})
 
     %{
-      ancestors: render("index.json", for: user, activities: ancestors, as: :activity),
-      descendants: render("index.json", for: user, activities: descendants, as: :activity)
+      ancestors: render("index.json", Map.put(render_opts, :activities, ancestors)),
+      descendants: render("index.json", Map.put(render_opts, :activities, descendants))
     }
+  end
+
+  # Remote activities can arrive newest-first, so their sortable local IDs do
+  # not reliably describe ancestry. ActivityPub inReplyTo links are the source
+  # of truth; published time only controls presentation within each side.
+  defp context_activity_sort_key(%{id: id, data: data}) when is_map(data) do
+    {data["published"] || "", id}
+  end
+
+  defp context_activity_sort_key(%{id: id}), do: {"", id}
+
+  defp context_activity_identity(activity) do
+    case context_object_id(activity) do
+      object_id when is_binary(object_id) -> {:object, object_id}
+      _object_id -> {:activity, activity.id}
+    end
+  end
+
+  defp context_activities_by_object_id(activities) do
+    Enum.reduce(activities, %{}, fn activity, indexed ->
+      case context_object_id(activity) do
+        nil -> indexed
+        object_id -> Map.put(indexed, object_id, activity)
+      end
+    end)
+  end
+
+  defp context_object_id(activity) do
+    case Object.normalize(activity, fetch: false) do
+      %Object{data: %{"id" => object_id}} when is_binary(object_id) -> object_id
+      _ -> nil
+    end
+  end
+
+  defp context_ancestor_ids(activity, activities_by_object_id) do
+    case Object.normalize(activity, fetch: false) do
+      %Object{data: %{"inReplyTo" => parent_id}} when is_binary(parent_id) ->
+        walk_context_ancestors(parent_id, activities_by_object_id, MapSet.new(), [])
+
+      _ ->
+        []
+    end
+  end
+
+  defp walk_context_ancestors(parent_id, activities_by_object_id, seen, ancestors) do
+    if MapSet.member?(seen, parent_id) do
+      ancestors
+    else
+      case Map.get(activities_by_object_id, parent_id) do
+        nil ->
+          ancestors
+
+        parent_activity ->
+          seen = MapSet.put(seen, parent_id)
+          ancestors = [parent_id | ancestors]
+
+          case Object.normalize(parent_activity, fetch: false) do
+            %Object{data: %{"inReplyTo" => next_parent_id}}
+            when is_binary(next_parent_id) ->
+              walk_context_ancestors(
+                next_parent_id,
+                activities_by_object_id,
+                seen,
+                ancestors
+              )
+
+            _ ->
+              ancestors
+          end
+      end
+    end
   end
 
   defp render_translation(%{
@@ -1225,11 +1573,34 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
 
   defp proxied_url(url, page_url_data) do
     if is_binary(url) do
-      build_image_url(URI.parse(url), page_url_data) |> MediaProxy.url()
+      resolved_url = build_image_url(URI.parse(url), page_url_data)
+
+      if same_page_url?(resolved_url, page_url_data) do
+        nil
+      else
+        MediaProxy.url(resolved_url)
+      end
     else
       nil
     end
   end
+
+  defp same_page_url?(url, %URI{} = page_url_data) when is_binary(url) do
+    candidate_url =
+      url
+      |> URI.parse()
+      |> Map.put(:fragment, nil)
+      |> URI.to_string()
+
+    canonical_url =
+      page_url_data
+      |> Map.put(:fragment, nil)
+      |> URI.to_string()
+
+    candidate_url == canonical_url
+  end
+
+  defp same_page_url?(_url, _page_url_data), do: false
 
   defp replies_count(%Object{data: data}) do
     [

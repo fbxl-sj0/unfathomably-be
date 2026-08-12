@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.LikeHandlingTest do
-  use Pleroma.DataCase, async: true
+  use Pleroma.DataCase, async: false
 
   require Pleroma.Constants
 
@@ -100,6 +100,102 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.LikeHandlingTest do
     assert {:ok, %Activity{data: data}} = Transmogrifier.handle_incoming(announce)
     assert data["context"] == object.data["id"]
     assert data["audience"] == [group.ap_id]
+  end
+
+  test "it resolves an alternate frontend canonical before applying a group reaction" do
+    clear_config([:instance, :federating], true)
+
+    alias_url = "https://scribe.example/comment/12373026"
+    canonical_url = "https://midwest.example/comment/50705317"
+    like_id = "https://lemmy.example/activities/like/1"
+
+    author =
+      insert(:user,
+        local: false,
+        ap_id: "https://midwest.example/u/author",
+        follower_address: "https://midwest.example/u/author/followers"
+      )
+
+    liker =
+      insert(:user,
+        local: false,
+        ap_id: "https://lemmy.example/u/liker",
+        follower_address: "https://lemmy.example/u/liker/followers"
+      )
+
+    group =
+      insert(:user,
+        actor_type: "Group",
+        local: false,
+        ap_id: "https://ani.example/c/animemes",
+        follower_address: "https://ani.example/c/animemes/followers"
+      )
+
+    canonical_object = %{
+      "id" => canonical_url,
+      "type" => "Note",
+      "actor" => author.ap_id,
+      "attributedTo" => author.ap_id,
+      "audience" => group.ap_id,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.ap_id],
+      "context" => canonical_url,
+      "content" => "<p>Canonical discussion comment.</p>",
+      "published" => "2026-08-12T00:00:00Z"
+    }
+
+    like = %{
+      "id" => like_id,
+      "type" => "Like",
+      "actor" => liker.ap_id,
+      "object" => alias_url,
+      "audience" => group.ap_id,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.ap_id]
+    }
+
+    Tesla.Mock.mock(fn
+      %{method: :get, url: ^like_id} ->
+        %Tesla.Env{
+          status: 200,
+          url: like_id,
+          headers: HttpRequestMock.activitypub_object_headers(),
+          body: Jason.encode!(like)
+        }
+
+      %{method: :get, url: ^alias_url} ->
+        %Tesla.Env{
+          status: 200,
+          url: alias_url,
+          headers: [{"content-type", "text/html; charset=utf-8"}],
+          body:
+            ~s(<html><head><link data-owner="frontend" rel="canonical" href="#{canonical_url}"></head></html>)
+        }
+
+      %{method: :get, url: ^canonical_url} ->
+        %Tesla.Env{
+          status: 200,
+          url: canonical_url,
+          headers: HttpRequestMock.activitypub_object_headers(),
+          body: Jason.encode!(canonical_object)
+        }
+    end)
+
+    announce = %{
+      "id" => "https://ani.example/activities/announce/like/1",
+      "type" => "Announce",
+      "actor" => group.ap_id,
+      "object" => like,
+      "to" => [Pleroma.Constants.as_public()],
+      "cc" => [group.follower_address]
+    }
+
+    assert {:ok, %Activity{data: %{"type" => "Like"} = data}} =
+             Transmogrifier.handle_incoming(announce)
+
+    assert data["object"] == canonical_url
+    assert %Object{data: %{"like_count" => 1}} = Object.get_by_ap_id(canonical_url)
+    refute Object.get_by_ap_id(alias_url)
   end
 
   test "it hydrates an unknown reply thread before applying a late remote like" do

@@ -7,6 +7,29 @@ defmodule Pleroma.Helpers.UriHelperTest do
 
   alias Pleroma.Helpers.UriHelper
 
+  describe "log_safe_url/1" do
+    test "removes credentials, query values, and fragments while retaining context" do
+      result =
+        UriHelper.log_safe_url(
+          "https://alice:secret@example.com/inbox/item?access_token=private#key"
+        )
+
+      assert result == "https://example.com/inbox/item?redacted"
+      refute result =~ "alice"
+      refute result =~ "secret"
+      refute result =~ "private"
+      refute result =~ "key"
+    end
+
+    test "does not echo malformed, non-HTTP, or oversized values" do
+      assert UriHelper.log_safe_url("acct:alice@example.com") == "[invalid URL]"
+      assert UriHelper.log_safe_url("not a URL?token=private") == "[invalid URL]"
+
+      assert UriHelper.log_safe_url("https://example.com/" <> String.duplicate("x", 20_000)) ==
+               "[invalid URL]"
+    end
+  end
+
   describe "equivalent?/2" do
     test "treats an omitted default port as the same HTTP resource" do
       assert UriHelper.equivalent?(

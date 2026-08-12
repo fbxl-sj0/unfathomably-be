@@ -4,6 +4,7 @@
 
 defmodule Pleroma.Web.Federator do
   alias Pleroma.Activity
+  alias Pleroma.ATProto.BridgyCompat
   alias Pleroma.Object.Containment
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.CustomObject
@@ -60,29 +61,105 @@ defmodule Pleroma.Web.Federator do
   end
 
   def incoming_ap_doc(%{params: params, req_headers: req_headers}) do
-    ReceiverWorker.enqueue(
-      "incoming_ap_doc",
-      %{"req_headers" => req_headers, "params" => params, "timeout" => :timer.seconds(20)},
-      priority: 2
-    )
+    if legacy_nostr_bridge_envelope?(params) do
+      {:ok, :native_nostr_required}
+    else
+      ReceiverWorker.enqueue(
+        "incoming_ap_doc",
+        incoming_job_args(params, %{
+          "req_headers" => req_headers,
+          "timeout" => :timer.seconds(20)
+        }),
+        priority: 2
+      )
+    end
   end
 
   def incoming_ap_doc(%{"type" => "Delete"} = params) do
-    ReceiverWorker.enqueue("incoming_ap_doc", %{"params" => params}, priority: 3)
+    if legacy_nostr_bridge_envelope?(params) do
+      {:ok, :native_nostr_required}
+    else
+      ReceiverWorker.enqueue("incoming_ap_doc", incoming_job_args(params), priority: 3)
+    end
   end
 
   def incoming_ap_doc(params) do
-    ReceiverWorker.enqueue("incoming_ap_doc", %{"params" => params})
+    if legacy_nostr_bridge_envelope?(params) do
+      {:ok, :native_nostr_required}
+    else
+      ReceiverWorker.enqueue("incoming_ap_doc", incoming_job_args(params))
+    end
+  end
+
+  defp legacy_nostr_bridge_envelope?(params) do
+    if Pleroma.Nostr.MostrCompat.legacy_envelope?(params) do
+      params
+      |> Map.get("actor")
+      |> Utils.get_ap_id()
+      |> Pleroma.Workers.LegacyNostrUnsubscribeWorker.enqueue()
+
+      true
+    else
+      false
+    end
+  end
+
+  defp incoming_job_args(params, extra \\ %{}) do
+    extra
+    |> Map.put("params", params)
+    |> Map.put("activity_key", incoming_activity_key(params))
+  end
+
+  # Some software legitimately reuses a Create ID for a later Delete. The
+  # activity type therefore forms part of the job identity, while idless
+  # activities receive a deterministic content identity rather than all
+  # competing for the same nil uniqueness key.
+  defp incoming_activity_key(%{"id" => id, "type" => type})
+       when is_binary(id) and id != "" and is_binary(type) and type != "" do
+    type <> ":" <> id
+  end
+
+  defp incoming_activity_key(params) do
+    digest =
+      params
+      |> :erlang.term_to_binary([:deterministic])
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    "sha256:" <> digest
   end
 
   @impl true
   def publish(%{id: "pleroma:fakeid"} = activity) do
-    perform(:publish, activity)
+    if Pleroma.Federation.enabled?() do
+      perform(:publish, activity)
+    else
+      {:ok, :federation_disabled}
+    end
   end
 
   @impl true
   def publish(%Pleroma.Activity{data: %{"type" => type}} = activity) do
-    PublisherWorker.enqueue("publish", publish_args(activity), priority: publish_priority(type))
+    if Pleroma.Federation.enabled?() do
+      PublisherWorker.enqueue("publish", publish_args(activity), priority: publish_priority(type))
+    else
+      {:ok, :federation_disabled}
+    end
+  end
+
+  @doc """
+  Re-enqueues a stored activity while bounding repeated recovery requests.
+
+  This is intended for explicit recovery workflows, not ordinary federation.
+  Completed jobs remain part of the uniqueness window so a fast delivery does
+  not let repeated button presses immediately enqueue the same activity again.
+  """
+  def republish(%Pleroma.Activity{data: %{"type" => type}} = activity, period \\ 900)
+      when is_integer(period) and period > 0 do
+    PublisherWorker.enqueue("publish", publish_args(activity),
+      priority: publish_priority(type),
+      unique: [period: period, states: Oban.Job.states()]
+    )
   end
 
   defp publish_priority("Delete"), do: 3
@@ -114,47 +191,62 @@ defmodule Pleroma.Web.Federator do
   def perform(:incoming_ap_doc, params) do
     Logger.debug("Handling incoming AP activity")
 
-    actor =
-      params
-      |> Map.get("actor")
-      |> Utils.get_ap_id()
-
-    # NOTE: we use the actor ID to do the containment, this is fine because an
-    # actor shouldn't be acting on objects outside their own AP server.
-    with {_, {:ok, _user}} <- {:actor, User.get_or_fetch_by_ap_id(actor)},
-         {_, :ok} <-
-           {:correct_origin?, Containment.contain_origin_from_id(actor, params)},
-         {:ok, activity} <- handle_incoming_or_duplicate(params) do
-      {:ok, activity}
+    if legacy_nostr_bridge_envelope?(params) do
+      {:error, {:reject, :native_nostr_required}}
     else
-      {:correct_origin?, _} ->
-        Logger.debug("Origin containment failure for #{params["id"]}")
-        {:error, :origin_containment_failed}
+      actor =
+        params
+        |> Map.get("actor")
+        |> Utils.get_ap_id()
 
-      {:error, :already_present} ->
-        Logger.debug("Already had #{params["id"]}")
-        {:error, :already_present}
+      # NOTE: we use the actor ID to do the containment, this is fine because an
+      # actor shouldn't be acting on objects outside their own AP server.
+      with {_, :ok} <-
+             {:correct_origin?, Containment.contain_origin_from_id(actor, params)},
+           {_, {:ok, _user}} <- {:actor, User.get_or_fetch_by_ap_id(actor)},
+           {:ok, activity} <- handle_incoming_or_duplicate(params),
+           {:forward, :ok} <-
+             {:forward, Pleroma.Web.ActivityPub.Forwarder.maybe_forward(params, activity)} do
+        {:ok, activity}
+      else
+        {:correct_origin?, _} ->
+          Logger.debug("Origin containment failure for #{params["id"]}")
+          {:error, :origin_containment_failed}
 
-      {:actor, e} ->
-        Logger.debug("Unhandled actor #{actor}, #{inspect(e)}")
-        {:error, e}
+        {:error, :already_present} ->
+          Logger.debug("Already had #{params["id"]}")
+          {:error, :already_present}
 
-      {:error, {:validate_object, _}} = e ->
-        Logger.error("Incoming AP doc validation error: #{inspect(e)}")
-        Logger.debug(Jason.encode!(params, pretty: true))
-        e
+        {:actor, e} ->
+          Logger.debug("Unhandled actor #{actor}, #{inspect(e)}")
+          {:error, e}
 
-      e ->
-        # Just drop those for now
-        Logger.debug(fn ->
-          "Unhandled activity: #{inspect(e)}\n" <> Jason.encode!(params, pretty: true)
-        end)
+        {:error, {:validate_object, _}} = e ->
+          Logger.error("Incoming AP doc validation error: #{inspect(e)}")
+          Logger.debug(Jason.encode!(params, pretty: true))
+          e
 
-        {:error, e}
+        {:forward, {:error, reason}} ->
+          {:error, {:forward_enqueue_failed, reason}}
+
+        e ->
+          # Just drop those for now
+          Logger.debug(fn ->
+            "Unhandled activity: #{inspect(e)}\n" <> Jason.encode!(params, pretty: true)
+          end)
+
+          {:error, e}
+      end
     end
   end
 
   defp handle_incoming_or_duplicate(params) do
+    BridgyCompat.handle_incoming(params, fn reconciled ->
+      Pleroma.Nostr.MostrCompat.handle_incoming(reconciled, &handle_reconciled_incoming/1)
+    end)
+  end
+
+  defp handle_reconciled_incoming(params) do
     case Activity.normalize(params["id"]) do
       nil ->
         Transmogrifier.handle_incoming(params)

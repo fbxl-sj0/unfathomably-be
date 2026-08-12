@@ -497,5 +497,16 @@ defmodule Pleroma.Web.TwitterAPI.RemoteFollowControllerTest do
       assert redirected_to(conn) ==
                remote_follow_path(conn, :follow, %{acct: "https://mastodon.social/users/emelie"})
     end
+
+    test "supports PieFed externalInteraction and web+ap protocol URLs", %{conn: conn} do
+      conn =
+        conn
+        |> get("/activitypub/externalInteraction", %{
+          uri: "web+ap:https://mastodon.social/users/emelie"
+        })
+
+      assert redirected_to(conn) ==
+               remote_follow_path(conn, :follow, %{acct: "https://mastodon.social/users/emelie"})
+    end
   end
 end

@@ -199,6 +199,18 @@ defmodule Pleroma.Web.MastodonAPI.UpdateCredentialsTest do
                |> json_response_and_validate_schema(:ok)
     end
 
+    test "updates whether the user's public posts may be indexed", %{conn: conn} do
+      assert %{"source" => %{"pleroma" => %{"indexable" => true}}} =
+               conn
+               |> patch("/api/v1/accounts/update_credentials", %{indexable: "true"})
+               |> json_response_and_validate_schema(:ok)
+
+      assert %{"source" => %{"pleroma" => %{"indexable" => false}}} =
+               conn
+               |> patch("/api/v1/accounts/update_credentials", %{indexable: "false"})
+               |> json_response_and_validate_schema(:ok)
+    end
+
     test "updates the user's hide_followers_count and hide_follows_count", %{conn: conn} do
       conn =
         patch(conn, "/api/v1/accounts/update_credentials", %{

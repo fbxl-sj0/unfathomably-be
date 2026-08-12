@@ -8,6 +8,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
   alias Pleroma.Activity
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Object
+  alias Pleroma.User
   alias Pleroma.Web.ActivityPub.CustomObject
 
   import Ecto.Changeset
@@ -38,7 +39,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
     |> validate_inclusion(:type, ["Accept", "Reject"])
     |> CommonValidations.validate_actor_presence()
     |> CommonValidations.validate_object_presence(
-      allowed_types: ["Follow", "Join", "Offer", "QuoteRequest"]
+      allowed_types: ["FeatureRequest", "Follow", "Join", "Offer", "QuoteRequest"]
     )
     |> validate_quote_result()
     |> validate_accept_reject_rights()
@@ -67,10 +68,15 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
   end
 
   defp validate_actor(%Activity{data: %{"type" => "Join", "object" => joined_event}}, actor) do
-    with %Object{data: %{"actor" => event_author}} <- Object.get_cached_by_ap_id(joined_event) do
-      event_author == actor
-    else
-      _ -> false
+    case Object.get_cached_by_ap_id(joined_event) do
+      %Object{data: %{"actor" => event_author}} ->
+        event_author == actor
+
+      _ ->
+        match?(
+          %User{actor_type: "Group", ap_id: ^actor},
+          User.get_cached_by_ap_id(joined_event)
+        )
     end
   end
 
@@ -81,6 +87,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
       _ -> false
     end
   end
+
+  defp validate_actor(%Activity{data: %{"type" => "FeatureRequest", "object" => target}}, actor),
+    do: target == actor
 
   defp validate_actor(%Activity{data: %{"type" => "Offer", "target" => target}}, actor) do
     with target_id when is_binary(target_id) <- object_id(target) do
@@ -100,7 +109,8 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AcceptRejectValidator do
   defp validate_quote_result(changeset) do
     with "Accept" <- get_field(changeset, :type),
          object_id when is_binary(object_id) <- get_field(changeset, :object),
-         %Activity{data: %{"type" => type}} when type in ["Offer", "QuoteRequest"] <-
+         %Activity{data: %{"type" => type}}
+         when type in ["FeatureRequest", "Offer", "QuoteRequest"] <-
            Activity.get_by_ap_id(object_id) do
       validate_required(changeset, [:result])
     else

@@ -12,7 +12,8 @@ defmodule Pleroma.Web.Plugs.EnsureAuthenticatedPlugTest do
     test "it halts if user is NOT assigned", %{conn: conn} do
       conn = EnsureAuthenticatedPlug.call(conn, %{})
 
-      assert conn.status == 403
+      assert conn.status == 401
+      assert get_resp_header(conn, "www-authenticate") == [~s(Bearer realm="Unfathomably")]
       assert conn.halted == true
     end
 
@@ -81,7 +82,7 @@ defmodule Pleroma.Web.Plugs.EnsureAuthenticatedPlugTest do
          %{conn: conn, true_fn: true_fn} do
       conn = EnsureAuthenticatedPlug.call(conn, if_func: true_fn)
 
-      assert conn.status == 403
+      assert conn.status == 401
       assert conn.halted == true
     end
 
@@ -89,7 +90,7 @@ defmodule Pleroma.Web.Plugs.EnsureAuthenticatedPlugTest do
          %{conn: conn, false_fn: false_fn} do
       conn = EnsureAuthenticatedPlug.call(conn, unless_func: false_fn)
 
-      assert conn.status == 403
+      assert conn.status == 401
       assert conn.halted == true
     end
   end

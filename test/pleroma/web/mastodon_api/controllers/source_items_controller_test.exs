@@ -334,12 +334,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceItemsControllerTest do
           }
 
         %{method: :get, url: ^outbox_url, headers: headers} ->
-          if preview_collection_request?(headers) do
-            %Tesla.Env{
-              status: 401,
-              body: Jason.encode!(%{"error" => "signed fetch required"})
-            }
-          else
+          if signed_collection_request?(headers) do
             %Tesla.Env{
               status: 200,
               headers: [{"content-type", "application/activity+json"}],
@@ -359,6 +354,11 @@ defmodule Pleroma.Web.MastodonAPI.SourceItemsControllerTest do
                     }
                   ]
                 })
+            }
+          else
+            %Tesla.Env{
+              status: 401,
+              body: Jason.encode!(%{"error" => "signed fetch required"})
             }
           end
       end)
@@ -673,11 +673,10 @@ defmodule Pleroma.Web.MastodonAPI.SourceItemsControllerTest do
     """
   end
 
-  defp preview_collection_request?(headers) do
+  defp signed_collection_request?(headers) do
     Enum.any?(headers, fn
-      {name, value} ->
-        String.downcase(to_string(name)) == "accept" and
-          String.contains?(to_string(value), "application/ld+json")
+      {name, _value} ->
+        String.downcase(to_string(name)) in ["signature", "signature-input"]
 
       _ ->
         false

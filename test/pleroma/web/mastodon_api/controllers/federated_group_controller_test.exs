@@ -9,7 +9,9 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
 
   alias Pleroma.GroupMembership
   alias Pleroma.Instances
+  alias Pleroma.Nostr.Entity
   alias Pleroma.Notification
+  alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.CommonAPI
@@ -389,6 +391,82 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                |> get("/api/v1/groups/relationships?id[]=#{group.id}")
                |> json_response(200)
     end
+
+    test "reports moderator-only posting capability from the active role", %{
+      conn: conn,
+      user: user
+    } do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          posting_restricted_to_mods: true,
+          nickname: "announcements@lotide.example",
+          ap_id: "https://lotide.example/c/announcements"
+        )
+
+      {:ok, _, _} = User.follow(user, group)
+
+      assert [%{"can_post" => false, "moderation_status" => "moderator_only"}] =
+               conn
+               |> get("/api/v1/groups/relationships?id[]=#{group.id}")
+               |> json_response(200)
+
+      {:ok, _membership} = GroupMembership.sync_directory_member(group, user, "moderator")
+
+      assert [%{"can_post" => true, "role" => "moderator"}] =
+               conn
+               |> get("/api/v1/groups/relationships?id[]=#{group.id}")
+               |> json_response(200)
+    end
+  end
+
+  describe "GET /api/v1/groups/relationships without authentication" do
+    test "returns neutral public relationship fields", %{conn: conn} do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "public@lotide.example",
+          ap_id: "https://lotide.example/c/public"
+        )
+
+      group_id = to_string(group.id)
+
+      assert [
+               %{
+                 "id" => ^group_id,
+                 "member" => false,
+                 "requested" => false,
+                 "role" => "user"
+               }
+             ] =
+               conn
+               |> get("/api/v1/groups/relationships?id[]=#{group.id}")
+               |> json_response(200)
+    end
+
+    test "does not advertise anonymous posting to moderator-only groups", %{conn: conn} do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          posting_restricted_to_mods: true,
+          nickname: "restricted@lotide.example",
+          ap_id: "https://lotide.example/c/restricted"
+        )
+
+      assert [
+               %{
+                 "can_post" => false,
+                 "moderation_message" => "Only group moderators can post here.",
+                 "moderation_status" => "moderator_only"
+               }
+             ] =
+               conn
+               |> get("/api/v1/groups/relationships?id[]=#{group.id}")
+               |> json_response(200)
+    end
   end
 
   describe "POST /api/v1/groups/:id/join" do
@@ -567,6 +645,53 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                third_conn
                |> post("/api/v1/groups/#{group_id}/join")
                |> json_response(403)
+    end
+  end
+
+  describe "GET /api/v1/timelines/groups discovery" do
+    test "returns public roots from known forum communities without authentication", %{conn: conn} do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: false,
+          nickname: "selfhosted@lemmy.example",
+          ap_id: "https://lemmy.example/c/selfhosted",
+          name: "Self Hosted"
+        )
+
+      author =
+        insert(:user,
+          local: false,
+          nickname: "alice@lemmy.example",
+          ap_id: "https://lemmy.example/u/alice"
+        )
+
+      root =
+        insert(:note,
+          user: author,
+          data: %{
+            "content" => "<p>A discoverable community root.</p>",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      activity =
+        insert(:note_activity,
+          user: author,
+          note: root,
+          local: false,
+          data_attrs: %{
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      assert [%{"id" => activity_id, "content" => content}] =
+               conn
+               |> get("/api/v1/timelines/groups?discover=true")
+               |> json_response(200)
+
+      assert activity_id == to_string(activity.id)
+      assert content =~ "A discoverable community root"
     end
   end
 
@@ -938,6 +1063,83 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
       assert length(flat_contents) == 2
       assert Enum.any?(flat_contents, &(&1 =~ "A thread root"))
       assert Enum.any?(flat_contents, &(&1 =~ "A recent comment"))
+    end
+
+    test "includes missing Nostr ancestors on bounded reply-inclusive pages", %{conn: conn} do
+      group =
+        insert(:user,
+          actor_type: "Group",
+          local: true,
+          nickname: "nostr_group_thread_fixture"
+        )
+
+      Entity.changeset(%Entity{}, %{
+        user_id: group.id,
+        kind: "mirror_group",
+        pubkey: String.duplicate("a", 64),
+        relay_url: "wss://groups.example",
+        group_id: "thread-fixture"
+      })
+      |> Repo.insert!()
+
+      author = insert(:user)
+      context = "https://social.example/contexts/nostr-thread"
+
+      root =
+        insert(:note,
+          user: author,
+          data: %{
+            "content" => "<p>The conversation root.</p>",
+            "context" => context,
+            "published" => "2026-08-05T12:00:00Z",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      root_activity =
+        insert(:note_activity,
+          user: author,
+          note: root,
+          data_attrs: %{
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      reply =
+        insert(:note,
+          user: author,
+          data: %{
+            "content" => "<p>The newest reply.</p>",
+            "context" => context,
+            "inReplyTo" => root.data["id"],
+            "published" => "2026-08-05T12:01:00Z",
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      reply_activity =
+        insert(:note_activity,
+          user: author,
+          note: reply,
+          data_attrs: %{
+            "context" => context,
+            "to" => [Pleroma.Constants.as_public(), group.ap_id]
+          }
+        )
+
+      statuses =
+        conn
+        |> get("/api/v1/timelines/group/#{group.id}?with_replies=true&limit=1")
+        |> json_response(200)
+
+      root_activity_id = to_string(root_activity.id)
+      reply_activity_id = to_string(reply_activity.id)
+
+      assert [
+               %{"id" => ^reply_activity_id, "in_reply_to_id" => ^root_activity_id},
+               %{"id" => ^root_activity_id}
+             ] = statuses
     end
 
     test "refreshes a partially cached remote threadiverse group first page", %{conn: conn} do

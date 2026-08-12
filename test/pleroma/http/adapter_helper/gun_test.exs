@@ -77,5 +77,19 @@ defmodule Pleroma.HTTP.AdapterHelper.GunTest do
 
       assert opts[:proxy] == {~c"example.com", 4321}
     end
+
+    test "preserves verified TLS compatibility options" do
+      uri = URI.parse("https://legacy-tls.example")
+
+      opts =
+        Gun.options(
+          [tls_opts: [versions: [:"tlsv1.2"]], tls_compatibility: :tls12],
+          uri
+        )
+
+      assert opts[:certificates_verification]
+      assert opts[:tls_opts] == [versions: [:"tlsv1.2"]]
+      assert opts[:tls_compatibility] == :tls12
+    end
   end
 end

@@ -55,7 +55,7 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
     %{parent: parent, user: user}
   end
 
-  test "enqueues scheduled refreshes for a remote public object", %{parent: parent} do
+  test "enqueues the first scheduled refresh for a remote public object", %{parent: parent} do
     clear_config([:activitypub, :remote_replies_collection_refresh],
       enabled: true,
       schedule: [0, 60],
@@ -78,7 +78,9 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
       }
     )
 
-    assert_enqueued(
+    # Later stages are chained only after the preceding remote request succeeds.
+    # This keeps unreachable collections from occupying every scheduled slot.
+    refute_enqueued(
       worker: RemoteRepliesFetcherWorker,
       args: %{
         "op" => "refresh_replies",
@@ -126,13 +128,86 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
     )
   end
 
-  test "fetches an advertised collection and enqueues missing replies" do
+  test "accelerates an existing numeric refresh instead of adding a triggered job", %{
+    parent: parent,
+    user: user
+  } do
+    clear_config([:activitypub, :remote_replies_collection_refresh],
+      enabled: true,
+      schedule: [60],
+      triggered_refresh_delay: 0,
+      triggered_refresh_ancestor_depth: 3,
+      max_pages: 2,
+      max_items: 40
+    )
+
+    assert :ok = RemoteRepliesFetcherWorker.enqueue_for_object(parent, 1)
+
+    reply =
+      insert(:note,
+        user: user,
+        data: %{
+          "id" => @reply_1,
+          "actor" => @actor,
+          "attributedTo" => @actor,
+          "to" => [Pleroma.Constants.as_public()],
+          "cc" => [],
+          "inReplyTo" => parent.data["id"]
+        }
+      )
+
+    assert :ok = RemoteRepliesFetcherWorker.enqueue_for_reply_ancestors(reply, 2)
+
+    jobs = all_enqueued(worker: RemoteRepliesFetcherWorker)
+    assert [%Oban.Job{args: %{"refresh_index" => 0}} = job] = jobs
+    assert DateTime.compare(job.scheduled_at, DateTime.add(DateTime.utc_now(), 5, :second)) != :gt
+  end
+
+  test "discovers replies through a FEP-f228 contextHistory collection", %{parent: parent} do
+    {:ok, _parent} = Object.update_data(parent, %{"replies_collection" => nil})
+
+    mock(fn
+      %{method: :get, url: @parent_id} ->
+        activitypub_json(%{
+          "id" => @parent_id,
+          "type" => "Note",
+          "actor" => @actor,
+          "attributedTo" => @actor,
+          "content" => "parent",
+          "published" => "2026-08-07T12:00:00Z",
+          "to" => [Pleroma.Constants.as_public()],
+          "contextHistory" => @collection_id
+        })
+    end)
+
+    assert :ok =
+             perform_job(RemoteRepliesFetcherWorker, %{
+               "op" => "discover_context_replies",
+               "object_id" => @parent_id,
+               "depth" => 1
+             })
+
+    assert Object.get_cached_by_ap_id(@parent_id).data["replies_collection"] == @collection_id
+
+    assert_enqueued(
+      worker: RemoteRepliesFetcherWorker,
+      args: %{
+        "op" => "refresh_replies",
+        "object_id" => @parent_id,
+        "collection_id" => @collection_id,
+        "depth" => 1,
+        "refresh_index" => "context"
+      }
+    )
+  end
+
+  test "fetches an idless advertised collection page and enqueues missing replies" do
     mock(fn
       %{method: :get, url: @collection_id} ->
         activitypub_json(%{
-          "id" => @collection_id,
-          "type" => "OrderedCollection",
-          "orderedItems" => [@reply_1, %{"id" => @reply_2}]
+          "type" => "CollectionPage",
+          "partOf" => @collection_id,
+          "items" => [@reply_1, %{"id" => @reply_2}]
         })
     end)
 

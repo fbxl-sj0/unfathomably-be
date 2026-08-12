@@ -237,7 +237,12 @@ defmodule Pleroma.Web.Streamer do
     recipients = MapSet.new(item.recipients)
     domain_blocks = Pleroma.Web.ActivityPub.MRF.subdomains_regex(user.domain_blocks)
 
+    following_ap_ids =
+      if user.domain_blocks == [], do: [], else: User.get_cached_user_friends_ap_ids(user)
+
     with parent <- Object.normalize(item, fetch: false) || item,
+         item_actor when is_binary(item_actor) <- item.actor,
+         parent_actor when is_binary(parent_actor) <- parent.data["actor"],
          true <- Enum.all?([blocked_ap_ids, muted_ap_ids], &(item.actor not in &1)),
          true <- item.data["type"] != "Announce" || item.actor not in reblog_muted_ap_ids,
          true <-
@@ -245,10 +250,14 @@ defmodule Pleroma.Web.Streamer do
                parent.data["actor"] == user.ap_id),
          true <- Enum.all?([blocked_ap_ids, muted_ap_ids], &(parent.data["actor"] not in &1)),
          true <- MapSet.disjoint?(recipients, recipient_blocks),
-         %{host: item_host} <- URI.parse(item.actor),
-         %{host: parent_host} <- URI.parse(parent.data["actor"]),
-         false <- Pleroma.Web.ActivityPub.MRF.subdomain_match?(domain_blocks, item_host),
-         false <- Pleroma.Web.ActivityPub.MRF.subdomain_match?(domain_blocks, parent_host),
+         %{host: item_host} <- URI.parse(item_actor),
+         %{host: parent_host} <- URI.parse(parent_actor),
+         false <-
+           item_actor not in following_ap_ids and
+             Pleroma.Web.ActivityPub.MRF.subdomain_match?(domain_blocks, item_host),
+         false <-
+           parent_actor not in following_ap_ids and
+             Pleroma.Web.ActivityPub.MRF.subdomain_match?(domain_blocks, parent_host),
          true <- thread_containment(item, user),
          false <- CommonAPI.thread_muted?(user, parent) do
       false
@@ -457,24 +466,27 @@ defmodule Pleroma.Web.Streamer do
   defp push_to_socket(_topic, %Activity{data: %{"type" => "Delete"}}), do: :noop
 
   defp push_to_socket(topic, %Activity{data: %{"type" => "Update"}} = item) do
-    create_activity =
-      Pleroma.Activity.get_create_by_object_ap_id(item.object.data["id"])
-      |> Map.put(:object, item.object)
+    case Pleroma.Activity.get_create_by_object_ap_id(item.object.data["id"]) do
+      %Activity{} = create_activity ->
+        create_activity = Map.put(create_activity, :object, item.object)
+        anon_render = StreamerView.render("status_update.json", create_activity, topic)
 
-    anon_render = StreamerView.render("status_update.json", create_activity, topic)
+        Registry.dispatch(@registry, topic, fn list ->
+          Enum.each(list, fn {pid, auth?} ->
+            if auth? do
+              send(
+                pid,
+                {:render_with_user, StreamerView, "status_update.json", create_activity, topic}
+              )
+            else
+              send(pid, {:text, anon_render})
+            end
+          end)
+        end)
 
-    Registry.dispatch(@registry, topic, fn list ->
-      Enum.each(list, fn {pid, auth?} ->
-        if auth? do
-          send(
-            pid,
-            {:render_with_user, StreamerView, "status_update.json", create_activity, topic}
-          )
-        else
-          send(pid, {:text, anon_render})
-        end
-      end)
-    end)
+      nil ->
+        :noop
+    end
   end
 
   defp push_to_socket(topic, item) do
@@ -527,6 +539,25 @@ defmodule Pleroma.Web.Streamer do
     end
   end
 
+  @streamer_database_retry_delay 250
+  @streamer_database_retries 1
+
+  defp run_streamer(topic, item, retries_left) do
+    do_stream(topic, item)
+  rescue
+    _error in DBConnection.ConnectionError ->
+      if retries_left > 0 do
+        Process.sleep(@streamer_database_retry_delay)
+        run_streamer(topic, item, retries_left - 1)
+      else
+        Logger.warning(
+          "Skipping #{topic} stream delivery because the database pool remained unavailable"
+        )
+
+        :ok
+      end
+  end
+
   if @mix_env == :test do
     @test_streamer_table :pleroma_streamer_test_workers
 
@@ -562,7 +593,7 @@ defmodule Pleroma.Web.Streamer do
       pid =
         spawn(fn ->
           try do
-            do_stream(topic, item)
+            run_streamer(topic, item, @streamer_database_retries)
           rescue
             _ -> :ok
           catch
@@ -595,7 +626,7 @@ defmodule Pleroma.Web.Streamer do
     end
   else
     defp spawn_streamer(topic, item) do
-      spawn(fn -> do_stream(topic, item) end)
+      spawn(fn -> run_streamer(topic, item, @streamer_database_retries) end)
     end
   end
 

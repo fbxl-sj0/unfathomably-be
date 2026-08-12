@@ -68,11 +68,11 @@ defmodule Pleroma.Web.OAuth.App do
       changeset
       |> put_change(
         :client_id,
-        :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+        Pleroma.Crypto.Random.urlsafe(:high)
       )
       |> put_change(
         :client_secret,
-        :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+        Pleroma.Crypto.Random.urlsafe(:high)
       )
     else
       changeset
@@ -185,7 +185,35 @@ defmodule Pleroma.Web.OAuth.App do
 
   @spec maybe_update_owner(Token.t()) :: :ok
   def maybe_update_owner(%Token{app_id: app_id, user_id: user_id}) when not is_nil(user_id) do
-    __MODULE__.update(app_id, %{user_id: user_id})
+    Repo.transaction(fn ->
+      app =
+        from(app in __MODULE__,
+          where: app.id == ^app_id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one()
+
+      owner_ids =
+        from(token in Token,
+          where: token.app_id == ^app_id and not is_nil(token.user_id),
+          distinct: true,
+          limit: 2,
+          select: token.user_id
+        )
+        |> Repo.all()
+
+      owner_id =
+        case owner_ids do
+          [owner_id] -> owner_id
+          _ -> nil
+        end
+
+      if app && app.user_id != owner_id do
+        app
+        |> change(user_id: owner_id)
+        |> Repo.update()
+      end
+    end)
 
     :ok
   end

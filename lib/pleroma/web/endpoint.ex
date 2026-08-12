@@ -10,6 +10,7 @@ defmodule Pleroma.Web.Endpoint do
   alias Pleroma.Config
 
   plug(Pleroma.Web.Plugs.RejectMalformedPathPlug)
+  plug(Pleroma.Web.NostrRelayPlug)
 
   plug(Pleroma.Web.MastodonAPI.WebsocketPlug,
     path: "/api/v1/streaming",
@@ -78,6 +79,19 @@ defmodule Pleroma.Web.Endpoint do
     cache_control_for_etags: @favicon_cache_control,
     headers: %{
       "cache-control" => @favicon_cache_control
+    }
+  )
+
+  # Vite emits content-hashed files under packs. Serve those immutable files
+  # before the mutable instance-static override assigns its no-cache policy.
+  plug(Pleroma.Web.Plugs.InstanceStatic,
+    at: "/",
+    from: :pleroma,
+    only: ["packs"],
+    gzip: true,
+    cache_control_for_etags: @static_cache_control,
+    headers: %{
+      "cache-control" => @static_cache_control
     }
   )
 

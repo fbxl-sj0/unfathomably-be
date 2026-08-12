@@ -17,12 +17,13 @@ defmodule Pleroma.Web.ActivityPub.Builder do
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI.ActivityDraft
+  alias Pleroma.Web.Endpoint
 
   require Pleroma.Constants
 
   def accept_or_reject(%User{ap_id: ap_id}, activity, type) do
     data = %{
-      "id" => Utils.generate_activity_id(),
+      "id" => response_activity_id(ap_id, activity.data["id"], type),
       "actor" => ap_id,
       "type" => type,
       "object" => activity.data["id"],
@@ -34,7 +35,7 @@ defmodule Pleroma.Web.ActivityPub.Builder do
 
   def accept_or_reject(%Object{data: %{"actor" => actor}}, activity, type) do
     data = %{
-      "id" => Utils.generate_activity_id(),
+      "id" => response_activity_id(actor, activity.data["id"], type),
       "actor" => actor,
       "type" => type,
       "object" => activity.data["id"],
@@ -43,6 +44,23 @@ defmodule Pleroma.Web.ActivityPub.Builder do
 
     {:ok, data, []}
   end
+
+  # A Follow or Join response is one protocol decision. Its identifier must
+  # remain stable when an incoming worker retries after relationship state was
+  # committed but before delivery work was durably inserted.
+  defp response_activity_id(actor, source_id, type)
+       when is_binary(actor) and is_binary(source_id) and is_binary(type) do
+    digest =
+      {actor, source_id, type}
+      |> :erlang.term_to_binary([:deterministic])
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.url_encode64(padding: false)
+
+    String.trim_trailing(Endpoint.url(), "/") <>
+      "/activities/" <> String.downcase(type) <> "-" <> digest
+  end
+
+  defp response_activity_id(_actor, _source_id, _type), do: Utils.generate_activity_id()
 
   @spec reject(User.t() | Object.t(), Activity.t()) :: {:ok, map(), keyword()}
   def reject(object, rejected_activity) do
@@ -141,6 +159,7 @@ defmodule Pleroma.Web.ActivityPub.Builder do
         else
           custom_emoji_react(object, data, emoji)
         end
+        |> strip_public_recipients()
 
       {:ok, data, meta}
     end
@@ -157,7 +176,7 @@ defmodule Pleroma.Web.ActivityPub.Builder do
   def undo(actor, object) do
     {:ok,
      %{
-       "id" => Utils.generate_activity_id(),
+       "id" => announce_activity_id(actor, object),
        "actor" => actor.ap_id,
        "type" => "Undo",
        "object" => object.data["id"],
@@ -165,6 +184,25 @@ defmodule Pleroma.Web.ActivityPub.Builder do
        "cc" => object.data["cc"] || []
      }, []}
   end
+
+  # A Group may announce a canonical object only once at a time. Stable IDs
+  # make retries, late reconciliation, and wrapped Delete delivery converge on
+  # the same protocol activity instead of generating parallel announcements.
+  defp announce_activity_id(
+         %User{actor_type: "Group", ap_id: actor_id},
+         %{data: %{"id" => object_id}}
+       )
+       when is_binary(actor_id) and is_binary(object_id) do
+    digest =
+      {actor_id, object_id, "Announce"}
+      |> :erlang.term_to_binary([:deterministic])
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.url_encode64(padding: false)
+
+    String.trim_trailing(Endpoint.url(), "/") <> "/activities/announce-" <> digest
+  end
+
+  defp announce_activity_id(_actor, _object), do: Utils.generate_activity_id()
 
   @spec delete(User.t(), String.t()) :: {:ok, map(), keyword()}
   def delete(actor, object_id) do
@@ -237,7 +275,7 @@ defmodule Pleroma.Web.ActivityPub.Builder do
         "interactionPolicy",
         Pleroma.Web.ActivityPub.QuotePolicy.build(
           draft.user,
-          draft.params[:quote_approval_policy] || default_quote_policy(draft.visibility)
+          effective_quote_policy(draft.visibility, draft.params[:quote_approval_policy])
         )
       )
       |> Map.merge(draft.extra)
@@ -246,7 +284,15 @@ defmodule Pleroma.Web.ActivityPub.Builder do
   end
 
   defp default_quote_policy(visibility) when visibility in ["direct", "private"], do: "nobody"
+  defp default_quote_policy("unlisted"), do: "followers"
   defp default_quote_policy(_visibility), do: "public"
+
+  defp effective_quote_policy(visibility, _requested)
+       when visibility in ["direct", "private"],
+       do: "nobody"
+
+  defp effective_quote_policy(visibility, requested),
+    do: requested || default_quote_policy(visibility)
 
   defp add_in_reply_to(object, nil), do: object
 
@@ -277,7 +323,7 @@ defmodule Pleroma.Web.ActivityPub.Builder do
        "type" => "QuoteRequest",
        "actor" => actor.ap_id,
        "object" => quoted_object.data["id"],
-       "instrument" => quote_object.data["id"],
+       "instrument" => Pleroma.Web.ActivityPub.Transmogrifier.prepare_object(quote_object.data),
        "to" => [quoted_object.data["actor"]],
        "cc" => []
      }, []}
@@ -376,10 +422,25 @@ defmodule Pleroma.Web.ActivityPub.Builder do
       data =
         data
         |> Map.put("type", "Like")
+        |> strip_public_recipients()
 
       {:ok, data, meta}
     end
   end
+
+  defp strip_public_recipients(data) do
+    public = Pleroma.Constants.as_public()
+
+    data
+    |> Map.update("to", [], &strip_recipient(&1, public))
+    |> Map.update("cc", [], &strip_recipient(&1, public))
+  end
+
+  defp strip_recipient(recipients, public) when is_list(recipients) do
+    Enum.reject(recipients, fn recipient -> recipient == public end)
+  end
+
+  defp strip_recipient(_recipients, _public), do: []
 
   @spec update(User.t(), Object.t()) :: {:ok, map(), keyword()}
   def update(actor, object) do
@@ -389,12 +450,12 @@ defmodule Pleroma.Web.ActivityPub.Builder do
         {[Pleroma.Constants.as_public(), actor.follower_address], [], []}
       else
         # Status updates, follow the recipients in the object
-        {object["to"] || [], object["cc"] || [], object["participations"] || []}
+        {object["to"] || [], object["cc"] || [], update_bcc_recipients(object)}
       end
 
     {:ok,
      %{
-       "id" => Utils.generate_activity_id(),
+       "id" => update_activity_id(actor, object),
        "type" => "Update",
        "actor" => actor.ap_id,
        "object" => object,
@@ -402,6 +463,37 @@ defmodule Pleroma.Web.ActivityPub.Builder do
        "cc" => cc,
        "bcc" => bcc
      }, []}
+  end
+
+  # Re-rendering the same edit must not create a second logical ActivityPub
+  # activity at receiving servers. Include both the object identity and its
+  # revision timestamp so two objects edited at the same instant remain
+  # distinct. Actor and profile updates without revision metadata keep the
+  # historical random identifier because there is no stable revision to name.
+  defp update_activity_id(
+         %User{ap_id: actor_ap_id},
+         %{"id" => object_ap_id, "updated" => updated}
+       )
+       when is_binary(actor_ap_id) and is_binary(object_ap_id) and object_ap_id != "" and
+              is_binary(updated) and updated != "" do
+    revision =
+      :sha256
+      |> :crypto.hash([object_ap_id, 0, updated])
+      |> Base.url_encode64(padding: false)
+
+    "#{actor_ap_id}#updates/#{revision}"
+  end
+
+  defp update_activity_id(_actor, _object), do: Utils.generate_activity_id()
+
+  # Event participants and poll voters are intentionally blind-copy recipients.
+  # A Question result must reach voters without exposing the complete voter list
+  # to every recipient of the Update activity.
+  defp update_bcc_recipients(object) do
+    ["participations", "voters"]
+    |> Enum.flat_map(fn field -> object |> Map.get(field, []) |> List.wrap() end)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
   end
 
   @spec block(User.t(), User.t()) :: {:ok, map(), keyword()}
@@ -536,7 +628,7 @@ defmodule Pleroma.Web.ActivityPub.Builder do
   @spec object_action(User.t(), Object.t()) :: {:ok, map(), keyword()}
   defp object_action(actor, object) do
     object_actor_id =
-      object.data["actor"] ||
+      object.data["actor"] |> ap_id_list() |> List.first() ||
         object.data
         |> CustomObject.authorities()
         |> List.first()
@@ -615,10 +707,39 @@ defmodule Pleroma.Web.ActivityPub.Builder do
         data
         |> Map.put("type", "Join")
         |> Map.put("participationMessage", participation_message)
+        |> address_event_organizer(object)
 
       {:ok, data, meta}
     end
   end
+
+  defp address_event_organizer(data, %Object{data: %{"type" => "Event"} = event}) do
+    case event_actor_id(event["actor"] || event["attributedTo"]) do
+      organizer when is_binary(organizer) ->
+        Map.update(data, "to", [organizer], fn recipients ->
+          [organizer | event_recipient_ids(recipients)] |> Enum.uniq()
+        end)
+
+      _missing ->
+        data
+    end
+  end
+
+  defp address_event_organizer(data, _object), do: data
+
+  defp event_actor_id(actor) when is_binary(actor), do: actor
+  defp event_actor_id(%{"id" => actor}) when is_binary(actor), do: actor
+  defp event_actor_id(actors) when is_list(actors), do: Enum.find_value(actors, &event_actor_id/1)
+  defp event_actor_id(_actor), do: nil
+
+  defp event_recipient_ids(recipient) when is_binary(recipient), do: [recipient]
+
+  defp event_recipient_ids(recipients) when is_list(recipients) do
+    Enum.flat_map(recipients, &event_recipient_ids/1)
+  end
+
+  defp event_recipient_ids(%{"id" => recipient}) when is_binary(recipient), do: [recipient]
+  defp event_recipient_ids(_recipients), do: []
 
   @spec leave(User.t(), Object.t()) :: {:ok, map(), keyword()}
   def leave(actor, object) do

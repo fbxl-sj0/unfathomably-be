@@ -22,7 +22,10 @@ defmodule Pleroma.Repo.Migrations.CreateQuoteAuthorizations do
 
     create(unique_index(:quote_authorizations, [:quote_object_id]))
     create(index(:quote_authorizations, [:quoted_object_id, :state]))
-    create(unique_index(:quote_authorizations, [:request_ap_id], where: "request_ap_id IS NOT NULL"))
+
+    create(
+      unique_index(:quote_authorizations, [:request_ap_id], where: "request_ap_id IS NOT NULL")
+    )
   end
 end
 

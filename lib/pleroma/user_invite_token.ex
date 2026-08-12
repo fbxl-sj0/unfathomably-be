@@ -34,7 +34,7 @@ defmodule Pleroma.UserInviteToken do
   end
 
   defp add_token(changeset) do
-    token = :crypto.strong_rand_bytes(32) |> Base.url_encode64()
+    token = Pleroma.Crypto.Random.urlsafe(:high)
     put_change(changeset, :token, token)
   end
 

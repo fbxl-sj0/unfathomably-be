@@ -32,9 +32,11 @@ defmodule Pleroma.Web.Federation.PlatformTest do
     {"WriteFreely", :longform},
     {"GoToSocial", :microblog},
     {"Iceshrimp", :microblog},
+    {"Ibis", :publishing},
     {"snac", :microblog},
     {"Pixelfed", :photo},
     {"Mitra", :microblog},
+    {"Manyfold", :models},
     {"Owncast", :video},
     {"Misskey", :microblog},
     {"Sharkey", :microblog},
@@ -60,7 +62,7 @@ defmodule Pleroma.Web.Federation.PlatformTest do
     {"Discourse", :groups},
     {"Mbin", :groups},
     {"Mobilizon", :events},
-    {"Mutual Aid", :marketplace},
+    {"Mutual Aid", :coordination},
     {"NodeBB", :groups},
     {"PieFed", :groups},
     {"FediGroups", :groups},
@@ -173,13 +175,16 @@ defmodule Pleroma.Web.Federation.PlatformTest do
     assert %{platform: "bonfire_valueflows", family: :coordination, confidence: :object} =
              Platform.classify(%{"type" => "ValueFlows:Proposal"})
 
+    assert %{platform: "bonfire_valueflows", family: :coordination, confidence: :object} =
+             Platform.classify(%{"type" => "https://w3id.org/valueflows/ont/vf#Proposal"})
+
     assert %{platform: "activitypods", family: :coordination, confidence: :object} =
              Platform.classify(%{"type" => "pair:Project"})
 
-    assert %{platform: "mutual_aid", family: :marketplace, confidence: :object} =
+    assert %{platform: "mutual_aid", family: :coordination, confidence: :object} =
              Platform.classify(%{"type" => "maid:Offer"})
 
-    assert %{platform: "mutual_aid", family: :marketplace, confidence: :object} =
+    assert %{platform: "mutual_aid", family: :coordination, confidence: :object} =
              Platform.classify(%{"type" => "https://mutual-aid.app/ns/core#Request"})
   end
 

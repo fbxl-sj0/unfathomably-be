@@ -14,6 +14,7 @@ defmodule Pleroma.Web.CommonAPI.Utils do
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.ContentLinks
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.ActivityPub.Visibility
   alias Pleroma.Web.CommonAPI.ActivityDraft
@@ -115,16 +116,28 @@ defmodule Pleroma.Web.CommonAPI.Utils do
   end
 
   def get_to_and_cc(%{visibility: "private"} = draft) do
-    {to, cc} = get_to_and_cc(struct(draft, visibility: "direct"))
-    {[draft.user.follower_address | to], cc}
+    case protected_parent_audience(draft) do
+      {:ok, to, cc} ->
+        {to, cc}
+
+      :error ->
+        {to, cc} = get_to_and_cc(struct(draft, visibility: "direct"))
+        {[draft.user.follower_address | to], cc}
+    end
   end
 
   def get_to_and_cc(%{visibility: "direct"} = draft) do
-    # If the OP is a DM already, add the implicit actor.
-    if draft.in_reply_to && Visibility.is_direct?(draft.in_reply_to) do
-      {Enum.uniq([draft.in_reply_to.data["actor"] | addressed_recipients(draft)]), []}
-    else
-      {addressed_recipients(draft), []}
+    case protected_parent_audience(draft) do
+      {:ok, to, cc} ->
+        {Enum.uniq(to ++ cc), []}
+
+      :error ->
+        # If the OP is a DM already, add the implicit actor.
+        if draft.in_reply_to && Visibility.is_direct?(draft.in_reply_to) do
+          {Enum.uniq([draft.in_reply_to.data["actor"] | addressed_recipients(draft)]), []}
+        else
+          {addressed_recipients(draft), []}
+        end
     end
   end
 
@@ -137,6 +150,33 @@ defmodule Pleroma.Web.CommonAPI.Utils do
   end
 
   defp addressed_recipients(%{mentions: mentions}), do: mentions || []
+
+  # A followers-only or direct conversation is defined by its audience, not by
+  # the follower collection of whichever participant happens to reply. Reuse
+  # the parent's recipients so a reply cannot disclose the thread to a new
+  # follower set while still ensuring the parent author receives it.
+  defp protected_parent_audience(%{in_reply_to: %Activity{} = activity}) do
+    with %Object{data: data} = object <- Object.normalize(activity, fetch: false),
+         visibility when visibility in ["private", "direct"] <-
+           Visibility.get_visibility(object) do
+      to = protected_recipient_ids(data["to"])
+      cc = protected_recipient_ids(data["cc"])
+      actor = protected_recipient_ids(data["actor"] || activity.data["actor"])
+
+      {:ok, Enum.uniq(actor ++ to), Enum.uniq(cc)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp protected_parent_audience(_draft), do: :error
+
+  defp protected_recipient_ids(values) when is_list(values),
+    do: values |> Enum.flat_map(&protected_recipient_ids/1) |> Enum.uniq()
+
+  defp protected_recipient_ids(value) when is_binary(value), do: [value]
+  defp protected_recipient_ids(%{"id" => value}) when is_binary(value), do: [value]
+  defp protected_recipient_ids(_value), do: []
 
   def get_addressed_users(_, to) when is_list(to) do
     to
@@ -168,6 +208,27 @@ defmodule Pleroma.Web.CommonAPI.Utils do
   end
 
   def get_addressed_group_ap_ids(_params, _actor), do: {:ok, []}
+
+  def validate_addressed_group_ap_ids(group_ap_ids, %User{} = actor)
+      when is_list(group_ap_ids) do
+    groups =
+      group_ap_ids
+      |> Enum.uniq()
+      |> Enum.map(&group_from_target/1)
+
+    cond do
+      Enum.any?(groups, &is_nil/1) ->
+        {:error, :group_not_found}
+
+      Enum.any?(groups, &(not group_target_allowed?(&1, actor))) ->
+        {:error, :group_forbidden}
+
+      true ->
+        {:ok, Enum.map(groups, & &1.ap_id)}
+    end
+  end
+
+  def validate_addressed_group_ap_ids(_group_ap_ids, _actor), do: {:ok, []}
 
   defp addressed_user_ap_ids(identifier) when is_binary(identifier) do
     cond do
@@ -258,9 +319,8 @@ defmodule Pleroma.Web.CommonAPI.Utils do
       when is_list(options) do
     limits = Config.get([:instance, :poll_limits])
 
-    options = options |> Enum.uniq()
-
-    with :ok <- validate_poll_expiration(expires_in, limits),
+    with {:ok, options} <- normalize_poll_options(options),
+         :ok <- validate_poll_expiration(expires_in, limits),
          :ok <- validate_poll_options_amount(options, limits),
          :ok <- validate_poll_options_length(options, limits) do
       {option_notes, emoji} =
@@ -294,9 +354,34 @@ defmodule Pleroma.Web.CommonAPI.Utils do
     {:ok, {%{}, %{}}}
   end
 
+  # Poll option names are plain text in ActivityStreams. Normalize locally
+  # supplied HTML and escaped markup before uniqueness and length validation so
+  # the stored value, federated value, and client-visible value stay identical.
+  defp normalize_poll_options(options) do
+    options =
+      options
+      |> Enum.map(&normalize_poll_option/1)
+      |> Enum.uniq()
+
+    if Enum.all?(options, &(is_binary(&1) and &1 != "")) do
+      {:ok, options}
+    else
+      {:error, "Poll options must contain non-empty text"}
+    end
+  end
+
+  defp normalize_poll_option(option) when is_binary(option) do
+    option
+    |> HtmlEntities.decode()
+    |> Pleroma.HTML.strip_tags()
+    |> String.trim()
+  end
+
+  defp normalize_poll_option(_option), do: nil
+
   defp validate_poll_options_amount(options, %{max_options: max_options}) do
     cond do
-      Enum.count(options) < 1 ->
+      Enum.empty?(options) ->
         {:error, "Poll must contain at least 1 option"}
 
       Enum.count(options) > max_options ->
@@ -341,6 +426,11 @@ defmodule Pleroma.Web.CommonAPI.Utils do
     draft.status
     |> format_input(content_type, options)
     |> maybe_add_attachments(draft.attachments, attachment_links)
+    |> absolutize_content_links(Pleroma.Web.Endpoint.url())
+  end
+
+  defp absolutize_content_links({html, mentions, tags}, base) do
+    {ContentLinks.absolutize_html(html, base), mentions, tags}
   end
 
   def get_content_type(content_type) do
@@ -539,12 +629,37 @@ defmodule Pleroma.Web.CommonAPI.Utils do
           %{}
       end
 
-    tagged_mentions = maybe_extract_mentions(object_data)
+    tagged_mentions =
+      object_data
+      |> maybe_extract_mentions()
+      |> relevant_reply_mentions(object_data, data)
 
     recipients ++ tagged_mentions
   end
 
   def maybe_notify_mentioned_recipients(recipients, _), do: recipients
+
+  # Some forum and microblog implementations copy every ancestor Mention tag
+  # into each reply. A Mention tag describes content; it does not by itself
+  # address a reply to that actor. Keep top-level tag-only compatibility, but
+  # require reply mentions to appear in the actual activity or object audience.
+  defp relevant_reply_mentions(mentions, object_data, activity_data) do
+    if is_nil(normalize_in_reply_to(object_data["inReplyTo"])) do
+      mentions
+    else
+      addressed =
+        [
+          activity_data["to"],
+          activity_data["cc"],
+          object_data["to"],
+          object_data["cc"]
+        ]
+        |> Enum.flat_map(&List.wrap/1)
+        |> MapSet.new()
+
+      Enum.filter(mentions, &MapSet.member?(addressed, &1))
+    end
+  end
 
   def maybe_notify_replied_to_author(
         recipients,
@@ -621,6 +736,7 @@ defmodule Pleroma.Web.CommonAPI.Utils do
 
   def maybe_extract_mentions(%{"tag" => tag}) do
     tag
+    |> List.wrap()
     |> Enum.filter(fn x -> is_map(x) && x["type"] == "Mention" end)
     |> Enum.map(fn x -> x["href"] end)
     |> Enum.uniq()
@@ -648,11 +764,13 @@ defmodule Pleroma.Web.CommonAPI.Utils do
 
   def get_report_statuses(_, _), do: {:ok, nil}
 
-  def validate_character_limit("" = _full_payload, [] = _attachments) do
-    {:error, dgettext("errors", "Cannot post an empty status without attachments")}
+  def validate_character_limit(full_payload, attachments, structured_content? \\ false)
+
+  def validate_character_limit("" = _full_payload, [] = _attachments, false) do
+    {:error, dgettext("errors", "Cannot post an empty status without media, a poll, or a quote")}
   end
 
-  def validate_character_limit(full_payload, _attachments) do
+  def validate_character_limit(full_payload, _attachments, _structured_content?) do
     limit = Config.get([:instance, :limit])
     length = String.length(full_payload)
 

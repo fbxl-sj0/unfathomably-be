@@ -1000,6 +1000,12 @@ defmodule Pleroma.UserTest do
 
       {:ok, user} = User.get_or_fetch_by_ap_id("http://mastodon.example.org/users/admin")
 
+      refute user.inbox
+      assert_enqueued(worker: Pleroma.Workers.UserRefreshWorker)
+
+      Pleroma.Tests.ObanHelpers.perform_all()
+
+      user = User.get_by_ap_id(orig_user.ap_id)
       assert user.inbox
 
       refute user.last_refreshed_at == orig_user.last_refreshed_at
@@ -2834,6 +2840,33 @@ defmodule Pleroma.UserTest do
       {:ok, after_remove} = User.remove_pinned_object_id(updated, object_id)
       assert after_remove.pinned_objects == %{}
     end
+
+    test "stale user snapshots do not overwrite newer pins", %{
+      user: user,
+      object_id: object_id
+    } do
+      object_id2 = object_id_from_created_activity(user)
+
+      assert {:ok, _updated} = User.add_pinned_object_id(user, object_id)
+      assert {:ok, updated} = User.add_pinned_object_id(user, object_id2)
+
+      assert Map.has_key?(updated.pinned_objects, object_id)
+      assert Map.has_key?(updated.pinned_objects, object_id2)
+    end
+
+    test "stale user snapshots do not restore removed pins", %{
+      user: user,
+      object_id: object_id
+    } do
+      object_id2 = object_id_from_created_activity(user)
+
+      assert {:ok, pinned_once} = User.add_pinned_object_id(user, object_id)
+      assert {:ok, pinned_twice} = User.add_pinned_object_id(pinned_once, object_id2)
+      assert {:ok, _updated} = User.remove_pinned_object_id(pinned_twice, object_id)
+      assert {:ok, updated} = User.remove_pinned_object_id(pinned_twice, object_id2)
+
+      assert updated.pinned_objects == %{}
+    end
   end
 
   defp object_id_from_created_activity(user) do
@@ -2968,11 +3001,19 @@ defmodule Pleroma.UserTest do
   end
 
   test "it checks fields links for a backlink" do
-    user = insert(:user, ap_id: "https://social.example.org/users/lain")
+    user =
+      insert(:user,
+        ap_id: "https://social.example.org/users/lain",
+        uri: "https://social.example.org/@lain"
+      )
 
     fields = [
       %{"name" => "Link", "value" => "http://example.com/rel_me/null"},
       %{"name" => "Verified link", "value" => "http://example.com/rel_me/link"},
+      %{
+        "name" => "Verified profile URI",
+        "value" => "http://example.com/rel_me/profile-uri"
+      },
       %{"name" => "Not a link", "value" => "i'm not a link"}
     ]
 
@@ -2986,9 +3027,11 @@ defmodule Pleroma.UserTest do
     assert [
              %{"verified_at" => nil},
              %{"verified_at" => verified_at},
+             %{"verified_at" => profile_uri_verified_at},
              %{"verified_at" => nil}
            ] = user.fields
 
     assert is_binary(verified_at)
+    assert is_binary(profile_uri_verified_at)
   end
 end

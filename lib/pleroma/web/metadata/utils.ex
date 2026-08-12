@@ -33,6 +33,18 @@ defmodule Pleroma.Web.Metadata.Utils do
 
   def scrub_html_and_truncate(%{}), do: ""
 
+  def scrub_html_and_truncate_for_preview(%{data: data} = object, hide_sensitive?)
+      when is_map(data) and is_boolean(hide_sensitive?) do
+    if hide_sensitive? do
+      case scrub_html_and_truncate(data["summary"] || "") do
+        "" -> "Sensitive content"
+        summary -> summary
+      end
+    else
+      scrub_html_and_truncate(object)
+    end
+  end
+
   def scrub_html_and_truncate(content, max_length \\ 200, omission \\ "...")
       when is_binary(content) do
     content

@@ -10,6 +10,7 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ControllerHelper
+  alias Pleroma.Web.FederatedTarget
   alias Pleroma.Web.MastodonAPI.InstanceView
   alias Pleroma.Web.Plugs.OAuthScopesPlug
   alias Pleroma.Web.Plugs.RateLimiter
@@ -68,8 +69,16 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
       |> Map.put(:followed_hashtags, followed_hashtags)
       |> Map.delete(:local)
 
+    following = User.following(user)
+
+    # Group follows are the federation-compatible membership relationship.
+    # Their addressed posts belong in the Groups timeline, not Home. Keeping
+    # them out of this recipient set matches the separate treatment already
+    # used by the groups API without changing normal profile and source follows.
+    home_following = following -- FederatedTarget.followed_group_ap_ids(user)
+
     activities =
-      [user.ap_id | User.following(user) -- excluded_list_members]
+      [user.ap_id | home_following -- excluded_list_members]
       |> ActivityPub.fetch_activities(params)
       |> Enum.reverse()
 
@@ -78,6 +87,8 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
     |> render("index.json",
       activities: activities,
       for: user,
+      filter_context: "home",
+      following: home_following,
       as: :activity,
       with_muted: Map.get(params, :with_muted, false)
     )
@@ -102,6 +113,7 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
     |> render("index.json",
       activities: activities,
       for: user,
+      filter_context: "home",
       as: :activity
     )
   end
@@ -123,7 +135,7 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
     else
       activities =
         params
-        |> Map.put(:type, ["Create"])
+        |> Map.put(:type, public_timeline_activity_types(params))
         |> Map.put(:local_only, local_only)
         |> Map.put(:blocking_user, user)
         |> Map.put(:muting_user, user)
@@ -134,15 +146,28 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
         |> ActivityPub.fetch_public_activities()
 
       conn
-      |> add_link_headers(activities, %{"local" => local_only})
+      |> add_link_headers(activities, %{
+        "local" => local_only,
+        "only_native" => params[:only_native],
+        "native_family" => params[:native_family],
+        "native_query" => params[:native_query]
+      })
       |> render("index.json",
         activities: activities,
         for: user,
+        filter_context: "public",
         as: :activity,
         with_muted: Map.get(params, :with_muted, false)
       )
     end
   end
+
+  # Funkwhale publishes listening activity as Listen with an Audio object,
+  # rather than as a social Create. Worlds is the one surface that explicitly
+  # requests native objects, so it may include that public activity without
+  # turning the ordinary public timeline into a scrobble feed.
+  defp public_timeline_activity_types(%{only_native: true}), do: ["Create", "Listen"]
+  defp public_timeline_activity_types(_params), do: ["Create"]
 
   # GET /api/v1/timelines/bubble
   def bubble(%{assigns: %{user: user}} = conn, params) do
@@ -171,6 +196,7 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
         |> render("index.json",
           activities: activities,
           for: user,
+          filter_context: "public",
           as: :activity,
           with_muted: Map.get(params, :with_muted, false)
         )
@@ -217,6 +243,7 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
       |> render("index.json",
         activities: activities,
         for: user,
+        filter_context: "public",
         as: :activity,
         with_muted: Map.get(params, :with_muted, false)
       )
@@ -250,6 +277,8 @@ defmodule Pleroma.Web.MastodonAPI.TimelineController do
       |> render("index.json",
         activities: activities,
         for: user,
+        filter_context: "home",
+        following: user_following,
         as: :activity,
         with_muted: Map.get(params, :with_muted, false)
       )

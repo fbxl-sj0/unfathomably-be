@@ -17,13 +17,19 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
   plug(
     OAuthScopesPlug,
     %{scopes: ["read:accounts", "read:follows"]}
-    when action in [:index, :relationships, :search, :memberships, :membership_requests, :blocks]
+    when action in [:index, :search, :discover, :membership_requests, :blocks]
   )
 
   plug(
     OAuthScopesPlug,
     %{scopes: ["read:accounts", "read:follows"], fallback: :proceed_unauthenticated}
-    when action in [:show, :lookup, :preview]
+    when action in [:relationships]
+  )
+
+  plug(
+    OAuthScopesPlug,
+    %{scopes: ["read:accounts", "read:follows"], fallback: :proceed_unauthenticated}
+    when action in [:show, :lookup, :preview, :memberships]
   )
 
   plug(
@@ -120,6 +126,20 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
     )
   end
 
+  @doc "GET /api/v1/groups/discover"
+  def discover(%{assigns: %{user: user}} = conn, params) do
+    groups = Pleroma.Nostr.CommunityDiscovery.discover_groups(params)
+
+    conn
+    |> put_view(FederatedTargetView)
+    |> render("groups.json",
+      groups: groups,
+      for: user,
+      refresh_counts: false,
+      include_interaction_score: false
+    )
+  end
+
   @doc "GET /api/v1/groups/search"
   def search(%{assigns: %{user: user}} = conn, params) do
     groups = FederatedTarget.search_groups(params)
@@ -197,8 +217,11 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
   end
 
   @doc "GET /api/v1/groups/:id/memberships"
-  def memberships(%{assigns: %{user: user}} = conn, %{"id" => id} = params) do
-    with {:ok, %User{} = group} <- FederatedTarget.resolve_group(id) do
+  def memberships(conn, %{"id" => id} = params) do
+    user = conn.assigns[:user]
+
+    with {:ok, %User{} = group} <- FederatedTarget.resolve_group(id),
+         :ok <- allow_public_memberships(group, user) do
       memberships = GroupMembership.members(group, params["role"] || params[:role] || "user")
 
       conn
@@ -206,8 +229,17 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
       |> render("group_memberships.json", memberships: memberships, for: user)
     else
       {:error, :not_found} -> render_error(conn, :not_found, "Record not found")
+      {:error, :unauthorized} -> render_error(conn, :unauthorized, "authorization required")
     end
   end
+
+  defp allow_public_memberships(%User{} = _group, %User{} = _user), do: :ok
+
+  defp allow_public_memberships(%User{is_locked: false} = group, nil) do
+    if Pleroma.Nostr.Identity.nostr_group?(group), do: :ok, else: {:error, :unauthorized}
+  end
+
+  defp allow_public_memberships(_group, _user), do: {:error, :unauthorized}
 
   @doc "GET /api/v1/groups/:id/membership_requests"
   def membership_requests(%{assigns: %{user: user}} = conn, %{"id" => id}) do
@@ -452,8 +484,12 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
   end
 
   defp join_group(%User{} = user, %User{} = group) do
-    with {:ok, _follower, followed, _activity} <- CommonAPI.follow(user, group) do
-      {:ok, followed}
+    if Pleroma.Nostr.Identity.nostr_group?(group) do
+      Pleroma.Nostr.Community.join(user, group)
+    else
+      with {:ok, _follower, followed, _activity} <- CommonAPI.follow(user, group) do
+        {:ok, followed}
+      end
     end
   end
 
@@ -461,7 +497,13 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
     GroupMembership.leave(user, group)
   end
 
-  defp leave_group(%User{} = user, %User{} = group), do: CommonAPI.unfollow(user, group)
+  defp leave_group(%User{} = user, %User{} = group) do
+    if Pleroma.Nostr.Identity.nostr_group?(group) do
+      Pleroma.Nostr.Community.leave(user, group)
+    else
+      CommonAPI.unfollow(user, group)
+    end
+  end
 
   defp truthy_param?(value) when value in [true, "true", "1", 1], do: true
   defp truthy_param?(_), do: false

@@ -163,7 +163,7 @@ defmodule Pleroma.Web.Feed.TagControllerTest do
              ~c"#{Pleroma.Web.Endpoint.url()}/tags/pleromaart.rss"
 
     assert xpath(xml, ~x"//channel/webfeeds:logo/text()") ==
-             ~c"#{Pleroma.Web.Endpoint.url()}/static/logo.svg"
+             ~c"#{Pleroma.Web.Endpoint.url()}/images/unfathomably-logo.svg"
 
     assert xpath(xml, ~x"//channel/item/title/text()"l) == [
              ~c"42 This is :moominmamm...",

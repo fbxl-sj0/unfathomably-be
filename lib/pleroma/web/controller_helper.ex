@@ -49,9 +49,14 @@ defmodule Pleroma.Web.ControllerHelper do
       do: conn
 
   def add_link_headers(conn, entries, extra_params, order) do
+    extra_params = Map.reject(extra_params, fn {_key, value} -> is_nil(value) end)
+
     case get_pagination_fields(conn, entries, extra_params, order) do
       %{"next" => next_url, "prev" => prev_url} ->
         put_resp_header(conn, "link", "<#{next_url}>; rel=\"next\", <#{prev_url}>; rel=\"prev\"")
+
+      %{"prev" => prev_url} ->
+        put_resp_header(conn, "link", "<#{prev_url}>; rel=\"prev\"")
 
       _ ->
         conn
@@ -62,14 +67,14 @@ defmodule Pleroma.Web.ControllerHelper do
   @id_key_atoms Enum.map(@id_keys, &String.to_atom/1)
   @drop_id_params_key :drop_id_params
 
-  defp build_pagination_fields(conn, min_id, max_id, extra_params, order) do
+  defp build_pagination_fields(conn, min_id, max_id, extra_params, order, full_page?) do
     drop_id_params? = Map.get(extra_params, @drop_id_params_key, false)
     extra_params = Map.delete(extra_params, @drop_id_params_key)
 
     params =
       conn.params
       |> Map.drop(path_param_keys(conn.path_params))
-      |> Map.merge(extra_params)
+      |> merge_pagination_params(extra_params)
       |> Map.drop(@id_keys ++ if(drop_id_params?, do: @id_key_atoms, else: []))
 
     {{next_id, next_value}, {prev_id, prev_value}} =
@@ -81,13 +86,35 @@ defmodule Pleroma.Web.ControllerHelper do
 
     id = current_url(conn)
     part_of = %{URI.parse(id) | query: nil} |> URI.to_string()
+    pagination_conn = %{conn | query_string: ""}
 
-    %{
-      "next" => current_url(conn, Map.put(params, next_id, next_value)),
-      "prev" => current_url(conn, Map.put(params, prev_id, prev_value)),
+    fields = %{
+      "prev" => current_url(pagination_conn, Map.put(params, prev_id, prev_value)),
       "id" => id,
       "partOf" => part_of
     }
+
+    if full_page? do
+      Map.put(fields, "next", current_url(pagination_conn, Map.put(params, next_id, next_value)))
+    else
+      fields
+    end
+  end
+
+  # OpenAPI casting uses atom keys while controller-specific pagination
+  # parameters are commonly supplied with string keys. Normalize both maps
+  # before merging so one logical query parameter cannot be emitted twice.
+  defp merge_pagination_params(params, extra_params) do
+    params
+    |> stringify_pagination_param_keys()
+    |> Map.merge(stringify_pagination_param_keys(extra_params))
+  end
+
+  defp stringify_pagination_param_keys(params) do
+    Map.new(params, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), value}
+      entry -> entry
+    end)
   end
 
   defp path_param_keys(path_params) do
@@ -125,24 +152,61 @@ defmodule Pleroma.Web.ControllerHelper do
 
   def get_pagination_fields(conn, entries, extra_params, :desc) do
     case get_first_last_pagination_id(entries) do
-      nil -> %{}
-      {min_id, max_id} -> build_pagination_fields(conn, min_id, max_id, extra_params, :desc)
+      nil ->
+        %{}
+
+      {min_id, max_id} ->
+        build_pagination_fields(
+          conn,
+          min_id,
+          max_id,
+          extra_params,
+          :desc,
+          full_page?(conn, entries)
+        )
     end
   end
 
   def get_pagination_fields(conn, entries, extra_params, :asc) do
     case get_first_last_pagination_id(entries) do
-      nil -> %{}
-      {max_id, min_id} -> build_pagination_fields(conn, min_id, max_id, extra_params, :asc)
+      nil ->
+        %{}
+
+      {max_id, min_id} ->
+        build_pagination_fields(
+          conn,
+          min_id,
+          max_id,
+          extra_params,
+          :asc,
+          full_page?(conn, entries)
+        )
     end
   end
 
+  defp full_page?(conn, entries) do
+    length(entries) >= Pagination.page_limit(conn.params)
+  end
+
   def assign_account_by_id(conn, _) do
-    case Pleroma.User.get_cached_by_id(conn.params.id) do
+    account =
+      if valid_account_id?(conn.params.id) do
+        Pleroma.User.get_cached_by_id(conn.params.id)
+      end
+
+    case account do
       %Pleroma.User{} = account -> assign(conn, :account, account)
       nil -> Pleroma.Web.MastodonAPI.FallbackController.call(conn, {:error, :not_found}) |> halt()
     end
   end
+
+  # Mastodon account IDs rendered by this server are Base62 Flake IDs. Reject
+  # malformed and unreasonably large route values before the Ecto cache key is
+  # dumped, where Base62 decoding errors would otherwise become HTTP 500s.
+  defp valid_account_id?(id) when is_binary(id) and byte_size(id) in 1..64,
+    do: Regex.match?(~r/\A[A-Za-z0-9]+\z/, id)
+
+  defp valid_account_id?(_), do: false
 
   def try_render(conn, target, params) when is_binary(target) do
     render(conn, target, params)

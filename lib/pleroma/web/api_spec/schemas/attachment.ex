@@ -50,7 +50,12 @@ defmodule Pleroma.Web.ApiSpec.Schemas.Attachment do
       pleroma: %Schema{
         type: :object,
         properties: %{
-          mime_type: %Schema{type: :string, description: "mime type of the attachment"}
+          mime_type: %Schema{type: :string, description: "mime type of the attachment"},
+          license: %Schema{
+            type: :string,
+            nullable: true,
+            description: "SPDX identifier, label, or URL describing the attachment license"
+          }
         }
       }
     },

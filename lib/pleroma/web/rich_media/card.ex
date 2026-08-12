@@ -200,10 +200,16 @@ defmodule Pleroma.Web.RichMedia.Card do
     not has_attachments?(data) and not has_quote?(data)
   end
 
-  defp has_attachments?(%{"attachment" => attachments}) when is_list(attachments),
-    do: attachments != []
+  defp has_attachments?(%{"attachment" => attachments}) when is_list(attachments) do
+    Enum.any?(attachments, &(not link_attachment?(&1)))
+  end
 
   defp has_attachments?(_), do: false
+
+  defp link_attachment?(%{"type" => "Link", "href" => href}) when is_binary(href),
+    do: href != ""
+
+  defp link_attachment?(_), do: false
 
   defp has_quote?(data) do
     Enum.any?(["quoteUrl", "quoteUri", "_misskey_quote"], fn key ->

@@ -50,6 +50,44 @@ defmodule Pleroma.Web.MediaProxy do
     end
   end
 
+  @doc """
+  Returns a signed media-proxy URL suitable for requests made by this server.
+
+  Browser URLs use the public endpoint. Preview generation instead talks to
+  the configured Cowboy listener directly so installations without public-IP
+  hairpin routing do not time out while fetching their own proxy route.
+  """
+  @spec internal_url(String.t() | nil) :: String.t() | nil
+  def internal_url(url) when is_nil(url) or url == "", do: nil
+  def internal_url("/" <> _ = url), do: url
+
+  def internal_url(url) do
+    if enabled?() and url_proxiable?(url) do
+      encode_url(url, internal_base_url())
+    else
+      url
+    end
+  end
+
+  @doc """
+  Returns a same-origin URL for browser-rendered remote media when the proxy is enabled.
+
+  Normal media-proxy URLs honor the operator whitelist. Discovery responses use this
+  stricter helper because a whitelisted remote host can still be excluded by the
+  frontend Content-Security-Policy. Local URLs remain untouched.
+  """
+  @spec browser_url(String.t() | nil) :: String.t() | nil
+  def browser_url(url) when is_nil(url) or url == "", do: nil
+  def browser_url("/" <> _ = url), do: url
+
+  def browser_url(url) do
+    if enabled?() and remote_http_url?(url) and not local?(url) do
+      encode_url(url)
+    else
+      url
+    end
+  end
+
   @spec url_proxiable?(String.t()) :: boolean()
   def url_proxiable?(url) do
     remote_http_url?(url) and not local?(url) and not whitelisted?(url)
@@ -132,10 +170,12 @@ defmodule Pleroma.Web.MediaProxy do
     {base64, sig64}
   end
 
-  def encode_url(url) do
+  def encode_url(url), do: encode_url(url, base_url())
+
+  defp encode_url(url, proxy_base_url) do
     {base64, sig64} = base64_sig64(url)
 
-    build_url(sig64, base64, filename(url))
+    proxy_url(proxy_base_url, "proxy", sig64, base64, filename(url))
   end
 
   def encode_preview_url(url, preview_params \\ []) do
@@ -170,9 +210,45 @@ defmodule Pleroma.Web.MediaProxy do
     Config.get([:media_proxy, :base_url], Endpoint.url())
   end
 
-  defp proxy_url(path, sig_base64, url_base64, filename) do
+  defp internal_base_url do
+    case Config.get([:media_proxy, :internal_base_url]) do
+      value when is_binary(value) and value != "" -> value
+      _ -> endpoint_http_base_url() || base_url()
+    end
+  end
+
+  defp endpoint_http_base_url do
+    http_config = Config.get([Endpoint, :http], [])
+
+    with ip when is_tuple(ip) <- config_value(http_config, :ip),
+         port when is_integer(port) and port in 1..65_535 <- config_value(http_config, :port),
+         host when is_binary(host) <- listener_host(ip) do
+      URI.to_string(%URI{scheme: "http", host: host, port: port})
+    else
+      _ -> nil
+    end
+  end
+
+  defp config_value(config, key) when is_list(config), do: Keyword.get(config, key)
+  defp config_value(%{} = config, key), do: Map.get(config, key)
+  defp config_value(_config, _key), do: nil
+
+  defp listener_host({0, 0, 0, 0}), do: "127.0.0.1"
+  defp listener_host({0, 0, 0, 0, 0, 0, 0, 0}), do: "::1"
+
+  defp listener_host(ip) when tuple_size(ip) in [4, 8] do
+    ip
+    |> :inet.ntoa()
+    |> to_string()
+  rescue
+    _ -> nil
+  end
+
+  defp listener_host(_ip), do: nil
+
+  defp proxy_url(proxy_base_url, path, sig_base64, url_base64, filename) do
     [
-      base_url(),
+      proxy_base_url,
       path,
       sig_base64,
       url_base64,
@@ -183,11 +259,11 @@ defmodule Pleroma.Web.MediaProxy do
   end
 
   def build_url(sig_base64, url_base64, filename \\ nil) do
-    proxy_url("proxy", sig_base64, url_base64, filename)
+    proxy_url(base_url(), "proxy", sig_base64, url_base64, filename)
   end
 
   def build_preview_url(sig_base64, url_base64, filename \\ nil, preview_params \\ []) do
-    uri = proxy_url("proxy/preview", sig_base64, url_base64, filename)
+    uri = proxy_url(base_url(), "proxy/preview", sig_base64, url_base64, filename)
 
     UriHelper.modify_uri_params(uri, preview_params)
   end

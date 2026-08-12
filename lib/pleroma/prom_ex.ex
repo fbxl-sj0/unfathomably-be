@@ -62,6 +62,7 @@ defmodule Pleroma.PromEx do
       # PromEx built in plugins
       Plugins.Application,
       Plugins.Beam,
+      Pleroma.PromEx.ActivityPubPlugin,
       {Plugins.Phoenix, router: Pleroma.Web.Router, endpoint: Pleroma.Web.Endpoint},
       Plugins.Ecto,
       Plugins.Oban

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.UserRelationshipTest do
+  alias Pleroma.User
   alias Pleroma.UserRelationship
 
   use Pleroma.DataCase, async: false
@@ -43,6 +44,24 @@ defmodule Pleroma.UserRelationshipTest do
       assert UserRelationship.notification_mute_exists?(user1, user2)
       assert UserRelationship.reblog_mute_exists?(user1, user2)
       assert UserRelationship.inverse_subscription_exists?(user1, user2)
+    end
+
+    test "returns false for an expired relationship before cleanup runs", %{
+      users: [user1, user2]
+    } do
+      insert(:user_relationship,
+        source: user1,
+        target: user2,
+        relationship_type: :mute,
+        expires_at: DateTime.add(DateTime.utc_now(), -60, :second)
+      )
+
+      refute UserRelationship.mute_exists?(user1, user2)
+      refute user2.ap_id in User.muted_users_ap_ids(user1)
+      refute user2.ap_id in User.cached_muted_users_ap_ids(user1)
+
+      assert %{user_relationships: []} =
+               UserRelationship.view_relationships_option(user1, [user2], subset: :source_mutes)
     end
   end
 

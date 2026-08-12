@@ -338,6 +338,42 @@ defmodule Pleroma.Web.Push.ImplTest do
              }
     end
 
+    test "sanitizes every final push title and body" do
+      actor = insert(:user, nickname: "Bob")
+
+      group =
+        insert(:user,
+          actor_type: "Group",
+          name: "<strong>Coffee &amp; Tea</strong> " <> String.duplicate("club ", 30)
+        )
+
+      activity =
+        insert(:activity,
+          actor: actor.ap_id,
+          recipients: [group.ap_id],
+          data: %{
+            "id" => Utils.generate_activity_id(),
+            "type" => "Join",
+            "actor" => actor.ap_id,
+            "object" => group.ap_id,
+            "state" => "accept"
+          }
+        )
+
+      content =
+        Impl.build_content(
+          %{activity: activity, type: "group_follow"},
+          actor,
+          nil,
+          "<b>group_follow</b>"
+        )
+
+      refute content.body =~ "<"
+      refute content.title =~ "<"
+      assert String.length(content.body) <= 83
+      assert String.length(content.title) <= 83
+    end
+
     test "hides contents of notifications when option enabled" do
       user = insert(:user, nickname: "Bob")
 

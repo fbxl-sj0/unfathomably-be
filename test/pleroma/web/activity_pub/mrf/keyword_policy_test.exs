@@ -44,6 +44,23 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicyTest do
                KeywordPolicy.filter(message)
     end
 
+    test "rejects if a string matches in an ActivityStreams language map" do
+      clear_config([:mrf_keyword, :reject], ["blocked translation"])
+
+      message = %{
+        "type" => "Create",
+        "object" => %{
+          "contentMap" => %{
+            "en" => "ordinary text",
+            "fr" => "blocked translation"
+          }
+        }
+      }
+
+      assert {:reject, "[KeywordPolicy] Matches with rejected keyword"} =
+               KeywordPolicy.filter(message)
+    end
+
     test "rejects if regex matches in content" do
       clear_config([:mrf_keyword, :reject], [~r/comp[lL][aA][iI][nN]er/])
 
@@ -164,6 +181,23 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicyTest do
       refute ["https://www.w3.org/ns/activitystreams#Public"] == result["to"]
     end
 
+    test "delists if a string matches in an ActivityStreams language map" do
+      clear_config([:mrf_keyword, :federated_timeline_removal], ["blocked title"])
+
+      message = %{
+        "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+        "type" => "Create",
+        "object" => %{
+          "contentMap" => %{"en" => "ordinary text"},
+          "nameMap" => %{"de" => "blocked title"}
+        }
+      }
+
+      {:ok, result} = KeywordPolicy.filter(message)
+      assert ["https://www.w3.org/ns/activitystreams#Public"] == result["cc"]
+      refute ["https://www.w3.org/ns/activitystreams#Public"] == result["to"]
+    end
+
     test "delists if regex matches in content" do
       clear_config([:mrf_keyword, :federated_timeline_removal], [~r/comp[lL][aA][iI][nN]er/])
 
@@ -257,6 +291,31 @@ defmodule Pleroma.Web.ActivityPub.MRF.KeywordPolicyTest do
 
       {:ok, %{"object" => %{"summary" => result}}} = KeywordPolicy.filter(message)
       assert result == "ZFS is free software"
+    end
+
+    test "replaces keywords in ActivityStreams language maps" do
+      clear_config([:mrf_keyword, :replace], [{"opensource", "free software"}])
+
+      message = %{
+        "type" => "Create",
+        "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+        "object" => %{
+          "contentMap" => %{
+            "en" => "ZFS is opensource",
+            "fr" => "ZFS reste opensource"
+          },
+          "summaryMap" => %{"en" => "opensource summary"}
+        }
+      }
+
+      {:ok, %{"object" => object}} = KeywordPolicy.filter(message)
+
+      assert object["contentMap"] == %{
+               "en" => "ZFS is free software",
+               "fr" => "ZFS reste free software"
+             }
+
+      assert object["summaryMap"] == %{"en" => "free software summary"}
     end
 
     test "replaces keyword if regex matches in content" do

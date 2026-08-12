@@ -128,6 +128,16 @@ defmodule Pleroma.Web.TwitterAPI.PasswordControllerTest do
       %{conn: conn, user: user}
     end
 
+    test "it does not issue a reset token for an account without a local password", %{conn: conn} do
+      user = insert(:user, password_hash: nil)
+
+      assert conn
+             |> post("/auth/password?email=#{user.email}")
+             |> empty_json_response()
+
+      refute Repo.get_by(Pleroma.PasswordResetToken, user_id: user.id)
+    end
+
     test "it returns 204", %{conn: conn} do
       assert empty_json_response(conn)
     end

@@ -12,12 +12,6 @@ defmodule Pleroma.Web.FallbackTest do
 
       refute html_response(response, 200) =~ "initial-results"
     end
-
-    test "GET /*path", %{conn: conn} do
-      refute conn
-             |> get("/foo")
-             |> html_response(200) =~ "initial-results"
-    end
   end
 
   test "GET /*path adds a title", %{conn: conn} do
@@ -39,6 +33,7 @@ defmodule Pleroma.Web.FallbackTest do
 
       refute html_response(user_missing, 200) =~ "<!--server-generated-meta-->"
       refute html_response(user_present, 200) =~ "<!--server-generated-meta-->"
+      assert html_response(user_missing, 200) =~ "initial-results"
       assert html_response(user_present, 200) =~ "initial-results"
       assert html_response(user_present, 200) =~ "<title>a cool title</title>"
       assert html_response(user_present, 200) =~ "<link rel=\"icon\" href=\"/favicon.svg\">"
@@ -93,7 +88,7 @@ defmodule Pleroma.Web.FallbackTest do
 
     assert conn
            |> get("/%c0")
-           |> response(404) == "Not found"
+           |> response(400) == "Malformed request path"
   end
 
   test "GET /pleroma/admin -> /pleroma/admin/", %{conn: conn} do

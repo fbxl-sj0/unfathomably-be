@@ -108,6 +108,27 @@ defmodule Pleroma.MFA do
   end
 
   @doc """
+  Confirms TOTP and atomically replaces the recovery codes.
+
+  The plaintext codes are returned once so the enrolling client can keep them
+  visible after confirmation. Only password hashes are stored with the user.
+  """
+  @spec confirm_totp_with_backup_codes(User.t(), map()) ::
+          {:ok, User.t(), list(binary)} | {:error, Ecto.Changeset.t() | atom()}
+  def confirm_totp_with_backup_codes(%User{} = user, attrs) do
+    with settings <- user.multi_factor_authentication_settings.totp,
+         {:ok, :pass} <- TOTP.validate_token(settings.secret, attrs["code"]),
+         codes <- BackupCodes.generate(),
+         hashed_codes <- Enum.map(codes, &Pleroma.Password.Pbkdf2.hash_pwd_salt/1),
+         {:ok, user} <-
+           user
+           |> Changeset.confirm_totp(hashed_codes)
+           |> User.update_and_set_cache() do
+      {:ok, user, codes}
+    end
+  end
+
+  @doc """
   Disables the TOTP method for user.
 
   `attrs`:

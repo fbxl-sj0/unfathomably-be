@@ -10,6 +10,7 @@ defmodule Pleroma.Search.MeilisearchTest do
   import Tesla.Mock
   import Mox
 
+  alias Pleroma.Search
   alias Pleroma.Search.Meilisearch
   alias Pleroma.UnstubbedConfigMock, as: Config
   alias Pleroma.Web.CommonAPI
@@ -92,6 +93,22 @@ defmodule Pleroma.Search.MeilisearchTest do
 
         assert_enqueued(worker: SearchIndexingWorker, args: args)
         assert :ok = perform_job(SearchIndexingWorker, args)
+      end)
+    end
+
+    test "doesn't index public posts with explicit discovery opt-outs" do
+      user = insert(:user)
+
+      {:ok, activity} =
+        CommonAPI.post(user, %{
+          status: "this public post must remain directly resolvable",
+          visibility: "public"
+        })
+
+      Enum.each(["indexable", "discoverable"], fn field ->
+        object = %{activity.object | data: Map.put(activity.object.data, field, false)}
+
+        assert is_nil(Search.object_to_search_data(object))
       end)
     end
 

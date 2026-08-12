@@ -30,13 +30,23 @@ defmodule Pleroma.Web.Federator.Publisher do
   @doc """
   Enqueue publishing a single activity.
   """
-  @spec enqueue_one(module(), map(), keyword()) :: :ok
+  @spec enqueue_one(module(), map(), keyword()) ::
+          {:ok, Oban.Job.t()} | {:error, Ecto.Changeset.t() | :federation_disabled}
   def enqueue_one(module, %{} = params, worker_args \\ []) do
-    PublisherWorker.enqueue(
-      "publish_one",
-      %{"module" => to_string(module), "params" => params},
-      worker_args
-    )
+    with :ok <- Pleroma.Federation.ensure_enabled() do
+      worker_args =
+        Keyword.put_new(worker_args, :unique,
+          period: 86_400,
+          states: [:available, :scheduled, :executing, :retryable, :suspended, :completed],
+          keys: [:module, :params]
+        )
+
+      PublisherWorker.enqueue(
+        "publish_one",
+        %{"module" => to_string(module), "params" => params},
+        worker_args
+      )
+    end
   end
 
   @doc """
@@ -44,17 +54,33 @@ defmodule Pleroma.Web.Federator.Publisher do
   """
   @callback publish(User.t(), Activity.t()) :: :ok | {:error, any()}
 
-  @spec publish(User.t(), Activity.t()) :: :ok
+  @spec publish(User.t(), Activity.t()) :: :ok | {:error, any()}
   def publish(%User{} = user, %Activity{} = activity) do
-    Config.get([:instance, :federation_publisher_modules])
-    |> Enum.each(fn module ->
-      if module.is_representable?(activity) do
-        Logger.debug("Publishing #{activity.data["id"]} using #{inspect(module)}")
-        module.publish(user, activity)
-      end
-    end)
+    if Pleroma.Federation.enabled?() do
+      errors =
+        Config.get([:instance, :federation_publisher_modules])
+        |> Enum.reduce([], fn module, errors ->
+          if module.is_representable?(activity) do
+            Logger.debug("Publishing #{activity.data["id"]} using #{inspect(module)}")
 
-    :ok
+            case module.publish(user, activity) do
+              :ok -> errors
+              {:ok, _result} -> errors
+              {:error, reason} -> [{module, reason} | errors]
+              result -> [{module, {:invalid_publish_result, result}} | errors]
+            end
+          else
+            errors
+          end
+        end)
+
+      case errors do
+        [] -> :ok
+        errors -> {:error, {:publisher_failures, Enum.reverse(errors)}}
+      end
+    else
+      :ok
+    end
   end
 
   @doc """
@@ -64,10 +90,14 @@ defmodule Pleroma.Web.Federator.Publisher do
 
   @spec gather_webfinger_links(User.t()) :: list()
   def gather_webfinger_links(%User{} = user) do
-    Config.get([:instance, :federation_publisher_modules])
-    |> Enum.reduce([], fn module, links ->
-      links ++ module.gather_webfinger_links(user)
-    end)
+    if Pleroma.Federation.enabled?() do
+      Config.get([:instance, :federation_publisher_modules])
+      |> Enum.reduce([], fn module, links ->
+        links ++ module.gather_webfinger_links(user)
+      end)
+    else
+      []
+    end
   end
 
   @doc """
@@ -77,10 +107,14 @@ defmodule Pleroma.Web.Federator.Publisher do
 
   @spec gather_nodeinfo_protocol_names() :: list()
   def gather_nodeinfo_protocol_names do
-    Config.get([:instance, :federation_publisher_modules])
-    |> Enum.reduce([], fn module, links ->
-      links ++ module.gather_nodeinfo_protocol_names()
-    end)
+    if Pleroma.Federation.enabled?() do
+      Config.get([:instance, :federation_publisher_modules])
+      |> Enum.reduce([], fn module, links ->
+        links ++ module.gather_nodeinfo_protocol_names()
+      end)
+    else
+      []
+    end
   end
 
   @doc """

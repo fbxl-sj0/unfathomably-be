@@ -29,6 +29,7 @@ defmodule Pleroma.Notification do
   @type t :: %__MODULE__{}
 
   @include_muted_option :with_muted
+  @notification_event_unique_index :notifications_user_id_activity_id_index
 
   schema "notifications" do
     field(:seen, :boolean, default: false)
@@ -207,13 +208,36 @@ defmodule Pleroma.Notification do
     {exclude_blocked_opts, exclude_notification_muted_opts}
   end
 
+  @objectless_notification_types ~w(follow follow_request)
+
   def for_user_query(user, opts \\ %{}) do
     {exclude_blocked_opts, exclude_notification_muted_opts} =
       for_user_query_ap_id_opts(user, opts)
 
+    preload_activity_object? = preload_activity_object?(opts)
+
     Notification
     |> where(user_id: ^user.id)
     |> join(:inner, [n], activity in assoc(n, :activity))
+    |> maybe_preload_activity_object(preload_activity_object?)
+    |> join(:inner, [_n, a], u in User, on: u.ap_id == a.actor, as: :user_actor)
+    |> where([user_actor: user_actor], user_actor.is_active)
+    |> exclude_notification_muted(user, exclude_notification_muted_opts)
+    |> exclude_blocked(user, exclude_blocked_opts)
+    |> exclude_blockers(user)
+    |> exclude_filtered(user, preload_activity_object?)
+    |> exclude_visibility(opts)
+  end
+
+  defp preload_activity_object?(%{include_types: include_types})
+       when is_list(include_types) and include_types != [] do
+    Enum.any?(include_types, &(&1 not in @objectless_notification_types))
+  end
+
+  defp preload_activity_object?(_opts), do: true
+
+  defp maybe_preload_activity_object(query, true) do
+    query
     |> join(:left, [n, a], object in Object,
       on:
         fragment(
@@ -222,14 +246,11 @@ defmodule Pleroma.Notification do
           a.data
         )
     )
-    |> join(:inner, [_n, a], u in User, on: u.ap_id == a.actor, as: :user_actor)
     |> preload([n, a, o], activity: {a, object: o})
-    |> where([user_actor: user_actor], user_actor.is_active)
-    |> exclude_notification_muted(user, exclude_notification_muted_opts)
-    |> exclude_blocked(user, exclude_blocked_opts)
-    |> exclude_blockers(user)
-    |> exclude_filtered(user)
-    |> exclude_visibility(opts)
+  end
+
+  defp maybe_preload_activity_object(query, false) do
+    preload(query, [n, a], activity: a)
   end
 
   # Excludes blocked users and non-followed domain-blocked users
@@ -269,7 +290,9 @@ defmodule Pleroma.Notification do
     |> where([thread_mute: thread_mute], is_nil(thread_mute.user_id))
   end
 
-  defp exclude_filtered(query, user) do
+  defp exclude_filtered(query, _user, false), do: query
+
+  defp exclude_filtered(query, user, true) do
     case Pleroma.Filter.compose_regex(user) do
       nil ->
         query
@@ -610,27 +633,70 @@ defmodule Pleroma.Notification do
     type = Keyword.get(opts, :type, type_from_activity(activity))
 
     unless skip?(activity, user, opts) do
-      {:ok, %{notification: notification}} =
-        Multi.new()
-        |> Multi.insert(:notification, %Notification{
-          user_id: user.id,
-          activity: activity,
-          seen: mark_as_read?(activity, user),
-          type: type,
-          group_key: grouped_notification_key(type, activity)
-        })
-        |> Marker.multi_set_last_read_id(user, "notifications")
-        |> Repo.transaction()
+      case persist_notification(activity, user, type) do
+        {:created, notification} ->
+          if do_send, do: stream(notification)
+          notification
 
-      if do_send, do: stream(notification)
-
-      notification
+        {:existing, notification} ->
+          notification
+      end
     end
   end
 
+  @doc false
+  def persist_notification(%Activity{} = activity, %User{} = user, type)
+      when is_binary(type) do
+    changeset =
+      %Notification{
+        user_id: user.id,
+        activity: activity,
+        seen: mark_as_read?(activity, user),
+        type: type,
+        group_key: grouped_notification_key(type, activity)
+      }
+      |> change()
+      |> unique_constraint([:user_id, :activity_id],
+        name: @notification_event_unique_index
+      )
+
+    case Multi.new()
+         |> Multi.insert(:notification, changeset)
+         |> Marker.multi_set_last_read_id(user, "notifications")
+         |> Repo.transaction() do
+      {:ok, %{notification: notification}} ->
+        {:created, notification}
+
+      {:error, :notification, %Ecto.Changeset{} = failed_changeset, _changes} ->
+        case Repo.get_by(Notification, user_id: user.id, activity_id: activity.id) do
+          %Notification{} = notification ->
+            # The unique index is the final authority. A concurrent delivery may
+            # win after skip?/3 checks but before this insert. Returning that row
+            # without streaming it again prevents duplicate browser and push
+            # delivery while preserving the exact activity that caused the event.
+            {:existing, %{notification | activity: activity}}
+
+          nil ->
+            raise Ecto.InvalidChangesetError,
+              action: :insert,
+              changeset: failed_changeset
+        end
+
+      {:error, operation, reason, _changes} ->
+        raise "Notification transaction failed at #{inspect(operation)}: #{inspect(reason)}"
+    end
+  end
+
+  @historical_push_age_limit 60 * 60
+
   def stream(%Notification{} = notification) do
     Streamer.stream(["user", "user:notification"], notification)
-    Push.send(notification)
+
+    # Federation backfills can discover an old interaction for the first time.
+    # Keep it in the notification history and live stream, but do not present it
+    # as a new device alert. Missing or malformed timestamps remain eligible so
+    # peers that legitimately omit `published` do not lose timely notifications.
+    if recent_enough_for_push?(notification), do: Push.send(notification)
 
     notification
   end
@@ -641,6 +707,21 @@ defmodule Pleroma.Notification do
   end
 
   def stream(_), do: nil
+
+  defp recent_enough_for_push?(%Notification{
+         activity: %Activity{data: %{"published" => published}}
+       })
+       when is_binary(published) do
+    with {:ok, published_at, _offset} <- DateTime.from_iso8601(published) do
+      DateTime.diff(DateTime.utc_now(), published_at, :second)
+      |> abs()
+      |> Kernel.<(@historical_push_age_limit)
+    else
+      _ -> true
+    end
+  end
+
+  defp recent_enough_for_push?(_notification), do: true
 
   def create_poll_notifications(%Activity{} = activity) do
     with %Object{data: %{"type" => "Question", "actor" => actor} = data} <-
@@ -711,7 +792,9 @@ defmodule Pleroma.Notification do
     potential_receiver_ap_ids = get_potential_receiver_ap_ids(activity)
 
     potential_receivers =
-      User.get_users_from_set(potential_receiver_ap_ids, local_only: local_only)
+      potential_receiver_ap_ids
+      |> User.get_users_from_set(local_only: local_only)
+      |> Enum.filter(&human_notification_receiver?/1)
 
     notification_enabled_ap_ids =
       potential_receiver_ap_ids
@@ -738,7 +821,9 @@ defmodule Pleroma.Notification do
       |> Utils.maybe_notify_subscribers(activity)
 
     potential_receivers =
-      User.get_users_from_set(notification_enabled_ap_ids, local_only: local_only)
+      notification_enabled_ap_ids
+      |> User.get_users_from_set(local_only: local_only)
+      |> Enum.filter(&human_notification_receiver?/1)
 
     notification_enabled_users =
       Enum.filter(potential_receivers, fn u -> u.ap_id in notification_enabled_ap_ids end)
@@ -759,7 +844,9 @@ defmodule Pleroma.Notification do
       |> Utils.maybe_notify_participants(activity)
 
     potential_receivers =
-      User.get_users_from_set(notification_enabled_ap_ids, local_only: local_only)
+      notification_enabled_ap_ids
+      |> User.get_users_from_set(local_only: local_only)
+      |> Enum.filter(&human_notification_receiver?/1)
 
     notification_enabled_users =
       Enum.filter(potential_receivers, fn u -> u.ap_id in notification_enabled_ap_ids end)
@@ -768,6 +855,14 @@ defmodule Pleroma.Notification do
   end
 
   def get_notified_participants_from_activity(_, _), do: {[], []}
+
+  # Internal and Application actors exist to perform instance-level protocol
+  # work. They have no person-facing notification inbox, so retaining rows,
+  # websocket events, or push work for them only creates misleading state.
+  # Service actors remain eligible because ordinary user-controlled bots use
+  # that ActivityStreams type.
+  defp human_notification_receiver?(%User{actor_type: "Application"}), do: false
+  defp human_notification_receiver?(%User{} = user), do: not User.is_internal_user?(user)
 
   # For some activities, only notify the author of the object
   def get_potential_receiver_ap_ids(%{data: %{"type" => type, "object" => object_id}})
@@ -964,7 +1059,6 @@ defmodule Pleroma.Notification do
     end
   end
 
-  # To do: consider defining recency in hours and checking FollowingRelationship with a single SQL
   def skip?(
         :recently_followed,
         %Activity{data: %{"type" => "Follow"}} = activity,
@@ -973,11 +1067,16 @@ defmodule Pleroma.Notification do
       ) do
     actor = activity.data["actor"]
 
-    Notification.for_user(user)
-    |> Enum.any?(fn
-      %{activity: %{data: %{"type" => "Follow", "actor" => ^actor}}} -> true
-      _ -> false
-    end)
+    # Remote software may retry a Follow with a new activity id when repairing
+    # relationship state. The Accept must still be emitted, but the retry must
+    # not generate another notification for the same follower.
+    from(n in Notification,
+      join: a in assoc(n, :activity),
+      where: n.user_id == ^user.id,
+      where: fragment("?->>'type' = ?", a.data, "Follow"),
+      where: fragment("?->>'actor' = ?", a.data, ^actor)
+    )
+    |> Repo.exists?()
   end
 
   def skip?(:filtered, %{data: %{"type" => type}}, _user, _opts) when type in ["Follow", "Move"],

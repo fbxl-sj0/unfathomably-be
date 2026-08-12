@@ -12,5 +12,18 @@ defmodule Pleroma.Web.AdminAPI.AccountViewTest do
       user = insert(:user, email: "yolo@yolofam.tld")
       assert %{"email" => "yolo@yolofam.tld"} = AccountView.render("show.json", %{user: user})
     end
+
+    test "renders account migration state" do
+      user =
+        insert(:user,
+          also_known_as: ["https://old.example/users/alice"],
+          last_move_at: ~N[2025-08-08 12:34:56]
+        )
+
+      assert %{
+               "also_known_as" => ["https://old.example/users/alice"],
+               "last_move_at" => "2025-08-08T12:34:56.000Z"
+             } = AccountView.render("show.json", %{user: user})
+    end
   end
 end

@@ -82,7 +82,7 @@ defmodule Pleroma.Web.Plugs.OAuthScopesPlugTest do
     test "if `token.scopes` does not fulfill specified 'any of' conditions, " <>
            "returns 403 and halts",
          %{conn: conn} do
-      for token <- [insert(:oauth_token, scopes: ["read", "write"]), nil] do
+      for token <- [insert(:oauth_token, scopes: ["read", "write"])] do
         any_of_scopes = ["follow", "push"]
 
         ret_conn =
@@ -101,7 +101,7 @@ defmodule Pleroma.Web.Plugs.OAuthScopesPlugTest do
     test "if `token.scopes` does not fulfill specified 'all of' conditions, " <>
            "returns 403 and halts",
          %{conn: conn} do
-      for token <- [insert(:oauth_token, scopes: ["read", "write"]), nil] do
+      for token <- [insert(:oauth_token, scopes: ["read", "write"])] do
         token_scopes = (token && token.scopes) || []
         all_of_scopes = ["write", "follow"]
 
@@ -118,6 +118,15 @@ defmodule Pleroma.Web.Plugs.OAuthScopesPlugTest do
 
         assert Jason.encode!(%{error: expected_error}) == conn.resp_body
       end
+    end
+
+    test "if no token is assigned, returns 401 with a Bearer challenge", %{conn: conn} do
+      conn = OAuthScopesPlug.call(conn, %{scopes: ["read"]})
+
+      assert conn.halted
+      assert conn.status == 401
+      assert get_resp_header(conn, "www-authenticate") == [~s(Bearer realm="Unfathomably")]
+      assert Jason.decode!(conn.resp_body) == %{"error" => "Invalid credentials."}
     end
   end
 

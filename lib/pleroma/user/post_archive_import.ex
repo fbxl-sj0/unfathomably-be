@@ -25,6 +25,7 @@ defmodule Pleroma.User.PostArchiveImport do
 
   @type policy :: :disabled | :moderated | :open
   @default_max_file_size 100 * 1024 * 1024
+  @archive_entry_names ~w[actor.json outbox.json]
   @supported_create_objects ~w[Article Note Page Question Audio Video Image Event]
 
   schema "post_archive_imports" do
@@ -235,7 +236,7 @@ defmodule Pleroma.User.PostArchiveImport do
   end
 
   defp copy_upload(%User{} = user, %Plug.Upload{path: source}) do
-    rand_str = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
+    rand_str = Pleroma.Crypto.Random.urlsafe(:high)
     datetime = Calendar.NaiveDateTime.Format.iso8601_basic(NaiveDateTime.utc_now())
     file_name = "post-archive-import-#{user.nickname}-#{datetime}-#{rand_str}.zip"
     destination = path(file_name)
@@ -271,56 +272,136 @@ defmodule Pleroma.User.PostArchiveImport do
       original_actor = actor["id"]
       total_items = length(items)
 
-      {processed_number, imported_count} =
-        Enum.reduce(items, {0, 0}, fn item, {processed, imported} ->
-          imported =
-            case import_item(item, import.user, original_actor) do
-              {:ok, :imported} ->
-                imported + 1
+      with {:ok, _import} <- set_state(import, :running, %{total_items: total_items}) do
+        {processed_number, imported_count} =
+          Enum.reduce(items, {0, 0}, fn item, {processed, imported} ->
+            imported =
+              case import_item(item, import.user, original_actor) do
+                {:ok, :imported} ->
+                  imported + 1
 
-              {:ok, :skipped} ->
-                imported
+                {:ok, :skipped} ->
+                  imported
 
-              {:error, reason} ->
-                Logger.warning("Could not import archive item: #{inspect(reason)}")
-                imported
+                {:error, reason} ->
+                  Logger.warning("Could not import archive item: #{inspect(reason)}")
+                  imported
+              end
+
+            processed = processed + 1
+
+            if rem(processed, 100) == 0 do
+              set_state(import, :running, %{processed_number: processed})
             end
 
-          processed = processed + 1
+            {processed, imported}
+          end)
 
-          if rem(processed, 100) == 0 do
-            set_state(import, :running, %{processed_number: processed})
-          end
-
-          {processed, imported}
-        end)
-
-      {:ok,
-       %{
-         processed_number: processed_number,
-         imported_count: imported_count,
-         total_items: total_items,
-         original_actor: original_actor
-       }}
+        {:ok,
+         %{
+           processed_number: processed_number,
+           imported_count: imported_count,
+           total_items: total_items,
+           original_actor: original_actor
+         }}
+      end
     end
   end
 
   defp read_archive(%__MODULE__{} = import) do
+    with {:ok, files} <- extract_archive(import),
+         {:ok, entries} <- index_archive_entries(files),
+         {:ok, root} <- select_archive_root(entries) do
+      archive =
+        Map.new(@archive_entry_names, fn name ->
+          {name, Map.fetch!(entries, {root, name})}
+        end)
+
+      {:ok, archive}
+    end
+  end
+
+  defp extract_archive(import) do
     import
     |> path()
     |> String.to_charlist()
     |> :zip.extract([:memory])
     |> case do
-      {:ok, files} ->
-        archive =
-          Map.new(files, fn {name, content} ->
-            {name |> to_string() |> Path.basename(), content}
-          end)
+      {:ok, files} -> {:ok, files}
+      {:error, reason} -> {:error, {:zip, reason}}
+    end
+  end
 
-        {:ok, archive}
+  defp index_archive_entries(files) do
+    Enum.reduce_while(files, {:ok, %{}}, fn {name, content}, {:ok, entries} ->
+      case archive_entry(to_string(name)) do
+        {:ok, nil} ->
+          {:cont, {:ok, entries}}
 
-      {:error, reason} ->
-        {:error, {:zip, reason}}
+        {:ok, key} ->
+          if Map.has_key?(entries, key) do
+            {:halt, {:error, {:duplicate_archive_file, elem(key, 1)}}}
+          else
+            {:cont, {:ok, Map.put(entries, key, content)}}
+          end
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp archive_entry(name) when is_binary(name) do
+    normalized = String.replace(name, "\\", "/")
+    directory? = String.ends_with?(normalized, "/")
+    path = String.trim_trailing(normalized, "/")
+    segments = String.split(path, "/", trim: false)
+
+    cond do
+      path == "" ->
+        {:error, :invalid_archive_path}
+
+      String.starts_with?(normalized, "/") ->
+        {:error, :invalid_archive_path}
+
+      Regex.match?(~r/^[A-Za-z]:/, normalized) ->
+        {:error, :invalid_archive_path}
+
+      String.contains?(normalized, <<0>>) ->
+        {:error, :invalid_archive_path}
+
+      Enum.any?(segments, &(&1 in ["", ".", ".."])) ->
+        {:error, :invalid_archive_path}
+
+      directory? ->
+        {:ok, nil}
+
+      true ->
+        archive_file_key(segments)
+    end
+  end
+
+  defp archive_file_key([name]) when name in @archive_entry_names, do: {:ok, {"", name}}
+
+  defp archive_file_key([root, name]) when name in @archive_entry_names,
+    do: {:ok, {root, name}}
+
+  defp archive_file_key(_segments), do: {:ok, nil}
+
+  defp select_archive_root(entries) do
+    roots =
+      entries
+      |> Map.keys()
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.uniq()
+      |> Enum.filter(fn root ->
+        Enum.all?(@archive_entry_names, &Map.has_key?(entries, {root, &1}))
+      end)
+
+    case roots do
+      [root] -> {:ok, root}
+      [] -> {:error, {:missing_archive_files, @archive_entry_names}}
+      _ -> {:error, :ambiguous_archive_root}
     end
   end
 

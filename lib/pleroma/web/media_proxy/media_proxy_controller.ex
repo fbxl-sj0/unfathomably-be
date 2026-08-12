@@ -12,6 +12,13 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
   alias Pleroma.Web.MediaProxy
   alias Plug.Conn
 
+  @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
+  @preview_cache :media_preview_cache
+
+  # The cache is limited to 500 entries by the application supervisor. Keeping
+  # each generated body below 256 KiB bounds its worst-case binary memory use.
+  @max_cached_preview_bytes 256 * 1024
+
   plug(:sandbox)
 
   def remote(conn, %{"sig" => sig64, "url" => url64}) do
@@ -20,7 +27,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
          :ok <- MediaProxy.verify_remote_http_url(url),
          {_, false} <- {:in_banned_urls, MediaProxy.in_banned_urls(url)},
          :ok <- MediaProxy.verify_request_path_and_url(conn, url) do
-      ReverseProxy.call(conn, url, media_proxy_opts())
+      ReverseProxy.media_call(conn, url, media_proxy_opts())
     else
       {:enabled, false} ->
         send_resp(conn, 404, Conn.Status.reason_phrase(404))
@@ -62,66 +69,111 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
 
   defp handle_preview(conn, url) do
     media_proxy_url = MediaProxy.url(url)
-    http_client_opts = Pleroma.Config.get([:media_proxy, :proxy_opts, :http], pool: :media)
+    internal_media_proxy_url = MediaProxy.internal_url(url)
+    static = conn.params["static"] in ["true", true]
 
-    with {:ok, %{status: status} = head_response} when status in 200..299 <-
-           Pleroma.HTTP.request("HEAD", media_proxy_url, [], [], http_client_opts) do
+    media_proxy_url
+    |> cached_preview_decision(internal_media_proxy_url, static)
+    |> render_preview_decision(conn, media_proxy_url)
+  end
+
+  defp cached_preview_decision(media_proxy_url, internal_media_proxy_url, static) do
+    cache_key = {media_proxy_url, static}
+
+    case @cachex.get(@preview_cache, cache_key) do
+      {:ok, nil} ->
+        fetch_preview_decision(cache_key, media_proxy_url, internal_media_proxy_url, static)
+
+      {:ok, decision} ->
+        decision
+
+      _ ->
+        build_preview_decision(media_proxy_url, internal_media_proxy_url, static)
+    end
+  rescue
+    _ -> build_preview_decision(media_proxy_url, internal_media_proxy_url, static)
+  catch
+    _, _ -> build_preview_decision(media_proxy_url, internal_media_proxy_url, static)
+  end
+
+  defp fetch_preview_decision(cache_key, media_proxy_url, internal_media_proxy_url, static) do
+    @cachex.fetch!(@preview_cache, cache_key, fn _cache_key ->
+      decision = build_preview_decision(media_proxy_url, internal_media_proxy_url, static)
+
+      if cacheable_preview_decision?(decision) do
+        {:commit, decision}
+      else
+        {:ignore, decision}
+      end
+    end)
+  rescue
+    _ -> build_preview_decision(media_proxy_url, internal_media_proxy_url, static)
+  catch
+    _, _ -> build_preview_decision(media_proxy_url, internal_media_proxy_url, static)
+  end
+
+  defp build_preview_decision(media_proxy_url, internal_media_proxy_url, static) do
+    with false <- MediaHelper.preview_failed?(media_proxy_url),
+         {:ok, %{status: status} = head_response} when status in 200..299 <-
+           Pleroma.HTTP.request(
+             "HEAD",
+             internal_media_proxy_url,
+             [],
+             [],
+             preview_http_client_opts()
+           ) do
       content_type = Tesla.get_header(head_response, "content-type")
-      content_length = Tesla.get_header(head_response, "content-length")
-      content_length = content_length && String.to_integer(content_length)
-      static = conn.params["static"] in ["true", true]
+      content_length = parse_content_length(Tesla.get_header(head_response, "content-length"))
 
       cond do
         static and content_type == "image/gif" ->
-          handle_jpeg_preview(conn, media_proxy_url)
+          build_jpeg_preview(internal_media_proxy_url)
 
         static ->
-          drop_static_param_and_redirect(conn)
+          {:redirect, :drop_static}
 
         content_type == "image/gif" ->
-          conn
-          |> put_status(301)
-          |> redirect(external: media_proxy_url)
+          {:redirect, :media_proxy}
 
         min_content_length_for_preview() > 0 and content_length > 0 and
             content_length < min_content_length_for_preview() ->
-          conn
-          |> put_status(301)
-          |> redirect(external: media_proxy_url)
+          {:redirect, :media_proxy}
 
         true ->
-          handle_preview(content_type, conn, media_proxy_url)
+          build_preview(content_type, internal_media_proxy_url)
       end
     else
-      # If HEAD failed, redirecting to media proxy URI doesn't make much sense; returning an error
-      {_, %{status: status}} ->
-        send_resp(conn, :failed_dependency, "Can't fetch HTTP headers (HTTP #{status}).")
+      true ->
+        {:error, :cached_failure}
 
-      {:error, :recv_response_timeout} ->
-        send_resp(conn, :failed_dependency, "HEAD request timeout.")
+      {_, %{status: status}} ->
+        {:error, {:http_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
 
       _ ->
-        send_resp(conn, :failed_dependency, "Can't fetch HTTP headers.")
+        {:error, :invalid_head_response}
     end
   end
 
-  defp handle_preview("image/png" <> _ = _content_type, conn, media_proxy_url) do
-    handle_png_preview(conn, media_proxy_url)
+  defp build_preview("image/png" <> _ = _content_type, media_proxy_url) do
+    build_png_preview(media_proxy_url)
   end
 
-  defp handle_preview("image/" <> _ = _content_type, conn, media_proxy_url) do
-    handle_jpeg_preview(conn, media_proxy_url)
+  defp build_preview("image/" <> _ = _content_type, media_proxy_url) do
+    build_jpeg_preview(media_proxy_url)
   end
 
-  defp handle_preview("video/" <> _ = _content_type, conn, media_proxy_url) do
-    handle_video_preview(conn, media_proxy_url)
+  defp build_preview("video/" <> _ = _content_type, media_proxy_url) do
+    build_video_preview(media_proxy_url)
   end
 
-  defp handle_preview(_unsupported_content_type, conn, media_proxy_url) do
-    fallback_on_preview_error(conn, media_proxy_url)
+  defp build_preview(unsupported_content_type, _media_proxy_url) do
+    {:error, {:unsupported_content_type, unsupported_content_type}}
   end
 
-  defp handle_png_preview(conn, media_proxy_url) do
+  defp build_png_preview(media_proxy_url) do
     quality = Config.get!([:media_preview_proxy, :image_quality])
     {thumbnail_max_width, thumbnail_max_height} = thumbnail_max_dimensions()
 
@@ -135,16 +187,13 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
                format: "png"
              }
            ) do
-      conn
-      |> put_preview_response_headers(["image/png", "preview.png"])
-      |> send_resp(200, thumbnail_binary)
+      {:body, ["image/png", "preview.png"], thumbnail_binary}
     else
-      _ ->
-        fallback_on_preview_error(conn, media_proxy_url)
+      _ -> {:error, :image_resize_failed}
     end
   end
 
-  defp handle_jpeg_preview(conn, media_proxy_url) do
+  defp build_jpeg_preview(media_proxy_url) do
     quality = Config.get!([:media_preview_proxy, :image_quality])
     {thumbnail_max_width, thumbnail_max_height} = thumbnail_max_dimensions()
 
@@ -153,25 +202,53 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
              media_proxy_url,
              %{max_width: thumbnail_max_width, max_height: thumbnail_max_height, quality: quality}
            ) do
-      conn
-      |> put_preview_response_headers()
-      |> send_resp(200, thumbnail_binary)
+      {:body, ["image/jpeg", "preview.jpg"], thumbnail_binary}
     else
-      _ ->
-        fallback_on_preview_error(conn, media_proxy_url)
+      _ -> {:error, :image_resize_failed}
     end
   end
 
-  defp handle_video_preview(conn, media_proxy_url) do
+  defp build_video_preview(media_proxy_url) do
     with {:ok, thumbnail_binary} <-
            MediaHelper.video_framegrab(media_proxy_url) do
-      conn
-      |> put_preview_response_headers()
-      |> send_resp(200, thumbnail_binary)
+      {:body, ["image/jpeg", "preview.jpg"], thumbnail_binary}
     else
-      _ ->
-        fallback_on_preview_error(conn, media_proxy_url)
+      _ -> {:error, :video_framegrab_failed}
     end
+  end
+
+  defp cacheable_preview_decision?({:body, _content_info, body}) when is_binary(body),
+    do: byte_size(body) <= @max_cached_preview_bytes
+
+  defp cacheable_preview_decision?({:redirect, _target}), do: true
+  defp cacheable_preview_decision?(_decision), do: false
+
+  defp render_preview_decision(
+         {:body, content_info, thumbnail_binary},
+         conn,
+         _media_proxy_url
+       ) do
+    conn
+    |> put_preview_response_headers(content_info)
+    |> send_resp(200, thumbnail_binary)
+  end
+
+  defp render_preview_decision({:redirect, :media_proxy}, conn, media_proxy_url) do
+    conn
+    |> put_status(301)
+    |> redirect(external: media_proxy_url)
+  end
+
+  defp render_preview_decision({:redirect, :drop_static}, conn, _media_proxy_url) do
+    drop_static_param_and_redirect(conn)
+  end
+
+  defp render_preview_decision({:error, :cached_failure}, conn, _media_proxy_url) do
+    ReverseProxy.failed_image_placeholder(conn)
+  end
+
+  defp render_preview_decision({:error, reason}, conn, media_proxy_url) do
+    cache_preview_failure(conn, media_proxy_url, reason)
   end
 
   defp drop_static_param_and_redirect(conn) do
@@ -183,13 +260,14 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
     redirect(conn, external: uri_without_static_param)
   end
 
-  defp fallback_on_preview_error(conn, media_proxy_url) do
-    redirect(conn, external: media_proxy_url)
+  defp cache_preview_failure(conn, media_proxy_url, _reason) do
+    MediaHelper.cache_preview_failure(media_proxy_url)
+    ReverseProxy.failed_image_placeholder(conn)
   end
 
   defp put_preview_response_headers(
          conn,
-         [content_type, filename] = _content_info \\ ["image/jpeg", "preview.jpg"]
+         [content_type, filename] = _content_info
        ) do
     conn
     |> put_resp_header("content-type", content_type)
@@ -210,6 +288,28 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
     Keyword.get(media_preview_proxy_config(), :min_content_length, 0)
   end
 
+  defp preview_http_client_opts do
+    Config.get([:media_proxy, :proxy_opts, :http], pool: :media)
+    |> Keyword.put(:connect_timeout, preview_operation_timeout())
+    |> Keyword.put(:recv_timeout, preview_operation_timeout())
+  end
+
+  defp preview_operation_timeout do
+    case Keyword.get(media_preview_proxy_config(), :operation_timeout, 2_000) do
+      timeout when is_integer(timeout) and timeout > 0 -> min(timeout, 10_000)
+      _ -> 2_000
+    end
+  end
+
+  defp parse_content_length(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {content_length, ""} when content_length >= 0 -> content_length
+      _ -> 0
+    end
+  end
+
+  defp parse_content_length(_), do: 0
+
   defp media_preview_proxy_config do
     Config.get!([:media_preview_proxy])
   end
@@ -217,6 +317,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
   defp media_proxy_opts do
     Config.get([:media_proxy, :proxy_opts], [])
     |> Keyword.put_new(:image_fallback_on_failure, true)
+    |> Keyword.put_new(:sniff_content_type, true)
   end
 
   defp sandbox(conn, _params) do

@@ -36,8 +36,12 @@ defmodule Pleroma.Web.ActivityPub.Relay do
          {:ok, target_user} <- fetch_target_user(target_instance, opts),
          {:ok, activity} <- ActivityPub.unfollow(local_user, target_user) do
       case target_user.id do
-        nil -> User.update_following_count(local_user)
-        _ -> User.unfollow(local_user, target_user)
+        nil ->
+          User.invalidate_following_cache(local_user)
+          User.update_following_count(local_user)
+
+        _ ->
+          User.unfollow(local_user, target_user)
       end
 
       Logger.info("relay: unfollowed instance: #{target_instance}: id=#{activity.data["id"]}")

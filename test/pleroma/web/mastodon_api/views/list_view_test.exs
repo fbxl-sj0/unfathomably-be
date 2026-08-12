@@ -15,26 +15,10 @@ defmodule Pleroma.Web.MastodonAPI.ListViewTest do
     expected = %{
       id: to_string(list.id),
       title: title,
-      exclusive: false,
-      pleroma: %{
-        emoji: nil,
-        emoji_url: nil
-      }
+      exclusive: false
     }
 
     assert expected == ListView.render("show.json", %{list: list})
-  end
-
-  test "show with a unicode emoji" do
-    user = insert(:user)
-    {:ok, list} = Pleroma.List.create(%{title: "mortal enemies", emoji: "🕓"}, user)
-
-    assert %{
-             pleroma: %{
-               emoji: "🕓",
-               emoji_url: nil
-             }
-           } = ListView.render("show.json", %{list: list})
   end
 
   test "index" do

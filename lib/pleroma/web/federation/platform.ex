@@ -45,6 +45,7 @@ defmodule Pleroma.Web.Federation.Platform do
           | :events
           | :development
           | :coordination
+          | :models
           | :publishing
           | :routes
           | :local
@@ -94,12 +95,14 @@ defmodule Pleroma.Web.Federation.Platform do
     "group actor" => %{platform: "group_actor", label: "Group Actor", family: :groups},
     "guppe" => %{platform: "guppe", label: "Guppe", family: :groups},
     "hubzilla" => %{platform: "hubzilla", label: "Hubzilla", family: :groups},
+    "ibis" => %{platform: "ibis", label: "Ibis", family: :publishing},
     "iceshrimp" => %{platform: "iceshrimp", label: "Iceshrimp", family: :microblog},
     "kbin" => %{platform: "kbin", label: "Kbin", family: :groups},
     "lemmy" => %{platform: "lemmy", label: "Lemmy", family: :groups},
     "local" => %{platform: "local", label: "Local", family: :local},
     "lotide" => %{platform: "lotide", label: "Lotide", family: :groups},
     "mastodon" => %{platform: "mastodon", label: "Mastodon", family: :microblog},
+    "manyfold" => %{platform: "manyfold", label: "Manyfold", family: :models},
     "mbin" => %{platform: "mbin", label: "Mbin", family: :groups},
     "misskey" => %{platform: "misskey", label: "Misskey", family: :microblog},
     "mitra" => %{platform: "mitra", label: "Mitra", family: :microblog},
@@ -107,7 +110,7 @@ defmodule Pleroma.Web.Federation.Platform do
     "mutual aid" => %{
       platform: "mutual_aid",
       label: "Mutual Aid",
-      family: :marketplace
+      family: :coordination
     },
     "neodb" => %{platform: "neodb", label: "NeoDB", family: :culture},
     "nodebb" => %{platform: "nodebb", label: "NodeBB", family: :groups},
@@ -139,6 +142,7 @@ defmodule Pleroma.Web.Federation.Platform do
   }
 
   @object_types %{
+    "Album" => %{platform: "activitypub-album", label: "Album", family: :audio},
     "Article" => %{platform: "activitypub-article", label: "Article", family: :longform},
     "Author" => %{platform: "bookwyrm", label: "BookWyrm author", family: :books},
     "Audio" => %{platform: "activitypub-audio", label: "Audio", family: :audio},
@@ -146,23 +150,40 @@ defmodule Pleroma.Web.Federation.Platform do
     "BookList" => %{platform: "bookwyrm", label: "Book list", family: :books},
     "Branch" => %{platform: "forgefed", label: "Branch", family: :development},
     "Commit" => %{platform: "forgefed", label: "Commit", family: :development},
+    "Chapter" => %{platform: "activitypub-chapter", label: "Chapter", family: :publishing},
     "Comment" => %{platform: "bookwyrm", label: "Book comment", family: :books},
     "Edition" => %{platform: "bookwyrm", label: "Book edition", family: :books},
     "Document" => %{platform: "activitypub-document", label: "Document", family: :publishing},
     "Event" => %{platform: "activitypub-event", label: "Event", family: :events},
+    "Game" => %{platform: "activitypub-game", label: "Game", family: :games},
     "Group" => %{platform: "activitypub-group", label: "Group", family: :groups},
     "Image" => %{platform: "activitypub-image", label: "Image", family: :photo},
     "Issue" => %{platform: "forgefed", label: "Issue", family: :development},
+    "LiveStream" => %{platform: "activitypub-livestream", label: "Live stream", family: :video},
     "MergeRequest" => %{platform: "forgefed", label: "Merge request", family: :development},
+    "Model" => %{platform: "activitypub-model", label: "3D model", family: :models},
     "Note" => %{platform: "activitypub-note", label: "Note", family: :microblog},
     "Page" => %{platform: "activitypub-page", label: "Page", family: :longform},
     "Patch" => %{platform: "forgefed", label: "Patch", family: :development},
     "Proposal" => %{platform: "forgefed", label: "Proposal", family: :development},
+    "PodcastEpisode" => %{
+      platform: "activitypub-podcast",
+      label: "Podcast episode",
+      family: :audio
+    },
+    "Publication" => %{
+      platform: "activitypub-publication",
+      label: "Publication",
+      family: :publishing
+    },
+    "Project" => %{platform: "forgefed", label: "Project", family: :development},
     "Push" => %{platform: "forgefed", label: "Push", family: :development},
     "Question" => %{platform: "activitypub-question", label: "Question", family: :groups},
     "Quotation" => %{platform: "bookwyrm", label: "Book quotation", family: :books},
     "Rating" => %{platform: "bookwyrm", label: "Book rating", family: :books},
     "Review" => %{platform: "bookwyrm", label: "Book review", family: :books},
+    "Repository" => %{platform: "forgefed", label: "Repository", family: :development},
+    "Route" => %{platform: "activitypub-route", label: "Route", family: :routes},
     "Shelf" => %{platform: "bookwyrm", label: "Book shelf", family: :books},
     "Ticket" => %{platform: "forgefed", label: "Ticket", family: :development},
     "TicketDependency" => %{
@@ -170,6 +191,8 @@ defmodule Pleroma.Web.Federation.Platform do
       label: "Ticket dependency",
       family: :development
     },
+    "ThreeDModel" => %{platform: "activitypub-model", label: "3D model", family: :models},
+    "Track" => %{platform: "activitypub-track", label: "Track", family: :audio},
     "Video" => %{platform: "activitypub-video", label: "Video", family: :video},
     "Work" => %{platform: "bookwyrm", label: "Book work", family: :books}
   }
@@ -237,7 +260,7 @@ defmodule Pleroma.Web.Federation.Platform do
     %{
       platform: "mutual_aid",
       label: "Mutual Aid #{name}",
-      family: :marketplace
+      family: :coordination
     }
   end
 
@@ -268,6 +291,7 @@ defmodule Pleroma.Web.Federation.Platform do
     case type do
       "ValueFlows:" <> name -> valueflows_classification_for_name(name)
       "https://w3id.org/valueflows#" <> name -> valueflows_classification_for_name(name)
+      "https://w3id.org/valueflows/ont/vf#" <> name -> valueflows_classification_for_name(name)
       _type -> nil
     end
   end

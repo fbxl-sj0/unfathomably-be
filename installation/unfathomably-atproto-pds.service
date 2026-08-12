@@ -1,0 +1,39 @@
+# Unfathomably AT Protocol PDS
+# --------------------------------
+#
+# File: unfathomably-atproto-pds.service
+#
+# Purpose:
+#   Run the protocol-required repository host for opted-in local accounts.
+#
+# Responsibilities:
+#   - run one pinned official PDS container
+#   - expose the PDS only on the private address used by the reverse proxy
+#   - bound CPU, memory, process count, and writable filesystem access
+#
+# This unit intentionally does NOT run a relay, AppView, crawler, firehose
+# mirror, Caddy, Watchtower, Redis, or monitoring stack.
+
+[Unit]
+Description=Unfathomably local-account AT Protocol PDS
+Documentation=https://github.com/bluesky-social/pds
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=90s
+TimeoutStopSec=45s
+
+ExecStartPre=-/usr/bin/docker rm unfathomably-atproto-pds
+ExecStart=/usr/bin/docker run --name unfathomably-atproto-pds --network bridge --publish 192.168.250.41:3000:3000 --env-file /pds/pds.env --volume /pds:/pds --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m --cap-drop ALL --security-opt no-new-privileges --memory 1536m --cpus 1.0 --pids-limit 256 --log-driver journald ghcr.io/bluesky-social/pds@sha256:1fa8bbceabb65d8e1710749b1ea92c1c20a7489ca38da4a0a5f64c0c10a70c29
+ExecStop=/usr/bin/docker stop --time 30 unfathomably-atproto-pds
+ExecStopPost=-/usr/bin/docker rm unfathomably-atproto-pds
+
+[Install]
+WantedBy=multi-user.target
+
+# end of unfathomably-atproto-pds.service

@@ -20,4 +20,14 @@ defmodule Pleroma.Web.XMLTest do
       assert(:error == XML.parse_document(data))
     end)
   end
+
+  test "rejects malformed XML without xmerl fatal output" do
+    log =
+      capture_log(fn ->
+        assert :error == XML.parse_document("This is not XML.")
+      end)
+
+    refute log =~ "expected_element_start_tag"
+    refute log =~ "fatal:"
+  end
 end

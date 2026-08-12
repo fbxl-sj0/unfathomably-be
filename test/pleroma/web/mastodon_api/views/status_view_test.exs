@@ -406,6 +406,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       pleroma: %{
         local: true,
         native: nil,
+        nostr: nil,
         conversation_id: convo_id,
         context: object_data["context"],
         in_reply_to_account_acct: nil,
@@ -416,6 +417,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
         quote_state: nil,
         quote_authorization: nil,
         quote_approval_required: false,
+        quote_approval_policy: "legacy",
         quote_manageable: false,
         quote_allowed: true,
         interaction_policy: nil,
@@ -674,6 +676,37 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
     refute parent_author.ap_id in mention_urls
   end
 
+  test "keeps explicitly tagged group actors as typed mentions" do
+    group =
+      insert(:user,
+        local: false,
+        actor_type: "Group",
+        nickname: "news@forum.example",
+        ap_id: "https://forum.example/c/news"
+      )
+
+    object =
+      insert(:note,
+        data: %{
+          "to" => [Pleroma.Constants.as_public()],
+          "tag" => [
+            %{
+              "type" => "Mention",
+              "href" => group.ap_id,
+              "name" => "@news@forum.example"
+            }
+          ]
+        }
+      )
+
+    activity = insert(:note_activity, note: object)
+    status = StatusView.render("show.json", %{activity: activity})
+
+    assert [mention] = status.mentions
+    assert mention.actor_type == "Group"
+    assert mention.url == group.ap_id
+  end
+
   test "create mentions from the 'tag' field" do
     recipient = insert(:user)
     cc = insert_pair(:user) |> Enum.map(& &1.ap_id)
@@ -723,6 +756,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
         }
       ],
       "blurhash" => "UJJ8X[xYW,%Jtq%NNFbXB5j]IVM|9GV=WHRn",
+      "license" => %{"spdx:licenseId" => "CC-BY-4.0"},
       "uuid" => 6
     }
 
@@ -734,8 +768,13 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       preview_url: "someurl",
       text_url: "someurl",
       description: nil,
-      pleroma: %{mime_type: "image/png"},
-      meta: %{original: %{width: 200, height: 100, aspect: 2}},
+      pleroma: %{mime_type: "image/png", license: "CC-BY-4.0"},
+      meta: %{
+        width: 200,
+        height: 100,
+        aspect: 2,
+        original: %{width: 200, height: 100, aspect: 2}
+      },
       blurhash: "UJJ8X[xYW,%Jtq%NNFbXB5j]IVM|9GV=WHRn"
     }
 
@@ -765,7 +804,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       ]
     }
 
-    assert %{meta: %{original: %{width: 200, height: 0}}} =
+    assert %{meta: %{width: 200, height: 0, original: %{width: 200, height: 0}}} =
              StatusView.render("attachment.json", %{attachment: object})
   end
 

@@ -127,6 +127,7 @@ defmodule Pleroma.Web.ApiSpec.MastodonAdmin.AccountOperation do
           "Parameters",
           %Schema{
             type: :object,
+            required: [:type],
             properties: %{
               type: %Schema{
                 type: :string,
@@ -143,6 +144,7 @@ defmodule Pleroma.Web.ApiSpec.MastodonAdmin.AccountOperation do
         ),
       responses: %{
         204 => no_content_response(),
+        400 => Operation.response("Error", "application/json", ApiError),
         401 => Operation.response("Error", "application/json", ApiError)
       }
     }

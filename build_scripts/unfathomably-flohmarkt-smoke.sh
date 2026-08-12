@@ -398,12 +398,53 @@ run_flohmarkt_smoke() {
     wait_postgres
     prepare_database
     migrate_and_create_be_user alice "alice@$BE_HOST"
-    migrate_and_create_be_user instance "instance@$BE_HOST"
+    docker_run_mix "${PREFIX}-make-alice-admin" \
+        "mix pleroma.user set alice --admin >/dev/null"
     start_be
     start_be_proxy
     wait_be
     ALICE_TOKEN="$(create_be_token alice)"
     alice_actor="https://$BE_HOST/users/alice"
+
+    log "Exercising Unfathomably's consented marketplace connector"
+    marketplace_connector="$(http_json POST \
+        "$BE_BASE/api/v1/pleroma/admin/federation_connectors/marketplace" \
+        "$ALICE_TOKEN" 201 "{\"actor\":\"https://$GTS_HOST\"}")"
+    marketplace_connector_id="$(json_get "$marketplace_connector" id)"
+    marketplace_connector_status="$(json_get "$marketplace_connector" status)"
+    json_assert "$marketplace_connector" \
+        'data.get("actor") == "https://flohmarkt-ref.example.com/users/instance" and data.get("enabled") is True and data.get("status") in {"active", "pending"}' \
+        "Unfathomably did not establish a Flohmarkt-compatible marketplace connector"
+
+    marketplace_readiness="$(http_form GET \
+        "$BE_BASE/api/v1/discovery/native-objects/connectors" "$ALICE_TOKEN" 200)"
+    json_assert "$marketplace_readiness" \
+        '"peers" not in data.get("marketplace", {}) and data.get("marketplace", {}).get("service_actor", "").endswith("/users/instance")' \
+        "Author-facing marketplace readiness leaked connector peer details"
+
+    if JSON_INPUT="$marketplace_readiness" python3 - <<'PY'
+import json
+import os
+
+data = json.loads(os.environ["JSON_INPUT"]).get("marketplace", {})
+raise SystemExit(0 if data.get("ready") is True and data.get("connected_peers") == 1 else 1)
+PY
+    then
+        marketplace_connector_summary="supported: the Flohmarkt instance actor accepted Unfathomably's explicit marketplace Follow"
+    else
+        json_assert "$marketplace_readiness" \
+            'data.get("marketplace", {}).get("ready") is False and data.get("marketplace", {}).get("pending_peers") == 1' \
+            "Marketplace readiness was neither accepted nor pending"
+        marketplace_connector_summary="stock_limitation: Flohmarkt retained Unfathomably's marketplace Follow as pending, so no local listing is delivered before an Accept"
+    fi
+
+    log "Verifying author-controlled marketplace delivery consent"
+    connector_listing="$(http_json POST "$BE_BASE/api/v1/discovery/native-objects" \
+        "$ALICE_TOKEN" 200 \
+        '{"template":"markets","title":"Connector-only radio","content":"MARKETPLACE-CONNECTOR-OPT-IN A public local listing with explicit marketplace delivery consent.","visibility":"public","fields":{"listing_type":"offer","price":"25.00","currency":"CAD","latitude":"45.4215","longitude":"-75.6972","share_with_marketplaces":true}}')"
+    json_assert "$connector_listing" \
+        '"MARKETPLACE-CONNECTOR-OPT-IN" in data.get("content", "")' \
+        "Unfathomably did not create the explicitly consented marketplace listing"
 
     log "Following the Flohmarkt Person from Unfathomably"
     seller_account_id="$(resolve_account_id "$BE_BASE" "$ALICE_TOKEN" \
@@ -605,6 +646,9 @@ PY
         "Unfathomably did not clean its local Flohmarkt follow and block relationships"
     flohmarkt_request GET "/api/v1/admin/unfollow_instance/?url=$(urlencode "https://$BE_HOST")" 200 >/dev/null
     flohmarkt_request DELETE "/api/v1/report/$local_report_id" 204 >/dev/null
+    http_json DELETE \
+        "$BE_BASE/api/v1/pleroma/admin/federation_connectors/marketplace/$marketplace_connector_id" \
+        "$ALICE_TOKEN" 204 "" >/dev/null
 
     check_logs "$BE_CONTAINER" "Unfathomably"
     check_logs "$FLOHMARKT_CONTAINER" "Flohmarkt"
@@ -618,6 +662,9 @@ The matching source contract was inspected at $FLOHMARKT_SOURCE_COMMIT:
 * supported: WebFinger, actor fetch, ActivityPub content negotiation, NodeInfo, and canonical HTTPS IDs
 * supported: Unfathomably follows and unfollows a Flohmarkt Person with bounded follower collection cleanup
 * stock_limitation: blocking tears down Unfathomably's local follow without an Undo, so Flohmarkt retains that final follower entry until disposable peer cleanup
+* $marketplace_connector_summary
+* supported: marketplace author readiness exposes only aggregate state, and an explicit public-offer consent creates an eligible local listing
+* supported: connector removal sends a service-actor unfollow before deleting local connector policy
 * $instance_follow_summary
 * not_supported: Flohmarkt has no Person or Group outbound-follow UI and no Group follow or group-unfollow semantics
 * supported: native listing Create, Delete, and canonical Note identity reach Unfathomably

@@ -21,11 +21,14 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   alias Pleroma.Upload
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActorExtensions
+  alias Pleroma.Web.ActivityPub.IdentityProof
   alias Pleroma.Web.ActivityPub.Builder
-  alias Pleroma.Web.ActivityPub.MRF
   alias Pleroma.Web.ActivityPub.CustomObject
+  alias Pleroma.Web.ActivityPub.MRF
   alias Pleroma.Web.ActivityPub.Pipeline
+  alias Pleroma.Web.ActivityPub.RemoteCollection
   alias Pleroma.Web.ActivityPub.Transmogrifier
+  alias Pleroma.Web.Federation.Churn
   alias Pleroma.Web.Streamer
   alias Pleroma.Web.WebFinger
   alias Pleroma.Workers.BackgroundWorker
@@ -40,6 +43,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   require Logger
   require Pleroma.Constants
+
+  @failed_featured_collection_cache :failed_featured_collection_cache
 
   @behaviour Pleroma.Web.ActivityPub.ActivityPub.Persisting
   @behaviour Pleroma.Web.ActivityPub.ActivityPub.Streaming
@@ -400,7 +405,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   @impl true
   def stream_out(%Activity{data: %{"type" => data_type}} = activity)
-      when data_type in ["Create", "Announce", "Delete", "Update"] do
+      when data_type in ["Create", "Announce", "Delete", "Listen", "Update"] do
     activity
     |> Topics.get_activity_topics()
     |> Streamer.stream(activity)
@@ -430,6 +435,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         %{to: to, actor: actor, published: published, context: context, object: object},
         additional
       )
+      |> put_create_object_audience(object)
 
     with {:ok, activity} <- insert(create_data, local, fake),
          {:fake, false, activity} <- {:fake, fake, activity},
@@ -456,6 +462,13 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
         Repo.rollback(message)
     end
   end
+
+  defp put_create_object_audience(create_data, %{"audience" => audience})
+       when not is_nil(audience) do
+    Map.put(create_data, "audience", audience)
+  end
+
+  defp put_create_object_audience(create_data, _object), do: create_data
 
   defp maybe_schedule_poll_notifications(activity) do
     PollWorker.schedule_poll_end(activity)
@@ -582,7 +595,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       "to" => [origin.follower_address]
     }
 
-    with true <- origin.ap_id in target.also_known_as,
+    with true <- origin.ap_id in List.wrap(target.also_known_as),
          {:ok, activity} <- insert(params, local),
          _ <- notify_and_stream(activity) do
       maybe_federate(activity)
@@ -601,6 +614,64 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       false -> {:error, "Target account must have the origin in `alsoKnownAs`"}
       err -> err
     end
+  end
+
+  @move_restart_unique_period 15 * 60
+  @default_move_restart_window_days 30
+
+  def latest_move(%User{} = origin) do
+    Activity
+    |> Activity.Queries.by_type("Move")
+    |> Activity.Queries.by_actor(origin.ap_id)
+    |> where([activity], activity.local == true)
+    |> order_by([activity], desc: activity.id)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  def restart_move(%User{local: true} = origin) do
+    with %Activity{} = activity <- latest_move(origin),
+         {:restartable, true} <- {:restartable, restartable_move?(activity)},
+         target_ap_id when is_binary(target_ap_id) <- activity.data["target"],
+         {:ok, %User{} = target} <- User.get_or_fetch_by_ap_id(target_ap_id),
+         {:authorized, true} <-
+           {:authorized, origin.ap_id in List.wrap(target.also_known_as)},
+         {:ok, _job} <-
+           Pleroma.Web.Federator.republish(activity, @move_restart_unique_period),
+         {:ok, _job} <-
+           BackgroundWorker.enqueue(
+             "move_following",
+             %{"origin_id" => origin.id, "target_id" => target.id},
+             unique: [period: @move_restart_unique_period, states: Oban.Job.states()]
+           ) do
+      {:ok, activity, target}
+    else
+      nil -> {:error, :move_not_found}
+      {:restartable, false} -> {:error, :move_restart_expired}
+      {:authorized, false} -> {:error, "Target account must have the origin in `alsoKnownAs`"}
+      target when is_binary(target) -> {:error, :invalid_move_target}
+      error -> error
+    end
+  end
+
+  def restart_move(%User{}), do: {:error, :local_account_required}
+
+  defp restartable_move?(%Activity{inserted_at: inserted_at})
+       when not is_nil(inserted_at) do
+    age = NaiveDateTime.diff(NaiveDateTime.utc_now(), inserted_at)
+    age >= 0 and age <= move_restart_window_seconds()
+  end
+
+  defp restartable_move?(_activity), do: false
+
+  defp move_restart_window_seconds do
+    days =
+      case Pleroma.Config.get([:instance, :migration_cooldown_period]) do
+        configured when is_integer(configured) and configured > 0 -> configured
+        _ -> @default_move_restart_window_days
+      end
+
+    days * 24 * 60 * 60
   end
 
   def fetch_activities_for_context_query(context, opts) do
@@ -860,6 +931,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       |> Map.put(:type, ["Create", "Announce"])
       |> Map.put(:user, reading_user)
       |> Map.put(:actor_id, user.ap_id)
+      |> Map.put(:actor_local, user.local)
       |> Map.put(:pinned_object_ids, pinned_object_ids)
 
     params =
@@ -1046,14 +1118,22 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       |> Repo.all()
 
     # Note: NO extra ordering should be done on "activities.id desc nulls last" for optimal plan
-    from(
-      [_activity, object] in query,
-      join: hto in "hashtags_objects",
-      on: hto.object_id == object.id,
-      where: hto.hashtag_id in ^hashtag_ids,
-      distinct: [desc: object.id],
-      order_by: [desc: object.id]
-    )
+    query =
+      from(
+        [_activity, object] in query,
+        join: hto in "hashtags_objects",
+        on: hto.object_id == object.id,
+        where: hto.hashtag_id in ^hashtag_ids
+      )
+
+    if is_nil(query.distinct) do
+      from([_activity, object] in query,
+        distinct: [desc: object.id],
+        order_by: [desc: object.id]
+      )
+    else
+      query
+    end
   end
 
   defp restrict_hashtag_any(query, %{tag: tag}) when is_binary(tag) do
@@ -1209,6 +1289,57 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   defp restrict_events(query, _), do: query
+
+  defp restrict_native_objects(_query, %{only_native: _value, skip_preload: true}) do
+    raise "Can't inspect native object metadata without preloading objects"
+  end
+
+  defp restrict_native_objects(query, %{only_native: true}) do
+    from(
+      [_activity, object] in query,
+      where: fragment("unfathomably_native_discoverable(?)", object.data),
+      where: fragment("unfathomably_native_feed_eligible(?)", object.data),
+      order_by: [desc: object.id]
+    )
+  end
+
+  defp restrict_native_objects(query, _), do: query
+
+  @native_discovery_families ~w[
+    audio video longform photo books bookmarks groups events development
+    models marketplace games routes culture coordination publishing
+  ]
+
+  defp restrict_native_family(query, %{only_native: true, native_family: family})
+       when family in @native_discovery_families do
+    from(
+      [_activity, object] in query,
+      where: fragment("unfathomably_native_family(?) = ?", object.data, ^family)
+    )
+  end
+
+  defp restrict_native_family(query, _opts), do: query
+
+  defp restrict_native_query(query, %{only_native: true, native_query: native_query})
+       when is_binary(native_query) do
+    native_query = String.trim(native_query)
+
+    if byte_size(native_query) in 2..200 do
+      from(
+        [_activity, object] in query,
+        where:
+          fragment(
+            "unfathomably_native_search_document(?) @@ websearch_to_tsquery('simple', ?)",
+            object.data,
+            ^native_query
+          )
+      )
+    else
+      from(activity in query, where: false)
+    end
+  end
+
+  defp restrict_native_query(query, _opts), do: query
 
   defp restrict_replies(query, %{exclude_replies: true}) do
     from(
@@ -1429,6 +1560,36 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp restrict_unlisted(query, _), do: query
 
+  defp restrict_profile_web_visibility(
+         query,
+         %{profile_web_visibility: %{public: false, unlisted: false}}
+       ) do
+    from(activity in query, where: false)
+  end
+
+  defp restrict_profile_web_visibility(
+         query,
+         %{profile_web_visibility: %{public: true, unlisted: false}}
+       ) do
+    restrict_unlisted(query, %{restrict_unlisted: true})
+  end
+
+  defp restrict_profile_web_visibility(
+         query,
+         %{profile_web_visibility: %{public: false, unlisted: true}}
+       ) do
+    public = [Constants.as_public()]
+
+    from(
+      activity in query,
+      where:
+        fragment("coalesce(?->'cc', '[]'::jsonb) \\?| ?", activity.data, ^public) and
+          not fragment("coalesce(?->'to', '[]'::jsonb) \\?| ?", activity.data, ^public)
+    )
+  end
+
+  defp restrict_profile_web_visibility(query, _opts), do: query
+
   defp restrict_pinned(query, %{pinned: true, pinned_object_ids: ids}) do
     from(
       [activity, object: o] in query,
@@ -1498,7 +1659,12 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       regex ->
         from([activity, object] in query,
           where:
-            fragment("not(?->>'content' ~* ?)", object.data, ^regex) or
+            fragment(
+              "not((coalesce(?->>'content', '') || ' ' || coalesce(?->>'summary', '')) ~* ?)",
+              object.data,
+              object.data,
+              ^regex
+            ) or
               activity.actor == ^user.ap_id
         )
     end
@@ -1566,6 +1732,50 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   defp restrict_unauthenticated(query, _), do: query
+
+  defp restrict_activity_and_object_origin(query, local?) do
+    local_object_prefix = Pleroma.Web.Endpoint.url() <> "/"
+
+    # Keep these correlated checks inside CASE so PostgreSQL applies the account
+    # statuses limit before considering a global bitmap-and-sort plan.
+    from([activity, object: object] in query,
+      where:
+        fragment(
+          "CASE WHEN ? = ? AND starts_with((?->>'id'), ?) = ? THEN true ELSE false END",
+          activity.local,
+          ^local?,
+          object.data,
+          ^local_object_prefix,
+          ^local?
+        )
+    )
+  end
+
+  defp maybe_restrict_unauthenticated(
+         query,
+         %{restrict_unauthenticated: true, user: nil, actor_local: actor_local}
+       )
+       when is_boolean(actor_local) do
+    local_restricted = Config.restrict_unauthenticated_access?(:activities, :local)
+    remote_restricted = Config.restrict_unauthenticated_access?(:activities, :remote)
+    actor_restricted = if actor_local, do: local_restricted, else: remote_restricted
+
+    cond do
+      actor_restricted ->
+        from(activity in query, where: false)
+
+      local_restricted ->
+        restrict_activity_and_object_origin(query, false)
+
+      remote_restricted ->
+        restrict_activity_and_object_origin(query, true)
+
+      true ->
+        query
+    end
+  end
+
+  defp maybe_restrict_unauthenticated(query, _), do: query
 
   defp exclude_poll_votes(query, %{include_poll_votes: true}), do: query
 
@@ -1721,6 +1931,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       |> maybe_preload_report_notes(opts)
       |> maybe_set_thread_muted_field(opts)
       |> maybe_order(opts)
+      |> maybe_restrict_unauthenticated(opts)
       |> restrict_recipients_or_hashtags(recipients, opts[:user], opts[:followed_hashtags])
       |> restrict_replies(opts)
       |> restrict_discussion_roots(opts)
@@ -1739,7 +1950,11 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       |> restrict_filtered(opts)
       |> restrict_media(opts)
       |> restrict_events(opts)
+      |> restrict_native_objects(opts)
+      |> restrict_native_family(opts)
+      |> restrict_native_query(opts)
       |> restrict_visibility(opts)
+      |> restrict_profile_web_visibility(opts)
       |> restrict_thread_visibility(opts, config)
       |> restrict_reblogs(opts)
       |> restrict_pinned(opts)
@@ -1845,14 +2060,31 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   @spec get_actor_url(any()) :: binary() | nil
   defp get_actor_url(url) when is_binary(url), do: url
   defp get_actor_url(%{"href" => href}) when is_binary(href), do: href
+  defp get_actor_url(%{"id" => id}) when is_binary(id), do: id
+  defp get_actor_url(%{"url" => url}), do: get_actor_url(url)
 
   defp get_actor_url(url) when is_list(url) do
     url
-    |> List.first()
-    |> get_actor_url()
+    |> Enum.map(&get_actor_url/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.min_by(&actor_url_path_depth/1, fn -> nil end)
   end
 
   defp get_actor_url(_url), do: nil
+
+  # ActivityStreams permits `url` to contain several links. Some actors put an
+  # icon or alternate representation first, while the ordinary profile route
+  # appears later. Prefer the candidate with the fewest path segments, which
+  # matches the canonical-profile convention used by current MBin actors.
+  # Enum.min_by/3 retains publisher order when candidates have equal depth.
+  defp actor_url_path_depth(url) do
+    url
+    |> URI.parse()
+    |> Map.get(:path)
+    |> to_string()
+    |> String.split("/", trim: true)
+    |> length()
+  end
 
   defp normalize_image(%{"url" => url} = data) when is_binary(url) do
     %{
@@ -1911,6 +2143,8 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       |> List.wrap()
       |> Enum.flat_map(&actor_field_from_attachment/1)
 
+    identity_proofs = IdentityProof.extract(data)
+
     emojis =
       data
       |> Map.get("tag", [])
@@ -1938,20 +2172,14 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
     featured_collection = data["featured"]
     featured_address = collection_address(featured_collection)
-    {:ok, pinned_objects} = fetch_and_prepare_featured_from_ap_id(featured_collection)
+    pinned_objects = prepare_embedded_featured_collection(featured_collection)
     outbox_address = collection_address(data["outbox"])
     attributed_to_address = collection_address(data["attributedTo"])
-    moderator_count = collection_count(data["attributedTo"])
+    moderator_count = prepare_embedded_collection_count(data["attributedTo"])
 
-    public_key =
-      if is_map(data["publicKey"]) && is_binary(data["publicKey"]["publicKeyPem"]) do
-        data["publicKey"]["publicKeyPem"]
-      end
+    public_key = remote_actor_public_keys(data)
 
-    shared_inbox =
-      if is_map(data["endpoints"]) && is_binary(data["endpoints"]["sharedInbox"]) do
-        data["endpoints"]["sharedInbox"]
-      end
+    shared_inbox = actor_shared_inbox(data)
 
     birthday =
       if is_binary(data["vcard:bday"]) do
@@ -1963,43 +2191,57 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
     show_birthday = !!birthday
 
-    with {:ok, nickname} <- nickname_from_actor(data, additional) do
-      {:ok,
-       %{
-         ap_id: data["id"],
-         uri: get_actor_url(data["url"]),
-         banner: normalize_image(data["image"]),
-         fields: fields,
-         emoji: emojis,
-         is_locked: is_locked,
-         is_discoverable: is_discoverable,
-         invisible: invisible,
-         avatar: normalize_image(data["icon"]),
-         name: data["name"],
-         follower_address: data["followers"],
-         following_address: data["following"],
-         featured_address: featured_address,
-         outbox_address: outbox_address,
-         attributed_to_address: attributed_to_address,
-         moderator_count: moderator_count,
-         bio: data["summary"] || "",
-         raw_bio: data["_misskey_summary"],
-         actor_type: actor_type,
-         actor_types: actor_types,
-         actor_extensions: ActorExtensions.extract(data),
-         also_known_as: normalize_actor_aliases(data),
-         public_key: public_key,
-         inbox: data["inbox"],
-         shared_inbox: shared_inbox,
-         is_indexable: normalize_optional_boolean(data["indexable"]),
-         posting_restricted_to_mods: normalize_boolean(data["postingRestrictedToMods"]),
-         accepts_chat_messages: accepts_chat_messages,
-         birthday: birthday,
-         show_birthday: show_birthday,
-         nickname: nickname,
-         location: data["vcard:Address"] || "",
-         pinned_objects: pinned_objects
-       }}
+    with {:ok, nickname, nickname_authoritative} <- nickname_from_actor(data, additional) do
+      user_data = %{
+        ap_id: data["id"],
+        uri: get_actor_url(data["url"]),
+        banner: normalize_image(data["image"]),
+        fields: fields,
+        identity_proofs: identity_proofs,
+        emoji: emojis,
+        is_locked: is_locked,
+        is_discoverable: is_discoverable,
+        invisible: invisible,
+        avatar: normalize_image(data["icon"]),
+        name: data["name"],
+        follower_address: data["followers"],
+        following_address: data["following"],
+        featured_address: featured_address,
+        outbox_address: outbox_address,
+        attributed_to_address: attributed_to_address,
+        bio: data["summary"] || "",
+        raw_bio: data["_misskey_summary"],
+        actor_type: actor_type,
+        actor_types: actor_types,
+        actor_extensions: ActorExtensions.extract(data),
+        also_known_as: normalize_actor_aliases(data),
+        public_key: public_key,
+        inbox: data["inbox"],
+        shared_inbox: shared_inbox,
+        is_indexable: normalize_optional_boolean(data["indexable"]),
+        posting_restricted_to_mods: normalize_boolean(data["postingRestrictedToMods"]),
+        accepts_chat_messages: accepts_chat_messages,
+        birthday: birthday,
+        show_birthday: show_birthday,
+        nickname: nickname,
+        nickname_authoritative: nickname_authoritative,
+        verified_nickname: if(nickname_authoritative, do: nickname),
+        location: data["vcard:Address"] || ""
+      }
+
+      user_data =
+        case pinned_objects do
+          :deferred -> user_data
+          pinned_objects -> Map.put(user_data, :pinned_objects, pinned_objects)
+        end
+
+      user_data =
+        case moderator_count do
+          :deferred -> user_data
+          moderator_count -> Map.put(user_data, :moderator_count, moderator_count)
+        end
+
+      {:ok, user_data}
     end
   end
 
@@ -2009,6 +2251,73 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   ]
   @maximum_actor_types 32
   @maximum_actor_type_bytes 512
+  @remote_public_key_blocks [
+    {"-----BEGIN PUBLIC KEY-----", "-----END PUBLIC KEY-----"},
+    {"-----BEGIN RSA PUBLIC KEY-----", "-----END RSA PUBLIC KEY-----"}
+  ]
+
+  # Some otherwise valid snac actors append descriptive text after the PEM
+  # boundary. Erlang's PEM decoder is deliberately strict, so retain exactly
+  # one bounded public-key block and discard only trailing material. Unknown
+  # encodings remain unchanged and follow the existing safe decode failure.
+  defp normalize_remote_public_key_pem(pem) when is_binary(pem) do
+    trimmed = String.trim(pem)
+
+    Enum.find_value(@remote_public_key_blocks, pem, fn {begin_marker, end_marker} ->
+      if String.starts_with?(trimmed, begin_marker) do
+        case String.split(trimmed, end_marker, parts: 2) do
+          [block, _trailing] -> block <> end_marker <> "\n"
+          _ -> nil
+        end
+      end
+    end)
+  end
+
+  defp remote_actor_public_keys(data) do
+    legacy_public_key =
+      if is_map(data["publicKey"]) && is_binary(data["publicKey"]["publicKeyPem"]) do
+        normalize_remote_public_key_pem(data["publicKey"]["publicKeyPem"])
+      end
+
+    [legacy_public_key | Pleroma.Keys.ed25519_public_key_pems(data)]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+    |> Enum.take(8)
+    |> case do
+      [] -> nil
+      public_keys -> Enum.join(public_keys, "\n")
+    end
+  end
+
+  # A shared inbox is a delivery optimization, not part of the actor's
+  # identity. Ignore a malformed cross-origin endpoint without rejecting an
+  # otherwise usable actor, but never let it redirect signed deliveries to a
+  # server that does not own the actor.
+  defp actor_shared_inbox(%{
+         "id" => actor_id,
+         "endpoints" => %{"sharedInbox" => shared_inbox}
+       })
+       when is_binary(actor_id) and is_binary(shared_inbox) do
+    actor_origin = safe_http_origin(actor_id)
+
+    if not is_nil(actor_origin) and actor_origin == safe_http_origin(shared_inbox) do
+      shared_inbox
+    end
+  end
+
+  defp actor_shared_inbox(_), do: nil
+
+  defp safe_http_origin(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host, port: port, userinfo: userinfo}
+      when scheme in ["http", "https"] and is_binary(host) and userinfo in [nil, ""] ->
+        default_port = if scheme == "https", do: 443, else: 80
+        {scheme, String.downcase(host), port || default_port}
+
+      _ ->
+        nil
+    end
+  end
 
   defp normalize_actor_types(value) do
     actor_types =
@@ -2031,19 +2340,32 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
     case additional[:nickname_from_acct] do
       ^generated when is_binary(generated) ->
-        {:ok, generated}
+        {:ok, generated, true}
 
       acct when is_binary(acct) ->
         with true <-
                nickname_matches_generated_host?(acct, generated) or
                  webfinger_nickname(data) == acct do
-          {:ok, acct}
+          {:ok, acct, true}
         else
           _ -> {:error, {:webfinger_actor_mismatch, acct, data["id"]}}
         end
 
       _ ->
-        {:ok, generate_nickname(data)}
+        generated_nickname_result(data)
+    end
+  end
+
+  defp generated_nickname_result(data) do
+    generated = generated_nickname(data)
+
+    if Config.get([WebFinger, :update_nickname_on_user_fetch]) do
+      case webfinger_nickname(data) do
+        acct when is_binary(acct) -> {:ok, acct, true}
+        _ -> {:ok, generated, false}
+      end
+    else
+      {:ok, generated, false}
     end
   end
 
@@ -2078,23 +2400,13 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     end
   end
 
-  defp generate_nickname(%{"preferredUsername" => username} = data) when is_binary(username) do
-    generated = generated_nickname(data)
-
-    if Config.get([WebFinger, :update_nickname_on_user_fetch]) do
-      case webfinger_nickname(data) do
-        acct when is_binary(acct) -> acct
-        _ -> generated
-      end
-    else
-      generated
+  def fetch_follow_information_for_user(user) do
+    with :ok <- Pleroma.Federation.ensure_enabled() do
+      do_fetch_follow_information_for_user(user)
     end
   end
 
-  # nickname can be nil because of virtual actors
-  defp generate_nickname(_), do: nil
-
-  def fetch_follow_information_for_user(user) do
+  defp do_fetch_follow_information_for_user(user) do
     results = [
       fetch_follow_collection(user, :following),
       fetch_follow_collection(user, :followers)
@@ -2222,11 +2534,11 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     end
   end
 
-  defp log_follow_information_refresh_error(ap_id, {:error, reason}) do
+  def log_follow_information_refresh_error(ap_id, {:error, reason}) do
     log_follow_information_refresh_error(ap_id, reason)
   end
 
-  defp log_follow_information_refresh_error(ap_id, reason) do
+  def log_follow_information_refresh_error(ap_id, reason) do
     message = "Follower/Following counter update for #{ap_id} failed: #{inspect(reason)}"
 
     if expected_remote_collection_unavailable?(reason) do
@@ -2238,12 +2550,20 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp expected_remote_collection_unavailable?("Object has been deleted"), do: true
 
-  defp expected_remote_collection_unavailable?(reason) when reason in [:forbidden, :not_found],
-    do: true
+  defp expected_remote_collection_unavailable?(reason)
+       when reason in [:forbidden, :native_nostr_required, :not_found, :recv_response_timeout],
+       do: true
 
   defp expected_remote_collection_unavailable?({:http, status})
        when status in [401, 403, 404, 410],
        do: true
+
+  defp expected_remote_collection_unavailable?({:content_type, content_type})
+       when is_binary(content_type) do
+    content_type
+    |> String.downcase()
+    |> String.starts_with?("text/html")
+  end
 
   defp expected_remote_collection_unavailable?(_), do: false
 
@@ -2303,89 +2623,174 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp fetch_and_prepare_user_from_ap_id(ap_id, additional) do
     with {:ok, data} <- Fetcher.fetch_and_contain_remote_object_from_id(ap_id),
          :ok <- reject_tombstone_actor(data),
+         :ok <- validate_actor_public_key_owner(data),
          {:ok, data} <- user_data_from_user_object(data, additional) do
       {:ok, maybe_update_follow_information(data)}
     else
       {:error, :actor_tombstone} ->
-        Logger.debug("Remote actor at #{ap_id} is a Tombstone")
+        Logger.debug(
+          "Remote actor at #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)} is a Tombstone"
+        )
+
         {:error, :actor_tombstone}
 
       # If this has been deleted, only log a debug and not an error
       {:error, "Object has been deleted" = e} ->
-        Logger.debug("Could not decode user at fetch #{ap_id}, #{inspect(e)}")
+        Logger.debug(
+          "Could not read user at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, #{Pleroma.Helpers.UriHelper.log_safe_text(e)}"
+        )
+
         {:error, e}
 
       {:error, :not_found} = e ->
-        Logger.debug("Could not decode user at fetch #{ap_id}, :not_found")
+        Logger.debug(
+          "Could not read user at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, :not_found"
+        )
+
         e
 
       {:error, {:reject, reason} = e} ->
-        Logger.info("Rejected user #{ap_id}: #{inspect(reason)}")
+        Logger.info(
+          "Rejected user #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}: #{Pleroma.Helpers.UriHelper.log_safe_text(reason)}"
+        )
+
         {:error, e}
 
       {:error, e} ->
-        log_remote_fetch_error("Could not decode user", ap_id, e)
+        log_remote_fetch_error("Could not read user", ap_id, e)
         {:error, e}
     end
   end
 
+  # The owner of an embedded ActivityPub public key is the actor authorized to
+  # use it. Accept actors that omit the legacy owner field or use newer key
+  # representations, but never bind a PEM key that explicitly names somebody
+  # else as its owner.
+  defp validate_actor_public_key_owner(%{
+         "id" => actor_id,
+         "publicKey" => %{"owner" => owner}
+       })
+       when is_binary(actor_id) and is_binary(owner) do
+    if actor_id == owner,
+      do: :ok,
+      else: {:error, :actor_public_key_owner_mismatch}
+  end
+
+  defp validate_actor_public_key_owner(_data), do: :ok
+
   defp reject_tombstone_actor(%{"type" => "Tombstone"}), do: {:error, :actor_tombstone}
   defp reject_tombstone_actor(_), do: :ok
 
-  defp log_remote_fetch_error(message, ap_id, {:http, code}) when code in [401, 403, 404, 410] do
-    Logger.debug("#{message} at fetch #{ap_id}, remote returned HTTP #{code}")
+  defp log_remote_fetch_error(message, ap_id, {:http, code})
+       when code in [400, 401, 403, 404, 405, 406, 410, 501] do
+    Logger.debug(
+      "#{message} at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, remote returned HTTP #{code}"
+    )
   end
 
   defp log_remote_fetch_error(message, ap_id, {:content_type, content_type}) do
-    Logger.debug("#{message} at fetch #{ap_id}, remote returned content-type #{content_type}")
+    Logger.debug(
+      "#{message} at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, remote returned content-type #{content_type}"
+    )
   end
 
   defp log_remote_fetch_error(message, ap_id, "Object has been deleted") do
-    Logger.debug("#{message} at fetch #{ap_id}, \"Object has been deleted\"")
+    Logger.debug(
+      "#{message} at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, \"Object has been deleted\""
+    )
   end
 
   defp log_remote_fetch_error(message, ap_id, :not_found) do
-    Logger.debug("#{message} at fetch #{ap_id}, :not_found")
+    Logger.debug(
+      "#{message} at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, :not_found"
+    )
   end
 
   defp log_remote_fetch_error(message, ap_id, reason)
        when reason in [:forbidden, :unauthorized] do
-    Logger.debug("#{message} at fetch #{ap_id}, #{inspect(reason)}")
+    Logger.debug(
+      "#{message} at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, #{Pleroma.Helpers.UriHelper.log_safe_text(reason)}"
+    )
   end
 
   defp log_remote_fetch_error(message, ap_id, {:http, code}) do
-    Logger.warning("#{message} at fetch #{ap_id}, remote returned HTTP #{code}")
+    Logger.warning(
+      "#{message} at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, remote returned HTTP #{code}"
+    )
   end
 
   defp log_remote_fetch_error(message, ap_id, reason) do
-    Logger.warning("#{message} at fetch #{ap_id}, #{inspect(reason)}")
+    if Churn.terminal_transport_error?(reason) do
+      Logger.debug(
+        "#{message} at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, #{Pleroma.Helpers.UriHelper.log_safe_text(reason)}"
+      )
+    else
+      Logger.warning(
+        "#{message} at fetch #{Pleroma.Helpers.UriHelper.log_safe_url(ap_id)}, #{Pleroma.Helpers.UriHelper.log_safe_text(reason)}"
+      )
+    end
   end
 
   def maybe_handle_clashing_nickname(data) do
+    data
+    |> Map.put_new(:nickname_authoritative, true)
+    |> resolve_clashing_nickname()
+  end
+
+  defp resolve_clashing_nickname(data) do
     with nickname when is_binary(nickname) <- data[:nickname],
          %User{} = old_user <- User.get_by_nickname(nickname),
          {_, false} <- {:ap_id_comparison, data[:ap_id] == old_user.ap_id} do
-      Logger.info(
-        "Found an old user for #{nickname}, the old ap id is #{old_user.ap_id}, new one is #{data[:ap_id]}, renaming."
-      )
-
-      old_user
-      |> User.remote_user_changeset(%{nickname: "#{old_user.id}.#{old_user.nickname}"})
-      |> User.update_and_set_cache()
+      resolve_nickname_owner(data, old_user)
     else
       {:ap_id_comparison, true} ->
-        Logger.info(
-          "Found an old user for #{data[:nickname]}, but the ap id #{data[:ap_id]} is the same as the new user. Race condition? Not changing anything."
-        )
+        {:ok, data}
 
       _ ->
-        nil
+        {:ok, data}
+    end
+  end
+
+  defp resolve_nickname_owner(
+         %{nickname_authoritative: true} = data,
+         %User{local: false} = old_user
+       ) do
+    Logger.info(
+      "Verified WebFinger alias #{data[:nickname]} moved from #{Pleroma.Helpers.UriHelper.log_safe_url(old_user.ap_id)} to #{Pleroma.Helpers.UriHelper.log_safe_url(data[:ap_id])}"
+    )
+
+    old_user
+    |> User.remote_user_changeset(%{nickname: "#{old_user.id}.#{old_user.nickname}"})
+    |> User.update_and_set_cache()
+    |> case do
+      {:ok, _old_user} -> {:ok, data}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp resolve_nickname_owner(data, _old_user) do
+    # A preferredUsername combined with the actor URL host is useful display
+    # data, but it is not proof that the actor owns that acct handle. Keep the
+    # existing owner and give this canonical actor a deterministic local label.
+    {:ok, Map.put(data, :nickname, collision_safe_nickname(data[:nickname], data[:ap_id]))}
+  end
+
+  defp collision_safe_nickname(nickname, ap_id) do
+    digest =
+      :crypto.hash(:sha256, ap_id)
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 24)
+
+    case String.split(nickname, "@", parts: 2) do
+      [name, host] when name != "" and host != "" -> "#{name}.#{digest}@#{host}"
+      _ -> "actor.#{digest}@invalid.invalid"
     end
   end
 
   @featured_collection_types ["OrderedCollection", "Collection"]
   @featured_collection_page_types ["OrderedCollectionPage", "CollectionPage"]
   @featured_collection_item_types @featured_collection_types ++ @featured_collection_page_types
+  @maximum_remote_featured_items 150
 
   def pin_data_from_featured_collection(%{
         "type" => type,
@@ -2417,6 +2822,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     objects
     |> List.wrap()
     |> Enum.flat_map(&featured_object_ap_ids/1)
+    |> Enum.take(@maximum_remote_featured_items)
     |> Map.new(&{&1, NaiveDateTime.utc_now()})
   end
 
@@ -2435,35 +2841,92 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   end
 
   def fetch_and_prepare_featured_from_ap_id(ap_id) when is_binary(ap_id) do
-    with {:ok, data} <- Fetcher.fetch_and_contain_remote_object_from_id(ap_id) do
-      {:ok, prepare_featured_collection(data)}
-    else
-      e ->
-        log_remote_fetch_error("Could not decode featured collection", ap_id, unwrap_error(e))
-        {:ok, %{}}
+    case fetch_featured_collection_from_ap_id(ap_id) do
+      {:ok, pinned_objects} -> {:ok, pinned_objects}
+      {:error, _reason} -> {:ok, %{}}
     end
   end
 
   def fetch_and_prepare_featured_from_ap_id(_), do: {:ok, %{}}
 
+  def fetch_featured_collection_from_ap_id(ap_id) when is_binary(ap_id) do
+    with :ok <- Pleroma.Federation.ensure_enabled() do
+      lock = {{__MODULE__, :featured_collection_fetch, ap_id}, self()}
+
+      case :global.trans(lock, fn ->
+             fetch_featured_collection_under_lock(ap_id)
+           end) do
+        {:aborted, reason} -> {:error, {:featured_collection_lock, reason}}
+        result -> result
+      end
+    end
+  end
+
+  defp fetch_featured_collection_under_lock(ap_id) do
+    if failed_featured_collection?(ap_id) do
+      {:error, :cooldown}
+    else
+      with {:ok, objects} <-
+             RemoteCollection.fetch(ap_id,
+               max_items: @maximum_remote_featured_items,
+               max_pages: 4
+             ) do
+        Cachex.del(@failed_featured_collection_cache, ap_id)
+        {:ok, pin_data_from_featured_items(objects)}
+      else
+        e ->
+          Cachex.put(@failed_featured_collection_cache, ap_id, true)
+
+          log_remote_fetch_error(
+            "Could not fetch or read featured collection",
+            ap_id,
+            unwrap_error(e)
+          )
+
+          e
+      end
+    end
+  end
+
+  defp failed_featured_collection?(ap_id) do
+    match?({:ok, true}, Cachex.get(@failed_featured_collection_cache, ap_id))
+  end
+
+  defp prepare_embedded_featured_collection(ap_id) when is_binary(ap_id), do: :deferred
+
+  defp prepare_embedded_featured_collection(data) do
+    {:ok, pinned_objects} = fetch_and_prepare_featured_from_ap_id(data)
+    pinned_objects
+  end
+
   defp collection_address(address) when is_binary(address), do: address
   defp collection_address(%{"id" => address}) when is_binary(address), do: address
   defp collection_address(_), do: nil
 
-  defp collection_count(address) when is_binary(address) do
-    case Fetcher.fetch_and_contain_remote_collection_from_id(address) do
-      {:ok, data} ->
-        collection_count(data)
+  def fetch_actor_collection_count(address) when is_binary(address) do
+    with :ok <- Pleroma.Federation.ensure_enabled() do
+      case RemoteCollection.count(address, max_items: 1_000, max_pages: 8) do
+        {:ok, count} ->
+          {:ok, count}
 
-      e ->
-        log_remote_fetch_error("Could not decode actor collection", address, unwrap_error(e))
-        0
+        e ->
+          log_remote_fetch_error(
+            "Could not fetch or read actor collection",
+            address,
+            unwrap_error(e)
+          )
+
+          e
+      end
     end
   end
 
   defp collection_count(%{"totalItems" => count}), do: normalize_counter(count)
   defp collection_count(%{"total_items" => count}), do: normalize_counter(count)
   defp collection_count(_), do: 0
+
+  defp prepare_embedded_collection_count(address) when is_binary(address), do: :deferred
+  defp prepare_embedded_collection_count(data), do: collection_count(data)
 
   defp normalize_optional_boolean(value) when is_boolean(value), do: value
   defp normalize_optional_boolean(value) when value in ["true", "1", 1], do: true
@@ -2513,7 +2976,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
       e ->
         log_remote_fetch_error(
-          "Could not decode featured collection page",
+          "Could not fetch or read featured collection page",
           first,
           unwrap_error(e)
         )
@@ -2530,7 +2993,9 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   def enqueue_pin_fetches(%{pinned_objects: pins}) when is_list(pins) or is_map(pins) do
     # enqueue a task to fetch all pinned objects
-    Enum.each(pins, fn
+    pins
+    |> Enum.take(@maximum_remote_featured_items)
+    |> Enum.each(fn
       {ap_id, _} when is_binary(ap_id) ->
         if is_nil(Object.get_cached_by_ap_id(ap_id)) and not Instances.dormant?(ap_id) do
           Pleroma.Workers.RemoteFetcherWorker.new(%{
@@ -2569,26 +3034,35 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp pinned_object_available?(_), do: true
 
   def make_user_from_ap_id(ap_id, additional \\ []) do
+    with :ok <- Pleroma.Federation.ensure_enabled() do
+      do_make_user_from_ap_id(ap_id, additional)
+    end
+  end
+
+  defp do_make_user_from_ap_id(ap_id, additional) do
     user = User.get_cached_by_ap_id(ap_id)
 
     case fetch_and_prepare_user_from_ap_id(ap_id, additional) do
       {:ok, data} ->
         enqueue_pin_fetches(data)
 
-        if user do
-          if user.nickname != data[:nickname] do
-            maybe_handle_clashing_nickname(data)
-          end
+        data = preserve_existing_nickname_without_alias_proof(data, user)
 
-          user
-          |> User.remote_user_changeset(data)
-          |> User.update_and_set_cache()
-        else
-          maybe_handle_clashing_nickname(data)
+        with {:ok, data} <- resolve_clashing_nickname(data) do
+          result =
+            if user do
+              user
+              |> User.remote_user_changeset(data)
+              |> User.update_and_set_cache()
+            else
+              data
+              |> User.remote_user_changeset()
+              |> insert_remote_user(data[:ap_id])
+            end
 
-          data
-          |> User.remote_user_changeset()
-          |> insert_remote_user(data[:ap_id])
+          result = maybe_bind_verified_nickname(result, data)
+          enqueue_deferred_actor_collections(result, data)
+          result
         end
 
       {:error, :actor_tombstone} ->
@@ -2597,6 +3071,63 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       error ->
         error
     end
+  end
+
+  defp preserve_existing_nickname_without_alias_proof(
+         %{nickname_authoritative: false} = data,
+         %User{nickname: nickname}
+       )
+       when is_binary(nickname) do
+    Map.put(data, :nickname, nickname)
+  end
+
+  defp preserve_existing_nickname_without_alias_proof(data, _user), do: data
+
+  defp maybe_bind_verified_nickname(
+         {:ok, %User{} = user} = result,
+         %{verified_nickname: nickname}
+       )
+       when is_binary(nickname) do
+    case Pleroma.User.ActorAlias.bind_verified(user, nickname) do
+      {:ok, _binding} ->
+        result
+
+      {:error, reason} ->
+        Logger.warning(
+          "Could not persist verified WebFinger alias #{Pleroma.Helpers.UriHelper.log_safe_text(nickname)} for #{Pleroma.Helpers.UriHelper.log_safe_url(user.ap_id)}: #{Pleroma.Helpers.UriHelper.log_safe_text(reason)}"
+        )
+
+        result
+    end
+  end
+
+  defp maybe_bind_verified_nickname(result, _data), do: result
+
+  defp enqueue_deferred_actor_collections({:ok, %User{} = user}, data) do
+    if is_binary(data[:featured_address]) and not Map.has_key?(data, :pinned_objects) do
+      enqueue_actor_collection_refresh(user, "featured", data[:featured_address])
+    end
+
+    if is_binary(data[:attributed_to_address]) and not Map.has_key?(data, :moderator_count) do
+      enqueue_actor_collection_refresh(user, "moderators", data[:attributed_to_address])
+    end
+
+    if user.actor_type == "Feed" and is_binary(data[:following_address]) do
+      enqueue_actor_collection_refresh(user, "aggregate_feed", data[:following_address])
+    end
+  end
+
+  defp enqueue_deferred_actor_collections(_result, _data), do: :ok
+
+  defp enqueue_actor_collection_refresh(user, kind, collection) do
+    Pleroma.Workers.ActorCollectionRefreshWorker.new(%{
+      "ap_id" => user.ap_id,
+      "kind" => kind,
+      "collection" => collection
+    })
+    |> Oban.insert()
+
+    :ok
   end
 
   defp insert_remote_user(changeset, ap_id) do
@@ -2654,10 +3185,12 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp handle_tombstone_user_fetch(_), do: {:error, "Object has been deleted"}
 
   def make_user_from_nickname(nickname) do
-    with {:ok, %{"ap_id" => ap_id, "subject" => "acct:" <> acct}} when not is_nil(ap_id) <-
+    with :ok <- Pleroma.Federation.ensure_enabled(),
+         {:ok, %{"ap_id" => ap_id, "subject" => "acct:" <> acct}} when not is_nil(ap_id) <-
            WebFinger.finger(nickname) do
       make_user_from_ap_id(ap_id, nickname_from_acct: acct)
     else
+      {:error, :federation_disabled} = error -> error
       _e -> {:error, "No AP id in WebFinger"}
     end
   end

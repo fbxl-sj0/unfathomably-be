@@ -348,6 +348,7 @@ defmodule Pleroma.Web.CommonAPITest do
       user = insert(:user)
 
       {:ok, post} = CommonAPI.post(user, %{status: "namu amida butsu"})
+      :ok = Activity.mark_federated(post.data["id"])
 
       clear_config([:instance, :federating], true)
 
@@ -368,6 +369,7 @@ defmodule Pleroma.Web.CommonAPITest do
       user = insert(:user)
 
       {:ok, post} = CommonAPI.post(user, %{status: "namu amida butsu"})
+      :ok = Activity.mark_federated(post.data["id"])
 
       clear_config([:instance, :federating], true)
 
@@ -379,6 +381,20 @@ defmodule Pleroma.Web.CommonAPITest do
       end
 
       refute Activity.get_by_id(post.id)
+    end
+
+    test "it does not federate a delete for a post no peer accepted" do
+      user = insert(:user)
+      {:ok, post} = CommonAPI.post(user, %{status: "never delivered"})
+
+      refute Activity.get_by_id(post.id).federated
+
+      with_mock Pleroma.Web.Federator,
+        publish: fn _ -> :ok end do
+        assert {:ok, delete} = CommonAPI.delete(post.id, user)
+        assert delete.local
+        refute called(Pleroma.Web.Federator.publish(:_))
+      end
     end
 
     test "it does not allow a user to delete posts from another user" do
@@ -770,7 +786,9 @@ defmodule Pleroma.Web.CommonAPITest do
       object = Object.normalize(activity, fetch: false)
 
       assert object.data["content"] == "<p><b>2hu</b></p>alert(&#39;xss&#39;)"
-      assert object.data["source"]["content"] == post
+
+      assert object.data["source"]["content"] ==
+               "<p><b>2hu</b></p>alert(&#39;xss&#39;)"
     end
 
     test "it filters out obviously bad tags when accepting a post as Markdown" do
@@ -788,6 +806,24 @@ defmodule Pleroma.Web.CommonAPITest do
 
       assert object.data["content"] == "<p><b>2hu</b></p>"
       assert object.data["source"]["content"] == post
+    end
+
+    test "it makes relative Markdown links portable in content and source" do
+      user = insert(:user)
+
+      {:ok, activity} =
+        CommonAPI.post(user, %{
+          status: "[Guide](/docs/start) ![Logo](images/logo.png)",
+          content_type: "text/markdown"
+        })
+
+      object = Object.normalize(activity, fetch: false)
+      base = Pleroma.Web.Endpoint.url()
+
+      assert object.data["content"] =~ ~s(href="#{base}/docs/start")
+      assert object.data["content"] =~ ~s(src="#{base}/images/logo.png")
+      assert object.data["source"]["content"] =~ "#{base}/docs/start"
+      assert object.data["source"]["content"] =~ "#{base}/images/logo.png"
     end
 
     test "it does not allow replies to direct messages that are not direct messages themselves" do
@@ -852,8 +888,38 @@ defmodule Pleroma.Web.CommonAPITest do
     test "it returns error when status is empty and no attachments" do
       user = insert(:user)
 
-      assert {:error, "Cannot post an empty status without attachments"} =
+      assert {:error, "Cannot post an empty status without media, a poll, or a quote"} =
                CommonAPI.post(user, %{status: ""})
+    end
+
+    test "it accepts a validated poll without a status body" do
+      user = insert(:user)
+
+      assert {:ok, activity} =
+               CommonAPI.post(user, %{
+                 status: "",
+                 poll: %{expires_in: 600, options: ["One", "Two"]}
+               })
+
+      assert Object.normalize(activity, fetch: false).data["type"] == "Question"
+    end
+
+    test "it accepts a visible quote without a status body" do
+      user = insert(:user)
+      {:ok, quoted} = CommonAPI.post(user, %{status: "Quoted content"})
+
+      assert {:ok, activity} =
+               CommonAPI.post(user, %{status: "", quoted_status_id: quoted.id})
+
+      assert Object.normalize(activity, fetch: false).data["quoteUrl"] ==
+               Object.normalize(quoted, fetch: false).data["id"]
+    end
+
+    test "it rejects a missing quote target without a status body" do
+      user = insert(:user)
+
+      assert {:error, "Cannot post an empty status without media, a poll, or a quote"} =
+               CommonAPI.post(user, %{status: "", quoted_status_id: "missing"})
     end
 
     test "it validates character limits are correctly enforced" do
@@ -954,6 +1020,139 @@ defmodule Pleroma.Web.CommonAPITest do
       {:ok, _} = CommonAPI.post(another_user, %{status: "nice", quote_id: public.id})
     end
 
+    test "local replies cannot be broader than the parent post" do
+      user = insert(:user)
+
+      {:ok, private} = CommonAPI.post(user, %{status: "private", visibility: "private"})
+
+      {:ok, private_reply} =
+        CommonAPI.post(user, %{
+          status: "reply",
+          in_reply_to_id: private.id,
+          visibility: "public"
+        })
+
+      assert Visibility.get_visibility(private_reply) == "private"
+
+      {:ok, unlisted} = CommonAPI.post(user, %{status: "unlisted", visibility: "unlisted"})
+
+      {:ok, unlisted_reply} =
+        CommonAPI.post(user, %{
+          status: "reply",
+          in_reply_to_id: unlisted.id,
+          visibility: "public"
+        })
+
+      assert Visibility.get_visibility(unlisted_reply) == "unlisted"
+    end
+
+    test "followers-only replies retain the parent's audience instead of the replier's followers" do
+      author = insert(:user)
+      replier = insert(:user)
+
+      assert {:ok, _, _} = User.follow(replier, author)
+      {:ok, parent} = CommonAPI.post(author, %{status: "protected", visibility: "private"})
+
+      {:ok, reply} =
+        CommonAPI.post(replier, %{
+          status: "protected reply",
+          in_reply_to_id: parent.id,
+          visibility: "public"
+        })
+
+      assert Visibility.get_visibility(reply) == "private"
+      assert author.follower_address in reply.recipients
+      assert author.ap_id in reply.recipients
+      refute replier.follower_address in reply.recipients
+    end
+
+    test "local quotes cannot be broader than the quoted post" do
+      user = insert(:user)
+
+      {:ok, private} = CommonAPI.post(user, %{status: "private", visibility: "private"})
+
+      {:ok, quote} =
+        CommonAPI.post(user, %{
+          status: "quote",
+          quote_id: private.id,
+          visibility: "public"
+        })
+
+      assert Visibility.get_visibility(quote) == "private"
+    end
+
+    test "unlisted posts default to follower-only quote approval" do
+      user = insert(:user)
+
+      {:ok, activity} =
+        CommonAPI.post(user, %{status: "unlisted", visibility: "unlisted"})
+
+      assert Pleroma.Web.ActivityPub.QuotePolicy.name(
+               activity.object.data["interactionPolicy"],
+               activity.object
+             ) == "followers"
+    end
+
+    test "private posts cannot advertise broad quote approval" do
+      user = insert(:user)
+
+      {:ok, activity} =
+        CommonAPI.post(user, %{
+          status: "private",
+          visibility: "private",
+          quote_approval_policy: "public"
+        })
+
+      assert Pleroma.Web.ActivityPub.QuotePolicy.name(
+               activity.object.data["interactionPolicy"],
+               activity.object
+             ) == "nobody"
+
+      {:ok, _update} =
+        CommonAPI.update(user, activity, %{
+          status: "still private",
+          quote_approval_policy: "manual"
+        })
+
+      edited = Activity.get_by_id_with_object(activity.id)
+
+      assert Pleroma.Web.ActivityPub.QuotePolicy.name(
+               edited.object.data["interactionPolicy"],
+               edited.object
+             ) == "nobody"
+    end
+
+    test "status edits preserve or explicitly replace the quote policy" do
+      user = insert(:user)
+
+      {:ok, activity} =
+        CommonAPI.post(user, %{
+          status: "original",
+          quote_approval_policy: "nobody"
+        })
+
+      {:ok, _update} = CommonAPI.update(user, activity, %{status: "edited"})
+      edited = Activity.get_by_id_with_object(activity.id)
+
+      assert Pleroma.Web.ActivityPub.QuotePolicy.name(
+               edited.object.data["interactionPolicy"],
+               edited.object
+             ) == "nobody"
+
+      {:ok, _update} =
+        CommonAPI.update(user, edited, %{
+          status: "edited again",
+          quote_approval_policy: "manual"
+        })
+
+      edited_again = Activity.get_by_id_with_object(activity.id)
+
+      assert Pleroma.Web.ActivityPub.QuotePolicy.name(
+               edited_again.object.data["interactionPolicy"],
+               edited_again.object
+             ) == "manual"
+    end
+
     test "it properly mentions punycode domain" do
       user = insert(:user)
 
@@ -968,6 +1167,35 @@ defmodule Pleroma.Web.CommonAPITest do
   end
 
   describe "reactions" do
+    test "rejects interactions and replies across a defederated boundary" do
+      clear_config([:mrf_simple, :reject], [{"blocked.example", "Federation paused"}])
+
+      user = insert(:user)
+
+      remote =
+        insert(:user,
+          local: false,
+          ap_id: "https://blocked.example/users/alice",
+          nickname: "alice@blocked.example"
+        )
+
+      activity = insert(:note_activity, user: remote, local: false)
+
+      assert {:error, "Federation paused"} = CommonAPI.favorite(user, activity.id)
+      assert {:error, "Federation paused"} = CommonAPI.repeat(activity.id, user)
+
+      assert {:error, "Federation paused"} =
+               CommonAPI.react_with_emoji(activity.id, user, "\u{1F44D}")
+
+      assert {:error, "Federation paused"} =
+               CommonAPI.post(user, %{status: "blocked reply", in_reply_to_id: activity.id})
+
+      refute Pleroma.Web.ActivityPub.Utils.get_existing_like(
+               user.ap_id,
+               Object.normalize(activity, fetch: false)
+             )
+    end
+
     test "reacting to a status with an emoji" do
       user = insert(:user)
       other_user = insert(:user)
@@ -982,6 +1210,17 @@ defmodule Pleroma.Web.CommonAPITest do
       {:ok, activity} = CommonAPI.post(other_user, %{status: "cofe"})
 
       {:error, _} = CommonAPI.react_with_emoji(activity.id, user, ".")
+    end
+
+    test "rejecting an oversized reaction does not create an activity" do
+      user = insert(:user)
+      other_user = insert(:user)
+      {:ok, activity} = CommonAPI.post(other_user, %{status: "bounded reactions"})
+
+      oversized = ":" <> String.duplicate("a", 100) <> ":"
+
+      assert {:error, _} = CommonAPI.react_with_emoji(activity.id, user, oversized)
+      assert {:error, _} = CommonAPI.unreact_with_emoji(activity.id, user, oversized)
     end
 
     test "unreacting to a status with an emoji" do
@@ -1021,14 +1260,15 @@ defmodule Pleroma.Web.CommonAPITest do
       assert Visibility.is_public?(announce_activity)
     end
 
-    test "can't repeat a repeat" do
+    test "repeating an Announce-backed status targets the original object" do
       user = insert(:user)
       other_user = insert(:user)
       {:ok, activity} = CommonAPI.post(other_user, %{status: "cofe"})
 
       {:ok, %Activity{} = announce} = CommonAPI.repeat(activity.id, other_user)
+      {:ok, %Activity{} = repeated_announce} = CommonAPI.repeat(announce.id, user)
 
-      refute match?({:ok, %Activity{}}, CommonAPI.repeat(announce.id, user))
+      assert repeated_announce.data["object"] == announce.data["object"]
     end
 
     test "repeating a status privately" do
@@ -1771,6 +2011,47 @@ defmodule Pleroma.Web.CommonAPITest do
       assert track_actor in outgoing["cc"]
       assert outgoing["object"] == %{"id" => track_ap_id, "type" => "Track"}
     end
+
+    test "records a visible remote Audio status as a Track listen" do
+      user = insert(:user)
+      track_actor = insert(:user, local: false, ap_id: "https://audio.example/actors/library")
+      track_ap_id = "https://audio.example/library/tracks/456"
+
+      object =
+        insert(:note,
+          user: track_actor,
+          data: %{
+            "actor" => track_actor.ap_id,
+            "id" => track_ap_id,
+            "name" => "Federated track",
+            "to" => [Pleroma.Constants.as_public()],
+            "type" => "Audio"
+          }
+        )
+
+      activity =
+        insert(:note_activity,
+          local: false,
+          user: track_actor,
+          note: object,
+          data_attrs: %{
+            "id" => "https://audio.example/activities/456",
+            "type" => "Create"
+          }
+        )
+
+      assert {:ok, listen} = CommonAPI.listen_to_status(user, activity.id)
+      assert {:ok, outgoing} = Transmogrifier.prepare_outgoing(listen.data)
+      assert outgoing["object"] == %{"id" => track_ap_id, "type" => "Track"}
+      assert track_actor.ap_id in outgoing["cc"]
+    end
+
+    test "does not turn an ordinary status with media into a Track listen" do
+      user = insert(:user)
+      activity = insert(:note_activity)
+
+      assert {:error, :not_a_track} = CommonAPI.listen_to_status(user, activity.id)
+    end
   end
 
   describe "get_user/1" do
@@ -1854,6 +2135,23 @@ defmodule Pleroma.Web.CommonAPITest do
         assert Visibility.is_local_public?(activity)
         refute called(Pleroma.Web.Federator.publish(activity))
       end
+    end
+
+    test "unrepeat is idempotent after the announce has been removed" do
+      user = insert(:user)
+      other_user = insert(:user)
+
+      {:ok, %Activity{id: activity_id}} =
+        CommonAPI.post(other_user, %{status: "cofe", visibility: "local"})
+
+      assert {:ok, %Activity{data: %{"type" => "Announce"}}} =
+               CommonAPI.repeat(activity_id, user)
+
+      assert {:ok, %Activity{data: %{"type" => "Undo"}}} =
+               CommonAPI.unrepeat(activity_id, user)
+
+      assert {:ok, %Activity{id: ^activity_id, data: %{"type" => "Create"}}} =
+               CommonAPI.unrepeat(activity_id, user)
     end
 
     test "favorite" do
@@ -2023,6 +2321,58 @@ defmodule Pleroma.Web.CommonAPITest do
       assert edited_note.data["emoji"]["remoteemoji"] == remote_emoji_uri
     end
 
+    test "rejects quote target changes during an edit" do
+      user = insert(:user)
+      {:ok, activity} = CommonAPI.post(user, %{status: "original"})
+      {:ok, quoted} = CommonAPI.post(user, %{status: "quoted"})
+
+      assert {:error, {:unprocessable_entity, message}} =
+               CommonAPI.update(user, activity, %{
+                 status: "edited",
+                 quoted_status_id: quoted.id
+               })
+
+      assert message =~ "quoted status cannot be added"
+    end
+
+    test "rejects replacing media with a poll in one edit" do
+      user = insert(:user)
+      attachment = insert(:attachment, user: user)
+
+      {:ok, activity} =
+        CommonAPI.post(user, %{
+          status: "media",
+          media_ids: [to_string(attachment.id)]
+        })
+
+      assert {:error, {:unprocessable_entity, message}} =
+               CommonAPI.update(user, activity, %{
+                 status: "poll",
+                 poll: %{options: ["one", "two"], expires_in: 3600}
+               })
+
+      assert message =~ "media status cannot be replaced with a poll"
+    end
+
+    test "rejects replacing a poll with media in one edit" do
+      user = insert(:user)
+      attachment = insert(:attachment, user: user)
+
+      {:ok, activity} =
+        CommonAPI.post(user, %{
+          status: "poll",
+          poll: %{options: ["one", "two"], expires_in: 3600}
+        })
+
+      assert {:error, {:unprocessable_entity, message}} =
+               CommonAPI.update(user, activity, %{
+                 status: "media",
+                 media_ids: [to_string(attachment.id)]
+               })
+
+      assert message =~ "poll cannot be replaced with media"
+    end
+
     test "respects MRF" do
       user = insert(:user)
 
@@ -2119,6 +2469,22 @@ defmodule Pleroma.Web.CommonAPITest do
       assert group.ap_id in object.data["to"]
       refute Pleroma.Constants.as_public() in object.data["to"]
       assert Pleroma.Constants.as_public() in object.data["cc"]
+    end
+
+    test "moderator-only groups reject ordinary posters", %{poster: poster, group: group} do
+      group =
+        group
+        |> Ecto.Changeset.change(posting_restricted_to_mods: true)
+        |> Repo.update!()
+
+      assert {:error, "Only group moderators can post in this group"} =
+               CommonAPI.post(poster, %{status: "ordinary post", group_id: group.ap_id})
+
+      {:ok, _membership} =
+        Pleroma.GroupMembership.sync_directory_member(group, poster, "moderator")
+
+      assert {:ok, _post} =
+               CommonAPI.post(poster, %{status: "moderator post", group_id: group.ap_id})
     end
 
     test "group-targeted posts can opt into public timeline visibility", %{

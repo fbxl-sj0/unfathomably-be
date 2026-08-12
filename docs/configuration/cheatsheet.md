@@ -1212,3 +1212,75 @@ Each job has these settings:
 
 * `:max_running` - max concurrently runnings jobs
 * `:max_waiting` - max waiting jobs
+
+## Native federation discovery (`:native_discovery`)
+
+Worlds can expose a small set of operator-approved public discovery sources
+for specialized ActivityPub software. These settings are not a federation
+allowlist and do not follow, crawl, or import an actor. A person must choose a
+discovery action before a configured provider is contacted.
+
+Use only HTTPS origins you have reviewed. The standard provider indexes accept
+at most three roots each and must not contain a path, query, fragment, or
+credentials. Owncast is the exception because its opt-in public directory is
+an explicit playlist URL.
+
+```elixir
+config :pleroma, :native_discovery,
+  peertube_indexes: ["https://video.example"],
+  mobilizon_indexes: ["https://events.example"],
+  gancio_indexes: ["https://calendar.example"],
+  funkwhale_indexes: ["https://music.example"],
+  neodb_indexes: ["https://catalog.example"],
+  bookwyrm_indexes: ["https://books.example"],
+  flohmarkt_indexes: ["https://market.example"],
+  wanderer_indexes: ["https://trails.example"],
+  owncast_directory_indexes: ["https://directory.example/api/iptv"]
+```
+
+`community_catalog` is for reviewed specialized communities or curated public
+directories that have no trustworthy common API directory. It accepts at most
+24 passive cards. Each card requires a `family`, `title`, `workflow`, and HTTPS
+`url`; `platform` is an optional display identifier. Card URLs may retain one
+safe path, but must not contain credentials, a query, a fragment, duplicate
+slashes, traversal segments, control characters, or backslashes. Supported
+families are `audio`, `books`,
+`bookmarks`, `coordination`, `culture`, `development`, `events`, `games`,
+`groups`, `longform`, `marketplace`, `models`, `photo`, `publishing`, `routes`,
+and `video`.
+
+Set `entry_type` to `"directory"` when a card opens a curated directory rather
+than one community. Omit it, or set it to `"community"`, for an individual
+reviewed community. Set it to `"guide"` for an official implementation or
+status page that helps users understand how to enter an immature ecosystem but
+is not itself a community, directory, or federation endpoint. Clients label
+guide cards separately and offer a `Review ecosystem` action.
+
+Unfathomably includes official guide cards for Postmarks, ForgeFed, Bonfire
+Coordination, and ActivityPods Mutual Aid, plus Pixelfed's official opt-in
+server directory and the project-maintained directories for BookWyrm, NeoDB,
+Flohmarkt, Manyfold, Funkwhale, Mobilizon, and Gancio. The guide-backed
+projects use single-user actors, maintainer-shared project actors,
+deployment-specific federation settings, or private trusted networks instead
+of a safe global directory. Directory cards remain outbound choice points and
+are never crawled in the background. A `community_catalog` card with the same
+family and host takes precedence when an operator has a more useful reviewed
+local workflow.
+
+```elixir
+config :pleroma, :native_discovery,
+  community_catalog: [
+    %{
+      family: "development",
+      platform: "forgefed",
+      title: "ForgeFed implementations",
+      entry_type: "guide",
+      workflow: "Review current implementations before resolving a published project or repository actor.",
+      url: "https://forgefed.org/"
+    }
+  ]
+```
+
+Custom cards are outbound links only. They do not assert that the linked
+community is already followed, locally resolved, or reachable for every
+ActivityPub operation.

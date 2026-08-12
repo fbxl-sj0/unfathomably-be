@@ -14,9 +14,8 @@ defmodule Pleroma.Telemetry.Logger do
     [:pleroma, :connection_pool, :client, :dead],
     [:pleroma, :connection_pool, :client, :add]
   ]
-
   def attach do
-    :telemetry.attach_many("pleroma-logger", @events, &__MODULE__.handle_event/4, [])
+    :telemetry.attach_many("pleroma-logger", @events, &handle_event/4, [])
   end
 
   # Passing anonymous functions instead of strings to logger is intentional,
@@ -40,7 +39,7 @@ defmodule Pleroma.Telemetry.Logger do
         _,
         _
       ) do
-    Logger.error(fn ->
+    Logger.debug(fn ->
       "Connection pool failed to reclaim any connections due to all of them being in use. It will have to drop requests for opening connections to new hosts"
     end)
   end
@@ -56,39 +55,30 @@ defmodule Pleroma.Telemetry.Logger do
 
   def handle_event(
         [:pleroma, :connection_pool, :provision_failure],
-        %{opts: [key | _]},
         _,
+        %{key: key},
         _
       ) do
-    Logger.error(fn ->
+    Logger.debug(fn ->
       "Connection pool had to refuse opening a connection to #{key} due to connection limit exhaustion"
     end)
   end
 
-  # Gun clients commonly stop with :normal or :shutdown when a request finishes
-  # or its caller cancels it. Keep those lifecycle events available for
-  # diagnostics without allowing them to obscure abnormal pool failures.
-  def handle_event(
-        [:pleroma, :connection_pool, :client, :dead],
-        %{client_pid: client_pid, reason: reason},
-        %{key: key},
-        _config
-      )
-      when reason in [:normal, :shutdown] do
-    Logger.debug(fn ->
-      "Pool worker for #{key}: Client #{inspect(client_pid)} exited with #{inspect(reason)}"
-    end)
-  end
-
   def handle_event(
         [:pleroma, :connection_pool, :client, :dead],
         %{client_pid: client_pid, reason: reason},
         %{key: key},
         _
       ) do
-    Logger.warning(fn ->
+    message = fn ->
       "Pool worker for #{key}: Client #{inspect(client_pid)} died before releasing the connection with #{inspect(reason)}"
-    end)
+    end
+
+    if routine_client_exit?(reason) do
+      Logger.debug(message)
+    else
+      Logger.warning(message)
+    end
   end
 
   def handle_event(
@@ -97,10 +87,14 @@ defmodule Pleroma.Telemetry.Logger do
         %{key: key, protocol: :http},
         _
       ) do
-    Logger.info(fn ->
+    Logger.debug(fn ->
       "Pool worker for #{key}: #{length(clients)} clients are using an HTTP1 connection at the same time, head-of-line blocking might occur."
     end)
   end
 
   def handle_event([:pleroma, :connection_pool, :client, :add], _, _, _), do: :ok
+
+  defp routine_client_exit?(reason) when reason in [:normal, :shutdown], do: true
+  defp routine_client_exit?({:shutdown, _reason}), do: true
+  defp routine_client_exit?(_reason), do: false
 end

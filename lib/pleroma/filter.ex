@@ -8,8 +8,13 @@ defmodule Pleroma.Filter do
   import Ecto.Changeset
   import Ecto.Query
 
+  alias Pleroma.Config
   alias Pleroma.Repo
   alias Pleroma.User
+
+  @default_max_account_filters 20
+  @default_max_filter_phrase_length 255
+  @valid_contexts ~w(home notifications public thread)
 
   @type t() :: %__MODULE__{}
   @type format() :: :postgres | :re
@@ -66,7 +71,8 @@ defmodule Pleroma.Filter do
   end
 
   defp create_with_expiration(attrs) do
-    with {:ok, filter} <- do_create(attrs),
+    with :ok <- lock_filter_allocation(attrs),
+         {:ok, filter} <- do_create(attrs),
          {:ok, _} <- maybe_add_expiration_job(filter) do
       filter
     else
@@ -79,17 +85,76 @@ defmodule Pleroma.Filter do
     |> cast(attrs, [:phrase, :context, :hide, :expires_at, :whole_word, :user_id, :filter_id])
     |> maybe_add_filter_id()
     |> validate_required([:phrase, :context, :user_id, :filter_id])
+    |> validate_length(:phrase, min: 1, max: max_filter_phrase_length())
+    |> validate_length(:context, min: 1, max: length(@valid_contexts))
+    |> validate_subset(:context, @valid_contexts)
+    |> validate_account_filter_limit()
     |> maybe_add_expires_at(attrs)
     |> Repo.insert()
+  end
+
+  # Filter IDs are allocated from the user's current maximum. A transaction
+  # advisory lock keeps simultaneous clients and clustered nodes from choosing
+  # the same ID or racing past the configured account limit.
+  defp lock_filter_allocation(attrs) do
+    case Map.get(attrs, :user_id) || Map.get(attrs, "user_id") do
+      nil ->
+        :ok
+
+      user_id ->
+        Ecto.Adapters.SQL.query!(
+          Repo,
+          "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [to_string(user_id)]
+        )
+
+        :ok
+    end
+  end
+
+  defp validate_account_filter_limit(%{valid?: false} = changeset), do: changeset
+
+  defp validate_account_filter_limit(changeset) do
+    case fetch_field(changeset, :user_id) do
+      {_source, user_id} ->
+        count =
+          __MODULE__
+          |> where([filter], filter.user_id == ^user_id)
+          |> Repo.aggregate(:count, :id)
+
+        if count >= max_account_filters() do
+          add_error(changeset, :user_id, "has reached the configured filter limit")
+        else
+          changeset
+        end
+
+      :error ->
+        changeset
+    end
+  end
+
+  defp max_account_filters do
+    configured_positive_integer(:max_account_filters, @default_max_account_filters)
+  end
+
+  defp max_filter_phrase_length do
+    :max_filter_phrase_length
+    |> configured_positive_integer(@default_max_filter_phrase_length)
+    |> min(@default_max_filter_phrase_length)
+  end
+
+  defp configured_positive_integer(key, default) do
+    case Config.get([:instance, key], default) do
+      value when is_integer(value) and value > 0 -> value
+      _ -> default
+    end
   end
 
   defp maybe_add_filter_id(%{changes: %{filter_id: _}} = changeset), do: changeset
 
   defp maybe_add_filter_id(%{changes: %{user_id: user_id}} = changeset) do
-    # If filter_id wasn't given, use the max filter_id for this user plus 1.
-    # XXX This could result in a race condition if a user tries to add two
-    # different filters for their account from two different clients at the
-    # same time, but that should be unlikely.
+    # The surrounding transaction holds this user's allocation lock, so the
+    # maximum cannot change until this filter has been inserted.
 
     max_id_query =
       from(
@@ -175,6 +240,9 @@ defmodule Pleroma.Filter do
     filter
     |> cast(params, [:phrase, :context, :hide, :expires_at, :whole_word])
     |> validate_required([:phrase, :context])
+    |> validate_length(:phrase, min: 1, max: max_filter_phrase_length())
+    |> validate_length(:context, min: 1, max: length(@valid_contexts))
+    |> validate_subset(:context, @valid_contexts)
     |> maybe_add_expires_at(params)
     |> Repo.update()
   end
@@ -193,6 +261,49 @@ defmodule Pleroma.Filter do
     end
   end
 
+  # Mastodon filter phrases are literal text. Escaping before combining them
+  # prevents punctuation from becoming active in either the Erlang or
+  # PostgreSQL regular-expression engine.
+  defp escape_phrase(phrase) when is_binary(phrase), do: Regex.escape(phrase)
+
+  defp starts_with_word_character?(phrase),
+    do: Regex.match?(~r/^[\p{L}\p{N}_]/u, phrase)
+
+  defp ends_with_word_character?(phrase),
+    do: Regex.match?(~r/[\p{L}\p{N}_]$/u, phrase)
+
+  defp filter_pattern(%__MODULE__{phrase: phrase, whole_word: false}, _format),
+    do: escape_phrase(phrase)
+
+  defp filter_pattern(%__MODULE__{phrase: phrase}, :postgres) do
+    prefix = if starts_with_word_character?(phrase), do: "\\m", else: ""
+    suffix = if ends_with_word_character?(phrase), do: "\\M", else: ""
+    prefix <> escape_phrase(phrase) <> suffix
+  end
+
+  defp filter_pattern(%__MODULE__{phrase: phrase}, :re) do
+    prefix = if starts_with_word_character?(phrase), do: "(?<![\\p{L}\\p{N}_])", else: ""
+    suffix = if ends_with_word_character?(phrase), do: "(?![\\p{L}\\p{N}_])", else: ""
+    prefix <> escape_phrase(phrase) <> suffix
+  end
+
+  @spec matching([t()], String.t(), String.t()) :: [{t(), String.t()}]
+  def matching(filters, text, context)
+      when is_list(filters) and is_binary(text) and is_binary(context) do
+    filters
+    |> Enum.filter(&(context in (&1.context || [])))
+    |> Enum.flat_map(fn filter ->
+      regex = Regex.compile!(filter_pattern(filter, :re), "iu")
+
+      case Regex.run(regex, text, capture: :first) do
+        [match] -> [{filter, match}]
+        _ -> []
+      end
+    end)
+  end
+
+  def matching(_filters, _text, _context), do: []
+
   @spec compose_regex(User.t() | [t()], format()) :: String.t() | Regex.t() | nil
   def compose_regex(user_or_filters, format \\ :postgres)
 
@@ -207,15 +318,15 @@ defmodule Pleroma.Filter do
   def compose_regex([_ | _] = filters, format) do
     phrases =
       filters
-      |> Enum.map(& &1.phrase)
+      |> Enum.map(&filter_pattern(&1, format))
       |> Enum.join("|")
 
     case format do
       :postgres ->
-        "\\y(#{phrases})\\y"
+        "(#{phrases})"
 
       :re ->
-        ~r/\b#{phrases}\b/i
+        Regex.compile!("(?:#{phrases})", "iu")
 
       _ ->
         nil

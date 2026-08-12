@@ -4,7 +4,7 @@
 
 defmodule Pleroma.Web.ActivityPub.MRF.NsfwApiPolicy do
   @moduledoc """
-  Hide, delete, or mark sensitive NSFW content with artificial intelligence.
+  Hide, delete, or mark sensitive NSFW content with automated image classification.
 
   Requires a NSFW API server, configured like so:
 
@@ -241,7 +241,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.NsfwApiPolicy do
       related_policy: to_string(__MODULE__),
       label: "NSFW API Policy",
       description:
-        "Hide, delete, or mark sensitive NSFW content with artificial intelligence. Requires running an external API server.",
+        "Hide, delete, or mark sensitive NSFW content with automated image classification. Requires running an external API server.",
       children: [
         %{
           key: :url,

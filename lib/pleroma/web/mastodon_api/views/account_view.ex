@@ -6,17 +6,45 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
   use Pleroma.Web, :view
 
   @cachex Pleroma.Config.get([:cachex, :provider], Cachex)
+  @favicon_cache_ttl :timer.hours(24)
+  @stale_favicon_cache_ttl :timer.minutes(5)
+  @maximum_remote_profile_note_chars 5_000
+  @maximum_remote_profile_note_bytes @maximum_remote_profile_note_chars * 4
 
   alias Pleroma.FederationStatus
+  alias Pleroma.Activity
   alias Pleroma.FollowingRelationship
+  alias Pleroma.Instances.Instance
+  alias Pleroma.Nostr.Identity
   alias Pleroma.User
   alias Pleroma.UserNote
   alias Pleroma.UserRelationship
   alias Pleroma.Utils.URIEncoding
   alias Pleroma.Web.ActivityPub.ActorExtensions
+  alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.CommonAPI.Utils
   alias Pleroma.Web.MastodonAPI.AccountView
   alias Pleroma.Web.MediaProxy
+  alias Pleroma.Workers.InstanceFaviconWorker
+
+  defp bounded_profile_note(%{bio: bio}, false) when is_binary(bio) do
+    limit =
+      case Pleroma.Config.get([:instance, :user_bio_length], 5_000) do
+        value when is_integer(value) and value >= 0 ->
+          min(value, @maximum_remote_profile_note_chars)
+
+        _value ->
+          @maximum_remote_profile_note_chars
+      end
+
+    # Older rows and non-ActivityPub import paths can predate the remote-user
+    # changeset limit. A codepoint boundary is deliberate here: one grapheme
+    # may contain an unbounded number of combining codepoints.
+    Pleroma.TextBoundary.truncate_utf8(bio, limit, @maximum_remote_profile_note_bytes)
+  end
+
+  defp bounded_profile_note(%{bio: bio}, _local) when is_binary(bio), do: bio
+  defp bounded_profile_note(_user, _local), do: ""
 
   def render("index.json", %{users: users} = opts) do
     reading_user = opts[:for]
@@ -71,8 +99,9 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
     %{
       id: to_string(user.id),
       acct: user.nickname,
-      username: username_from_nickname(user.nickname),
-      url: user.uri || user.ap_id
+      username: mention_username(user),
+      url: user.uri || user.ap_id,
+      actor_type: user.actor_type
     }
   end
 
@@ -233,6 +262,11 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
   defp do_render("show.json", %{user: user} = opts) do
     self = opts[:for] == user
 
+    nostr = Identity.presentation(user)
+    atproto = Pleroma.ATProto.Identities.presentation(user)
+    diaspora = Pleroma.Diaspora.presentation(user)
+    local = public_local?(user, nostr, atproto, diaspora)
+    user = if local, do: user, else: %{user | bio: bounded_profile_note(user, false)}
     user = User.sanitize_html(user, User.html_filter_policy(opts[:for]))
     display_name = user.name || user.nickname
 
@@ -278,7 +312,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
       followers_count: followers_count,
       following_count: following_count,
       statuses_count: user.note_count,
-      note: user.bio,
+      note: bounded_profile_note(user, local),
       url: user.uri || user.ap_id,
       avatar: avatar,
       avatar_static: avatar_static,
@@ -289,12 +323,14 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
       emojis: emojis,
       fields: user.fields,
       bot: bot,
+      local: local,
       source: %{
         note: user.raw_bio || "",
         sensitive: false,
         fields: user.raw_fields,
         pleroma: %{
           discoverable: user.is_discoverable,
+          indexable: user.is_indexable,
           actor_type: user.actor_type,
           actor_types: user.actor_types
         }
@@ -322,12 +358,17 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
         accepts_chat_messages: user.accepts_chat_messages,
         favicon: favicon,
         federation: federation,
+        is_local: local,
         location: user.location,
         avatar_description: avatar_description,
-        header_description: header_description
+        header_description: header_description,
+        identity_proofs: user.identity_proofs
       }
     }
     |> maybe_put_native(native)
+    |> maybe_put_nostr(nostr)
+    |> maybe_put_protocol(:atproto, atproto)
+    |> maybe_put_protocol(:diaspora, diaspora)
     |> maybe_put_role(user, opts[:for])
     |> maybe_put_privileges(user, opts[:for])
     |> maybe_put_settings(user, opts[:for], opts)
@@ -336,6 +377,7 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
     |> maybe_put_activation_status(user, opts[:for])
     |> maybe_put_follow_requests_count(user, opts[:for])
     |> maybe_put_allow_following_move(user, opts[:for])
+    |> maybe_put_moved_to(user, opts[:for])
     |> maybe_put_unread_conversation_count(user, opts[:for])
     |> maybe_put_unread_notification_count(user, opts[:for])
     |> maybe_put_accepts_email_list(user, opts[:for])
@@ -345,11 +387,67 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
     |> maybe_show_birthday(user, opts[:for])
   end
 
+  defp maybe_put_moved_to(data, %User{id: user_id} = user, %User{id: user_id}) do
+    moved_to =
+      case ActivityPub.latest_move(user) do
+        %Activity{data: %{"target" => target}} when is_binary(target) -> target
+        _ -> nil
+      end
+
+    put_in(data, [:pleroma, :moved_to], moved_to)
+  end
+
+  defp maybe_put_moved_to(data, _user, _viewer), do: data
+
   defp maybe_put_native(account, nil), do: account
 
   defp maybe_put_native(%{pleroma: pleroma} = account, native) do
     %{account | pleroma: Map.put(pleroma, :native, native)}
   end
+
+  defp maybe_put_nostr(account, nil), do: account
+  defp maybe_put_nostr(account, nostr), do: Map.put(account, :nostr, nostr)
+  defp maybe_put_protocol(account, _key, nil), do: account
+  defp maybe_put_protocol(account, key, value), do: Map.put(account, key, value)
+
+  # Nostr mirrors are hosted local actors because Unfathomably must sign and
+  # serve their ActivityPub projections. The represented people and groups are
+  # nevertheless remote identities, so public account metadata must not expose
+  # the storage-level User.local flag for them.
+  defp mention_username(user) do
+    atproto_handle =
+      case Pleroma.ATProto.Identities.get_by_user(user) do
+        %Pleroma.ATProto.Identity{handle: handle} when is_binary(handle) and handle != "" ->
+          handle
+
+        _identity ->
+          nil
+      end
+
+    nostr_name =
+      case Pleroma.Nostr.Identity.get_by_user(user) do
+        %Pleroma.Nostr.Entity{} ->
+          case Pleroma.Nostr.Identity.presentation(user) do
+            %{nip05: nip05} when is_binary(nip05) and nip05 != "" -> nip05
+            %{npub: npub} when is_binary(npub) and npub != "" -> npub
+            _presentation -> nil
+          end
+
+        _entity ->
+          nil
+      end
+
+    atproto_handle || nostr_name || username_from_nickname(user.nickname)
+  end
+
+  defp public_local?(%User{local: true}, %{kind: kind}, _atproto, _diaspora)
+       when kind in ["mirror_profile", "mirror_group"],
+       do: false
+
+  defp public_local?(%User{local: true}, _nostr, %{mirror: true}, _diaspora), do: false
+  defp public_local?(%User{local: true}, _nostr, _atproto, %{mirror: true}), do: false
+
+  defp public_local?(%User{local: local}, _nostr, _atproto, _diaspora), do: local == true
 
   defp rendered_following_count(user, self) do
     if !user.hide_follows_count or !user.hide_follows or self do
@@ -383,10 +481,42 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
       |> Map.get(:ap_id, "")
       |> URI.parse()
       |> URI.merge("/")
-      |> Pleroma.Instances.Instance.get_or_update_favicon()
+      |> cached_favicon()
+      |> Instance.normalize_favicon_url()
       |> MediaProxy.url()
     else
       nil
+    end
+  end
+
+  defp cached_favicon(%URI{host: host} = uri) when is_binary(host) do
+    cache_key = Instance.favicon_cache_key(host)
+
+    case @cachex.fetch!(:host_meta_cache, cache_key, fn _ ->
+           {favicon, ttl} = favicon_for_render(uri)
+           {:commit, {:favicon, favicon}, expire: ttl}
+         end) do
+      {:favicon, favicon} -> favicon
+      favicon when is_binary(favicon) -> favicon
+      _ -> nil
+    end
+  rescue
+    _ -> uri |> favicon_for_render() |> elem(0)
+  end
+
+  defp cached_favicon(_uri), do: nil
+
+  defp favicon_for_render(uri) do
+    case Instance.favicon_status(uri) do
+      {:fresh, favicon} ->
+        {favicon, @favicon_cache_ttl}
+
+      {:stale, favicon} ->
+        _ = InstanceFaviconWorker.enqueue(uri)
+        {favicon, @stale_favicon_cache_ttl}
+
+      _ ->
+        {nil, @stale_favicon_cache_ttl}
     end
   end
 

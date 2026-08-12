@@ -24,7 +24,7 @@ defmodule Pleroma.SafeZipTest do
     test "lists files in a valid zip" do
       {:ok, files} = SafeZip.list_dir_file(Path.join(@fixtures_dir, "emojis.zip"))
       assert is_list(files)
-      assert length(files) > 0
+      refute Enum.empty?(files)
     end
 
     test "returns an empty list for empty zip" do
@@ -187,7 +187,7 @@ defmodule Pleroma.SafeZipTest do
 
       # Verify files were extracted
       assert is_list(files)
-      assert length(files) > 0
+      refute Enum.empty?(files)
 
       # Verify at least one file exists
       first_file = List.first(files)
@@ -259,7 +259,7 @@ defmodule Pleroma.SafeZipTest do
 
       # Verify files were extracted
       assert is_list(files)
-      assert length(files) > 0
+      refute Enum.empty?(files)
 
       # Verify at least one file exists
       first_file = List.first(files)
@@ -388,7 +388,7 @@ defmodule Pleroma.SafeZipTest do
         {:ok, files} ->
           # If it successfully extracts, verify the files were extracted
           assert is_list(files)
-          assert length(files) > 0
+          refute Enum.empty?(files)
 
         {:error, _} ->
           # If it returns an error, that's also acceptable

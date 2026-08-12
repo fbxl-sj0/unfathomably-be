@@ -40,6 +40,27 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
       |> Activity.with_preloaded_object(:left)
       |> Pleroma.Repo.all()
 
+    move_activities_targets =
+      activities
+      |> Enum.filter(&(&1.data["type"] == "Move"))
+      |> Enum.map(&User.get_cached_by_ap_id(&1.data["target"]))
+      |> Enum.filter(& &1)
+
+    actors_by_ap_id =
+      (activities ++ parent_activities)
+      |> Enum.map(& &1.data["actor"])
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+      |> Enum.map(&User.get_cached_by_ap_id/1)
+      |> Enum.filter(& &1)
+      |> Map.new(&{&1.ap_id, &1})
+
+    actors =
+      actors_by_ap_id
+      |> Map.values()
+      |> Kernel.++(move_activities_targets)
+      |> Enum.uniq_by(& &1.id)
+
     relationships_opt =
       cond do
         Map.has_key?(opts, :relationships) ->
@@ -49,25 +70,34 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
           UserRelationship.view_relationships_option(nil, [])
 
         true ->
-          move_activities_targets =
-            activities
-            |> Enum.filter(&(&1.data["type"] == "Move"))
-            |> Enum.map(&User.get_cached_by_ap_id(&1.data["target"]))
-            |> Enum.filter(& &1)
-
-          actors =
-            activities
-            |> Enum.map(fn a -> User.get_cached_by_ap_id(a.data["actor"]) end)
-            |> Enum.filter(& &1)
-            |> Kernel.++(move_activities_targets)
-
-          UserRelationship.view_relationships_option(reading_user, actors, subset: :source_mutes)
+          UserRelationship.view_relationships_option(reading_user, actors)
       end
+
+    rendered_accounts =
+      Map.new(actors, fn actor ->
+        account =
+          AccountView.render("show.json", %{
+            user: actor,
+            for: reading_user,
+            relationships: relationships_opt
+          })
+
+        {actor.id, account}
+      end)
 
     opts =
       opts
       |> Map.put(:parent_activities, parent_activities)
       |> Map.put(:relationships, relationships_opt)
+      |> Map.put(:following, User.following(reading_user))
+      |> Map.put(:mention_users, StatusView.get_mention_users(activities))
+      |> Map.put(:notification_actors, actors_by_ap_id)
+      |> Map.put(:rendered_accounts, rendered_accounts)
+      |> Map.put(:filter_context, "notifications")
+      |> Map.put(
+        :status_filters,
+        StatusView.get_filters_for_context(reading_user, "notifications")
+      )
 
     safe_render_many(notifications, NotificationView, "show.json", opts)
   end
@@ -92,22 +122,39 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
     notification_group_counts = Map.get(opts, :notification_group_counts, %{})
     notification_group_bounds = Map.get(opts, :notification_group_bounds, %{})
     include_page_metadata = Map.get(opts, :include_page_metadata, true)
+    following = User.following(reading_user)
+    representative_notifications = Enum.map(notification_groups, &List.first/1)
+
+    mention_users =
+      representative_notifications
+      |> Enum.map(& &1.activity)
+      |> StatusView.get_mention_users()
+
+    status_filters = StatusView.get_filters_for_context(reading_user, "notifications")
 
     statuses =
-      notification_groups
-      |> Enum.map(&List.first/1)
-      |> Enum.map(&render("show.json", %{notification: &1, for: reading_user}))
+      representative_notifications
+      |> Enum.map(
+        &render("show.json", %{
+          notification: &1,
+          for: reading_user,
+          following: following,
+          mention_users: mention_users,
+          filter_context: "notifications",
+          status_filters: status_filters
+        })
+      )
       |> Enum.map(& &1[:status])
       |> Enum.filter(& &1)
       |> Enum.uniq_by(& &1[:id])
 
-    actors =
+    accounts =
       notification_groups
       |> List.flatten()
-      |> notification_actors()
+      |> notification_accounts()
 
     %{
-      accounts: AccountView.render("index.json", %{users: actors, for: reading_user}),
+      accounts: AccountView.render("index.json", %{users: accounts, for: reading_user}),
       statuses: statuses,
       notification_groups:
         Enum.map(
@@ -131,7 +178,9 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
           for: reading_user
         } = opts
       ) do
-    actor = User.get_cached_by_ap_id(activity.data["actor"])
+    actor =
+      Map.get(opts[:notification_actors] || %{}, activity.data["actor"]) ||
+        User.get_cached_by_ap_id(activity.data["actor"])
 
     parent_activity_fn = fn ->
       if opts[:parent_activities] do
@@ -142,8 +191,17 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
     end
 
     # Note: :relationships contain user mutes (needed for :muted flag in :status)
-    status_render_opts = %{relationships: opts[:relationships]}
-    account = AccountView.render("show.json", %{user: actor, for: reading_user})
+    status_render_opts = %{
+      following: opts[:following],
+      filter_context: opts[:filter_context],
+      mention_users: opts[:mention_users],
+      relationships: opts[:relationships],
+      rendered_accounts: opts[:rendered_accounts],
+      users_by_ap_id: opts[:notification_actors],
+      status_filters: opts[:status_filters]
+    }
+
+    account = rendered_account(actor, opts, reading_user)
 
     response = %{
       id: to_string(notification.id),
@@ -152,7 +210,7 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
       created_at: CommonAPI.Utils.to_masto_date(notification.inserted_at),
       account: account,
       pleroma: %{
-        is_muted: User.mutes?(reading_user, actor),
+        is_muted: muted?(reading_user, actor, opts),
         is_seen: notification.seen
       }
     }
@@ -212,7 +270,7 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
 
   defp render_group(
          [%Notification{} = notification | _] = notifications,
-         _reading_user,
+         reading_user,
          grouped_types,
          notification_group_counts,
          notification_group_bounds,
@@ -258,12 +316,48 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
         response
       end
 
-    if status_activity do
-      Map.put(response, :status_id, to_string(status_activity.id))
-    else
-      response
+    response =
+      if status_activity do
+        Map.put(response, :status_id, to_string(status_activity.id))
+      else
+        response
+      end
+
+    put_group_details(response, notification, reading_user)
+  end
+
+  defp put_group_details(response, %Notification{type: "move", activity: activity}, _reading_user) do
+    case User.get_cached_by_ap_id(activity.data["target"]) do
+      %User{id: id} -> Map.put(response, :target_id, to_string(id))
+      _ -> response
     end
   end
+
+  defp put_group_details(
+         response,
+         %Notification{type: "pleroma:emoji_reaction", activity: activity},
+         _reading_user
+       ) do
+    put_emoji(response, activity)
+  end
+
+  defp put_group_details(
+         response,
+         %Notification{type: "pleroma:chat_mention", activity: activity},
+         reading_user
+       ) do
+    put_chat_message(response, activity, reading_user, %{})
+  end
+
+  defp put_group_details(
+         response,
+         %Notification{type: "pleroma:report", activity: activity},
+         _reading_user
+       ) do
+    put_report(response, activity)
+  end
+
+  defp put_group_details(response, _notification, _reading_user), do: response
 
   defp status_activity_for_group([%Notification{} = notification | _], grouped_types) do
     status_activity_for(notification, grouped_types)
@@ -324,6 +418,34 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
     |> Enum.uniq_by(& &1.id)
   end
 
+  defp notification_accounts(notifications) do
+    move_targets =
+      notifications
+      |> Enum.filter(&(&1.type == "move"))
+      |> Enum.map(&User.get_cached_by_ap_id(&1.activity.data["target"]))
+      |> Enum.filter(& &1)
+
+    notifications
+    |> notification_actors()
+    |> Kernel.++(move_targets)
+    |> Enum.uniq_by(& &1.id)
+  end
+
+  defp rendered_account(user, opts, reading_user) do
+    Map.get(opts[:rendered_accounts] || %{}, user.id) ||
+      AccountView.render("show.json", %{user: user, for: reading_user})
+  end
+
+  defp muted?(reading_user, actor, opts) do
+    UserRelationship.exists?(
+      get_in(opts, [:relationships, :user_relationships]),
+      :mute,
+      reading_user,
+      actor,
+      &User.mutes?/2
+    )
+  end
+
   defp put_emoji(response, activity) do
     response
     |> Map.put(:emoji, activity.data["content"])
@@ -350,8 +472,7 @@ defmodule Pleroma.Web.MastodonAPI.NotificationView do
 
   defp put_target(response, activity, reading_user, opts) do
     target_user = User.get_cached_by_ap_id(activity.data["target"])
-    target_render_opts = Map.merge(opts, %{user: target_user, for: reading_user})
-    target_render = AccountView.render("show.json", target_render_opts)
+    target_render = rendered_account(target_user, opts, reading_user)
 
     Map.put(response, :target, target_render)
   end

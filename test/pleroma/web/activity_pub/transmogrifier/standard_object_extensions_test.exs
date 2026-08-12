@@ -82,6 +82,68 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.StandardObjectExtensionsTest do
              },
              type: "Article"
            } = rendered.pleroma.native
+
+    assert CustomObject.discoverable?(object.data)
+  end
+
+  test "does not present generic transport extensions as a specialized object", %{actor: actor} do
+    note = %{
+      "actor" => actor.ap_id,
+      "attributedTo" => actor.ap_id,
+      "cc" => [actor.follower_address],
+      "content" => "An ordinary note with transport metadata.",
+      "conversation" => "https://ibis.example/conversations/ordinary",
+      "id" => "https://ibis.example/notes/ordinary",
+      "published" => "2026-07-21T20:00:00Z",
+      "to" => [Pleroma.Constants.as_public()],
+      "type" => "Note"
+    }
+
+    assert {:ok, %Activity{} = stored_activity} =
+             note
+             |> then(&activity("Create", &1, actor, "ordinary-note"))
+             |> Transmogrifier.handle_incoming()
+
+    object = Object.get_by_ap_id(note["id"])
+
+    refute CustomObject.discoverable?(object.data)
+    assert StatusView.render("show.json", activity: stored_activity).pleroma.native == nil
+  end
+
+  test "honors explicit native-object discovery opt-outs" do
+    assert CustomObject.discoverable?(%{"type" => "Event"})
+    refute CustomObject.discoverable?(%{"type" => "Event", "indexable" => false})
+    refute CustomObject.discoverable?(%{"type" => "Video", "discoverable" => false})
+  end
+
+  test "classifies capability-bearing image Notes by shape instead of hostname", %{actor: actor} do
+    object =
+      %{
+        "actor" => actor.ap_id,
+        "attachment" => [
+          %{
+            "mediaType" => "image/jpeg",
+            "name" => "A documented photograph",
+            "type" => "Document",
+            "url" => "https://ibis.example/media/photo.jpg"
+          }
+        ],
+        "attributedTo" => actor.ap_id,
+        "capabilities" => %{
+          "like" => Pleroma.Constants.as_public(),
+          "reply" => Pleroma.Constants.as_public()
+        },
+        "content" => "A photograph from an otherwise unknown implementation.",
+        "id" => "https://ibis.example/notes/capability-photo",
+        "published" => "2026-07-21T20:00:00Z",
+        "type" => "Note"
+      }
+      |> CustomObject.put_standard_internal_metadata(["capabilities"])
+
+    assert %{
+             fields: %{family: "photo", kind: "photo_story"},
+             type: "Note"
+           } = CustomObject.presentation(object)
   end
 
   test "updates the complete bounded Ibis extension set", %{actor: actor} do
@@ -260,7 +322,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.StandardObjectExtensionsTest do
     assert %{
              canonical_id: ^object_id,
              class: "status",
-             controls: ["open"],
+             controls: ["open", "download"],
              fields: %{
                author: "Alien Federation Working Group",
                language: "English",
@@ -471,7 +533,6 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.StandardObjectExtensionsTest do
         }
       ],
       "attributedTo" => actor.ap_id,
-      "cc" => [],
       # The inbox controller copies these outer delivery recipients into the
       # object before validation. Stock Wanderer itself omits the Trail audience.
       "cc" => [local_recipient.ap_id, actor.follower_address],
@@ -722,8 +783,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.StandardObjectExtensionsTest do
       |> Map.put("attributedTo", "https://castling.example/users/alice")
       |> CustomObject.put_standard_internal_metadata(~w[@context fen game san])
 
-    assert %{fields: impostor_fields} = CustomObject.presentation(impostor)
-    refute Map.has_key?(impostor_fields, :platform)
+    assert CustomObject.presentation(impostor) == nil
   end
 
   test "applies idempotent Flohmarkt Updates that reuse the Create activity ID" do

@@ -138,6 +138,18 @@ defmodule Pleroma.Web.ApiSpec.AccountOperation do
             "Include only objects with Event type"
           ),
           Operation.parameter(
+            :native_family,
+            :query,
+            %Schema{
+              type: :string,
+              enum: ~w[
+                audio video longform photo books bookmarks groups events development
+                models marketplace games routes culture coordination publishing
+              ]
+            },
+            "Include only feed-eligible native objects from this Worlds family"
+          ),
+          Operation.parameter(
             :with_muted,
             :query,
             BooleanLike,
@@ -527,9 +539,14 @@ defmodule Pleroma.Web.ApiSpec.AccountOperation do
       parameters: [
         %Reference{"$ref": "#/components/parameters/accountIdOrNickname"}
       ],
-      description: "Not implemented",
+      description: "Returns verified FEP-c390 identity statements attached to the account actor",
       responses: %{
-        200 => empty_array_response()
+        200 =>
+          Operation.response(
+            "Identity proofs",
+            "application/json",
+            %Schema{type: :array, items: %Schema{type: :object, additionalProperties: true}}
+          )
       }
     }
   end
@@ -834,6 +851,12 @@ defmodule Pleroma.Web.ApiSpec.AccountOperation do
           description:
             "Discovery (listing, indexing) of this account by external services (search bots etc.) is allowed."
         },
+        indexable: %Schema{
+          allOf: [BooleanLike],
+          nullable: true,
+          description:
+            "Public posts from this account may be included in full-text search by compatible federated services."
+        },
         actor_type: ActorType,
         accepts_email_list: %Schema{
           allOf: [BooleanLike],
@@ -893,6 +916,7 @@ defmodule Pleroma.Web.ApiSpec.AccountOperation do
         allow_following_move: false,
         also_known_as: ["https://foo.bar/users/foo"],
         discoverable: false,
+        indexable: false,
         actor_type: "Person",
         show_birthday: false,
         birthday: "2001-02-12"

@@ -4,6 +4,7 @@
 
 defmodule Pleroma.Web.WebFingerTest do
   use Pleroma.DataCase, async: true
+  alias Pleroma.Web.ActivityPub.Marketplace
   alias Pleroma.Web.WebFinger
   import ExUnit.CaptureLog
   import Pleroma.Factory
@@ -12,6 +13,24 @@ defmodule Pleroma.Web.WebFingerTest do
   setup do
     mock(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok
+  end
+
+  test "advertises supported FEP-3b86 activity intents" do
+    user = insert(:user)
+    endpoint = Pleroma.Web.Endpoint.url()
+    follow_template = endpoint <> "/activitypub/externalInteraction?uri={object}"
+    create_template = endpoint <> "/share?url={object}"
+    links = WebFinger.represent_user(user, "JSON")["links"]
+
+    assert %{
+             "rel" => "https://w3id.org/fep/3b86/Follow",
+             "template" => ^follow_template
+           } in links
+
+    assert %{
+             "rel" => "https://w3id.org/fep/3b86/Create",
+             "template" => ^create_template
+           } in links
   end
 
   describe "host meta" do
@@ -32,11 +51,45 @@ defmodule Pleroma.Web.WebFingerTest do
       assert is_binary(result)
     end
 
+    test "works for Unicode local usernames" do
+      user = insert(:user, nickname: "書評")
+
+      assert {:ok, result} =
+               WebFinger.webfinger(
+                 "acct:#{user.nickname}@#{Pleroma.Web.Endpoint.host()}",
+                 "JSON"
+               )
+
+      assert result["subject"] ==
+               "acct:#{user.nickname}@#{Pleroma.Web.WebFinger.domain()}"
+    end
+
     test "works for ap_ids" do
       user = insert(:user)
 
       {:ok, result} = WebFinger.webfinger(user.ap_id, "XML")
       assert is_binary(result)
+    end
+
+    test "treats a legacy nil alias list as empty" do
+      user = insert(:user, also_known_as: nil)
+
+      assert WebFinger.represent_user(user, "JSON")["aliases"] == [user.ap_id]
+    end
+
+    test "resolves the marketplace service actor through its conventional handle" do
+      {:ok, actor} = Marketplace.service_actor()
+
+      {:ok, result} =
+        WebFinger.webfinger(
+          "#{Marketplace.service_actor_webfinger_nickname()}@#{Pleroma.Web.Endpoint.host()}",
+          "JSON"
+        )
+
+      assert result["subject"] ==
+               "acct:#{Marketplace.service_actor_webfinger_nickname()}@#{Pleroma.Web.WebFinger.domain()}"
+
+      assert actor.ap_id in result["aliases"]
     end
   end
 
@@ -72,8 +125,12 @@ defmodule Pleroma.Web.WebFingerTest do
           {:ok, %Tesla.Env{status: 404, body: ""}}
 
         %{
-          url: "https://nolinks.example/.well-known/webfinger?resource=acct:alice@nolinks.example"
+          url:
+            "https://nolinks.example/.well-known/webfinger?resource=acct:alice@nolinks.example",
+          headers: headers
         } ->
+          assert {"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"} in headers
+
           {:ok,
            %Tesla.Env{
              status: 200,
@@ -159,6 +216,40 @@ defmodule Pleroma.Web.WebFingerTest do
     test "it works with idna domains as link" do
       ap_id = "https://" <> to_string(:idna.encode("zetsubou.みんな")) <> "/users/lain"
       {:ok, _data} = WebFinger.finger(ap_id)
+    end
+
+    test "preserves bracketed IPv6 hosts and non-default ports from actor URLs" do
+      actor_id = "https://[2001:db8::10]:8443/users/alice"
+      expected_authority = "https://[2001:db8::10]:8443/"
+
+      Tesla.Mock.mock(fn env ->
+        assert String.starts_with?(env.url, expected_authority)
+
+        if String.ends_with?(env.url, "/.well-known/host-meta") do
+          {:ok, %Tesla.Env{status: 404, body: ""}}
+        else
+          assert {"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"} in env.headers
+
+          {:ok,
+           %Tesla.Env{
+             status: 200,
+             body:
+               Jason.encode!(%{
+                 "subject" => "acct:alice@[2001:db8::10]:8443",
+                 "links" => [
+                   %{
+                     "rel" => "self",
+                     "type" => "application/activity+json",
+                     "href" => actor_id
+                   }
+                 ]
+               }),
+             headers: [{"content-type", "application/jrd+json"}]
+           }}
+        end
+      end)
+
+      assert {:ok, %{"ap_id" => ^actor_id}} = WebFinger.finger(actor_id)
     end
 
     test "respects json content-type" do

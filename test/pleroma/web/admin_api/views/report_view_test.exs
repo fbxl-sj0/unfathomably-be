@@ -23,6 +23,8 @@ defmodule Pleroma.Web.AdminAPI.ReportViewTest do
 
     expected = %{
       content: nil,
+      actor_ap_id: user.ap_id,
+      account_ap_id: other_user.ap_id,
       actor:
         Map.merge(
           MastodonAPI.AccountView.render("show.json", %{user: user, skip_visibility_check: true}),
@@ -63,6 +65,8 @@ defmodule Pleroma.Web.AdminAPI.ReportViewTest do
 
     expected = %{
       content: nil,
+      actor_ap_id: user.ap_id,
+      account_ap_id: other_user.ap_id,
       actor:
         Map.merge(
           MastodonAPI.AccountView.render("show.json", %{user: user, skip_visibility_check: true}),
@@ -133,7 +137,7 @@ defmodule Pleroma.Web.AdminAPI.ReportViewTest do
              ReportView.render("show.json", Report.extract_report_info(activity))[:content]
   end
 
-  test "doesn't error out when the user doesn't exists" do
+  test "preserves the target identity when the reported account no longer exists" do
     user = insert(:user)
     other_user = insert(:user)
 
@@ -143,10 +147,17 @@ defmodule Pleroma.Web.AdminAPI.ReportViewTest do
         comment: ""
       })
 
-    Pleroma.User.delete(other_user)
     Pleroma.User.invalidate_cache(other_user)
+    Pleroma.Repo.delete!(other_user)
 
-    assert %{} = ReportView.render("show.json", Report.extract_report_info(activity))
+    assert %{
+             account: %{},
+             account_ap_id: account_ap_id,
+             actor_ap_id: actor_ap_id
+           } = ReportView.render("show.json", Report.extract_report_info(activity))
+
+    assert account_ap_id == other_user.ap_id
+    assert actor_ap_id == user.ap_id
   end
 
   test "reports are ordered newest first" do

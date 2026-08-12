@@ -103,6 +103,44 @@ defmodule Pleroma.FilterTest do
       assert filter2.filter_id == filter1.filter_id + 1
     end
 
+    test "rejects filters beyond the configured per-account limit", %{user: user} do
+      clear_config([:instance, :max_account_filters], 1)
+      insert(:filter, user: user)
+
+      assert {:error, changeset} =
+               Filter.create(%{
+                 user_id: user.id,
+                 phrase: "who",
+                 context: ["home"]
+               })
+
+      assert changeset.errors[:user_id]
+    end
+
+    test "rejects phrases beyond the configured length", %{user: user} do
+      clear_config([:instance, :max_filter_phrase_length], 4)
+
+      assert {:error, changeset} =
+               Filter.create(%{
+                 user_id: user.id,
+                 phrase: "knights",
+                 context: ["home"]
+               })
+
+      assert changeset.errors[:phrase]
+    end
+
+    test "rejects unknown filter contexts", %{user: user} do
+      assert {:error, changeset} =
+               Filter.create(%{
+                 user_id: user.id,
+                 phrase: "knights",
+                 context: ["timeline"]
+               })
+
+      assert changeset.errors[:context]
+    end
+
     test "filter_id is unique per user", %{user: user_one} do
       user_two = insert(:user)
 

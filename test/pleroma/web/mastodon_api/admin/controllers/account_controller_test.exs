@@ -40,6 +40,16 @@ defmodule Pleroma.Web.MastodonAPI.Admin.AccountControllerTest do
                |> get("/api/v1/admin/accounts?display_name=Display")
                |> json_response_and_validate_schema(200)
     end
+
+    test "pending registrations only include local accounts", %{conn: conn} do
+      %{id: local_id} = insert(:user, is_approved: false)
+      insert(:user, local: false, is_approved: false)
+
+      assert [%{"id" => ^local_id}] =
+               conn
+               |> get("/api/v1/admin/accounts?pending=true")
+               |> json_response_and_validate_schema(200)
+    end
   end
 
   describe "GET /api/v1/admin/accounts/:id" do
@@ -97,6 +107,26 @@ defmodule Pleroma.Web.MastodonAPI.Admin.AccountControllerTest do
       user = Repo.reload!(user)
 
       assert %{is_active: false} = user
+    end
+
+    test "rejects a missing action without resolving the assigned report", %{conn: conn} do
+      [reporter, target_user] = insert_pair(:user)
+
+      {:ok, %{id: report_id} = report} =
+        CommonAPI.report(reporter, %{
+          account_id: target_user.id
+        })
+
+      original_data = report.data
+
+      conn
+      |> put_req_header("content-type", "application/json")
+      |> post("/api/v1/admin/accounts/#{target_user.id}/action", %{
+        "report_id" => report_id
+      })
+      |> json_response_and_validate_schema(400)
+
+      assert %{data: ^original_data} = Repo.reload!(report)
     end
 
     test "perform action with assigned report", %{conn: conn} do
