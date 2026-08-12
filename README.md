@@ -1,140 +1,274 @@
-# unfathomably-be
+# Unfathomably BE
 
 > Your corner of the Fediverse is the whole thing
 
-**unfathomably-be** is an Elixir social networking backend descended from
-Rebased and Pleroma. It keeps broad Mastodon API compatibility and provides the
-backend half of the Unfathomably stack alongside
-[unfathomably-fe](https://github.com/fbxl-sj0/unfathomably-fe).
+Unfathomably BE is a self-hosted, multi-protocol social networking server. It
+gives a community one local identity, moderation, privacy, and storage boundary
+while reaching across the Fediverse, Threadiverse, federated media and
+publishing services, Nostr, AT Protocol, and diaspora*.
 
-## Your social media server
+This is not a Pleroma theme or a lightly renamed Rebased release. The project
+descends from both systems and preserves their useful compatibility surfaces,
+but it now has its own federation model, product concepts, protocol adapters,
+security rules, background services, APIs, and paired frontend. The current
+release is 3.5.0.
 
-unfathomably-be lets a community operate its own social space and set its own
-rules. It is designed to connect deeply across federated networks while
-remaining practical for a small-to-medium instance to run.
+## The system in one view
 
-## What makes it different
+```text
+ Unfathomably FE       Mastodon-compatible clients       Administration
+         \                        |                            /
+          +------------ HTTP APIs and WebSockets ------------+
+                                   |
+                timelines | groups and sources | Worlds
+                                   |
+                      Unfathomably canonical core
+            accounts | objects | timelines | visibility | moderation
+                    /              |                    \
+          ActivityPub peers   selective adapters      operator services
+                              Nostr, AT Protocol,      Oban, search,
+                                  diaspora*           media, translation
+```
 
-Pleroma and Rebased remain the foundation, but the project now covers much more
-than Mastodon-style profile feeds. Important areas of work include:
+ActivityPub is the canonical local model. Material arriving through another
+protocol is mapped into local actors, objects, relationships, and activities,
+then passes through the same visibility, authorization, moderation, and
+retention rules as ordinary federation. A bridge assertion is not allowed to
+bypass the local trust boundary.
 
-- **Worlds.** A bounded discovery and authoring layer organizes federated
-  material into audio, video, long-form writing, photography, books, bookmarks,
-  groups, events, software development, 3D models, marketplaces, games, routes,
-  culture, coordination, and publishing.
-- **Groups and Threadiverse compatibility.** Group-like actors from Lemmy,
-  PieFed, Mbin, Lotide, PeerTube, NodeBB, Discourse, FediGroups, Hubzilla,
-  Friendica, and similar software are mapped where their ActivityPub shape can
-  be handled safely.
-- **Selective protocol bridges.** Configurable Nostr, AT Protocol/Bluesky, and
-  diaspora* support maps locally relevant identities and interactions into the
-  server's ActivityPub model without trying to mirror those networks.
-- **Source-style feeds.** Sources cover actors and feeds that are not ordinary
-  user profiles, including RSS and WordPress publishers, Funkwhale libraries,
-  PeerTube channels, Pixelfed-style media sources, and other feed-like targets.
-- **Remote discussion hydration.** The backend can refresh remote reply
-  collections and thread chains so group discussions, PeerTube comments, and
-  other conversations do not depend only on replies delivered to the local
-  inbox.
-- **Target-aware audiences.** Replies and posts sent to group software use
-  audience and recipient rules suited to Lemmy-like and Mbin-like platforms.
-- **Mastodon-compatible streaming.** WebSocket streaming covers notification,
-  public, direct, list, and related streams expected by Mastodon clients.
-- **Translation.** LibreTranslate, OpenTranslate-compatible services, and
-  language metadata can be exposed to clients when translation is available.
-- **Search and discovery.** Meilisearch, RSS ingestion, remote source discovery,
-  redirect and gone handling, and administrator-approved FASP account search
-  are part of the operator-facing stack.
-- **Post archive portability.** ActivityPub export archives can be imported
-  under an instance policy that disables imports, requires administrator
-  review, or allows automatic processing.
-- **Long-running instance maintenance.** Federation health, stale actor and
-  remote post cleanup, old job cleanup, and reachability checks keep unused or
-  unreachable remote state bounded.
-- **Broader ActivityPub normalization.** Compatibility work covers Misskey
-  reactions, Mbin activity wrappers, NodeBB groups and profile fields, Hubzilla
-  nomadic identity hints, Discourse contexts, FediGroups locked mentions,
-  Friendica source discovery, and Funkwhale source metadata.
+PostgreSQL stores durable social and federation state. Oban owns asynchronous
+delivery, ingestion, synchronization, archive, maintenance, and repair work.
+Phoenix serves the client APIs, public pages, ActivityPub endpoints, and
+WebSocket streams.
 
-## Interoperability boundaries
+## What people can do with it
 
-ActivityPub is the canonical local data and moderation model. The other
-protocol integrations are deliberately selective:
+### Run a complete social server
 
-- Nostr uses the local relay and administrator-selected external relays.
-- AT Protocol stores followed, explicitly opened, and directly relevant
-  records instead of consuming the firehose or mirroring repositories.
-- diaspora* accepts signed, locally relevant traffic and does not implement
-  private aspect messages that cannot be represented safely.
+Unfathomably provides accounts, profiles, posts, media, polls, conversations,
+chats, reactions, quotes, bookmarks, lists, filters, notifications, scheduled
+posts, account migration, moderation, reporting, OAuth, MFA, push delivery,
+search, translation, streaming, and administration. Common Mastodon client APIs
+remain available, with Pleroma and Unfathomably extensions for the broader
+feature set.
 
-Bridge features are configuration-dependent. Imported material still passes
-through local validation, visibility, and moderation rules. See the
-[federation capability manifest](FEDERATION.md) and
-[federation test matrix](FEDERATION_TESTING.md) for the exact supported surface
-and known peer limitations.
+Account history can be exported, and supported public ActivityPub history can
+be imported from compatible archives. An operator can disable post archive
+imports, require administrator review, or permit automatic processing.
 
-## Relationship to upstream
+### Use groups and sources as first-class objects
 
-unfathomably-be intentionally keeps many inherited names. The OTP application
-is still `:pleroma`, many modules are under `Pleroma.*`, and many commands begin
-with `mix pleroma.*`. Existing clients also expect Mastodon, Pleroma, and
-Soapbox API conventions.
+The server does not assume every federated destination is a person with a
+microblog. It understands community and source shapes used by forum, media,
+event, publishing, and feed software.
 
-Those compatibility names keep existing deployments, administration tools,
-clients, and configuration paths working while the behavior evolves beyond the
-original Rebased installation.
+- Group-aware discovery, following, posting, replies, moderation, and audience
+  construction cover Lemmy, PieFed, Mbin, Lotide, NodeBB, Discourse,
+  FediGroups, Friendica, Hubzilla, PeerTube, and compatible shapes.
+- Sources represent channels, libraries, publishers, RSS or Atom feeds, and
+  other read-oriented actors that should not be presented as ordinary people.
+- Bounded thread and collection hydration can recover relevant remote replies
+  without crawling an entire remote service.
+- Follow state, group membership, and local moderation remain explicit. Merely
+  opening discovery does not join, follow, publish, or contact a remote actor.
 
-## Frontend pairing
+### Move beyond one generic timeline with Worlds
 
-The backend owns accounts, federation, moderation, timelines, search,
-translation, WebSocket streams, archive jobs, media proxying, and cleanup
-workers. [unfathomably-fe](https://github.com/fbxl-sj0/unfathomably-fe) owns the
-browser interface, including Worlds, groups, sources, archive controls,
-federation health views, and thread display.
+Worlds is Unfathomably's semantic layer for finding, presenting, and authoring
+specialized federated material. Users work with familiar tasks such as finding
+a book, joining an event, publishing a route, or sharing a model instead of
+having to understand ActivityStreams vocabulary or remote server software.
 
-Other Mastodon-compatible clients should continue to work where they use common
-API surfaces. Unfathomably-specific features are best exposed through the
-paired frontend.
+The 16 current Worlds families are:
 
-## Installation and upgrades
+| Area | Families |
+| --- | --- |
+| Media and publishing | Audio, video, photography, long-form writing, publishing |
+| Culture and collections | Books, bookmarks, culture, games |
+| Communities and coordination | Groups, events, coordination |
+| Tools and exchange | Software development, 3D models, marketplace, routes |
 
-- [Install Unfathomably from source](docs/INSTALLATION.MD)
-- [Upgrade from Rebased, Soapbox, or Pleroma](docs/UPGRADE.MD)
-- [Read the operator and API documentation](docs/README.md)
-- [Review the security policy](SECURITY.md)
-- [Review release history](CHANGELOG.md)
+Worlds uses bounded server-side discovery and fixed authoring schemas. It
+preserves remote ownership, visibility, licensing, and source-specific actions;
+it does not flatten every remote object into a generic status or let an
+untrusted object opt itself into local discovery.
 
-Production deployments still follow Pleroma conventions in several places. A
-deployment may use a `pleroma` Unix user, `pleroma` database,
-`pleroma.service`, and Mix tasks containing `pleroma`.
+The detailed user and acceptance contract is in
+[Worlds user epics and stories](docs/WORLDS_USER_EPICS_AND_STORIES.md).
+
+## Federation and protocol coverage
+
+### ActivityPub and the wider Fediverse
+
+The ActivityPub implementation supports server-to-server federation and
+client-to-server interactions, ActivityStreams 2.0 JSON-LD, WebFinger,
+NodeInfo, LitePub relays, legacy HTTP Signatures, and RFC 9421 HTTP Message
+Signatures. It includes explicit support for group federation, quote
+authorization, interaction policies, appendable collections, server actors,
+follower synchronization, and other finalized or deployment-gated FEPs
+documented in the [federation capability manifest](FEDERATION.md).
+
+Compatibility work covers ordinary account servers as well as forum, video,
+audio, event, image, publishing, catalogue, marketplace, route, and development
+software. The repository includes disposable smoke adapters for 25 stock peer
+implementations. A capability is recorded as unsupported or untested when the
+peer does not expose it; a successful HTTP exchange alone is not counted as
+working interoperability.
+
+See [federation testing](FEDERATION_TESTING.md) for the peer matrix, supported
+directions, known stock limitations, and test commands.
+
+### Selective bridges
+
+The non-ActivityPub adapters are intentionally bounded:
+
+| Network | Supported model | Deliberate boundary |
+| --- | --- | --- |
+| Nostr | A local relay, configured external relays, profiles, posts, threads, reactions, reposts, deletes, communities, lists, calendars, live activities, polls, reports, badges, and NIP-17 private chat | No unrestricted relay-graph crawl; private material is not projected into public ActivityPub timelines |
+| AT Protocol and Bluesky | Explicit identity resolution, followed and directly relevant records, thread hydration, linked local identities, media, and supported read or publish actions | No firehose consumption, global repository mirror, relay, or AppView |
+| diaspora* | Signed and locally relevant profiles, public statuses, comments, likes, reshares, retractions, and contact changes | No arbitrary public pod ingestion and no private aspect messages whose audience cannot be represented safely |
+
+Bridge availability is configuration-dependent. The instance API reports which
+adapters are actually enabled so clients do not have to infer support from a
+software version string.
+
+### Feeds and auxiliary discovery
+
+RSS and Atom sources, WordPress-style publishers, remote source actors,
+FediBuzz event discovery, and administrator-approved FASP providers can extend
+local discovery. These integrations are paced and bounded. Results still use
+the normal fetch, origin, visibility, blocking, and moderation paths, and an
+unapproved provider is not queried.
+
+## Security and trust boundaries
+
+Federation accepts hostile network input by design. Unfathomably therefore
+treats protocol compatibility and security as the same engineering problem.
+Important rules include:
+
+- bind fetched objects, redirects, identifiers, actors, and embedded activities
+  to their authoritative origins
+- require destructive Updates, Deletes, forwarded activities, and group
+  wrappers to prove the authority that owns the affected object
+- preserve private and followers-only audiences across replies, quotes, and
+  bridge projections
+- reject or constrain local, private, credential-bearing, cross-origin, cyclic,
+  oversized, and otherwise unsafe remote targets before network or storage work
+- validate signed request components, body digests, signature lifetimes, and
+  actor-controlled keys while bounding failed-signature key refreshes
+- apply local MRF, domain blocks, visibility, relationship, and moderation
+  policy before committing an interaction or claiming delivery success
+- put explicit depth, page, item, byte, and retry limits around remote
+  collections and asynchronous work
+
+The repository contains regression tests for these boundaries and federation
+safety smoke lanes. This is not a claim that the software is free of security
+defects. Report suspected vulnerabilities privately according to
+[SECURITY.md](SECURITY.md).
+
+## Operations and maintenance
+
+Unfathomably is designed for a real, long-running community rather than only a
+demonstration federation node. Operator-facing facilities include:
+
+- database-backed configuration and role-scoped administration APIs
+- Oban queues with bounded retry, uniqueness, cleanup, and repair paths
+- remote host health and reachability tracking
+- stale actor, cached post, group discussion, job, application, and hashtag
+  cleanup
+- media proxying, attachment processing, backups, and archive jobs
+- Prometheus-compatible metrics and federation diagnostics
+- optional Meilisearch and OpenTranslate-compatible services
+- migration and upgrade paths from Rebased, Soapbox, and Pleroma deployments
+
+Protocol adapters are not all enabled by default. Operators choose the networks,
+relays, providers, import policy, discovery connectors, and external services
+appropriate for their community.
+
+## Frontend and client compatibility
+
+[unfathomably-fe](https://github.com/fbxl-sj0/unfathomably-fe) is the paired
+browser frontend. It owns the complete Worlds interface, group and source
+navigation, docked media, archive workflows, federation health views,
+translation controls, and presentation of Unfathomably-specific metadata.
+
+Mastodon-compatible clients can use the common account, timeline, posting,
+notification, search, list, filter, conversation, and streaming APIs they
+understand. They will not automatically expose every Worlds, bridge, source,
+group-administration, or federation-diagnostics feature.
+
+## Relationship to Pleroma and Rebased
+
+The lineage remains visible in the code and deployment model:
+
+- the OTP application is still named `:pleroma`
+- most modules remain under `Pleroma.*`
+- many Mix tasks begin with `mix pleroma.*`
+- deployments commonly retain the `pleroma` Unix user, PostgreSQL database,
+  and systemd service names
+- Pleroma, Rebased, Soapbox, and Mastodon API compatibility names remain on
+  wire surfaces where existing clients depend on them
+
+These names are deliberate compatibility contracts, not the current product
+boundary. New behavior should follow Unfathomably's validation, moderation,
+bounded-discovery, and protocol-neutral architecture rather than assuming an
+inherited upstream behavior is automatically correct for this project.
+
+## Installing or upgrading
+
+Production installation is more than running a development Phoenix server. It
+requires PostgreSQL, the system media and build dependencies, a private runtime
+configuration, database migrations, a reverse proxy with TLS, and a deployed
+frontend.
+
+- [Install a new Unfathomably instance from source](docs/INSTALLATION.MD)
+- [Upgrade a Rebased, Soapbox, or Pleroma installation](docs/UPGRADE.MD)
+- [Review configuration and operator documentation](docs/README.md)
+
+Use [`.tool-versions`](.tool-versions) as the source of truth for Erlang and
+Elixir versions. Version 3.5 uses Erlang/OTP 29 and Elixir 1.20.
 
 ## Development and verification
 
-Use the Erlang and Elixir versions in [`.tool-versions`](.tool-versions). The
-test configuration expects PostgreSQL on `localhost` by default.
+The test environment expects PostgreSQL on `localhost` by default.
 
 ```sh
 mix deps.get
 mix strict
 ```
 
-`mix strict` performs a warning-clean compile, checks formatting, runs the
-strict Credo checks, creates and migrates the test database, and runs the full
-test suite. For narrower release checks, use `mix test.federation` or
-`mix test.release_surface`. The Docker-based peer tests and their requirements
-are documented in [FEDERATION_TESTING.md](FEDERATION_TESTING.md).
+`mix strict` performs a warning-clean compile, checks formatting, runs strict
+Credo checks, creates and migrates the test database, and runs the full test
+suite. Useful narrower lanes include:
+
+```sh
+mix test.federation
+mix test.release_surface
+```
+
+The stock-peer federation lanes use Docker and additional disposable services.
+Their requirements and platform-specific commands are documented in
+[FEDERATION_TESTING.md](FEDERATION_TESTING.md).
+
+## Documentation
+
+| Topic | Document |
+| --- | --- |
+| Installation | [docs/INSTALLATION.MD](docs/INSTALLATION.MD) |
+| Upgrading | [docs/UPGRADE.MD](docs/UPGRADE.MD) |
+| Operator and API documentation | [docs/README.md](docs/README.md) |
+| Federation capabilities | [FEDERATION.md](FEDERATION.md) |
+| Federation verification | [FEDERATION_TESTING.md](FEDERATION_TESTING.md) |
+| Worlds product contract | [docs/WORLDS_USER_EPICS_AND_STORIES.md](docs/WORLDS_USER_EPICS_AND_STORIES.md) |
+| Security reporting | [SECURITY.md](SECURITY.md) |
+| Release history | [CHANGELOG.md](CHANGELOG.md) |
 
 ## License
 
-unfathomably-be is free software: you can redistribute it and/or modify it under
-the terms of the GNU Affero General Public License as published by the Free
-Software Foundation, either version 3 of the License, or (at your option) any
-later version.
+Unfathomably BE is free software released under the GNU Affero General Public
+License, version 3 or, at your option, any later version. See [COPYING](COPYING)
+for the complete license.
 
-unfathomably-be is distributed in the hope that it will be useful, but WITHOUT
-ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
-details.
-
-You should have received a copy of the GNU Affero General Public License along
-with unfathomably-be. If not, see <https://www.gnu.org/licenses/>.
+The project retains and builds upon AGPL-licensed work by the Pleroma, Rebased,
+and Soapbox contributors. Source files preserve their applicable copyright and
+license notices.
