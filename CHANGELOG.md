@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept Oban janitor uniqueness effective for suspended jobs and removed an
+  unused native-discovery function default so current Elixir and Oban builds
+  remain warning-clean in Unfathomably-owned source.
+
 ## [3.5.0] - 2026-08-12
 
 ### Added

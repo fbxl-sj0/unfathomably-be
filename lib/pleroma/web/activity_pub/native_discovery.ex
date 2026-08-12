@@ -120,9 +120,7 @@ defmodule Pleroma.Web.ActivityPub.NativeDiscovery do
         |> Activity.create_by_object_ap_id()
         |> Repo.all()
         |> Repo.preload(:object)
-        |> Enum.filter(
-          &Pleroma.Web.ActivityPub.Visibility.visible_for_user?(&1, reading_user)
-        )
+        |> Enum.filter(&Pleroma.Web.ActivityPub.Visibility.visible_for_user?(&1, reading_user))
         |> Enum.sort_by(&local_status_sort_key/1, :asc)
         |> Enum.reduce(%{}, fn activity, status_records ->
           case create_object_id(activity) do
@@ -137,9 +135,7 @@ defmodule Pleroma.Web.ActivityPub.NativeDiscovery do
       activity_status_records =
         activity_ids
         |> Activity.all_by_ids_with_object()
-        |> Enum.filter(
-          &Pleroma.Web.ActivityPub.Visibility.visible_for_user?(&1, reading_user)
-        )
+        |> Enum.filter(&Pleroma.Web.ActivityPub.Visibility.visible_for_user?(&1, reading_user))
         |> Enum.reduce(%{}, fn
           %Activity{id: id, data: %{"type" => "Create"}} = activity, status_records ->
             id = to_string(id)
@@ -1978,7 +1974,7 @@ defmodule Pleroma.Web.ActivityPub.NativeDiscovery do
 
   defp channel_handle(_channel), do: nil
 
-  defp merge_results(results, limit, offset, params \\ %{}) do
+  defp merge_results(results, limit, offset, params) do
     results = materialize_results(results)
 
     all_items =
@@ -2094,7 +2090,7 @@ defmodule Pleroma.Web.ActivityPub.NativeDiscovery do
     value =
       discovery_value(item, :language) ||
         discovery_value(item, :resource_language) ||
-        (discovery_value(item, :book) |> discovery_value(:languages) |> List.wrap() |> List.first())
+        discovery_value(item, :book) |> discovery_value(:languages) |> List.wrap() |> List.first()
 
     case value do
       language when is_binary(language) and byte_size(language) <= 32 ->

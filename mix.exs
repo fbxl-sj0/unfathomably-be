@@ -32,12 +32,26 @@ defmodule Pleroma.Mixfile do
         source_url_pattern:
           "https://github.com/fbxl-sj0/unfathomably-be/blob/main/%{path}#L%{line}",
         logo: "priv/static/images/logo.png",
-        extras: ["README.md", "CHANGELOG.md"] ++ Path.wildcard("docs/**/*.md"),
+        extras:
+          [
+            "README.md",
+            "CHANGELOG.md",
+            "FEDERATION.md",
+            "FEDERATION_TESTING.md",
+            "SECURITY.md"
+          ] ++ Path.wildcard("docs/**/*.md"),
         groups_for_extras: [
+          "Project and policy": [
+            "CHANGELOG.md",
+            "FEDERATION.md",
+            "FEDERATION_TESTING.md",
+            "SECURITY.md"
+          ],
           "Installation manuals": Path.wildcard("docs/installation/*.md"),
-          Configuration: Path.wildcard("docs/config/*.md"),
-          Administration: Path.wildcard("docs/admin/*.md"),
-          "unfathomably-be APIs and Mastodon API extensions": Path.wildcard("docs/api/*.md")
+          Configuration: Path.wildcard("docs/configuration/*.md"),
+          Administration: Path.wildcard("docs/administration/**/*.md"),
+          "unfathomably-be APIs and Mastodon API extensions":
+            Path.wildcard("docs/development/API/*.md")
         ],
         main: "readme",
         output: "priv/static/doc"

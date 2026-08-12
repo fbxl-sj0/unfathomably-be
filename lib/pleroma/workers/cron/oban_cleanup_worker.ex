@@ -16,7 +16,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
   use Oban.Worker,
     queue: "background",
     max_attempts: 1,
-    unique: [period: 3_300, states: [:available, :scheduled, :executing, :retryable]]
+    unique: [period: 3_300, states: :incomplete]
 
   import Ecto.Query
 
@@ -400,11 +400,11 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     max_scheduled_at = DateTime.add(now, max_poll_schedule_seconds(), :second)
 
     Oban.Job
-      |> where([job], job.queue == "poll_notifications")
-      |> where([job], job.worker == "Pleroma.Workers.PollWorker")
-      |> where([job], job.state in ["scheduled", "available", "retryable"])
-      |> where([job], job.scheduled_at > ^max_scheduled_at)
-      |> delete_jobs()
+    |> where([job], job.queue == "poll_notifications")
+    |> where([job], job.worker == "Pleroma.Workers.PollWorker")
+    |> where([job], job.state in ["scheduled", "available", "retryable"])
+    |> where([job], job.scheduled_at > ^max_scheduled_at)
+    |> delete_jobs()
   end
 
   def delete_far_future_activity_expirations(now \\ DateTime.utc_now()) do
@@ -412,11 +412,11 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
       DateTime.add(now, @max_activity_expiration_schedule_seconds, :second)
 
     Oban.Job
-      |> where([job], job.queue == "activity_expiration")
-      |> where([job], job.worker == "Pleroma.Workers.PurgeExpiredActivity")
-      |> where([job], job.state in ["scheduled", "available", "retryable"])
-      |> where([job], job.scheduled_at > ^max_scheduled_at)
-      |> delete_jobs()
+    |> where([job], job.queue == "activity_expiration")
+    |> where([job], job.worker == "Pleroma.Workers.PurgeExpiredActivity")
+    |> where([job], job.state in ["scheduled", "available", "retryable"])
+    |> where([job], job.scheduled_at > ^max_scheduled_at)
+    |> delete_jobs()
   end
 
   def discard_stale_event_reminders(now \\ DateTime.utc_now()) do

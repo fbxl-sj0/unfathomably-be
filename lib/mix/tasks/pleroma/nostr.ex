@@ -273,10 +273,11 @@ defmodule Mix.Tasks.Pleroma.Nostr do
       failures =
         Enum.count([profile_result | post_results], fn result -> result != :ok end)
 
-      %{acc |
-        actors: acc.actors + 1,
-        posts: acc.posts + Enum.count(post_results, &(&1 == :ok)),
-        failed: acc.failed + failures
+      %{
+        acc
+        | actors: acc.actors + 1,
+          posts: acc.posts + Enum.count(post_results, &(&1 == :ok)),
+          failed: acc.failed + failures
       }
     else
       %{acc | actors: acc.actors + 1, posts: acc.posts + length(activities)}

@@ -2,18 +2,20 @@
 Unfathomably BE
 
 File: FEDERATION.md
-Purpose: Publish federation protocols and finalized FEP support.
+Purpose: Publish the protocols and finalized FEPs supported by version 3.5.
 Responsibilities: Give peer implementers a concise capability manifest.
 This file intentionally does not replace the detailed test matrix.
 -->
 
 # Unfathomably federation support
 
-Unfathomably is an ActivityPub server derived from Pleroma and Rebased. It
-also provides bounded interoperability with Nostr, AT Protocol, and Diaspora.
+Unfathomably is an ActivityPub server derived from Pleroma and Rebased. It also
+provides bounded interoperability with Nostr, AT Protocol, and diaspora*. This
+document describes the version 3.5 implementation. Runtime features can be
+further restricted by instance configuration and moderation policy.
 
-The detailed live compatibility matrix and smoke-test instructions are in
-[FEDERATION_TESTING.md](FEDERATION_TESTING.md).
+The detailed compatibility matrix, stock-peer limitations, and smoke-test
+instructions are in [FEDERATION_TESTING.md](FEDERATION_TESTING.md).
 
 ## Core protocols
 
@@ -34,23 +36,67 @@ The detailed live compatibility matrix and smoke-test instructions are in
 - FEP-67ff: this federation capability document
 - FEP-d556: server-level actor discovery using WebFinger
 - FEP-ae0c: LitePub-compatible relay participation
+- FEP-e232: outgoing quoted objects carry a structural ActivityStreams `Link`
+  tag with the canonical ActivityPub media type
+- FEP-521a: local actors publish their existing RSA HTTP-signature key as an
+  `assertionMethod` `Multikey` using the registered `rsa-pub` multicodec
+- FEP-400e: local actors expose an appendable wall whose contributed objects
+  require an owner-matching target and a signed `Add` confirmation before they
+  become visible
 
-### Partially implemented
+### Deployment-gated
 
-- FEP-e232: incoming Object Link tags are understood; outgoing quote links can
-  be emitted through the quote-link MRF policy
-- FEP-521a: incoming Ed25519 Multikey and JWK actor keys are supported; local
-  actors still publish their established RSA HTTP-signature key
-- FEP-400e: target collection metadata is preserved and used by specialized
-  group workflows; generic publicly appendable collections are not exposed
+- FEP-8fcf: follower collection synchronization is implemented but disabled by
+  default. It requires an operator-configured managed origin that exactly
+  matches the endpoint origin. Eligible deployments use signed synchronization
+  headers, requester-origin partial collections, and verified collection
+  digests.
 
-### Not implemented
+The deployment constraint and completed engineering work are documented in
+[the finalized FEP gap report](docs/FINALIZED_FEP_GAPS_2026-08-12.md). The
+[earlier audit](docs/FINAL_FEP_AUDIT_2026-08-12.md) records the state before
+those gaps were closed.
 
-- FEP-8fcf: followers collection synchronization. Its authority and digest
-  assumptions require a deployment-gated implementation rather than a global
-  compatibility default.
+## Protocol bridges
 
-The latest finalized-FEP engineering audit is in
-[docs/FINAL_FEP_AUDIT_2026-08-12.md](docs/FINAL_FEP_AUDIT_2026-08-12.md).
+### Nostr
+
+Nostr support is optional and disabled by default. When configured, the server
+can operate its local relay, use administrator-approved external relays, map
+profiles and public conversations, and preserve locally relevant reactions,
+reposts, deletes, lists, communities, and selected Nostr extensions. Private
+messages use the NIP-17 path. The bridge does not crawl an unrestricted relay
+graph.
+
+### AT Protocol and Bluesky
+
+AT Protocol support uses selective storage. It resolves explicitly opened
+Bluesky posts, follows linked or locally followed identities, hydrates directly
+relevant threads, and publishes supported actions for linked local accounts. It
+does not consume the firehose, run a relay or AppView, or mirror repositories.
+
+### diaspora*
+
+The diaspora* bridge verifies native envelopes and maps locally relevant public
+statuses, comments, likes, reshares, retractions, profiles, and contact changes.
+Public traffic must be relevant to a local relationship or conversation.
+Private delivery is limited to representable contact changes; private aspect
+messages are not imported.
+
+## Auxiliary discovery
+
+An instance can accept signed FASP registrations and use administrator-approved
+providers for bounded account search. Unapproved providers are not queried, and
+FASP results do not bypass ordinary account validation or moderation.
+
+## Safety and compatibility rules
+
+- Discovery screens do not trigger an unrestricted crawl of remote networks.
+- Imported records pass through the canonical local validation, visibility,
+  and moderation paths.
+- A bridge declines traffic whose privacy or audience cannot be represented
+  safely.
+- Peer-specific limitations are recorded as unsupported or untested in the
+  smoke matrix instead of being presented as successful interoperability.
 
 <!-- end of FEDERATION.md -->

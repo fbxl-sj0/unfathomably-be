@@ -131,7 +131,8 @@ defmodule Pleroma.SystemMemoryMonitor do
   end
 
   defp memory_amounts(memory_data) do
-    total = memory_value(memory_data, :system_total_memory) || memory_value(memory_data, :total_memory)
+    total =
+      memory_value(memory_data, :system_total_memory) || memory_value(memory_data, :total_memory)
 
     available =
       memory_value(memory_data, :available_memory) ||

@@ -1,19 +1,33 @@
-# Introduction to Pleroma
-## What is Pleroma?
-Pleroma is a federated social networking platform, compatible with Mastodon and other ActivityPub implementations. It is free software licensed under the AGPLv3.
-It actually consists of two components: a backend, named simply Pleroma, and a user-facing frontend, named Pleroma-FE. It also includes the Mastodon frontend, if that's your thing.
-It's part of what we call the fediverse, a federated network of instances which speak common protocols and can communicate with each other.
-One account on an instance is enough to talk to the entire fediverse!
+# Introduction to Unfathomably
 
-## How can I use it?
+## What is Unfathomably?
 
-Pleroma instances are already widely deployed, a list can be found at <https://the-federation.info/pleroma> and <https://fediverse.network/pleroma>.
+Unfathomably is a self-hosted social networking stack for the Fediverse. The
+backend speaks ActivityPub, exposes Mastodon-compatible client APIs, and adds
+bounded support for groups, non-profile sources, Worlds, Nostr, AT Protocol,
+and diaspora*. The paired frontend presents those capabilities in the browser.
 
-If you don't feel like joining an existing instance, but instead prefer to deploy your own instance, that's easy too!
-Installation instructions can be found in the installation section of these docs.
+An instance operator controls registration, moderation, federation policy,
+search, translation, media handling, imports, and the optional protocol
+bridges. ActivityPub remains the canonical local model even when an object
+arrives through another supported protocol.
 
-## I got an account, now what?
-Great! Now you can explore the fediverse! Open the login page for your Pleroma instance (e.g. <https://pleroma.soykaf.com>) and login with your username and password. (If you don't have an account yet, click on Register)
+## Components
 
-### Pleroma-FE
-The default front-end used by Pleroma is Pleroma-FE. You can find more information on what it is and how to use it in the [Introduction to Pleroma-FE](../frontend).
+- [unfathomably-be](https://github.com/fbxl-sj0/unfathomably-be) owns accounts,
+  storage, APIs, federation, moderation, background work, and streaming.
+- [unfathomably-fe](https://github.com/fbxl-sj0/unfathomably-fe) provides the
+  browser interface.
+
+Mastodon-compatible applications can use common API surfaces, but the paired
+frontend exposes the complete Worlds, group, source, archive, and administration
+experience.
+
+## Where to begin
+
+Operators should start with the [source installation guide](INSTALLATION.MD) or
+the [upgrade guide](UPGRADE.MD), then review the
+[configuration reference](configuration/cheatsheet.md) and
+[hardening guide](configuration/hardening.md). Peer implementers can use the
+[federation manifest](../FEDERATION.md), while contributors should begin with
+the verification commands in the repository [README](../README.md).
