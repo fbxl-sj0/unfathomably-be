@@ -76,12 +76,9 @@ defmodule Pleroma.Web.RichMedia.ParserTest do
                 "author_name" => "\u202E\u202D\u202Cbees\u202C",
                 "author_url" => "https://www.flickr.com/photos/bees/",
                 "cache_age" => 3600,
-                "flickr_type" => "photo",
-                "height" => "768",
+                "height" => 768,
                 "html" =>
                   "<a href=\"https://www.flickr.com/photos/bees/2362225867/\" title=\"Bacon Lollys by \u202E\u202D\u202Cbees\u202C, on Flickr\"><img src=\"https://farm4.staticflickr.com/3040/2362225867_4a87ab8baf_b.jpg\" width=\"1024\" height=\"768\" alt=\"Bacon Lollys\"/></a>",
-                "license" => "All Rights Reserved",
-                "license_id" => 0,
                 "provider_name" => "Flickr",
                 "provider_url" => "https://www.flickr.com/",
                 "thumbnail_height" => 150,
@@ -92,9 +89,7 @@ defmodule Pleroma.Web.RichMedia.ParserTest do
                 "type" => "photo",
                 "url" => "https://example.com/oembed",
                 "version" => "1.0",
-                "web_page" => "https://www.flickr.com/photos/bees/2362225867/",
-                "web_page_short_url" => "https://flic.kr/p/4AK2sc",
-                "width" => "1024"
+                "width" => 1024
               }}
   end
 

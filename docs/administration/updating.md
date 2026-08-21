@@ -1,5 +1,17 @@
 # Updating your instance
 
+## Promoting a staged source tree
+
+For source installations, promote a prepared tree with
+`build_scripts/promote-source-to-live.sh`. The script preserves runtime configuration, the
+frontend instance tree, deployment backups, and local uploads. Do not deploy application source
+with an ad hoc `rsync --delete`: one missing exclusion can remove mutable media while leaving all
+of its database records intact.
+
+The recommended layout stores uploads outside the application checkout, such as
+`/var/lib/pleroma/uploads`. Confirm the configured `Pleroma.Uploaders.Local` path before and after
+every source promotion, and include that path independently in host or VM backups.
+
 You should **always check the [release notes/changelog](https://git.pleroma.social/pleroma/pleroma/-/releases)** in case there are config deprecations, special update steps, etc.
 
 Besides that, doing the following is generally enough:

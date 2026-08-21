@@ -10688,7 +10688,7 @@ Rows marked `todo` below must receive a durable commit-level disposition before 
 | 9826 | `base-history` | `base-history` | 2020-05-12 | `b46811a07` | Alex Gleason | Upgrade Comeonin to v5 https://github.com/riverrun/comeonin/blob/master/UPGRADE_v5.md |  |
 | 9827 | `base-history` | `base-history` | 2020-05-13 | `3210e939b` | lain | Merge branch 'upgrade-comeonin' into 'develop' |  |
 | 9828 | `base-history` | `base-history` | 2020-05-13 | `a5ccb5b0b` | lain | Merge branch 'release/2.0.5' into 'stable' |  |
-| 9829 | `base-history` | `base-history` | 2020-05-08 | `4ba913d64` | Alexander Strizhakov | {:error, :enoent} s3 fix |  |
+| 9829 | `base-history` | `base-history` | 2020-05-08 | `4ba913d64` | Alexander Strizhakov | `error: enoent` S3 fix |  |
 | 9830 | `base-history` | `base-history` | 2020-05-11 | `712055612` | Alexander Strizhakov | don't run tests which change env in async |  |
 | 9831 | `base-history` | `base-history` | 2020-05-11 | `e0944dee9` | Alexander Strizhakov | make test fail everytime |  |
 | 9832 | `base-history` | `base-history` | 2020-05-12 | `ec27f346e` | Alexander Strizhakov | correct order for publised in assert |  |

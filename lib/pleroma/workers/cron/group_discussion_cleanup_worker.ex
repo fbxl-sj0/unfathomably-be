@@ -28,6 +28,7 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   alias Pleroma.FollowingRelationship
   alias Pleroma.Object
   alias Pleroma.Repo
+  alias Pleroma.Workers.Cron.DatabaseCleanupLock
 
   @default_max_age_days 183
   @default_followed_group_max_age_days 730
@@ -35,7 +36,13 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   @default_candidate_scan_limit 250
   @default_candidate_query_chunk_size 10
   @default_max_scan_pages 10
-  @default_query_timeout_ms 120_000
+  @default_query_timeout_ms 5_000
+  @query_checkout_buffer_ms 30_000
+  @default_work_budget_ms 10_000
+  @default_continuation_delay_seconds 60
+  @continuation_work_multiplier 4
+  @max_continuation_delay_seconds 3_600
+  @max_work_budget_ms 60_000
   @max_batch_size 500
   @max_candidate_scan_limit 500
   @max_candidate_query_chunk_size 100
@@ -47,7 +54,25 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
     if enabled?() do
-      {:ok, purge_candidates()}
+      case DatabaseCleanupLock.run(fn ->
+             started_at = System.monotonic_time()
+             {count, continue?} = purge_candidates()
+
+             maybe_schedule_continuation(
+               continue?,
+               measured_continuation_delay_seconds(started_at)
+             )
+
+             {:ok, count}
+           end) do
+        {:acquired, result} ->
+          result
+
+        :busy ->
+          Logger.debug("Group discussion cleanup is yielding to database cleanup")
+          maybe_schedule_continuation(true, 60)
+          {:ok, 0}
+      end
     else
       {:ok, 0}
     end
@@ -61,18 +86,22 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
     batch_size = batch_size()
 
     case candidate_objects(cutoff, batch_size) do
-      {:ok, objects, scanned_count} ->
+      {:ok, objects, scanned_count, continue?} ->
         count = Enum.reduce(objects, 0, &safely_delete_object/2)
 
         Logger.info(
           "Group discussion cleanup deleted #{count} objects after scanning #{scanned_count} stale remote candidates"
         )
 
-        count
+        {count, continue?}
+
+      {:error, %Postgrex.Error{postgres: %{code: :query_canceled}}} ->
+        Logger.debug("Group discussion cleanup reached its query budget and will continue later")
+        {0, true}
 
       {:error, reason} ->
         Logger.warning("Group discussion cleanup skipped after query failure: #{inspect(reason)}")
-        0
+        {0, true}
     end
   end
 
@@ -95,16 +124,26 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   end
 
   defp candidate_objects(cutoff, batch_size) do
-    collect_candidate_objects(cutoff, batch_size, nil, [], 0, max_scan_pages())
+    deadline_ms = System.monotonic_time(:millisecond) + work_budget_ms()
+
+    collect_candidate_objects(
+      cutoff,
+      batch_size,
+      nil,
+      [],
+      0,
+      max_scan_pages(),
+      deadline_ms
+    )
   end
 
-  defp collect_candidate_objects(_, _, _, objects, scanned_count, 0) do
-    {:ok, Enum.reverse(objects), scanned_count}
+  defp collect_candidate_objects(_, _, _, objects, scanned_count, 0, _) do
+    {:ok, Enum.reverse(objects), scanned_count, true}
   end
 
-  defp collect_candidate_objects(_, batch_size, _, objects, scanned_count, _)
+  defp collect_candidate_objects(_, batch_size, _, objects, scanned_count, _, _)
        when length(objects) >= batch_size do
-    {:ok, Enum.reverse(objects), scanned_count}
+    {:ok, Enum.reverse(objects), scanned_count, true}
   end
 
   defp collect_candidate_objects(
@@ -113,28 +152,38 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
          after_cursor,
          objects,
          scanned_count,
-         pages_left
+         pages_left,
+         deadline_ms
        ) do
     case candidate_object_rows(cutoff, after_cursor) do
       {:ok, []} ->
-        {:ok, Enum.reverse(objects), scanned_count}
+        {:ok, Enum.reverse(objects), scanned_count, false}
 
       {:ok, object_rows} ->
         object_ids = Enum.map(object_rows, &elem(&1, 0))
         remaining_count = batch_size - length(objects)
 
-        case candidate_page_objects(object_ids, cutoff, remaining_count) do
-          {:ok, page_objects} ->
-            mark_retained_candidates(object_ids, Enum.map(page_objects, & &1.id))
+        case candidate_page_objects(object_ids, cutoff, remaining_count, deadline_ms) do
+          {:ok, page_objects, evaluated_ids, yield?} ->
+            mark_retained_candidates(evaluated_ids, Enum.map(page_objects, & &1.id))
 
-            collect_candidate_objects(
-              cutoff,
-              batch_size,
-              List.last(object_rows),
-              Enum.reverse(page_objects) ++ objects,
-              scanned_count + length(object_ids),
-              pages_left - 1
-            )
+            evaluated_count = length(evaluated_ids)
+            objects = Enum.reverse(page_objects) ++ objects
+            scanned_count = scanned_count + evaluated_count
+
+            if yield? or evaluated_count == 0 do
+              {:ok, Enum.reverse(objects), scanned_count, true}
+            else
+              collect_candidate_objects(
+                cutoff,
+                batch_size,
+                Enum.at(object_rows, evaluated_count - 1),
+                objects,
+                scanned_count,
+                pages_left - 1,
+                deadline_ms
+              )
+            end
 
           {:error, reason} ->
             {:error, reason}
@@ -148,26 +197,60 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
   # Each candidate needs several safety checks before it may be removed. Keep
   # those checks in small slices so a single janitor query cannot monopolize a
   # database connection on a large federation cache.
-  defp candidate_page_objects(object_ids, cutoff, remaining_count) do
+  defp candidate_page_objects(object_ids, cutoff, remaining_count, deadline_ms) do
     object_ids
     |> Enum.chunk_every(candidate_query_chunk_size())
-    |> Enum.reduce_while({:ok, []}, fn object_id_chunk, {:ok, selected_objects} ->
-      remaining_count = remaining_count - length(selected_objects)
+    |> Enum.reduce_while(
+      {:ok, [], [], false},
+      fn object_id_chunk, {:ok, selected_objects, evaluated_ids, _yield?} ->
+        remaining_count = remaining_count - length(selected_objects)
 
-      if remaining_count <= 0 do
-        {:halt, {:ok, selected_objects}}
-      else
-        result =
-          object_id_chunk
-          |> candidates_query(cutoff, remaining_count)
-          |> safe_repo_all()
+        cond do
+          remaining_count <= 0 ->
+            {:halt, {:ok, selected_objects, evaluated_ids, true}}
 
-        case result do
-          {:ok, objects} -> {:cont, {:ok, selected_objects ++ objects}}
-          {:error, reason} -> {:halt, {:error, reason}}
+          work_budget_exhausted?(deadline_ms) or competing_cleanup_active?() ->
+            {:halt, {:ok, selected_objects, evaluated_ids, true}}
+
+          true ->
+            result =
+              object_id_chunk
+              |> candidates_query(cutoff, remaining_count)
+              |> safe_repo_all()
+
+            case result do
+              {:ok, objects} ->
+                selected_objects = selected_objects ++ objects
+                evaluated_ids = evaluated_ids ++ object_id_chunk
+                yield? = work_budget_exhausted?(deadline_ms)
+                state = {:ok, selected_objects, evaluated_ids, yield?}
+
+                if yield?, do: {:halt, state}, else: {:cont, state}
+
+              {:error, reason} ->
+                {:halt, {:error, reason}}
+            end
         end
       end
-    end)
+    )
+  end
+
+  defp competing_cleanup_active? do
+    Oban.Job
+    |> where(
+      [job],
+      job.worker == "Pleroma.Workers.Cron.RemotePostCleanupWorker" and
+        job.state == "executing"
+    )
+    |> Repo.exists?()
+  rescue
+    _ -> true
+  catch
+    :exit, _reason -> true
+  end
+
+  defp work_budget_exhausted?(deadline_ms) do
+    System.monotonic_time(:millisecond) >= deadline_ms
   end
 
   defp delete_object(%Object{} = object, count) do
@@ -467,8 +550,87 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorker do
     |> max(1_000)
   end
 
+  defp work_budget_ms do
+    __MODULE__
+    |> config_integer(:work_budget_ms, @default_work_budget_ms)
+    |> max(1_000)
+    |> min(@max_work_budget_ms)
+  end
+
+  defp continuation_enabled? do
+    Config.get([__MODULE__, :continuation_enabled], true)
+  end
+
+  defp configured_continuation_delay_seconds do
+    __MODULE__
+    |> config_integer(:continuation_delay_seconds, @default_continuation_delay_seconds)
+    |> max(5)
+    |> min(@max_continuation_delay_seconds)
+  end
+
+  defp maybe_schedule_continuation(false, _delay_seconds), do: :ok
+
+  defp maybe_schedule_continuation(true, delay_seconds) do
+    if continuation_enabled?() do
+      job =
+        __MODULE__.new(
+          %{"continuation" => true},
+          schedule_in: delay_seconds,
+          unique: [
+            period: max(120, delay_seconds * 4),
+            states: [:available, :scheduled, :retryable]
+          ]
+        )
+
+      case Oban.insert(job) do
+        {:ok, _job} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Could not continue group discussion cleanup: #{inspect(reason)}")
+      end
+    end
+  end
+
+  @doc false
+  def continuation_delay_seconds(elapsed_ms, configured_delay_seconds)
+      when is_integer(elapsed_ms) and elapsed_ms >= 0 and is_integer(configured_delay_seconds) and
+             configured_delay_seconds >= 1 do
+    measured_delay_seconds =
+      div(elapsed_ms * @continuation_work_multiplier + 999, 1_000)
+
+    configured_delay_seconds
+    |> max(measured_delay_seconds)
+    |> min(@max_continuation_delay_seconds)
+  end
+
+  defp measured_continuation_delay_seconds(started_at) do
+    elapsed_ms =
+      System.monotonic_time()
+      |> Kernel.-(started_at)
+      |> System.convert_time_unit(:native, :millisecond)
+
+    continuation_delay_seconds(elapsed_ms, configured_continuation_delay_seconds())
+  end
+
   defp safe_repo_all(query) do
-    {:ok, Repo.all(query, timeout: query_timeout_ms())}
+    statement_timeout_ms = query_timeout_ms()
+    connection_timeout_ms = statement_timeout_ms + @query_checkout_buffer_ms
+
+    Repo.transaction(
+      fn ->
+        Repo.query!("SELECT set_config('statement_timeout', $1, true)", [
+          Integer.to_string(statement_timeout_ms)
+        ])
+
+        Repo.all(query, timeout: connection_timeout_ms)
+      end,
+      timeout: connection_timeout_ms
+    )
+    |> case do
+      {:ok, rows} -> {:ok, rows}
+      {:error, reason} -> {:error, reason}
+    end
   rescue
     error in [DBConnection.ConnectionError, Postgrex.Error] ->
       {:error, error}

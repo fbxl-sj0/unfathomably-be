@@ -20,8 +20,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageMarkdownTest d
       })
 
     assert fixed["source"] == %{"content" => source, "mediaType" => "text/markdown"}
-    assert fixed["content"] =~ "<h1>Heading</h1>"
+    assert fixed["content"] =~ "Heading"
     assert fixed["content"] =~ "href=\"https://example.com\""
+    refute fixed["content"] =~ "<h1>"
     refute fixed["content"] =~ "<script"
   end
 

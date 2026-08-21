@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Unfathomably BE RPM-family bootstrap
-# ------------------------------------
+#
+# Project: Unfathomably BE host bootstrap
+# ----------------------------------------
 #
 # File: build_scripts/setup-rpm.sh
 #
@@ -176,6 +177,7 @@ install_packages() {
             gcc \
             gcc-c++ \
             git \
+            jq \
             file-devel \
             ncurses-devel \
             libopenssl-devel \
@@ -187,6 +189,7 @@ install_packages() {
             openssl \
             pkg-config \
             postgresql \
+            python3 \
             unzip \
             unixODBC-devel \
             xz \
@@ -214,6 +217,7 @@ install_packages() {
             gcc \
             gcc-c++ \
             git \
+            jq \
             libpng-devel \
             libssh-devel \
             m4 \
@@ -223,6 +227,7 @@ install_packages() {
             openssl-devel \
             pkgconf-pkg-config \
             postgresql \
+            python3 \
             unzip \
             unixODBC-devel \
             xz \

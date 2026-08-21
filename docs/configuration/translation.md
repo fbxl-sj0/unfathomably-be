@@ -1,6 +1,6 @@
 # Configuring translation
 
-Rebased can translate statuses through a configured backend provider.
+Unfathomably can translate statuses through a configured backend provider.
 
 DeepL remains supported for hosted translation. OpenTranslate is available for
 operators who want translation to stay on the local network.
@@ -10,12 +10,12 @@ operators who want translation to stay on the local network.
 OpenTranslate-compatible services expose a simple REST API with `/translate`
 and `/languages` endpoints. The backend connects to that service directly, so
 the translation server does not need to be exposed to the public Internet.
-The Rebased OpenTranslate provider advertises English as the only target
+The Unfathomably OpenTranslate provider advertises English as the only target
 language. Source languages come from the languages loaded by the translation
 service.
 
 For example, if the translation service is running on `10.0.0.10` and
-listening on port `5000`, configure Rebased like this:
+listening on port `5000`, configure Unfathomably like this:
 
 ```elixir
 config :pleroma, Pleroma.Language.Translation,

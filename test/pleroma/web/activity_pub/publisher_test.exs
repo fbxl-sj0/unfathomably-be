@@ -503,6 +503,7 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
                               get_in(job.args, ["params", "id"]) == activity.data["id"]
                             end)
 
+                     send(self(), {:relay_publish, activity.data["id"]})
                      {:ok, activity}
                    end do
       clear_config([:instance, :allow_relay], true)
@@ -519,11 +520,13 @@ defmodule Pleroma.Web.ActivityPub.PublisherTest do
       activity =
         insert(:note_activity,
           user: actor,
+          data_attrs: %{"to" => [@as_public, follower.ap_id]},
           recipients: [@as_public, follower.ap_id]
         )
 
       assert :ok = Publisher.publish(actor, activity)
-      assert called(Pleroma.Web.ActivityPub.Relay.publish(activity))
+      assert_received {:relay_publish, relay_activity_id}
+      assert relay_activity_id == activity.data["id"]
     end
 
     test_with_mock "does not relay-wrap public activities other than Create",

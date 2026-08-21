@@ -36,8 +36,8 @@ defmodule Pleroma.User do
   alias Pleroma.UserRelationship
   alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Web.ActivityPub.ActorExtensions
-  alias Pleroma.Web.ActivityPub.IdentityProof
   alias Pleroma.Web.ActivityPub.Builder
+  alias Pleroma.Web.ActivityPub.IdentityProof
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.Utils
   alias Pleroma.Web.CommonAPI
@@ -61,7 +61,7 @@ defmodule Pleroma.User do
   @primary_key {:id, FlakeId.Ecto.CompatType, autogenerate: true}
 
   # credo:disable-for-next-line Credo.Check.Readability.MaxLineLength
-  @email_regex ~r/^[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
+  @email_regex ~r/^[a-zA-Z0-9.!#$&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
 
   @strict_local_nickname_regex ~r/^[a-zA-Z\d]+$/
   @extended_local_nickname_regex ~r/^[a-zA-Z\d_-]+$/
@@ -746,6 +746,7 @@ defmodule Pleroma.User do
         :raw_fields,
         :pleroma_settings_store,
         :is_discoverable,
+        :is_indexable,
         :actor_type,
         :accepts_chat_messages,
         :disclose_client,
@@ -933,6 +934,8 @@ defmodule Pleroma.User do
   end
 
   def reset_password(%User{id: user_id} = user, struct, params) do
+    oauth_tokens = OAuth.Token.Query.get_by_user(user_id) |> Repo.all()
+
     multi =
       Multi.new()
       |> Multi.update(:user, password_update_changeset(struct, params))
@@ -940,8 +943,12 @@ defmodule Pleroma.User do
       |> Multi.delete_all(:auth, OAuth.Authorization.delete_by_user_query(user))
 
     case Repo.transaction(multi) do
-      {:ok, %{user: user} = _} -> set_cache(user)
-      {:error, _, changeset, _} -> {:error, changeset}
+      {:ok, %{user: user} = _} ->
+        Enum.each(oauth_tokens, &Pleroma.Web.Streamer.close_streams_by_oauth_token/1)
+        set_cache(user)
+
+      {:error, _, changeset, _} ->
+        {:error, changeset}
     end
   end
 
@@ -1595,7 +1602,7 @@ defmodule Pleroma.User do
   defp get_or_fetch_activitypub_by_nickname(nickname) do
     case String.split(nickname, "@", parts: 2) do
       [nick, domain] when nick != "" and domain != "" ->
-        case Pleroma.User.ActorAlias.get_fresh_user(nickname) do
+        case get_by_nickname(nickname) || Pleroma.User.ActorAlias.get_fresh_user(nickname) do
           %User{} = user ->
             {:ok, user}
 
@@ -3216,8 +3223,10 @@ defmodule Pleroma.User do
   def add_pinned_object_id(%User{} = user, object_id) do
     update_pinned_objects(user, fn current_user ->
       if !current_user.pinned_objects[object_id] do
+        pinned_at = NaiveDateTime.utc_now() |> NaiveDateTime.to_iso8601()
+
         params = %{
-          pinned_objects: Map.put(current_user.pinned_objects, object_id, NaiveDateTime.utc_now())
+          pinned_objects: Map.put(current_user.pinned_objects, object_id, pinned_at)
         }
 
         current_user

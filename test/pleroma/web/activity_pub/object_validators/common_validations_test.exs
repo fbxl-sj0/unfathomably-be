@@ -3,13 +3,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonValidationsTest do
-  use Pleroma.DataCase, async: true
+  use Pleroma.DataCase, async: false
 
   import Ecto.Changeset
   import Pleroma.Factory
 
   alias Pleroma.Web.ActivityPub.ObjectValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
+
+  setup do
+    clear_config([:instance, :federating], true)
+    :ok
+  end
 
   defp changeset(changes) do
     {%{}, %{actor: :any, object: :any, id: :any}}

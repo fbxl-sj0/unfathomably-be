@@ -10,6 +10,7 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
 
   alias Pleroma.Object
   alias Pleroma.Object.Fetcher
+  alias Pleroma.Object.Fetcher.PrefetchedObject
   alias Pleroma.Web.ActivityPub.RemoteReplies
 
   require Pleroma.Constants
@@ -46,27 +47,25 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
       )
 
     with_mock Fetcher,
-      fetch_and_contain_remote_object_from_id: fn
+      [:passthrough],
+      fetch_prefetched_remote_object_from_id: fn
         @context_id ->
-          {:ok,
-           %{
+          prefetched(@context_id, %{
              "id" => @context_id,
              "type" => "OrderedCollection",
              "orderedItems" => [@object_id, @reply_1],
              "next" => @next_page_id
-           }}
+           })
 
         @next_page_id ->
-          {:ok,
-           %{
+          prefetched(@next_page_id, %{
              "id" => @next_page_id,
              "type" => "OrderedCollectionPage",
              "orderedItems" => [%{"id" => @reply_2}]
-           }}
+           })
 
         reply_id when reply_id in [@reply_1, @reply_2] ->
-          {:ok,
-           %{
+          prefetched(reply_id, %{
              "id" => reply_id,
              "type" => "Note",
              "actor" => @actor,
@@ -74,7 +73,7 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
              "context" => @context_id,
              "to" => [Pleroma.Constants.as_public()],
              "cc" => []
-           }}
+           })
       end,
       fetch_object_from_id: fn id, opts ->
         send(test_pid, {:fetch_object_from_id, id, opts})
@@ -105,7 +104,8 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
     test_pid = self()
 
     with_mock Fetcher,
-      fetch_and_contain_remote_object_from_id: fn @reply_1 ->
+      [:passthrough],
+      fetch_prefetched_remote_object_from_id: fn @reply_1 ->
         send(test_pid, {:discovery_fetch, @reply_1})
         {:error, :recv_response_timeout}
       end,
@@ -146,35 +146,33 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
       )
 
     with_mock Fetcher,
-      fetch_and_contain_remote_object_from_id: fn
+      [:passthrough],
+      fetch_prefetched_remote_object_from_id: fn
         @object_id ->
           {:error, :not_found}
 
         @context_id ->
           send(test_pid, {:collection_fetch, @context_id})
 
-          {:ok,
-           %{
+          prefetched(@context_id, %{
              "id" => @context_id,
              "type" => "OrderedCollection",
              "orderedItems" => [@reply_1],
              "next" => @next_page_id
-           }}
+           })
 
         @next_page_id ->
           send(test_pid, {:collection_fetch, @next_page_id})
 
-          {:ok,
-           %{
+          prefetched(@next_page_id, %{
              "id" => @next_page_id,
              "type" => "OrderedCollectionPage",
              "orderedItems" => [%{"id" => @reply_2}],
              "next" => @context_id
-           }}
+           })
 
         reply_id when reply_id in [@reply_1, @reply_2] ->
-          {:ok,
-           %{
+          prefetched(reply_id, %{
              "id" => reply_id,
              "type" => "Note",
              "actor" => @actor,
@@ -182,7 +180,7 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
              "context" => @context_id,
              "to" => [Pleroma.Constants.as_public()],
              "cc" => []
-           }}
+           })
       end,
       fetch_object_from_id: fn id, _opts ->
         {:ok, %Object{data: %{"id" => id}}}
@@ -194,5 +192,9 @@ defmodule Pleroma.Web.ActivityPub.RemoteRepliesTest do
       refute_received {:collection_fetch, @context_id}
       refute_received {:collection_fetch, @next_page_id}
     end
+  end
+
+  defp prefetched(requested_id, data) do
+    {:ok, %PrefetchedObject{requested_id: requested_id, data: data}}
   end
 end

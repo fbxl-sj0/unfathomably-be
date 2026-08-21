@@ -16,8 +16,8 @@
 # Search Tree, Lexicon server, or OAuth authorization workflow.
 
 defmodule Pleroma.ATProto.Client do
-  alias Pleroma.ATProto.URL
   alias Pleroma.ATProto.DPoP
+  alias Pleroma.ATProto.URL
   alias Pleroma.Config
   alias Pleroma.HTTP
 
@@ -138,11 +138,12 @@ defmodule Pleroma.ATProto.Client do
   def create_session(_pds_url, _identifier, _password), do: {:error, :invalid_credentials}
 
   def refresh_session(pds_url, refresh_token) when is_binary(refresh_token) do
-    pds_post(pds_url, "com.atproto.server.refreshSession", %{}, refresh_token)
+    pds_post(pds_url, "com.atproto.server.refreshSession", nil, refresh_token)
   end
 
   def create_invite_code(pds_url, admin_password)
-      when is_binary(admin_password) and byte_size(admin_password) in 1..@max_admin_password_bytes do
+      when is_binary(admin_password) and
+             byte_size(admin_password) in 1..@max_admin_password_bytes do
     pds_post(
       pds_url,
       "com.atproto.server.createInviteCode",

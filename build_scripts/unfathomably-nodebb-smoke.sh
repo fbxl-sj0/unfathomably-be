@@ -33,7 +33,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-IMAGE="${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 NODEBB_IMAGE="${NODEBB_IMAGE:-ghcr.io/nodebb/nodebb:latest}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7-alpine}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.27-alpine}"

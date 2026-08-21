@@ -16,6 +16,7 @@
 #   * run every configured federation smoke test first
 #   * stop immediately and report a federation failure if a smoke test fails
 #   * run backend and frontend unit tests only after federation is green
+#   * reject mismatched backend and frontend release versions
 #   * enforce compile, type, lint, and build warning gates
 #   * check backend Hex and frontend Yarn package freshness
 #   * print "ready to release" only after every gate succeeds
@@ -53,6 +54,7 @@ FEDERATION_SCRIPTS_DEFAULT=(
     "build_scripts/two-instance-federation-smoke.sh"
     "build_scripts/be-fe-pleroma-smoke.sh"
     "build_scripts/unfathomably-federation-safety-smoke.sh"
+    "build_scripts/unfathomably-protocol-bridges-smoke.sh"
     "build_scripts/unfathomably-lemmy-smoke.sh"
     "build_scripts/unfathomably-mbin-smoke.sh"
     "build_scripts/unfathomably-piefed-smoke.sh"
@@ -105,6 +107,49 @@ require_frontend_root() {
         printf '\nFrontend checkout was not found. Set FE_ROOT or RELEASE_GATE_SKIP_FE=1.\n' >&2
         exit 1
     fi
+}
+
+run_version_alignment_gate() {
+    local backend_version frontend_version
+
+    backend_version="$(
+        awk -F'"' '/version: version\("[0-9]/{ print $2; exit }' "$BE_ROOT/mix.exs"
+    )"
+
+    if [ -z "$backend_version" ]; then
+        printf '\nCould not determine the backend version from %s/mix.exs.\n' "$BE_ROOT" >&2
+        exit 1
+    fi
+
+    if [ "$RELEASE_GATE_SKIP_FE" = "1" ]; then
+        log "backend release version: $backend_version (frontend skipped)"
+        return
+    fi
+
+    require_frontend_root
+
+    if ! command -v node >/dev/null 2>&1; then
+        printf '\nNode.js is required to read the frontend release version.\n' >&2
+        exit 1
+    fi
+
+    frontend_version="$(
+        node -e 'process.stdout.write(require(process.argv[1]).version || "")' \
+            "$FE_ROOT/package.json"
+    )"
+
+    if [ -z "$frontend_version" ]; then
+        printf '\nCould not determine the frontend version from %s/package.json.\n' "$FE_ROOT" >&2
+        exit 1
+    fi
+
+    if [ "$backend_version" != "$frontend_version" ]; then
+        printf '\nRelease version mismatch: BE=%s FE=%s\n' \
+            "$backend_version" "$frontend_version" >&2
+        exit 1
+    fi
+
+    log "aligned BE and FE release version: $backend_version"
 }
 
 parse_federation_scripts() {
@@ -228,6 +273,7 @@ run_package_freshness_gate() {
 main() {
     log "release gate logs: $RELEASE_GATE_LOG_DIR"
 
+    run_version_alignment_gate
     run_federation_gate
     run_backend_unit_gate
     run_frontend_unit_gate

@@ -48,7 +48,7 @@ defmodule Pleroma.Web.Metadata.Providers.TwitterCardTest do
 
     assert [
              {:meta, [name: "twitter:title", content: Utils.user_name_string(user)], []},
-             {:meta, [name: "twitter:description", content: "Sensitive content"], []},
+             {:meta, [name: "twitter:description", content: "pleroma in a nutshell"], []},
              {:meta, [name: "twitter:image", content: "http://localhost:4001/images/avi.png"],
               []},
              {:meta, [name: "twitter:card", content: "summary"], []}
@@ -124,7 +124,7 @@ defmodule Pleroma.Web.Metadata.Providers.TwitterCardTest do
 
     assert [
              {:meta, [name: "twitter:title", content: Utils.user_name_string(user)], []},
-             {:meta, [name: "twitter:description", content: "pleroma in a nutshell"], []},
+             {:meta, [name: "twitter:description", content: "Sensitive content"], []},
              {:meta, [name: "twitter:image", content: "http://localhost:4001/images/avi.png"],
               []},
              {:meta, [name: "twitter:card", content: "summary"], []}

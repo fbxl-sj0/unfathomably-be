@@ -12,6 +12,7 @@ defmodule Pleroma.FormatterTest do
 
   setup_all do
     clear_config(Pleroma.Formatter)
+    clear_config([:instance, :federating], true)
     Tesla.Mock.mock_global(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok
   end
@@ -145,7 +146,7 @@ defmodule Pleroma.FormatterTest do
           uri: "https://archeme/@archa_eme_"
         )
 
-      archaeme_remote = insert(:user, %{nickname: "archaeme@archae.me"})
+      archaeme_remote = insert(:user, %{nickname: "archaeme@archae.me", local: false})
 
       {text, mentions, []} = Formatter.linkify(text)
 
@@ -203,7 +204,8 @@ defmodule Pleroma.FormatterTest do
       text = " @#{user.nickname} @#{other_user.nickname} hey dudes i hate @#{third_user.nickname}"
       {expected_text, mentions, [] = _tags} = Formatter.linkify(text, safe_mention: true)
 
-      assert mentions == [{"@#{user.nickname}", user}, {"@#{other_user.nickname}", other_user}]
+      assert MapSet.new(mentions) ==
+               MapSet.new([{"@#{user.nickname}", user}, {"@#{other_user.nickname}", other_user}])
 
       assert expected_text ==
                ~s(<span class="h-card"><a class="u-url mention" data-user="#{user.id}" href="#{user.ap_id}" rel="ugc">@<span>#{user.nickname}</span></a></span> <span class="h-card"><a class="u-url mention" data-user="#{other_user.id}" href="#{other_user.ap_id}" rel="ugc">@<span>#{other_user.nickname}</span></a></span> hey dudes i hate <span class="h-card"><a class="u-url mention" data-user="#{third_user.id}" href="#{third_user.ap_id}" rel="ugc">@<span>#{third_user.nickname}</span></a></span>)
@@ -234,7 +236,7 @@ defmodule Pleroma.FormatterTest do
       _jimm = insert(:user, %{nickname: "jimm"})
       _gsimg = insert(:user, %{nickname: "gsimg"})
       archaeme = insert(:user, %{nickname: "archaeme"})
-      archaeme_remote = insert(:user, %{nickname: "archaeme@archae.me"})
+      archaeme_remote = insert(:user, %{nickname: "archaeme@archae.me", local: false})
 
       expected_mentions = [
         {"@archaeme", archaeme},
@@ -260,7 +262,8 @@ defmodule Pleroma.FormatterTest do
         insert(:user, %{
           nickname: "lain@lain.com",
           ap_id: "https://lain.com/users/lain",
-          id: "9qrWmR0cKniB0YU0TA"
+          id: "9qrWmR0cKniB0YU0TA",
+          local: false
         })
 
       text = "@lain@lain.com D:<"

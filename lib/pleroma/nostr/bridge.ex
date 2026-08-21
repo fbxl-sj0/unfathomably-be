@@ -82,6 +82,7 @@ defmodule Pleroma.Nostr.Bridge do
   @followed_profiles_cache_key :followed_profiles
   @metadata_publication_interval 86_400
   @metadata_publication_relay_limit 32
+  @local_response_subscription_overlap_seconds 604_800
 
   def ingest_event(raw_event, relay_url, source) do
     relay_url = Protocol.normalize_relay_url(relay_url)
@@ -393,6 +394,14 @@ defmodule Pleroma.Nostr.Bridge do
         chunk_filter(local_actor_pubkeys, fn pubkeys ->
           %{
             "#p" => pubkeys,
+            "kinds" => @profile_activity_kinds,
+            "limit" => 500,
+            "since" => local_response_subscription_since()
+          }
+        end) ++
+        chunk_filter(local_actor_pubkeys, fn pubkeys ->
+          %{
+            "#p" => pubkeys,
             "kinds" => [1_059],
             "limit" => 500,
             "since" => PrivateMessages.subscription_since()
@@ -500,8 +509,9 @@ defmodule Pleroma.Nostr.Bridge do
         |> Ecto.Multi.update(:object, Object.change(object, %{data: object_data}))
         |> Repo.transaction()
         |> case do
-          {:ok, %{object: updated_object}} ->
+          {:ok, %{activity: updated_activity, object: updated_object}} ->
             Object.set_cache(updated_object)
+            ActivityPub.stream_out(%{updated_activity | object: updated_object})
             :ok
 
           {:error, _operation, reason, _changes} ->
@@ -984,13 +994,12 @@ defmodule Pleroma.Nostr.Bridge do
         )
         |> Pleroma.Nostr.Events.outbound_destination(object.data)
 
-      content =
-        object.data["content"]
-        |> to_string()
-        |> Pleroma.HTML.strip_tags()
-        |> HtmlEntities.decode()
+      content = outbound_content(object.data)
+
+      content = append_external_reply_reference(content, target)
 
       {content, reference_tags} = Pleroma.Nostr.References.outbound(content, object.data)
+      {content, media_tags} = Media.outbound(content, object.data)
 
       publish_actor_event(
         actor,
@@ -998,7 +1007,7 @@ defmodule Pleroma.Nostr.Bridge do
         tags ++
           reference_tags ++
           Semantics.outbound_tags(object.data) ++
-          Media.outbound_tags(object.data) ++
+          media_tags ++
           proxy_tags(object.data["id"]),
         content,
         relays,
@@ -1008,6 +1017,26 @@ defmodule Pleroma.Nostr.Bridge do
     else
       _ -> :ok
     end
+  end
+
+  # ActivityPub stores both the user's authored source and rendered HTML. Nostr
+  # is a plain-text protocol, so rebuilding local text from HTML can remove the
+  # whitespace around mentions and links. Preserve supported text sources and
+  # use rendered content only for objects without a usable source representation.
+  defp outbound_content(%{
+         "source" => %{"content" => content, "mediaType" => media_type}
+       })
+       when is_binary(content) and
+              media_type in ["text/plain", "text/markdown", "text/x.misskeymarkdown"] do
+    content
+  end
+
+  defp outbound_content(data) do
+    data
+    |> Map.get("content", "")
+    |> to_string()
+    |> Pleroma.HTML.strip_tags()
+    |> HtmlEntities.decode()
   end
 
   defp publish_follow(activity, actor) do
@@ -1276,9 +1305,53 @@ defmodule Pleroma.Nostr.Bridge do
   defp outbound_target(%Object{data: data} = object) do
     case Store.get_by_ap_object_id(data["inReplyTo"]) do
       %Pleroma.Nostr.Event{} = event -> {:reply, event}
-      nil -> outbound_group(object) || public_target(object)
+      nil -> outbound_group(object) || external_reply_target(object) || public_target(object)
     end
   end
+
+  defp external_reply_target(%Object{data: %{"inReplyTo" => parent_id}})
+       when is_binary(parent_id) do
+    if valid_external_thread_id?(parent_id) do
+      {:external_reply, external_thread_root(parent_id, 32, MapSet.new()), parent_id}
+    end
+  end
+
+  defp external_reply_target(_object), do: nil
+
+  defp external_thread_root(current_id, 0, _seen), do: current_id
+
+  defp external_thread_root(current_id, remaining, seen) do
+    if MapSet.member?(seen, current_id) do
+      current_id
+    else
+      seen = MapSet.put(seen, current_id)
+
+      case Object.get_cached_by_ap_id(current_id) do
+        %Object{data: %{"inReplyTo" => parent_id}} when is_binary(parent_id) ->
+          if valid_external_thread_id?(parent_id) do
+            external_thread_root(parent_id, remaining - 1, seen)
+          else
+            current_id
+          end
+
+        _object ->
+          current_id
+      end
+    end
+  end
+
+  defp valid_external_thread_id?(id) when is_binary(id) and byte_size(id) <= 2_048 do
+    case URI.new(id) do
+      {:ok, %URI{scheme: scheme, host: host, userinfo: nil}}
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        true
+
+      _invalid ->
+        false
+    end
+  end
+
+  defp valid_external_thread_id?(_id), do: false
 
   defp public_target(%Object{data: data}) do
     public_uri = "https://www.w3.org/ns/activitystreams#Public"
@@ -1320,20 +1393,9 @@ defmodule Pleroma.Nostr.Bridge do
   end
 
   defp content_destination(_object, {:reply, target}) do
-    root = reply_root(target)
-
-    tags = [
-      ["E", root.id, root.relay_url || Nostr.relay_url(), root.pubkey],
-      ["K", to_string(root.kind)],
-      ["P", root.pubkey],
-      ["e", target.id, target.relay_url || Nostr.relay_url(), target.pubkey],
-      ["k", to_string(target.kind)],
-      ["p", target.pubkey]
-    ]
-
     case Protocol.tag_value(target.data, "h") do
       nil ->
-        {1_111, tags, destination_relays(target)}
+        reply_destination(target)
 
       group_id ->
         # NIP-29 deployments broadly use kind 9 for both roots and replies.
@@ -1350,16 +1412,108 @@ defmodule Pleroma.Nostr.Bridge do
     end
   end
 
+  defp content_destination(_object, {:external_reply, root_id, parent_id}) do
+    tags = [
+      ["I", root_id, root_id],
+      ["K", "web"],
+      ["i", parent_id, parent_id],
+      ["k", "web"],
+      ["r", parent_id]
+    ]
+
+    {1_111, tags, Pleroma.Nostr.profile_discovery_relays()}
+  end
+
   defp content_destination(_object, {:group, entity}) do
     {11, [["h", entity.group_id]], [entity.relay_url]}
   end
 
+  defp reply_destination(%Pleroma.Nostr.Event{kind: 1} = target) do
+    root = reply_root(target)
+    root_relay = root.relay_url || Nostr.relay_url()
+    target_relay = target.relay_url || Nostr.relay_url()
+
+    event_tags =
+      if root.id == target.id do
+        [["e", root.id, root_relay, "root", root.pubkey]]
+      else
+        [
+          ["e", root.id, root_relay, "root", root.pubkey],
+          ["e", target.id, target_relay, "reply", target.pubkey]
+        ]
+      end
+
+    participant_tags =
+      ([root.pubkey, target.pubkey] ++ Protocol.tag_values(target.data, "p"))
+      |> Enum.filter(&valid_nostr_pubkey?/1)
+      |> Enum.uniq()
+      |> Enum.map(&["p", &1])
+
+    {1, event_tags ++ participant_tags, destination_relays(target)}
+  end
+
+  defp reply_destination(target) do
+    {1_111, nip22_reply_tags(target), destination_relays(target)}
+  end
+
+  defp nip22_reply_tags(target) do
+    root_tags =
+      target.data
+      |> Map.get("tags", [])
+      |> Enum.filter(fn
+        [name, _value | _rest] when name in ["A", "E", "I", "K", "P"] -> true
+        _tag -> false
+      end)
+
+    root_tags =
+      if Enum.any?(root_tags, fn [name | _rest] -> name in ["A", "E", "I"] end) do
+        root_tags
+      else
+        relay = target.relay_url || Nostr.relay_url()
+
+        [
+          ["E", target.id, relay, target.pubkey],
+          ["K", to_string(target.kind)],
+          ["P", target.pubkey]
+        ]
+      end
+
+    root_tags ++
+      [
+        ["e", target.id, target.relay_url || Nostr.relay_url(), target.pubkey],
+        ["k", to_string(target.kind)],
+        ["p", target.pubkey]
+      ]
+  end
+
   defp reply_root(target) do
-    case target.data |> Protocol.tag_values("E") |> List.first() do
-      nil -> target
-      event_id -> Store.get(event_id) || target
+    event_id =
+      target.data
+      |> Map.get("tags", [])
+      |> Enum.find_value(fn
+        ["e", id, _relay, "root" | _rest] when is_binary(id) -> id
+        ["E", id | _rest] when is_binary(id) -> id
+        _tag -> nil
+      end)
+
+    if is_binary(event_id), do: Store.get(event_id) || target, else: target
+  end
+
+  defp valid_nostr_pubkey?(pubkey) when is_binary(pubkey),
+    do: Regex.match?(~r/\A[0-9a-f]{64}\z/, pubkey)
+
+  defp valid_nostr_pubkey?(_pubkey), do: false
+
+  defp append_external_reply_reference(content, {:external_reply, _root_id, parent_id}) do
+    cond do
+      String.contains?(content, parent_id) -> content
+      content == "" -> parent_id
+      String.ends_with?(content, "\n") -> content <> parent_id
+      true -> content <> "\n\n" <> parent_id
     end
   end
+
+  defp append_external_reply_reference(content, _target), do: content
 
   defp publish_contacts(actor, mapping \\ []) do
     tags =
@@ -1728,10 +1882,7 @@ defmodule Pleroma.Nostr.Bridge do
         _ -> []
       end
 
-    ([relay_url] ++ profile_relays)
-    |> Enum.map(&Protocol.normalize_relay_url/1)
-    |> Enum.filter(&Nostr.allowed_relay?/1)
-    |> Enum.uniq()
+    Nostr.public_relay_destinations([relay_url] ++ profile_relays)
   end
 
   defp prepend_group_tag(tags, %Pleroma.Nostr.Event{data: data}) do
@@ -1769,6 +1920,19 @@ defmodule Pleroma.Nostr.Bridge do
       case Pleroma.Config.get([Nostr, :live_subscription_overlap_seconds], 300) do
         value when is_integer(value) and value >= 30 and value <= 86_400 -> value
         _ -> 300
+      end
+
+    max(System.system_time(:second) - overlap, 0)
+  end
+
+  defp local_response_subscription_since do
+    overlap =
+      case Pleroma.Config.get(
+             [Nostr, :local_response_subscription_overlap_seconds],
+             @local_response_subscription_overlap_seconds
+           ) do
+        value when is_integer(value) and value >= 300 and value <= 2_592_000 -> value
+        _ -> @local_response_subscription_overlap_seconds
       end
 
     max(System.system_time(:second) - overlap, 0)

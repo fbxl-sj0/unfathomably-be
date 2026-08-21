@@ -15,10 +15,7 @@
 # timeline visibility policies.
 
 defmodule Pleroma.Web.ControllerHelperTest do
-  use ExUnit.Case, async: true
-
-  import Plug.Conn
-  import Plug.Test
+  use Pleroma.Web.ConnCase, async: true
 
   alias Pleroma.Pagination
   alias Pleroma.Web.ControllerHelper
@@ -59,7 +56,8 @@ defmodule Pleroma.Web.ControllerHelperTest do
   end
 
   defp request_conn(params) do
-    conn = conn(:get, "/api/v1/timelines/home")
+    conn = build_conn(:get, "/api/v1/timelines/home")
+    conn = put_in(conn.private[:phoenix_endpoint], Pleroma.Web.Endpoint)
     %{conn | params: params}
   end
 end

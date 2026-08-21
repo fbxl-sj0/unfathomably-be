@@ -5,9 +5,9 @@
 defmodule Pleroma.User.QueryTest do
   use Pleroma.DataCase, async: false
 
-  alias Pleroma.FollowingRelationship
   alias Pleroma.ATProto.Identity, as: ATProtoIdentity
   alias Pleroma.Diaspora.Entity, as: DiasporaEntity
+  alias Pleroma.FollowingRelationship
   alias Pleroma.Nostr.Entity, as: NostrEntity
   alias Pleroma.Repo
   alias Pleroma.User

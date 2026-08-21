@@ -255,6 +255,7 @@ Their requirements and platform-specific commands are documented in
 | Topic | Document |
 | --- | --- |
 | Installation | [docs/INSTALLATION.MD](docs/INSTALLATION.MD) |
+| Optional protocols and product features | [docs/FEATURE_ENABLEMENT.md](docs/FEATURE_ENABLEMENT.md) |
 | Upgrading | [docs/UPGRADE.MD](docs/UPGRADE.MD) |
 | Operator and API documentation | [docs/README.md](docs/README.md) |
 | Federation capabilities | [FEDERATION.md](FEDERATION.md) |

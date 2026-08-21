@@ -209,7 +209,7 @@ defmodule Pleroma.FilterTest do
 
     changes = %{
       phrase: "who",
-      context: ["home", "timeline"]
+      context: ["home", "public"]
     }
 
     {:ok, updated_filter} = Filter.update(filter, changes)

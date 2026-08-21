@@ -17,12 +17,12 @@ defmodule Pleroma.Nostr.References do
 
   import Ecto.Query
 
+  alias Pleroma.Formatter
   alias Pleroma.Nostr.Entity
   alias Pleroma.Nostr.Event
   alias Pleroma.Nostr.Identity
   alias Pleroma.Nostr.Protocol
   alias Pleroma.Nostr.Store
-  alias Pleroma.Formatter
   alias Pleroma.Repo
   alias Pleroma.User
 

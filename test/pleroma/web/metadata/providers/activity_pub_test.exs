@@ -14,7 +14,13 @@ defmodule Pleroma.Web.Metadata.Providers.ActivityPubTest do
     res = ActivityPub.build_tags(%{user: user})
 
     assert res == [
-             {:link, [rel: "alternate", type: "application/activity+json", href: user.ap_id], []}
+             {:link, [rel: "alternate", type: "application/activity+json", href: user.ap_id], []},
+             {:link,
+              [
+                rel: "alternate",
+                type: "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+                href: user.ap_id
+              ], []}
            ]
   end
 
@@ -27,6 +33,12 @@ defmodule Pleroma.Web.Metadata.Providers.ActivityPubTest do
     assert [
              {:link,
               [rel: "alternate", type: "application/activity+json", href: object.data["id"]], []},
+             {:link,
+              [
+                rel: "alternate",
+                type: "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+                href: object.data["id"]
+              ], []},
              {:meta, [name: "fediverse:creator", content: "@#{Pleroma.User.full_nickname(user)}"],
               []}
            ] == result
@@ -46,6 +58,12 @@ defmodule Pleroma.Web.Metadata.Providers.ActivityPubTest do
               [
                 rel: "alternate",
                 type: "application/activity+json",
+                href: "https://example.com/objects/1"
+              ], []},
+             {:link,
+              [
+                rel: "alternate",
+                type: "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
                 href: "https://example.com/objects/1"
               ], []}
            ]

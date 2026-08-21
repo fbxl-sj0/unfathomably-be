@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Workers.RemoteFetcherWorker do
-  alias Pleroma.AutomatedSourcePacer
+  require Logger
+
   alias Pleroma.ATProto.BridgyCompat
+  alias Pleroma.AutomatedSourcePacer
   alias Pleroma.Config
   alias Pleroma.Nostr.MostrCompat
   alias Pleroma.Object
@@ -139,6 +141,7 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
              :not_found,
              :object_identifier_mismatch,
              :object_origin_mismatch,
+             :private_network_address,
              "Object has been deleted"
            ] ->
         {:cancel, reason}
@@ -147,7 +150,12 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
       when reason in [:actor_not_found, :object_not_found] ->
         {:cancel, reason}
 
-      {:error, {:transmogrifier, {:error, {:validate, {:error, %Ecto.Changeset{}}}}}} ->
+      {:error, {:transmogrifier, {:error, {:validate, {:error, %Ecto.Changeset{} = changeset}}}}} ->
+        Logger.warning(
+          "Remote ActivityPub object validation failed for #{get_in(job.args, ["id"])}: " <>
+            inspect(changeset.errors)
+        )
+
         {:cancel, :remote_object_validation_failed}
 
       {:error, reason} ->
@@ -183,12 +191,19 @@ defmodule Pleroma.Workers.RemoteFetcherWorker do
         {:ok, object}
 
       result when result in [:miss, :not_applicable] ->
-        Fetcher.fetch_object_from_id(id, depth: args["depth"])
+        Fetcher.fetch_object_from_id(id, fetch_options(args))
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  defp fetch_options(%{"op" => "fetch_quote", "depth" => depth}) do
+    [depth: depth, allow_orphaned_public_reply: true]
+  end
+
+  defp fetch_options(%{"depth" => depth}), do: [depth: depth]
+  defp fetch_options(_args), do: []
 
   defp fetch_native_bridge_object(id) do
     case BridgyCompat.fetch_native_object(id) do

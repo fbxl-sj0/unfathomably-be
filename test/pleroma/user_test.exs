@@ -23,6 +23,7 @@ defmodule Pleroma.UserTest do
 
   setup do
     Mox.stub_with(Pleroma.UnstubbedConfigMock, Pleroma.Config)
+    clear_config([:instance, :federating], true)
     :ok
   end
 
@@ -473,7 +474,7 @@ defmodule Pleroma.UserTest do
     end
 
     setup do:
-            clear_config(:mrf_simple,
+            clear_config_section(:mrf_simple,
               media_removal: [],
               media_nsfw: [],
               federated_timeline_removal: [],
@@ -1011,7 +1012,7 @@ defmodule Pleroma.UserTest do
       refute user.last_refreshed_at == orig_user.last_refreshed_at
     end
 
-    test "if nicknames clash, the old user gets a prefix with the old id to the nickname" do
+    test "unverified nickname collisions preserve the old owner" do
       a_week_ago = NaiveDateTime.add(NaiveDateTime.utc_now(), -604_800)
 
       orig_user =
@@ -1030,10 +1031,13 @@ defmodule Pleroma.UserTest do
       assert user.inbox
 
       refute user.id == orig_user.id
+      refute user.nickname == orig_user.nickname
+      assert String.starts_with?(user.nickname, "admin.")
+      assert String.ends_with?(user.nickname, "@mastodon.example.org")
 
       orig_user = User.get_by_id(orig_user.id)
 
-      assert orig_user.nickname == "#{orig_user.id}.admin@mastodon.example.org"
+      assert orig_user.nickname == "admin@mastodon.example.org"
     end
 
     @tag capture_log: true
@@ -2805,6 +2809,7 @@ defmodule Pleroma.UserTest do
 
   describe "pins" do
     setup do
+      clear_config([:instance, :max_pinned_statuses], 5)
       user = insert(:user)
 
       [user: user, object_id: object_id_from_created_activity(user)]

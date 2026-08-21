@@ -33,6 +33,14 @@ defmodule Pleroma.Web.Plugs.FaviconPlug do
     end
   end
 
+  def call(%{request_path: "/favicon.ico"} = conn, _opts) do
+    conn
+    |> put_resp_header("cache-control", "public, max-age=86400, immutable")
+    |> put_resp_header("location", "/favicon.png")
+    |> send_resp(308, "")
+    |> halt()
+  end
+
   def call(conn, _opts), do: conn
 
   defp find_favicon_dir do

@@ -8,6 +8,7 @@ defmodule Pleroma.HTTP do
   """
 
   alias Pleroma.HTTP.AdapterHelper
+  alias Pleroma.HTTP.Onion
   alias Pleroma.HTTP.Request
   alias Pleroma.HTTP.RequestBuilder, as: Builder
   alias Tesla.Client
@@ -60,40 +61,63 @@ defmodule Pleroma.HTTP do
           {:ok, Env.t()} | {:error, any()}
   def request(method, url, body, headers, options) when is_binary(url) do
     uri = URI.parse(url)
-    adapter_opts = AdapterHelper.options(uri, options || [])
+    options = enforce_public_pool(options || [])
 
-    options = put_in(options[:adapter], adapter_opts)
-    params = options[:params] || []
-    request = build_request(method, headers, options, url, body, params)
+    with {:ok, options} <- Onion.route(uri, options) do
+      adapter_opts = AdapterHelper.options(uri, options)
 
-    adapter = Application.get_env(:tesla, :adapter)
-    extra_middleware = options[:tesla_middleware] || []
+      options = put_in(options[:adapter], adapter_opts)
+      params = options[:params] || []
+      request = build_request(method, headers, options, url, body, params)
 
-    redirect_middleware =
-      Keyword.get(options, :redirect_middleware, Tesla.Middleware.FollowRedirects)
+      adapter = Application.get_env(:tesla, :adapter)
+      extra_middleware = options[:tesla_middleware] || []
 
-    client =
-      Tesla.client(adapter_middlewares(adapter, redirect_middleware, extra_middleware), adapter)
+      redirect_middleware =
+        options
+        |> Keyword.get(:redirect_middleware, Tesla.Middleware.FollowRedirects)
+        |> List.wrap()
+        |> maybe_add_public_address_middleware(options)
 
-    result =
-      maybe_limit(
-        fn ->
-          request(client, request)
-        end,
+      client =
+        Tesla.client(adapter_middlewares(adapter, redirect_middleware, extra_middleware), adapter)
+
+      result =
+        maybe_limit(
+          fn ->
+            request(client, request)
+          end,
+          adapter,
+          adapter_opts
+        )
+
+      maybe_retry_tls_compatibility(
+        result,
         adapter,
-        adapter_opts
+        method,
+        request,
+        adapter_opts,
+        redirect_middleware,
+        extra_middleware,
+        uri
       )
+    end
+  end
 
-    maybe_retry_tls_compatibility(
-      result,
-      adapter,
-      method,
-      request,
-      adapter_opts,
-      redirect_middleware,
-      extra_middleware,
-      uri
-    )
+  defp enforce_public_pool(options) do
+    if Keyword.get(options, :pool) in [:federation, :rich_media] do
+      Keyword.put_new(options, :public_only, true)
+    else
+      options
+    end
+  end
+
+  defp maybe_add_public_address_middleware(middlewares, options) do
+    if Keyword.get(options, :public_only, false) do
+      middlewares ++ [Pleroma.Tesla.Middleware.PublicAddress]
+    else
+      middlewares
+    end
   end
 
   @spec request(Client.t(), keyword()) :: {:ok, Env.t()} | {:error, any()}

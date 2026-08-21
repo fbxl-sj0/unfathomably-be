@@ -582,6 +582,12 @@ defmodule Pleroma.Web.CommonAPI do
       {:error, :not_found} = res ->
         res
 
+      {:error, :event_full} ->
+        {:error, dgettext("errors", "This event is full")}
+
+      {:error, {:error, :event_full}} ->
+        {:error, dgettext("errors", "This event is full")}
+
       {:error, e} ->
         Logger.error("Could not join #{event_id}. Error: #{inspect(e, pretty: true)}")
         {:error, dgettext("errors", "Could not join")}
@@ -982,6 +988,8 @@ defmodule Pleroma.Web.CommonAPI do
           # common pipeline, so optional protocol exporters must be queued
           # explicitly after the activity has committed.
           Pleroma.Nostr.maybe_enqueue_activity(activity, [])
+          Pleroma.ATProto.maybe_enqueue_activity(activity, [])
+          Pleroma.Diaspora.maybe_enqueue_activity(activity, [])
           result
 
         result ->
@@ -1182,12 +1190,14 @@ defmodule Pleroma.Web.CommonAPI do
     |> group_target_values()
     |> Enum.uniq()
     |> Enum.reduce_while(:ok, fn identifier, :ok ->
-      case FederatedTarget.resolve_group(identifier) do
-        {:ok, %User{posting_restricted_to_mods: true} = group} ->
-          if GroupMembership.manager?(user, group) do
-            {:cont, :ok}
-          else
+      case resolve_group_for_posting(identifier) do
+        {:ok, %User{} = resolved_group} ->
+          group = Repo.get(User, resolved_group.id) || resolved_group
+
+          if group.posting_restricted_to_mods and not GroupMembership.manager?(user, group) do
             {:halt, {:error, "Only group moderators can post in this group"}}
+          else
+            {:cont, :ok}
           end
 
         _ ->
@@ -1195,6 +1205,15 @@ defmodule Pleroma.Web.CommonAPI do
       end
     end)
   end
+
+  defp resolve_group_for_posting(identifier) when is_binary(identifier) do
+    case User.get_by_ap_id(identifier) do
+      %User{actor_type: "Group"} = group -> {:ok, group}
+      _ -> FederatedTarget.resolve_group(identifier)
+    end
+  end
+
+  defp resolve_group_for_posting(identifier), do: FederatedTarget.resolve_group(identifier)
 
   defp ensure_interaction_federation_allowed(%User{} = user, %Activity{} = activity) do
     ensure_interaction_federation_allowed(

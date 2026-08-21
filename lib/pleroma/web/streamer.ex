@@ -91,8 +91,12 @@ defmodule Pleroma.Web.Streamer do
   end
 
   # Allow all hashtags streams.
-  def get_topic("hashtag", _user, _oauth_token, %{"tag" => tag} = _params) do
-    {:ok, "hashtag:" <> tag}
+  def get_topic("hashtag", user, oauth_token, %{"tag" => tag} = _params) do
+    if can_access_stream(user, oauth_token, :federated) do
+      {:ok, "hashtag:" <> tag}
+    else
+      {:error, :unauthorized}
+    end
   end
 
   # Allow remote instance streams.
@@ -565,9 +569,15 @@ defmodule Pleroma.Web.Streamer do
       ensure_test_streamer_table()
 
       deadline = System.monotonic_time(:millisecond) + timeout
+      drain_test_streamers(deadline)
+    end
 
-      @test_streamer_table
-      |> :ets.tab2list()
+    defp drain_test_streamers(deadline) do
+      entries = :ets.tab2list(@test_streamer_table)
+
+      Enum.each(entries, &:ets.delete_object(@test_streamer_table, &1))
+
+      entries
       |> Enum.map(fn {_owner, pid} -> pid end)
       |> Enum.uniq()
       |> Enum.each(fn pid ->
@@ -582,9 +592,20 @@ defmodule Pleroma.Web.Streamer do
         end
       end)
 
-      :ets.delete_all_objects(@test_streamer_table)
+      if System.monotonic_time(:millisecond) < deadline do
+        # A worker may be registered by another test-owned process while the
+        # previous snapshot is being drained. Require a short quiet period so
+        # that late registration cannot be erased without being observed.
+        Process.sleep(10)
 
-      :ok
+        case :ets.tab2list(@test_streamer_table) do
+          [] -> :ok
+          _entries -> drain_test_streamers(deadline)
+        end
+      else
+        :ets.delete_all_objects(@test_streamer_table)
+        :ok
+      end
     end
 
     defp spawn_streamer(topic, item) do

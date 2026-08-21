@@ -686,10 +686,10 @@ defmodule Pleroma.Web.MastodonAPI.NotificationControllerTest do
       conn =
         conn
         |> assign(:user, user)
-        |> get("/api/v1/notifications?limit=5")
+        |> get("/api/v1/notifications?limit=2")
 
       assert [link_header] = get_resp_header(conn, "link")
-      assert link_header =~ ~r/limit=5/
+      assert link_header =~ ~r/limit=2/
       assert link_header =~ ~r/min_id=#{notification2.id}/
       assert link_header =~ ~r/max_id=#{notification1.id}/
     end

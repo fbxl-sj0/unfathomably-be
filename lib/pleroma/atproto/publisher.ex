@@ -17,8 +17,8 @@
 
 defmodule Pleroma.ATProto.Publisher do
   alias Pleroma.Activity
-  alias Pleroma.ATProto.Client
   alias Pleroma.ATProto.Blobs
+  alias Pleroma.ATProto.Client
   alias Pleroma.ATProto.Identities
   alias Pleroma.ATProto.Links
   alias Pleroma.ATProto.Record
@@ -27,8 +27,31 @@ defmodule Pleroma.ATProto.Publisher do
   alias Pleroma.HTML
   alias Pleroma.Object
   alias Pleroma.User
+  alias Pleroma.Web.ActivityPub.Transmogrifier
 
   @post_collection "app.bsky.feed.post"
+
+  @doc false
+  def prepare_rich_text(data, fallback_urls \\ [])
+
+  def prepare_rich_text(data, fallback_urls) when is_map(data) and is_list(fallback_urls) do
+    content = authored_text(data)
+
+    text =
+      [content | Enum.filter(fallback_urls, &is_binary/1)]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n\n")
+
+    tags =
+      data
+      |> Transmogrifier.add_mention_tags()
+      |> Map.get("tag", [])
+      |> List.wrap()
+
+    RichText.outbound(text, tags)
+  end
+
+  def prepare_rich_text(_data, _fallback_urls), do: {"", []}
 
   def publish(%Activity{} = activity) do
     with %User{} = actor <- User.get_cached_by_ap_id(activity.data["actor"]),
@@ -44,6 +67,7 @@ defmodule Pleroma.ATProto.Publisher do
         "Create" -> publish_create(activity, actor)
         "Update" -> publish_update(activity, actor)
         "Like" -> publish_subject_record(activity, actor, "app.bsky.feed.like")
+        "EmojiReact" -> publish_subject_record(activity, actor, "app.bsky.feed.like")
         "Announce" -> publish_subject_record(activity, actor, "app.bsky.feed.repost")
         "Follow" -> publish_follow(activity, actor)
         "Delete" -> publish_delete(activity, actor)
@@ -181,17 +205,10 @@ defmodule Pleroma.ATProto.Publisher do
   end
 
   defp post_record(object, session) do
-    content =
-      object.data["content"]
-      |> to_string()
-      |> HTML.strip_tags()
-      |> String.trim()
-
     attachments = object.data |> Map.get("attachment", []) |> List.wrap()
 
     with {:ok, media_embed, fallback_urls} <- Blobs.prepare(attachments, session),
-         text <- Enum.join([content | fallback_urls] |> Enum.reject(&(&1 == "")), "\n\n"),
-         {text, facets} <- RichText.outbound(text, List.wrap(object.data["tag"])),
+         {text, facets} <- prepare_rich_text(object.data, fallback_urls),
          true <- String.valid?(text),
          true <- String.length(text) <= 300 and byte_size(text) <= 3_000 do
       record = %{
@@ -208,6 +225,24 @@ defmodule Pleroma.ATProto.Publisher do
     else
       _ -> {:error, :atproto_text_too_long}
     end
+  end
+
+  # Local plain-text source retains authored spacing around formatter-generated
+  # mention markup. Other source formats keep the existing sanitized HTML
+  # fallback rather than leaking markup syntax into Bluesky posts.
+  defp authored_text(%{
+         "source" => %{"content" => content, "mediaType" => "text/plain"}
+       })
+       when is_binary(content) do
+    String.trim(content)
+  end
+
+  defp authored_text(data) do
+    data
+    |> Map.get("content", "")
+    |> to_string()
+    |> HTML.strip_tags()
+    |> String.trim()
   end
 
   defp maybe_put_reply(record, parent_id) when is_binary(parent_id) do
@@ -393,10 +428,32 @@ defmodule Pleroma.ATProto.Publisher do
   end
 
   defp target_record(value) do
-    value
-    |> object_id()
-    |> Store.get_by_ap_object_id()
+    object_id = object_id(value)
+    Store.get_by_ap_object_id(object_id) || embedded_target_record(object_id)
   end
+
+  defp embedded_target_record(object_id) when is_binary(object_id) do
+    with %Object{data: data} <- Object.get_by_ap_id(object_id),
+         %{"uri" => uri, "cid" => cid} <- data["unfathomably:atproto"],
+         true <- is_binary(cid) and byte_size(cid) in 1..256,
+         {:ok, did, @post_collection, rkey} <- Store.split_uri(uri),
+         actor_id when is_binary(actor_id) <- data["actor"],
+         %User{} = actor <- User.get_cached_by_ap_id(actor_id),
+         identity when not is_nil(identity) <- Identities.get_by_user(actor),
+         true <- identity.did == did do
+      %Record{
+        uri: uri,
+        cid: cid,
+        author_did: did,
+        collection: @post_collection,
+        rkey: rkey
+      }
+    else
+      _reason -> nil
+    end
+  end
+
+  defp embedded_target_record(_object_id), do: nil
 
   defp object_id(%{"id" => id}) when is_binary(id), do: id
   defp object_id(id) when is_binary(id), do: id
@@ -430,10 +487,45 @@ defmodule Pleroma.ATProto.Publisher do
 
   defp published_at(_activity), do: DateTime.to_iso8601(DateTime.utc_now())
 
-  defp deterministic_rkey(%Activity{} = activity) do
+  # AT Protocol TIDs reserve 53 bits for microseconds and 10 bits for a clock
+  # identifier. The persisted activity timestamp keeps retries stable, while a
+  # hash-derived clock component separates activities created in the same
+  # microsecond without introducing process-local state.
+  @tid_alphabet "234567abcdefghijklmnopqrstuvwxyz"
+  @tid_clock_values 1_024
+  @tid_length 13
+  @tid_max_timestamp 9_007_199_254_740_991
+
+  @doc false
+  def deterministic_rkey(%Activity{} = activity) do
     seed = activity.data["id"] || to_string(activity.id)
-    "uf_" <> Base.url_encode64(:crypto.hash(:sha256, seed), padding: false)
+    <<clock_seed::unsigned-big-16, _rest::binary>> = :crypto.hash(:sha256, seed)
+
+    timestamp =
+      activity
+      |> activity_timestamp_microseconds()
+      |> max(0)
+      |> min(@tid_max_timestamp)
+
+    tid_value = timestamp * @tid_clock_values + rem(clock_seed, @tid_clock_values)
+    digits = Integer.digits(tid_value, 32)
+    padding = List.duplicate(0, @tid_length - length(digits))
+
+    Enum.map_join(padding ++ digits, fn digit ->
+      binary_part(@tid_alphabet, digit, 1)
+    end)
   end
+
+  defp activity_timestamp_microseconds(%Activity{inserted_at: %DateTime{} = inserted_at}),
+    do: DateTime.to_unix(inserted_at, :microsecond)
+
+  defp activity_timestamp_microseconds(%Activity{inserted_at: %NaiveDateTime{} = inserted_at}) do
+    inserted_at
+    |> DateTime.from_naive!("Etc/UTC")
+    |> DateTime.to_unix(:microsecond)
+  end
+
+  defp activity_timestamp_microseconds(_activity), do: 0
 end
 
 # end of atproto/publisher.ex

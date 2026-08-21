@@ -134,6 +134,25 @@ defmodule Pleroma.Nostr.Community do
 
   @profile_backfill_kinds [0, 1, 6, 9, 11, 1_111, 10_002, 10_011, 30_023]
   @thread_hydration_kinds [1, 9, 11, 1_111, 30_023]
+  @local_response_kinds [
+    1,
+    6,
+    7,
+    9,
+    11,
+    20,
+    21,
+    22,
+    1_018,
+    1_068,
+    1_111,
+    1_311,
+    30_023,
+    30_311,
+    31_922,
+    31_923,
+    31_925
+  ]
   @max_thread_hydration_targets 80
 
   def authorize(
@@ -195,6 +214,12 @@ defmodule Pleroma.Nostr.Community do
 
       is_binary(Protocol.tag_value(event, "h")) ->
         authorize_group_event(event, relay_url, source)
+
+      source == :relay and addressed_to_local_actor?(event) ->
+        :ok
+
+      source == :relay and response_to_local_event?(event) ->
+        :ok
 
       source == :relay and known_profile?(event["pubkey"], relay_url) ->
         :ok
@@ -507,6 +532,57 @@ defmodule Pleroma.Nostr.Community do
       %Entity{kind: kind} when kind in ["local_actor", "local_group"] -> true
       _ -> false
     end
+  end
+
+  # Response-relay filters subscribe to public events that tag a local actor.
+  # Apply the same boundary during authorization so a first-contact reply is
+  # accepted even when its author metadata has not reached this server yet.
+  defp addressed_to_local_actor?(%{"kind" => kind} = event)
+       when kind in @local_response_kinds do
+    event
+    |> Protocol.tag_values("p")
+    |> Enum.any?(&local_actor_pubkey?/1)
+  end
+
+  defp addressed_to_local_actor?(_event), do: false
+
+  # Public response subscriptions deliberately include authors that local users
+  # do not follow. The signed event must still point at an event exported by
+  # this server, which keeps the subscription from becoming a general relay
+  # firehose while allowing replies and reactions from new participants.
+  defp response_to_local_event?(%{"kind" => kind} = event)
+       when kind in @local_response_kinds do
+    event
+    |> local_response_reference_ids()
+    |> Enum.any?(fn event_id ->
+      match?(%Pleroma.Nostr.Event{local: true}, Pleroma.Nostr.Store.get(event_id))
+    end)
+  end
+
+  # Deletions are accepted only for a stored event signed by the same author.
+  # This permits an unknown responder to retract their imported response without
+  # allowing a remote key to delete one of this server's exported events.
+  defp response_to_local_event?(%{"kind" => 5, "pubkey" => pubkey} = event) do
+    event
+    |> local_response_reference_ids()
+    |> Enum.any?(fn event_id ->
+      case Pleroma.Nostr.Store.get(event_id) do
+        %Pleroma.Nostr.Event{local: false, pubkey: ^pubkey, ap_activity_id: activity_id}
+        when is_binary(activity_id) ->
+          true
+
+        _ ->
+          false
+      end
+    end)
+  end
+
+  defp response_to_local_event?(_event), do: false
+
+  defp local_response_reference_ids(event) do
+    (Protocol.tag_values(event, "e") ++ Protocol.tag_values(event, "q"))
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
   end
 
   defp maybe_add_tag(tags, _name, nil), do: tags

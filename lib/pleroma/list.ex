@@ -12,6 +12,9 @@ defmodule Pleroma.List do
   alias Pleroma.Repo
   alias Pleroma.User
 
+  @per_account_limit 50
+  @title_length_limit 256
+
   schema "lists" do
     belongs_to(:user, User, type: FlakeId.Ecto.CompatType)
     field(:title, :string)
@@ -30,6 +33,7 @@ defmodule Pleroma.List do
     list
     |> cast(attrs, [:title, :exclusive])
     |> validate_required([:title])
+    |> validate_length(:title, max: @title_length_limit)
   end
 
   def follow_changeset(list, attrs \\ %{}) do
@@ -126,35 +130,44 @@ defmodule Pleroma.List do
   end
 
   def create(attrs, %User{} = creator) when is_map(attrs) do
-    changeset = update_changeset(%Pleroma.List{user_id: creator.id}, attrs)
+    %Pleroma.List{user_id: creator.id}
+    |> update_changeset(attrs)
+    |> create_checked(creator)
+  end
 
+  def create(title, %User{} = creator) do
+    %Pleroma.List{user_id: creator.id}
+    |> title_changeset(%{title: title})
+    |> create_checked(creator)
+  end
+
+  defp create_checked(changeset, creator) do
     if changeset.valid? do
-      Repo.transaction(fn ->
-        list = Repo.insert!(changeset)
-
-        list
-        |> change(ap_id: "#{creator.ap_id}/lists/#{list.id}")
-        |> Repo.update!()
-      end)
+      create_valid(changeset, creator)
     else
       {:error, changeset}
     end
   end
 
-  def create(title, %User{} = creator) do
-    changeset = title_changeset(%Pleroma.List{user_id: creator.id}, %{title: title})
+  defp create_valid(changeset, creator) do
+    Repo.transaction(fn ->
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        ["lists:" <> to_string(creator.id)]
+      )
 
-    if changeset.valid? do
-      Repo.transaction(fn ->
-        list = Repo.insert!(changeset)
+      if Repo.aggregate(from(l in __MODULE__, where: l.user_id == ^creator.id), :count, :id) >=
+           @per_account_limit do
+        Repo.rollback(add_error(changeset, :user_id, "has reached the list limit"))
+      end
 
-        list
-        |> change(ap_id: "#{creator.ap_id}/lists/#{list.id}")
-        |> Repo.update!()
-      end)
-    else
-      {:error, changeset}
-    end
+      list = Repo.insert!(changeset)
+
+      list
+      |> change(ap_id: "#{creator.ap_id}/lists/#{list.id}")
+      |> Repo.update!()
+    end)
   end
 
   def follow(%Pleroma.List{id: id}, %User{} = followed) do

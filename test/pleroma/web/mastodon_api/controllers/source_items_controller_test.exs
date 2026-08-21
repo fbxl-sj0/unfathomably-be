@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.MastodonAPI.SourceItemsControllerTest do
   use Pleroma.Web.ConnCase
 
+  @moduletag capture_log: true
+
   alias Pleroma.Instances
 
   require Pleroma.Constants
@@ -13,6 +15,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceItemsControllerTest do
 
   setup do
     Mox.stub_with(Pleroma.UnstubbedConfigMock, Pleroma.Config)
+    clear_config([:instance, :federating], true)
     :ok
   end
 

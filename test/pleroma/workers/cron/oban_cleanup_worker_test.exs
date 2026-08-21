@@ -312,6 +312,33 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorkerTest do
     assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, recovering_job.id)
   end
 
+  test "discards persistent incoming server errors after twelve attempts" do
+    now = DateTime.utc_now()
+
+    persistent_job =
+      ReceiverWorker.new(%{
+        "op" => "incoming_ap_doc",
+        "params" => %{"type" => "Like", "id" => "https://remote.example/like"}
+      })
+      |> insert_job(now, state: "retryable", errors: [%{"error" => "remote response http 500"}])
+      |> Ecto.Changeset.change(attempt: 12, max_attempts: 20)
+      |> Pleroma.Repo.update!()
+
+    recovering_job =
+      ReceiverWorker.new(%{
+        "op" => "incoming_ap_doc",
+        "params" => %{"type" => "Like", "id" => "https://remote.example/like-2"}
+      })
+      |> insert_job(now, state: "retryable", errors: [%{"error" => "remote response http 502"}])
+      |> Ecto.Changeset.change(attempt: 11, max_attempts: 20)
+      |> Pleroma.Repo.update!()
+
+    assert 1 = ObanCleanupWorker.discard_fixed_federation_exception_retries()
+
+    assert %Oban.Job{state: "discarded"} = Repo.get(Oban.Job, persistent_job.id)
+    assert %Oban.Job{state: "retryable"} = Repo.get(Oban.Job, recovering_job.id)
+  end
+
   test "discards publisher jobs aimed at unreachable hosts" do
     now = DateTime.utc_now()
     Instances.set_unreachable("dead.example", Instances.reachability_datetime_threshold())

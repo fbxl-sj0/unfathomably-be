@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
   use Pleroma.Web.ConnCase
 
+  @moduletag capture_log: true
+
   require Pleroma.Constants
 
   alias Pleroma.Instances
@@ -213,7 +215,7 @@ defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
       category_json_url = category_url <> ".json"
 
       topic_url =
-        "https://socialhub.example/t/ai-bots-are-overwhelming-the-signup-application-process/8790"
+        "https://socialhub.example/t/automated-accounts-are-overwhelming-the-signup-application-process/8790"
 
       topic_json_url = topic_url <> ".json"
       post_ap_id = "https://mastodon.example/users/fediversereport/statuses/1"
@@ -281,9 +283,9 @@ defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
                     },
                     %{
                       "id" => 8790,
-                      "title" => "ai bots are overwhelming the signup application process",
-                      "fancy_title" => "ai bots are overwhelming the signup application process",
-                      "slug" => "ai-bots-are-overwhelming-the-signup-application-process",
+                      "title" => "automated accounts are overwhelming the signup application process",
+                      "fancy_title" => "automated accounts are overwhelming the signup application process",
+                      "slug" => "automated-accounts-are-overwhelming-the-signup-application-process",
                       "excerpt" => "A real topic excerpt&hellip;",
                       "created_at" => "2026-06-25T17:56:57.101Z",
                       "last_posted_at" => "2026-06-26T08:40:26.199Z",
@@ -324,7 +326,7 @@ defmodule Pleroma.Web.MastodonAPI.GroupPreviewControllerTest do
                  %{
                    "id" => ^topic_url,
                    "type" => "Article",
-                   "title" => "ai bots are overwhelming the signup application process",
+                   "title" => "automated accounts are overwhelming the signup application process",
                    "summary" => "A real topic excerpt\u2026",
                    "url" => ^topic_url,
                    "thumbnail_url" => "https://socialhub.example/uploads/topic.png",

@@ -81,6 +81,7 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
           |> to_string
       },
       languages: Keyword.get(instance, :languages, ["en"]),
+      urls: urls2(),
       configuration: configuration2(),
       registrations: %{
         enabled: Keyword.get(instance, :registrations_open),
@@ -186,6 +187,7 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       "multifetch",
       "pleroma:api/v1/notifications:include_types_filter",
       "quote_posting",
+      "quote_post_listing",
       "editing",
       if Config.get([:activitypub, :blockers_visible]) do
         "blockers_visible"
@@ -217,6 +219,19 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       "groups_discovery",
       "groups_search",
       "sources",
+      "native_federation",
+      if not Config.restrict_unauthenticated_access?(:timelines, :federated) do
+        "anonymous_public_timeline"
+      end,
+      if not Config.restrict_unauthenticated_access?(:timelines, :local) do
+        "anonymous_local_timeline"
+      end,
+      if not Config.restrict_unauthenticated_access?(:timelines, :federated) do
+        "anonymous_public_streaming"
+      end,
+      if not Config.restrict_unauthenticated_access?(:timelines, :local) do
+        "anonymous_local_streaming"
+      end,
       "bookmark_folders",
       if Pleroma.User.PostArchiveImport.enabled?() do
         "post_archive_import"
@@ -354,17 +369,21 @@ defmodule Pleroma.Web.MastodonAPI.InstanceView do
       Config.get([:instance, :account_field_value_length])
     )
     |> Map.merge(%{
-      urls: %{
-        streaming: Pleroma.Web.Endpoint.websocket_url(),
-        status: Config.get([:instance, :status_page]),
-        about: URI.merge(Pleroma.Web.Endpoint.url(), "/about") |> to_string(),
-        privacy_policy: nil,
-        terms_of_service:
-          URI.merge(Pleroma.Web.Endpoint.url(), "/static/terms-of-service.html") |> to_string()
-      },
       translation: %{enabled: Pleroma.Language.Translation.configured?()},
+      urls: %{streaming: Pleroma.Web.Endpoint.websocket_url()},
       vapid: %{public_key: Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key)}
     })
+  end
+
+  defp urls2 do
+    %{
+      streaming: Pleroma.Web.Endpoint.websocket_url(),
+      status: Config.get([:instance, :status_page]),
+      about: URI.merge(Pleroma.Web.Endpoint.url(), "/about") |> to_string(),
+      privacy_policy: nil,
+      terms_of_service:
+        URI.merge(Pleroma.Web.Endpoint.url(), "/static/terms-of-service.html") |> to_string()
+    }
   end
 
   defp restrict_unauthenticated do

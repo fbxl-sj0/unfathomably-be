@@ -645,6 +645,17 @@ pleroma-run mix pleroma.search.meilisearch index
 pleroma-run mix pleroma.search.meilisearch stats
 ```
 
+## Optional Protocol and Product Features
+
+The base installation provides ActivityPub federation and database-backed
+search. AT Protocol publishing, Nostr, Tor, translation, Meilisearch, web push,
+specialized Worlds discovery, and external service connectors have additional
+operator or per-user requirements.
+
+Complete [Optional Feature Enablement](FEATURE_ENABLEMENT.md) before advertising
+those capabilities. The guide includes configuration, secret handling, reverse
+proxy requirements, account linking, and verification steps.
+
 ## 13. Smoke Checks
 
 Run these checks after nginx is live:

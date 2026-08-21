@@ -9,6 +9,14 @@
 proxy_cache_path /tmp/pleroma-media-cache levels=1:2 keys_zone=pleroma_media_cache:10m max_size=10g
                  inactive=720m use_temp_path=off;
 
+# The backend returns this local SVG with status 200 so remote image failures
+# do not become broken browser elements. Never retain it as the response for a
+# recovered avatar or attachment URL.
+map $upstream_http_content_disposition $pleroma_media_no_cache {
+    default                                      0;
+    ~*remote-media-unavailable\.svg              1;
+}
+
 # this is explicitly IPv4 since Pleroma.Web.Endpoint binds on IPv4 only
 # and `localhost.` resolves to [::0] on some systems: see issue #930
 upstream phoenix {
@@ -98,6 +106,7 @@ server {
         proxy_set_header   Host $host;
         proxy_cache_valid  200 206 301 304 1h;
         proxy_cache_lock   on;
+        proxy_no_cache     $pleroma_media_no_cache;
         proxy_ignore_client_abort on;
         proxy_buffering    on;
         chunked_transfer_encoding on;

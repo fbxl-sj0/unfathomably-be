@@ -161,6 +161,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
 
     data
     |> Addressing.put_attributed_groups()
+    |> Addressing.put_targeted_groups()
     |> Map.put("actor", actor)
     |> Map.put("attributedTo", actor)
   end
@@ -324,6 +325,17 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CommonFixes do
       })
       when media_type in Pleroma.Constants.activity_json_mime_types() and is_binary(href) do
     quote_link_rel?(rel)
+  end
+
+  def is_object_link_tag(%{
+        "type" => "Link",
+        "mediaType" => media_type,
+        "href" => href,
+        "name" => name
+      })
+      when media_type in Pleroma.Constants.activity_json_mime_types() and is_binary(href) and
+             is_binary(name) do
+    name == "RE: #{href}"
   end
 
   def is_object_link_tag(_), do: false

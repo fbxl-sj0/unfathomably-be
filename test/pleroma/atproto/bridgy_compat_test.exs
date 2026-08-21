@@ -73,7 +73,7 @@ defmodule Pleroma.ATProto.BridgyCompatTest do
       Store.put(
         %{
           "uri" => @uri,
-          "cid" => "bafyreicodex#{test_name}",
+          "cid" => "bafyreitest#{test_name}",
           "indexedAt" => "2026-08-07T12:00:00Z"
         },
         "explicit"

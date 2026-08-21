@@ -291,7 +291,8 @@ defmodule Pleroma.Web.WebFinger do
     # WebFinger is restricted to HTTPS - https://tools.ietf.org/html/rfc7033#section-9.1
     meta_url = "https://#{domain}/.well-known/host-meta"
 
-    with {:ok, %{status: status, body: body}} when status in 200..299 <- HTTP.get(meta_url) do
+    with {:ok, %{status: status, body: body}} when status in 200..299 <-
+           HTTP.get(meta_url, [], pool: :federation, public_only: true) do
       get_template_from_xml(body)
     else
       error ->
@@ -306,7 +307,12 @@ defmodule Pleroma.Web.WebFinger do
   defp get_address_from_domain(domain, account)
        when is_binary(domain) and is_binary(account) do
     resource = if String.starts_with?(account, "acct:"), do: account, else: "acct:#{account}"
-    encoded_account = URI.encode(resource)
+
+    encoded_account =
+      resource
+      |> URI.encode()
+      |> String.replace("[", "%5B")
+      |> String.replace("]", "%5D")
 
     case find_lrdd_template(domain) do
       {:ok, template} ->
@@ -342,7 +348,9 @@ defmodule Pleroma.Web.WebFinger do
              address,
              [
                {"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}
-             ]
+             ],
+             pool: :federation,
+             public_only: true
            ) do
       case List.keyfind(headers, "content-type", 0) do
         {_, content_type} ->

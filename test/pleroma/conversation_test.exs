@@ -139,7 +139,7 @@ defmodule Pleroma.ConversationTest do
              jafnhar.id == user_id
            end)
 
-    assert Enum.find(conversation_three.participations, fn %{user_id: user_id} ->
+    refute Enum.find(conversation_three.participations, fn %{user_id: user_id} ->
              tridi.id == user_id
            end)
 
@@ -151,7 +151,7 @@ defmodule Pleroma.ConversationTest do
              jafnhar.id == user_id
            end)
 
-    assert Enum.find(conversation_three.users, fn %{id: user_id} ->
+    refute Enum.find(conversation_three.users, fn %{id: user_id} ->
              tridi.id == user_id
            end)
   end

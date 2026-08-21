@@ -149,6 +149,7 @@ defmodule Pleroma.Web.ApiSpec.Admin.UserOperation do
       ],
       responses: %{
         200 => Operation.response("Response", "application/json", user()),
+        401 => Operation.response("Unauthorized", "application/json", ApiError),
         403 => Operation.response("Forbidden", "application/json", ApiError),
         404 => Operation.response("Not Found", "application/json", ApiError)
       }

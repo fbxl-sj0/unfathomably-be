@@ -139,6 +139,7 @@ defmodule Pleroma.FASP.Client do
                | signature_headers
              ],
              pool: :federation,
+             public_only: true,
              redirect_middleware: nil
            ),
          {:ok, key_id} <- MessageSignatures.key_id(response),

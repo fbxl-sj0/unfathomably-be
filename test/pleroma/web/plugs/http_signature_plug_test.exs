@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.Plugs.HTTPSignaturePlugTest do
   use Pleroma.Web.ConnCase
 
+  alias Pleroma.Signature
   alias Pleroma.StubbedHTTPSignaturesMock, as: HTTPSignaturesMock
   alias Pleroma.Web.Plugs.HTTPSignaturePlug
 
@@ -12,6 +13,15 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlugTest do
   import Mox
   import Plug.Conn
   import Phoenix.Controller, only: [put_format: 2]
+
+  defp put_valid_legacy_signature(conn, key_id) do
+    conn
+    |> put_req_header("date", Signature.signed_date())
+    |> put_req_header(
+      "signature",
+      ~s|keyId="#{key_id}",algorithm="rsa-sha256",headers="(request-target) host date",signature="dGVzdA=="|
+    )
+  end
 
   test "logs activity context when a signing key is temporarily unavailable" do
     conn =
@@ -112,10 +122,7 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlugTest do
 
     conn =
       conn
-      |> put_req_header(
-        "signature",
-        "keyId=\"http://mastodon.example.org/users/admin#main-key"
-      )
+      |> put_valid_legacy_signature("http://mastodon.example.org/users/admin#main-key")
       |> put_format("activity+json")
       |> HTTPSignaturePlug.call(%{})
 
@@ -138,10 +145,7 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlugTest do
 
       conn =
         conn
-        |> put_req_header(
-          "signature",
-          "keyId=\"http://mastodon.example.org/users/admin#main-key"
-        )
+        |> put_valid_legacy_signature("http://mastodon.example.org/users/admin#main-key")
         |> HTTPSignaturePlug.call(%{})
 
       assert conn.assigns.valid_signature == false
@@ -156,10 +160,7 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlugTest do
         conn
         |> recycle()
         |> put_format("activity+json")
-        |> put_req_header(
-          "signature",
-          "keyId=\"http://mastodon.example.org/users/admin#main-key"
-        )
+        |> put_valid_legacy_signature("http://mastodon.example.org/users/admin#main-key")
         |> HTTPSignaturePlug.call(%{})
 
       assert conn.assigns.valid_signature == true
@@ -223,10 +224,7 @@ defmodule Pleroma.Web.Plugs.HTTPSignaturePlugTest do
       conn =
         build_conn(:get, "/users/alice")
         |> put_format("activity+json")
-        |> put_req_header(
-          "signature",
-          "keyId=\"http://mastodon.example.org/users/admin#main-key\""
-        )
+        |> put_valid_legacy_signature("http://mastodon.example.org/users/admin#main-key")
         |> HTTPSignaturePlug.call(%{})
 
       refute conn.halted

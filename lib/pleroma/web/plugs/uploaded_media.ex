@@ -18,6 +18,7 @@ defmodule Pleroma.Web.Plugs.UploadedMedia do
   @path "media"
 
   @default_cache_control_header "public, max-age=1209600, immutable"
+  @content_type_sniff_bytes 8192
 
   def init(_opts) do
     static_plug_opts =
@@ -53,7 +54,7 @@ defmodule Pleroma.Web.Plugs.UploadedMedia do
          proxy_remote = Keyword.get(config, :proxy_remote, false),
          {:ok, get_method} <- uploader.get_file(file),
          false <- media_is_banned(conn, get_method) do
-      get_media(conn, get_method, proxy_remote, opts)
+      get_media(conn, get_method, proxy_remote, opts, file)
     else
       :error ->
         media_storage_unavailable(conn)
@@ -76,14 +77,71 @@ defmodule Pleroma.Web.Plugs.UploadedMedia do
 
   defp media_is_banned(_, _), do: false
 
-  defp set_content_type(conn, opts, filepath) do
-    real_mime = MIME.from_path(filepath)
+  defp set_content_type(conn, opts, filepath, directory) do
+    real_mime = local_content_type(directory, filepath)
     clean_mime = Utils.get_safe_mime_type(opts, real_mime)
 
     put_resp_header(conn, "content-type", clean_mime)
   end
 
-  defp get_media(conn, {:static_dir, directory}, _, opts) do
+  defp local_content_type(directory, filepath) do
+    case MIME.from_path(filepath) do
+      "application/octet-stream" -> sniff_local_content_type(directory, filepath)
+      content_type -> content_type
+    end
+  end
+
+  defp sniff_local_content_type(directory, filepath) do
+    with {:ok, path} <- local_media_path(directory, filepath),
+         {:ok, file} <- File.open(path, [:read, :binary]) do
+      try do
+        with data when is_binary(data) and data != "" <-
+               IO.binread(file, @content_type_sniff_bytes) do
+          detected_content_type(data)
+        else
+          _ -> "application/octet-stream"
+        end
+      after
+        File.close(file)
+      end
+    else
+      _ -> "application/octet-stream"
+    end
+  rescue
+    _ -> "application/octet-stream"
+  catch
+    _, _ -> "application/octet-stream"
+  end
+
+  defp detected_content_type(<<0x89, "PNG\r\n", 0x1A, "\n", _::binary>>), do: "image/png"
+  defp detected_content_type(<<0xFF, 0xD8, 0xFF, _::binary>>), do: "image/jpeg"
+  defp detected_content_type(<<"GIF87a", _::binary>>), do: "image/gif"
+  defp detected_content_type(<<"GIF89a", _::binary>>), do: "image/gif"
+
+  defp detected_content_type(<<"RIFF", _size::binary-size(4), "WEBP", _::binary>>),
+    do: "image/webp"
+
+  defp detected_content_type(data) do
+    case Majic.perform({:bytes, data}, pool: Pleroma.MajicPool) do
+      {:ok, %{mime_type: content_type}} when is_binary(content_type) -> content_type
+      _ -> "application/octet-stream"
+    end
+  end
+
+  defp local_media_path(directory, filepath) do
+    root = Path.expand(directory)
+    path = Path.expand(filepath, root)
+    relative_path = Path.relative_to(path, root)
+
+    cond do
+      Path.type(relative_path) != :relative -> {:error, :unsafe_path}
+      relative_path in ["", "."] -> {:error, :unsafe_path}
+      ".." in Path.split(relative_path) -> {:error, :unsafe_path}
+      true -> {:ok, path}
+    end
+  end
+
+  defp get_media(conn, {:static_dir, directory}, _, opts, file) do
     static_opts =
       Map.get(opts, :static_plug_opts)
       |> Map.put(:at, [@path])
@@ -92,7 +150,7 @@ defmodule Pleroma.Web.Plugs.UploadedMedia do
 
     conn =
       conn
-      |> set_content_type(opts, conn.request_path)
+      |> set_content_type(opts, file, directory)
       |> Plug.Static.call(static_opts)
 
     if conn.halted do
@@ -104,7 +162,7 @@ defmodule Pleroma.Web.Plugs.UploadedMedia do
     end
   end
 
-  defp get_media(conn, {:url, url}, true, _) do
+  defp get_media(conn, {:url, url}, true, _, _) do
     proxy_opts = [
       http: [
         follow_redirect: true,
@@ -116,13 +174,13 @@ defmodule Pleroma.Web.Plugs.UploadedMedia do
     |> Pleroma.ReverseProxy.call(url, proxy_opts)
   end
 
-  defp get_media(conn, {:url, url}, _, _) do
+  defp get_media(conn, {:url, url}, _, _, _) do
     conn
     |> Phoenix.Controller.redirect(external: url)
     |> halt()
   end
 
-  defp get_media(conn, unknown, _, _) do
+  defp get_media(conn, unknown, _, _, _) do
     Logger.error("#{__MODULE__}: Unknown get strategy: #{inspect(unknown)}")
 
     conn

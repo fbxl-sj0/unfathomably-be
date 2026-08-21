@@ -24,8 +24,12 @@ defmodule Pleroma.Web.RichMedia.Parsers.OEmbedTest do
       "provider_name" => "Example Video",
       "provider_url" => "https://video.example",
       "thumbnail_url" => "https://video.example/thumb.jpg",
-      "width" => 640,
-      "height" => 360,
+      "width" => "640",
+      "height" => "360",
+      "thumbnail_width" => "320",
+      "thumbnail_height" => 180,
+      "cache_age" => "3600",
+      "version" => "1.0",
       "logo" => %{"url" => "https://video.example/logo.png"},
       "unknown" => %{"deep" => ["untrusted"]}
     }
@@ -35,6 +39,10 @@ defmodule Pleroma.Web.RichMedia.Parsers.OEmbedTest do
     assert normalized["provider_name"] == "Example Video"
     assert normalized["width"] == 640
     assert normalized["height"] == 360
+    assert normalized["thumbnail_width"] == 320
+    assert normalized["thumbnail_height"] == 180
+    assert normalized["cache_age"] == 3600
+    assert normalized["version"] == "1.0"
     refute Map.has_key?(normalized, "author_name")
     refute Map.has_key?(normalized, "author_url")
     refute Map.has_key?(normalized, "logo")

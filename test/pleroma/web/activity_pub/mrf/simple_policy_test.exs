@@ -9,7 +9,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.SimplePolicyTest do
   alias Pleroma.Web.CommonAPI
 
   setup do:
-          clear_config(:mrf_simple,
+          clear_config_section(:mrf_simple,
             media_removal: [],
             media_nsfw: [],
             content_warning: [],

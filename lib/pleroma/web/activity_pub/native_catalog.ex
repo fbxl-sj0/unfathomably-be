@@ -561,6 +561,8 @@ defmodule Pleroma.Web.ActivityPub.NativeCatalog do
         %{}
         |> maybe_put("author", Enum.join(authors, ", "))
         |> maybe_put("edition", year)
+        |> maybe_put("series", series_name(discovery_value(item, :series)))
+        |> maybe_put("series_number", series_number(discovery_value(item, :seriesNumber)))
 
       [
         %{
@@ -582,6 +584,32 @@ defmodule Pleroma.Web.ActivityPub.NativeCatalog do
   end
 
   defp bookwyrm_candidate(_item), do: []
+
+  defp series_name(value) when is_binary(value), do: bounded_string(value, 160)
+
+  defp series_name(%{} = value) do
+    [Map.get(value, "name"), Map.get(value, "title"), Map.get(value, "label")]
+    |> Enum.find_value(&series_name/1)
+  end
+
+  defp series_name(values) when is_list(values) do
+    values
+    |> Enum.map(&series_name/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.join(", ")
+    |> bounded_string(160)
+  end
+
+  defp series_name(_value), do: nil
+
+  defp series_number(value) when is_integer(value), do: Integer.to_string(value)
+
+  defp series_number(value) when is_float(value),
+    do: :erlang.float_to_binary(value, decimals: 3) |> bounded_string(80)
+
+  defp series_number(value) when is_binary(value), do: bounded_string(value, 80)
+  defp series_number(_value), do: nil
 
   defp merge_book_candidates(bookwyrm_candidates, metadata_candidates) do
     (bookwyrm_candidates ++ metadata_candidates)

@@ -17,6 +17,8 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
 
   require Pleroma.Constants
 
+  setup do: clear_config([:instance, :federating], true)
+
   test "uses a configurable worker timeout" do
     assert RemoteFetcherWorker.timeout(%Oban.Job{}) == 30_000
 
@@ -83,6 +85,18 @@ defmodule Pleroma.Workers.RemoteFetcherWorkerTest do
                  args: %{
                    "op" => "fetch_remote",
                    "id" => "https://dormant.example/objects/1"
+                 }
+               })
+    end
+  end
+
+  test "cancels private-network fetches instead of retrying SSRF rejections" do
+    with_mock Fetcher, fetch_object_from_id: fn _, _ -> {:error, :private_network_address} end do
+      assert {:cancel, :private_network_address} =
+               RemoteFetcherWorker.perform(%Oban.Job{
+                 args: %{
+                   "op" => "fetch_remote",
+                   "id" => "https://private-address.example/objects/1"
                  }
                })
     end

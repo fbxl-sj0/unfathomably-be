@@ -151,7 +151,44 @@ defmodule Credo.Check.Consistency.FileLocation do
 
     file_name = module_name |> Module.concat() |> Macro.underscore()
 
-    Path.join([root_folder, relative_path, file_name])
+    [root_folder, relative_path, file_name]
+    |> Path.join()
+    |> normalize_path_initialisms()
+  end
+
+  # Protocol initialisms have established spellings in this project and in
+  # their specifications. Macro.underscore/1 otherwise expands names such as
+  # ATProto and OAuth into surprising paths that do not match the source tree.
+  defp normalize_path_initialisms(path) do
+    parts = Path.split(path)
+
+    replacements =
+      %{
+        "at_proto" => "atproto",
+        "d_po_p" => "dpop",
+        "h_card" => "hcard"
+      }
+      |> maybe_add_atproto_oauth(parts)
+
+    parts
+    |> Enum.map(fn part ->
+      Enum.reduce(replacements, part, fn {expanded, stable}, current ->
+        if current == expanded or String.starts_with?(current, expanded <> "_") do
+          stable <> String.trim_leading(current, expanded)
+        else
+          current
+        end
+      end)
+    end)
+    |> Path.join()
+  end
+
+  defp maybe_add_atproto_oauth(replacements, parts) do
+    if Enum.any?(parts, &(&1 in ["at_proto", "atproto"])) do
+      Map.put(replacements, "o_auth", "oauth")
+    else
+      replacements
+    end
   end
 
   defp error(issue_meta, module, expected_file) do

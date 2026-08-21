@@ -129,7 +129,31 @@ defmodule Pleroma.HTML do
 
   defp extract_link_attachment_url(_), do: nil
 
-  defp link_attachment_url(%{"type" => "Link", "href" => href}) when is_binary(href) do
+  @doc """
+  Returns the first safe web destination carried by an ActivityPub Link.
+
+  ActivityPub producers use both a direct `href` and the attachment-style
+  `url: [{href: ...}]` shape. Treating only the first form as a link turns
+  Lemmy and similar link posts into unknown downloadable media.
+  """
+  def link_attachment_url(%{"type" => "Link"} = attachment) do
+    (attachment["href"] || nested_link_url(attachment["url"]))
+    |> valid_web_url()
+  end
+
+  def link_attachment_url(_), do: nil
+
+  defp nested_link_url(url) when is_binary(url), do: url
+
+  defp nested_link_url(urls) when is_list(urls) do
+    Enum.find_value(urls, &nested_link_url/1)
+  end
+
+  defp nested_link_url(%{"href" => href}) when is_binary(href), do: href
+  defp nested_link_url(%{"url" => url}), do: nested_link_url(url)
+  defp nested_link_url(_), do: nil
+
+  defp valid_web_url(href) when is_binary(href) do
     case URI.parse(href) do
       %URI{scheme: scheme, host: host}
       when scheme in ["http", "https"] and is_binary(host) and host != "" ->
@@ -142,5 +166,5 @@ defmodule Pleroma.HTML do
     URI.Error -> nil
   end
 
-  defp link_attachment_url(_), do: nil
+  defp valid_web_url(_), do: nil
 end

@@ -19,6 +19,7 @@ defmodule Pleroma.Mixfile do
       ],
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
+      hex: hex_options(),
       deps: deps(),
       test_coverage: [tool: :covertool, summary: true],
       test_ignore_filters: [
@@ -32,14 +33,7 @@ defmodule Pleroma.Mixfile do
         source_url_pattern:
           "https://github.com/fbxl-sj0/unfathomably-be/blob/main/%{path}#L%{line}",
         logo: "priv/static/images/logo.png",
-        extras:
-          [
-            "README.md",
-            "CHANGELOG.md",
-            "FEDERATION.md",
-            "FEDERATION_TESTING.md",
-            "SECURITY.md"
-          ] ++ Path.wildcard("docs/**/*.md"),
+        extras: docs_extras(),
         groups_for_extras: [
           "Project and policy": [
             "CHANGELOG.md",
@@ -54,6 +48,10 @@ defmodule Pleroma.Mixfile do
             Path.wildcard("docs/development/API/*.md")
         ],
         main: "readme",
+        # ExDoc cannot resolve private implementation modules, dependency types,
+        # or links that target the deployed documentation hierarchy. Keep that
+        # legacy baseline explicit so every warning outside it remains fatal.
+        skip_undefined_reference_warnings_on: docs_reference_warning_allowlist(),
         output: "priv/static/doc"
       ],
       releases: [
@@ -159,7 +157,7 @@ defmodule Pleroma.Mixfile do
       {:phoenix_html_helpers, "~> 1.0"},
       {:phoenix_live_reload, "~> 1.6", only: :dev},
       {:phoenix_live_view, "~> 1.2"},
-      {:phoenix_live_dashboard, "~> 0.8.7"},
+      {:phoenix_live_dashboard, "~> 0.9.0"},
       {:telemetry_metrics, "~> 1.1"},
       {:telemetry_poller, "~> 1.3"},
       {:oban, "~> 2.23"},
@@ -271,11 +269,17 @@ defmodule Pleroma.Mixfile do
         "test --warnings-as-errors --no-all-warnings test/pleroma/web/public_surface_security_test.exs test/pleroma/web/streamer_test.exs test/pleroma/integration/mastodon_websocket_test.exs test/pleroma/workers/cron/schedule_reachability_worker_test.exs test/pleroma/web/mastodon_api/controllers/federated_group_controller_test.exs test/pleroma/web/mastodon_api/controllers/group_preview_controller_test.exs test/pleroma/web/mastodon_api/controllers/local_group_controller_test.exs test/pleroma/web/mastodon_api/controllers/source_controller_test.exs test/pleroma/web/mastodon_api/controllers/source_items_controller_test.exs"
       ],
       strict: [
-        "compile --warnings-as-errors --no-all-warnings",
+        "hex.audit",
+        "deps.get --check-locked",
+        "deps.unlock --check-unused",
+        "compile --force --warnings-as-errors --no-all-warnings",
         "format --check-formatted",
         "credo --strict --only=warnings,todo,fixme,consistency,readability",
-        "test --warnings-as-errors --no-all-warnings"
+        "test.strict",
+        "docs.strict"
       ],
+      "test.strict": &strict_tests/1,
+      "docs.strict": &strict_docs/1,
       docs: ["pleroma.docs", "docs"],
       analyze: ["credo --strict --only=warnings,todo,fixme,consistency,readability"],
       copyright: &add_copyright/1,
@@ -290,6 +294,139 @@ defmodule Pleroma.Mixfile do
   # * build metadata:
   #   * a build name if `PLEROMA_BUILD_NAME` or `:pleroma, :build_name` is defined
   #   * the mix environment if different than prod
+  defp docs_extras do
+    core = [
+      {"README.md", [filename: "readme"]},
+      "CHANGELOG.md",
+      "FEDERATION.md",
+      "FEDERATION_TESTING.md",
+      "SECURITY.md"
+    ]
+
+    guides =
+      Path.wildcard("docs/**/*.md")
+      |> Enum.map(fn
+        "docs/README.md" = path ->
+          {path, [filename: "documentation-readme"]}
+
+        "docs/index.md" = path ->
+          {path, [filename: "documentation-index"]}
+
+        "docs/development/index.md" = path ->
+          {path, [filename: "development-index"]}
+
+        "docs/configuration/search.md" = path ->
+          {path, [filename: "configuration-search"]}
+
+        path ->
+          path
+      end)
+
+    core ++ guides
+  end
+
+  defp docs_reference_warning_allowlist do
+    [
+      "README.md",
+      "docs/UPSTREAM_PLEROMA_AUDIT.md",
+      "docs/UPSTREAM_PLEROMA_FULL_MANIFEST.md",
+      "docs/administration/CLI_tasks/robots_txt.md",
+      "docs/configuration/cheatsheet.md",
+      "docs/configuration/howto_theming_your_instance.md",
+      "docs/configuration/static_dir.md",
+      "docs/generated_config.md",
+      "docs/installation/debian_based_jp.md",
+      "Pleroma.Activity",
+      "Pleroma.ApplicationRequirements",
+      "Pleroma.Bookmark",
+      "Pleroma.Caching",
+      "Pleroma.Diaspora.Store",
+      "Pleroma.Migrators.ContextObjectsDeletionMigrator",
+      "Pleroma.Migrators.HashtagsTableMigrator",
+      "Pleroma.Migrators.Support.BaseMigratorState",
+      "Pleroma.Object.Fetcher",
+      "Pleroma.User",
+      "Pleroma.Web.ActivityPub.Builder",
+      "Pleroma.Web.CommonAPI.Utils",
+      "Pleroma.Web.RichMedia.Parser.MetaTags"
+    ]
+  end
+
+  defp strict_docs(_args) do
+    File.rm_rf!("priv/static/doc")
+    Mix.Task.run("pleroma.docs")
+    Mix.Tasks.Docs.run(["--warnings-as-errors"])
+  end
+
+  # The test suite intentionally exercises process-wide Application
+  # configuration and caches. Explicit file batches keep those tests isolated
+  # and, unlike ExUnit partitions, avoid compiling every test module into each
+  # VM before filtering the cases assigned to it.
+  defp strict_tests(args) do
+    mix = System.find_executable("mix") || Mix.raise("mix executable was not found")
+
+    test_batches =
+      "test/**/*_test.exs"
+      |> Path.wildcard()
+      |> Enum.sort()
+      |> Enum.chunk_every(50)
+
+    start_batch = strict_test_start_batch(args, length(test_batches))
+
+    test_batches
+    |> Enum.with_index(1)
+    |> Enum.drop(start_batch - 1)
+    |> Enum.each(fn {files, batch} ->
+      IO.puts("Running strict test batch #{batch}/#{length(test_batches)}")
+
+      {_output, status} =
+        System.cmd(
+          mix,
+          [
+            "test",
+            "--warnings-as-errors",
+            "--no-all-warnings",
+            "--max-cases",
+            "1",
+            "--no-compile",
+            "--no-deps-check"
+          ] ++ files,
+          into: IO.stream(:stdio, :line),
+          stderr_to_stdout: true
+        )
+
+      if status != 0 do
+        Mix.raise("strict test batch #{batch}/#{length(test_batches)} failed")
+      end
+    end)
+  end
+
+  defp strict_test_start_batch([], _batch_count), do: 1
+
+  defp strict_test_start_batch(["--from-batch", value], batch_count) do
+    case Integer.parse(value) do
+      {batch, ""} when batch >= 1 and batch <= batch_count -> batch
+      _ -> Mix.raise("strict test batch must be between 1 and #{batch_count}")
+    end
+  end
+
+  defp strict_test_start_batch(_args, _batch_count) do
+    Mix.raise("usage: mix test.strict [--from-batch BATCH]")
+  end
+
+  defp hex_options do
+    [
+      # These advisories misclassify the vendored fixed Gun 2.5 and cowlib
+      # 2.19 sources. The vendored security regression test proves that the
+      # relevant header and cookie injection protections remain present.
+      ignore_advisories: [
+        "GHSA-w4f7-4cxr-rv3c",
+        "CVE-2026-43966",
+        "CVE-2026-43969"
+      ]
+    ]
+  end
+
   defp version(version) do
     identifier_filter = ~r/[^0-9a-z\-]+/i
 

@@ -8,6 +8,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.PageHandlingTest do
 
   alias Pleroma.Object.Fetcher
 
+  setup_all do: clear_config([:instance, :federating], true)
+
   test "Lemmy Page" do
     Tesla.Mock.mock(fn
       %{url: "https://enterprise.lemmy.ml/post/3"} ->

@@ -19,8 +19,8 @@ defmodule Pleroma.Web.FederatedTarget do
   require Pleroma.Constants
 
   alias Pleroma.Activity
-  alias Pleroma.FollowingRelationship
   alias Pleroma.FederatedTargetCuration
+  alias Pleroma.FollowingRelationship
   alias Pleroma.GroupMembership
   alias Pleroma.HTTP
   alias Pleroma.Instances

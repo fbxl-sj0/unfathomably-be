@@ -23,6 +23,7 @@ defmodule Pleroma.WorldParticipation do
   alias Pleroma.Object
   alias Pleroma.Repo
   alias Pleroma.User
+  alias Pleroma.WorldObjectState
 
   @public "https://www.w3.org/ns/activitystreams#Public"
   @families ~w[
@@ -67,12 +68,19 @@ defmodule Pleroma.WorldParticipation do
       |> where([entry], entry.user_id == ^user.id)
       |> Repo.aggregate(:count, :id)
 
+    workspace_counts = WorldObjectState.public_counts(user)
+
     native_counts =
       if book_count > 0 do
         Map.update(native_counts, "books", book_count, &(&1 + book_count))
       else
         native_counts
       end
+
+    native_counts =
+      Map.merge(native_counts, workspace_counts, fn _family, native_count, workspace_count ->
+        native_count + workspace_count
+      end)
 
     @families
     |> Enum.flat_map(fn family ->

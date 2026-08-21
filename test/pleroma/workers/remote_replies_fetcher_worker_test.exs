@@ -23,6 +23,8 @@ defmodule Pleroma.Workers.RemoteRepliesFetcherWorkerTest do
   @reply_2 "https://remote.example/objects/reply-2"
 
   setup do
+    clear_config([:instance, :federating], true)
+
     clear_config([:activitypub, :remote_replies_collection_refresh],
       enabled: true,
       schedule: [0],

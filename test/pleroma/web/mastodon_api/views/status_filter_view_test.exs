@@ -41,11 +41,11 @@ defmodule Pleroma.Web.MastodonAPI.StatusFilterViewTest do
     assert result.keyword_matches == ["CAT"]
     assert result.status_matches == []
 
-    refute StatusView.render("show.json", %{
+    assert StatusView.render("show.json", %{
              activity: activity,
              for: reader,
              filter_context: "public"
-           }).filtered
+           }).filtered == []
   end
 end
 

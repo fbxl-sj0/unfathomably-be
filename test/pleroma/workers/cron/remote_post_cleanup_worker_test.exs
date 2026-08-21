@@ -29,18 +29,106 @@ defmodule Pleroma.Workers.Cron.RemotePostCleanupWorkerTest do
     clear_config([RemotePostCleanupWorker, :query_timeout_ms], 60_000)
     clear_config([RemotePostCleanupWorker, :keep_threads_with_local_activity], true)
     clear_config([RemotePostCleanupWorker, :keep_direct_or_mentioned], true)
+    clear_config([RemotePostCleanupWorker, :orphan_activity_cleanup_enabled], false)
+    clear_config([RemotePostCleanupWorker, :orphan_activity_batch_size], 50)
+    clear_config([RemotePostCleanupWorker, :orphan_activity_scan_limit], 100)
+    clear_config([RemotePostCleanupWorker, :orphan_activity_full_sweep_days], 30)
+    clear_config([RemotePostCleanupWorker, :orphan_activity_continuation_enabled], false)
+    clear_config([RemotePostCleanupWorker, :remote_cache_continuation_enabled], false)
+    clear_config([RemotePostCleanupWorker, :tombstone_cleanup_enabled], false)
     clear_config([RemotePostCleanupWorker, :remote_actor_cleanup_enabled], true)
     clear_config([RemotePostCleanupWorker, :remote_actor_max_age_days], 730)
     clear_config([RemotePostCleanupWorker, :remote_actor_batch_size], 50)
   end
 
-  test "prunes old untouched remote public post objects without deleting their create activities" do
+  test "paces orphan activity continuations according to database work" do
+    assert RemotePostCleanupWorker.orphan_activity_continuation_delay_seconds(100, 5) == 5
+    assert RemotePostCleanupWorker.orphan_activity_continuation_delay_seconds(5_000, 2) == 20
+    assert RemotePostCleanupWorker.orphan_activity_continuation_delay_seconds(100_000, 1) == 300
+  end
+
+  test "prunes old untouched remote public posts and their detached create activities" do
     %{activity: activity, object: object} = remote_public_post()
 
     assert {:ok, 1} = RemotePostCleanupWorker.perform(%Oban.Job{})
 
     refute Object.get_by_ap_id(object.data["id"])
+    refute Repo.get(Activity, activity.id)
+  end
+
+  test "sweeps old orphaned remote activity envelopes left by earlier pruning" do
+    clear_config([RemotePostCleanupWorker, :orphan_activity_cleanup_enabled], true)
+    %{activity: activity, object: object} = remote_public_post()
+    assert {:ok, _object} = Object.prune(object)
+
+    assert {:ok, 0} = RemotePostCleanupWorker.perform(%Oban.Job{})
+
+    refute Repo.get(Activity, activity.id)
+  end
+
+  test "defers old object cleanup while the orphan activity sweep is active" do
+    clear_config([RemotePostCleanupWorker, :orphan_activity_cleanup_enabled], true)
+
+    %{activity: orphan_activity, object: orphan_object} = remote_public_post()
+    assert {:ok, _object} = Object.prune(orphan_object)
+    %{object: retained_object} = remote_public_post()
+
+    assert {:ok, 0} = RemotePostCleanupWorker.perform(%Oban.Job{})
+
+    refute Repo.get(Activity, orphan_activity.id)
+    assert Object.get_by_ap_id(retained_object.data["id"])
+  end
+
+  test "keeps orphaned remote activities with local notifications" do
+    clear_config([RemotePostCleanupWorker, :orphan_activity_cleanup_enabled], true)
+    %{activity: activity, object: object} = remote_public_post()
+    user = insert(:user)
+    notification = insert(:notification, user: user, activity: activity)
+    assert {:ok, _object} = Object.prune(object)
+
+    assert {:ok, 0} = RemotePostCleanupWorker.perform(%Oban.Job{})
+
     assert Repo.get(Activity, activity.id)
+    assert Repo.get(Notification, notification.id)
+  end
+
+  test "keeps orphaned remote activities referenced by local activity" do
+    clear_config([RemotePostCleanupWorker, :orphan_activity_cleanup_enabled], true)
+    %{activity: activity, object: object} = remote_public_post()
+    user = insert(:user)
+    assert {:ok, _favorite} = CommonAPI.favorite(user, activity.id)
+    assert {:ok, _object} = Object.prune(object)
+
+    assert {:ok, 0} = RemotePostCleanupWorker.perform(%Oban.Job{})
+
+    assert Repo.get(Activity, activity.id)
+  end
+
+  test "prunes old remote Tombstones after the longer safety window" do
+    clear_config([RemotePostCleanupWorker, :tombstone_cleanup_enabled], true)
+    clear_config([RemotePostCleanupWorker, :tombstone_max_age_days], 730)
+    clear_config([RemotePostCleanupWorker, :tombstone_batch_size], 10)
+
+    old_inserted_at =
+      NaiveDateTime.utc_now()
+      |> NaiveDateTime.add(-800 * 86_400, :second)
+      |> NaiveDateTime.truncate(:second)
+
+    tombstone =
+      insert(:note,
+        data: %{
+          "id" => "https://retired.example/objects/old-tombstone",
+          "type" => "Tombstone"
+        }
+      )
+
+    Object
+    |> Ecto.Query.where([object], object.id == ^tombstone.id)
+    |> Repo.update_all(set: [inserted_at: old_inserted_at, updated_at: old_inserted_at])
+
+    assert {:ok, 0} = RemotePostCleanupWorker.perform(%Oban.Job{})
+
+    refute Object.get_by_id(tombstone.id)
   end
 
   test "keeps recent remote public post objects" do

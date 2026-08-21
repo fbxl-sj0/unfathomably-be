@@ -11,10 +11,12 @@ defmodule Pleroma.Web.ActivityPub.MRF.ObjectAgePolicyTest do
   alias Pleroma.Web.ActivityPub.Visibility
 
   setup do:
-          clear_config(:mrf_object_age,
+          clear_config_section(:mrf_object_age,
             threshold: 172_800,
             actions: [:delist, :strip_followers]
           )
+
+  setup do: clear_config([:instance, :federating], true)
 
   setup_all do
     Tesla.Mock.mock_global(fn env -> apply(HttpRequestMock, :request, [env]) end)

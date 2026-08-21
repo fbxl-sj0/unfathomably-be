@@ -243,8 +243,8 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
     drop_static_param_and_redirect(conn)
   end
 
-  defp render_preview_decision({:error, :cached_failure}, conn, _media_proxy_url) do
-    ReverseProxy.failed_image_placeholder(conn)
+  defp render_preview_decision({:error, :cached_failure}, conn, media_proxy_url) do
+    render_preview_decision({:redirect, :media_proxy}, conn, media_proxy_url)
   end
 
   defp render_preview_decision({:error, reason}, conn, media_proxy_url) do
@@ -262,7 +262,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
 
   defp cache_preview_failure(conn, media_proxy_url, _reason) do
     MediaHelper.cache_preview_failure(media_proxy_url)
-    ReverseProxy.failed_image_placeholder(conn)
+    render_preview_decision({:redirect, :media_proxy}, conn, media_proxy_url)
   end
 
   defp put_preview_response_headers(
@@ -316,6 +316,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyController do
 
   defp media_proxy_opts do
     Config.get([:media_proxy, :proxy_opts], [])
+    |> Keyword.update(:http, [public_only: true], &Keyword.put(&1, :public_only, true))
     |> Keyword.put_new(:image_fallback_on_failure, true)
     |> Keyword.put_new(:sniff_content_type, true)
   end

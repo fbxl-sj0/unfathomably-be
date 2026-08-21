@@ -110,7 +110,7 @@ defmodule Pleroma.Web.CommonAPI.ActivityDraftTest do
     {:ok, _} = ActivityDraft.create(user, %{status: "nice", quote_id: private.id})
     {:error, _} = ActivityDraft.create(another_user, %{status: "nice", quote_id: private.id})
     {:ok, _} = ActivityDraft.create(user, %{status: "nice", quote_id: unlisted.id})
-    {:ok, _} = ActivityDraft.create(another_user, %{status: "nice", quote_id: unlisted.id})
+    {:error, _} = ActivityDraft.create(another_user, %{status: "nice", quote_id: unlisted.id})
     {:ok, _} = ActivityDraft.create(user, %{status: "nice", quote_id: local.id})
     {:ok, _} = ActivityDraft.create(another_user, %{status: "nice", quote_id: local.id})
     {:ok, _} = ActivityDraft.create(user, %{status: "nice", quote_id: public.id})

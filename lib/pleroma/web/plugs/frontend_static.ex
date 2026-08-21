@@ -4,7 +4,7 @@
 
 defmodule Pleroma.Web.Plugs.FrontendStatic do
   @moduledoc """
-  This is a shim to call `Plug.Static` but with runtime `from` configuration`. It dispatches to the different frontends.
+  This is a shim to call `Plug.Static` but with runtime `from` configuration. It dispatches to the different frontends.
   """
   @behaviour Plug
 

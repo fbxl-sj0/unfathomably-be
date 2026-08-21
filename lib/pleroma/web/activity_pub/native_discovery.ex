@@ -96,6 +96,27 @@ defmodule Pleroma.Web.ActivityPub.NativeDiscovery do
     :id
   ]
 
+  # Specialized discovery providers sometimes put the ActivityPub object
+  # inside a bounded context field instead of repeating its URL at the item
+  # root. Keep this list explicit so actor, provider, and arbitrary metadata
+  # maps cannot accidentally become local-status candidates.
+  @local_status_nested_keys [
+    :book,
+    :edition,
+    :work,
+    :object,
+    :resource,
+    :audio,
+    :video,
+    :track,
+    :event,
+    :project,
+    :issue,
+    :repository,
+    :model,
+    :route
+  ]
+
   @doc "Attach visible current and exact-revision status IDs to locally stored discovery items."
   @spec attach_local_status_ids(result(), Pleroma.User.t() | nil) :: result()
   def attach_local_status_ids(result, reading_user \\ nil)
@@ -174,13 +195,37 @@ defmodule Pleroma.Web.ActivityPub.NativeDiscovery do
   def attach_local_status_ids(result, _reading_user), do: result
 
   defp local_status_candidates(item) when is_map(item) do
-    @local_status_candidate_keys
-    |> Enum.map(&discovery_value(item, &1))
+    direct_candidates = local_status_candidate_values(item)
+
+    nested_candidates =
+      @local_status_nested_keys
+      |> Enum.flat_map(fn key ->
+        item
+        |> discovery_value(key)
+        |> local_status_nested_values()
+        |> Enum.flat_map(&local_status_candidate_values/1)
+      end)
+
+    (direct_candidates ++ nested_candidates)
     |> Enum.filter(&local_object_id?/1)
     |> Enum.uniq()
   end
 
   defp local_status_candidates(_item), do: []
+
+  defp local_status_candidate_values(value) when is_map(value) do
+    Enum.map(@local_status_candidate_keys, &discovery_value(value, &1))
+  end
+
+  defp local_status_candidate_values(_value), do: []
+
+  defp local_status_nested_values(%{} = value), do: [value]
+
+  defp local_status_nested_values(values) when is_list(values) do
+    Enum.filter(values, &is_map/1) |> Enum.take(8)
+  end
+
+  defp local_status_nested_values(_value), do: []
 
   defp local_object_id?(value) when is_binary(value) and byte_size(value) <= 2048 do
     case URI.parse(value) do

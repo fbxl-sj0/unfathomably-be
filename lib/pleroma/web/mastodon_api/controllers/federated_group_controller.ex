@@ -166,6 +166,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
           group: group,
           for: user,
           include_interaction_score: false,
+          refresh_status_count: false,
           refresh_counts: true
         )
 
@@ -208,6 +209,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupController do
           group: group,
           for: user,
           include_interaction_score: false,
+          refresh_status_count: false,
           refresh_counts: true
         )
 

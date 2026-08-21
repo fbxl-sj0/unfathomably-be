@@ -129,7 +129,10 @@ defmodule Pleroma.Web.FederatorTest do
         "to" => ["https://www.w3.org/ns/activitystreams#Public"]
       }
 
-      assert {:ok, job} = Federator.incoming_ap_doc(params)
+      assert {:ok, job} =
+               Federator.incoming_ap_doc(%{params: params, req_headers: []})
+
+      refute Map.has_key?(job.args, "timeout")
       assert {:ok, _activity} = ObanHelpers.perform(job)
 
       assert {:ok, job} = Federator.incoming_ap_doc(params)

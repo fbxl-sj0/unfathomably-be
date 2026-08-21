@@ -1,5 +1,22 @@
 # Backup/Restore/Move/Remove your instance
 
+## Mutable media storage
+
+The upload directory is mutable instance data, not application source. Keep it outside the
+source checkout where practical, for example at `/var/lib/pleroma/uploads`, and set the same
+path in `Pleroma.Uploaders.Local` configuration. A source deployment must never replace or
+delete this directory.
+
+Back up the configured upload path explicitly. A database dump is not a media backup: database
+rows retain attachment URLs after the corresponding files have disappeared. Record a file count
+and byte count with each backup, and periodically restore a sample into a temporary directory so
+that unreadable or incomplete archives are found before they are needed.
+
+When uploads still live below the source checkout, use
+`build_scripts/promote-source-to-live.sh` for source promotion. Its upload exclusion and rsync
+receiver protection are intentional safety boundaries. Do not substitute a raw
+`rsync --delete` command.
+
 ## Backup
 
 1. Stop the Pleroma service.

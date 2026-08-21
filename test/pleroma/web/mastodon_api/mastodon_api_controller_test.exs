@@ -40,5 +40,12 @@ defmodule Pleroma.Web.MastodonAPI.MastodonAPIControllerTest do
                |> get("/api/v1/trends")
                |> json_response(200)
     end
+
+    test "GET /api/v1/trends/statuses", %{conn: conn} do
+      assert [] ==
+               conn
+               |> get("/api/v1/trends/statuses")
+               |> json_response(200)
+    end
   end
 end

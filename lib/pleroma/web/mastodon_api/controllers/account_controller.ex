@@ -11,8 +11,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountController do
   alias Pleroma.Maps
   alias Pleroma.User
   alias Pleroma.UserNote
-  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.CommonAPI

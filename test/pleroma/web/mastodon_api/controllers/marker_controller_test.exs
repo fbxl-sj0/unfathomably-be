@@ -11,7 +11,9 @@ defmodule Pleroma.Web.MastodonAPI.MarkerControllerTest do
     test "gets markers with correct scopes", %{conn: conn} do
       user = insert(:user)
       token = insert(:oauth_token, user: user, scopes: ["read:statuses"])
-      insert_list(7, :notification, user: user, activity: insert(:note_activity))
+      for _index <- 1..7 do
+        insert(:notification, user: user, activity: insert(:note_activity))
+      end
 
       {:ok, %{"notifications" => marker}} =
         Pleroma.Marker.upsert(

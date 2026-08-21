@@ -21,6 +21,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountControllerTest do
 
   import Pleroma.Factory
 
+  require Pleroma.Constants
+
   setup do
     Mox.stub_with(Pleroma.UnstubbedConfigMock, Pleroma.Config)
     Pleroma.DataCase.ensure_local_uploader(%{})
@@ -1993,7 +1995,9 @@ defmodule Pleroma.Web.MastodonAPI.AccountControllerTest do
       %{user: user, conn: conn} = oauth_access(["read:accounts"])
 
       [notification | _] =
-        insert_list(7, :notification, user: user, activity: insert(:note_activity))
+        Enum.map(1..7, fn _index ->
+          insert(:notification, user: user, activity: insert(:note_activity))
+        end)
 
       Pleroma.Notification.set_read_up_to(user, notification.id)
       conn = get(conn, "/api/v1/accounts/verify_credentials")

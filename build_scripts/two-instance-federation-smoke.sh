@@ -87,7 +87,7 @@ poll_timeline_contains_text() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-IMAGE="${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 PREFIX="${SMOKE_PREFIX:-unfathomably-pair-smoke}"
 NETWORK="${SMOKE_NETWORK:-$PREFIX-net}"
 NETWORK_SUBNET="${SMOKE_NETWORK_SUBNET:-}"

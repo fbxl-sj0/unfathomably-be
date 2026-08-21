@@ -5,9 +5,9 @@
 defmodule Pleroma.Web.AdminAPI.SearchTest do
   use Pleroma.Web.ConnCase, async: true
 
-  alias Pleroma.Web.AdminAPI.Search
   alias Pleroma.Nostr.Entity
   alias Pleroma.Repo
+  alias Pleroma.Web.AdminAPI.Search
 
   import Pleroma.Factory
 

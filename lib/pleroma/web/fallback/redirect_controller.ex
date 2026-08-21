@@ -21,8 +21,9 @@ defmodule Pleroma.Web.Fallback.RedirectController do
 
   @static_fallback_roots ~w(doc emoji finmoji images instance packs schemas sounds static static-fe)
   @static_fallback_files ~w(embed.css embed.js favicon.png manifest.json manifest.webmanifest robots.txt sw.js sw.mjs sw-pleroma.js)
-  @scanner_probe_roots ~w(.git .svn backup backups config private)
+  @scanner_probe_roots ~w(.git .svn backup backups cgi-bin config private wp-admin wp-content wp-includes)
   @scanner_probe_extensions ~w(.bak .backup .conf .env .ini .old .sql .tar .tgz .yml .yaml .zip)
+  @scanner_script_extensions ~w(.asp .aspx .ashx .asmx .cgi .cfm .jsp .jspx .phar .php .php3 .php4 .php5 .php7 .php8 .phtml .shtml)
 
   def api_not_implemented(conn, _params) do
     conn
@@ -113,11 +114,20 @@ defmodule Pleroma.Web.Fallback.RedirectController do
       lower_path = String.downcase(path)
 
       lower_root in @scanner_probe_roots or String.contains?(lower_path, "%c0") or
-        String.contains?(lower_path, "%2e") or
+        String.contains?(lower_path, "%2e") or scanner_script_path?(lower_path) or
         Enum.any?(@scanner_probe_extensions, &String.ends_with?(lower_path, &1))
     else
       true
     end
+  end
+
+  defp scanner_script_path?(path) do
+    path
+    |> String.split("/", trim: true)
+    |> Enum.any?(fn segment ->
+      candidate = segment |> String.split([";", "%00"], parts: 2) |> hd()
+      Enum.any?(@scanner_script_extensions, &String.ends_with?(candidate, &1))
+    end)
   end
 
   defp static_not_found(conn) do

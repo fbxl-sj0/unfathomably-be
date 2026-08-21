@@ -12,6 +12,7 @@ defmodule Pleroma.Web.AdminAPI.RelayControllerTest do
   alias Pleroma.User
 
   setup_all do
+    clear_config([:instance, :federating], true)
     Tesla.Mock.mock_global(fn env -> apply(HttpRequestMock, :request, [env]) end)
 
     :ok

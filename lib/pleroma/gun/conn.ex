@@ -4,6 +4,7 @@
 
 defmodule Pleroma.Gun.Conn do
   alias Pleroma.Gun
+  alias Pleroma.HTTP.PublicAddress
 
   require Logger
 
@@ -17,12 +18,14 @@ defmodule Pleroma.Gun.Conn do
       |> Map.put_new(:supervise, false)
       |> maybe_add_tls_opts(uri)
 
-    do_open(uri, opts)
+    with {:ok, opts} <- pin_public_destination(uri, opts) do
+      do_open(uri, opts)
+    end
   end
 
   defp maybe_add_tls_opts(opts, %URI{scheme: "http"}), do: opts
 
-  defp maybe_add_tls_opts(opts, %URI{scheme: "https"}) do
+  defp maybe_add_tls_opts(opts, %URI{scheme: "https"} = uri) do
     tls_opts = [
       verify: :verify_peer,
       cacertfile: ca_store_file_path(),
@@ -34,9 +37,11 @@ defmodule Pleroma.Gun.Conn do
 
     tls_opts =
       if Keyword.keyword?(opts[:tls_opts]) do
-        Keyword.merge(tls_opts, opts[:tls_opts])
+        opts[:tls_opts]
+        |> Keyword.merge(tls_opts)
+        |> Keyword.put(:server_name_indication, String.to_charlist(uri.host))
       else
-        tls_opts
+        Keyword.put(tls_opts, :server_name_indication, String.to_charlist(uri.host))
       end
 
     Map.put(opts, :tls_opts, tls_opts)
@@ -67,7 +72,7 @@ defmodule Pleroma.Gun.Conn do
   defp do_open(uri, %{proxy: {proxy_host, proxy_port}} = opts) do
     connect_opts =
       uri
-      |> destination_opts()
+      |> destination_opts(opts)
       |> add_http2_opts(uri.scheme, Map.get(opts, :tls_opts, []))
       |> add_proxy_auth(opts)
 
@@ -95,7 +100,7 @@ defmodule Pleroma.Gun.Conn do
        when proxy_type in [:socks, :socks5] do
     socks_opts =
       uri
-      |> destination_opts()
+      |> destination_opts(opts)
       |> add_http2_opts(uri.scheme, Map.get(opts, :tls_opts, []))
       |> Map.put(:version, 5)
       |> add_socks_proxy_auth(opts)
@@ -121,8 +126,12 @@ defmodule Pleroma.Gun.Conn do
   end
 
   defp do_open(%URI{host: host, port: port} = uri, opts) do
-    host = Pleroma.HTTP.AdapterHelper.parse_host(host)
-    opts = Map.put(opts, :transport, transport(uri.scheme))
+    host = Map.get(opts, :resolved_address, Pleroma.HTTP.AdapterHelper.parse_host(host))
+
+    opts =
+      opts
+      |> Map.drop([:public_only, :resolved_address])
+      |> Map.put(:transport, transport(uri.scheme))
 
     with {:ok, conn} <- Gun.open(host, port, opts),
          {:ok, protocol} <- await_up(conn, opts[:connect_timeout]) do
@@ -137,10 +146,28 @@ defmodule Pleroma.Gun.Conn do
     end
   end
 
-  defp destination_opts(%URI{host: host, port: port}) do
-    host = Pleroma.HTTP.AdapterHelper.parse_host(host)
+  defp destination_opts(%URI{host: host, port: port}, opts) do
+    host = Map.get(opts, :resolved_address, Pleroma.HTTP.AdapterHelper.parse_host(host))
     %{host: host, port: port}
   end
+
+  defp pin_public_destination(%URI{host: host}, %{public_only: true} = opts) do
+    if PublicAddress.onion_host?(host) and onion_proxy?(opts) do
+      {:ok, opts}
+    else
+      with {:ok, address} <- PublicAddress.resolve_public_address(host) do
+        {:ok, Map.put(opts, :resolved_address, address)}
+      end
+    end
+  end
+
+  defp pin_public_destination(_uri, opts), do: {:ok, opts}
+
+  defp onion_proxy?(%{proxy: {proxy_type, proxy_host, _port}})
+       when proxy_type in [:socks, :socks5] and proxy_host in [{127, 0, 0, 1}, "127.0.0.1"],
+       do: true
+
+  defp onion_proxy?(_opts), do: false
 
   defp add_http2_opts(opts, "https", tls_opts) do
     Map.merge(opts, %{protocols: [:http2, :http], transport: :tls, tls_opts: tls_opts})
@@ -167,7 +194,14 @@ defmodule Pleroma.Gun.Conn do
 
     opts =
       opts
-      |> Map.drop([:proxy, :proxy_auth, :proxy_tls_opts, :tls_opts])
+      |> Map.drop([
+        :proxy,
+        :proxy_auth,
+        :proxy_tls_opts,
+        :tls_opts,
+        :public_only,
+        :resolved_address
+      ])
       |> Map.put_new(:transport, :tcp)
 
     if opts.transport == :tls do

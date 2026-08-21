@@ -1671,7 +1671,7 @@ config :pleroma, :config_description, [
         description: "Internal Pleroma.ReverseProxy settings",
         suggestions: [
           redirect_on_failure: false,
-          max_body_length: 25 * 1_048_576,
+          max_body_length: 64 * 1_048_576,
           max_read_duration: 30_000
         ],
         children: [
@@ -1689,7 +1689,8 @@ config :pleroma, :config_description, [
             key: :max_body_length,
             type: :integer,
             description:
-              "Maximum file size (in bytes) allowed through the Pleroma MediaProxy cache."
+              "Maximum remote response size (in bytes) streamed through the MediaProxy. " <>
+                "This bounds proxy bandwidth; streamed media is not stored on the instance."
           },
           %{
             key: :max_read_duration,
@@ -2196,12 +2197,12 @@ config :pleroma, :config_description, [
     key: Pleroma.Workers.Cron.RemotePostCleanupWorker,
     type: :group,
     description:
-      "Prunes stale remote public post objects that can be refetched later, while keeping posts and threads local users interacted with.",
+      "Prunes stale remote post cache objects, detached activity envelopes, old remote Tombstones, and unused remote actors while preserving locally relevant data.",
     children: [
       %{
         key: :enabled,
         type: :boolean,
-        description: "Enable daily remote post cache pruning.",
+        description: "Enable recurring remote post cache pruning.",
         suggestions: [true]
       },
       %{
@@ -2215,7 +2216,7 @@ config :pleroma, :config_description, [
         key: :batch_size,
         type: :integer,
         description: "Maximum number of remote post objects to prune per cleanup run.",
-        suggestions: [50, 200, 500]
+        suggestions: [500, 1_000, 2_000]
       },
       %{
         key: :candidate_scan_limit,
@@ -2251,6 +2252,81 @@ config :pleroma, :config_description, [
         description:
           "Keep old remote posts that directly address local users or generated local notifications.",
         suggestions: [true]
+      },
+      %{
+        key: :orphan_activity_cleanup_enabled,
+        type: :boolean,
+        description:
+          "Remove old remote activity envelopes whose object, activity, or actor target no longer exists, while preserving all local references.",
+        suggestions: [true]
+      },
+      %{
+        key: :orphan_activity_batch_size,
+        type: :integer,
+        description: "Maximum orphaned remote activities deleted in one transaction.",
+        suggestions: [500, 1_000, 2_500]
+      },
+      %{
+        key: :orphan_activity_scan_limit,
+        type: :integer,
+        description:
+          "Maximum remote activities inspected by each persistent-cursor cleanup page.",
+        suggestions: [1_000, 2_000, 5_000]
+      },
+      %{
+        key: :orphan_activity_full_sweep_days,
+        type: :integer,
+        description:
+          "Days between complete orphan-activity sweeps; incremental checks continue between full sweeps.",
+        suggestions: [30, 14, 7]
+      },
+      %{
+        key: :orphan_activity_continuation_enabled,
+        type: :boolean,
+        description:
+          "Schedule bounded continuation jobs until the current orphan-activity sweep is complete.",
+        suggestions: [true]
+      },
+      %{
+        key: :orphan_activity_continuation_delay_seconds,
+        type: :integer,
+        description:
+          "Minimum delay between bounded orphan-activity cleanup pages. Expensive pages automatically wait longer so backlog cleanup does not starve live requests.",
+        suggestions: [5, 15, 60]
+      },
+      %{
+        key: :remote_cache_continuation_enabled,
+        type: :boolean,
+        description:
+          "Continue bounded old-object, Tombstone, and stale-actor cleanup until each backlog is below one batch.",
+        suggestions: [true]
+      },
+      %{
+        key: :remote_cache_continuation_delay_seconds,
+        type: :integer,
+        description:
+          "Delay between bounded remote-cache cleanup batches after the orphan-activity sweep is idle.",
+        suggestions: [30, 60, 300]
+      },
+      %{
+        key: :tombstone_cleanup_enabled,
+        type: :boolean,
+        description:
+          "Remove old remote Tombstones after their longer anti-resurrection retention window.",
+        suggestions: [true]
+      },
+      %{
+        key: :tombstone_max_age_days,
+        type: :integer,
+        description:
+          "Days to retain remote Tombstones. This value is never allowed below ordinary remote-post retention.",
+        suggestions: [730, 1_095]
+      },
+      %{
+        key: :tombstone_batch_size,
+        type: :integer,
+        description: "Maximum old remote Tombstones pruned per cleanup run.",
+        suggestions: [500, 1_000, 2_000]
       }
     ]
   },
@@ -2292,7 +2368,14 @@ config :pleroma, :config_description, [
         type: :integer,
         description:
           "Maximum number of stale remote objects to inspect in one bounded group cleanup window.",
-        suggestions: [1_000, 5_000]
+        suggestions: [100, 250, 500]
+      },
+      %{
+        key: :candidate_query_chunk_size,
+        type: :integer,
+        description:
+          "Number of candidate objects checked by each retention query inside a bounded cleanup slice.",
+        suggestions: [5, 10, 25]
       },
       %{
         key: :max_scan_pages,
@@ -2305,7 +2388,27 @@ config :pleroma, :config_description, [
         type: :integer,
         description:
           "Maximum time, in milliseconds, for the database query used by the group discussion cleanup worker.",
-        suggestions: [120_000, 60_000]
+        suggestions: [5_000, 10_000, 30_000]
+      },
+      %{
+        key: :work_budget_ms,
+        type: :integer,
+        description:
+          "Target wall-clock budget for candidate queries in one group cleanup slice. A single in-flight query may finish after the budget.",
+        suggestions: [5_000, 10_000, 30_000]
+      },
+      %{
+        key: :continuation_enabled,
+        type: :boolean,
+        description:
+          "Continue an unfinished group cleanup in short background slices instead of one long database-intensive job."
+      },
+      %{
+        key: :continuation_delay_seconds,
+        type: :integer,
+        description:
+          "Minimum delay between group cleanup slices. Slow slices automatically receive a longer delay.",
+        suggestions: [30, 60, 300]
       }
     ]
   },

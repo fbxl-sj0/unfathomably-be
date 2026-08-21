@@ -19,6 +19,7 @@ defmodule Pleroma.SignatureTest do
   @base58btc_alphabet "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
   setup do
+    clear_config([:instance, :federating], true)
     mock(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok
   end
@@ -208,7 +209,14 @@ defmodule Pleroma.SignatureTest do
   describe "validate_signature/1" do
     test "validates a legacy hs2019 signature with an Ed25519 actor key" do
       {public_key, private_key} = :crypto.generate_key(:eddsa, :ed25519)
-      user = insert(:user, public_key: Keys.ed25519_public_key_to_pem(public_key))
+
+      user =
+        insert(:user,
+          local: false,
+          public_key: Keys.ed25519_public_key_to_pem(public_key),
+          last_refreshed_at: NaiveDateTime.utc_now()
+        )
+
       date = Signature.signed_date()
       signed_headers = ["(request-target)", "date", "host"]
 
@@ -227,8 +235,8 @@ defmodule Pleroma.SignatureTest do
         |> Base.encode64()
 
       signature =
-        "keyId=\"#{user.ap_id}#ed25519-key\",algorithm=\"hs2019\"," <>
-          "headers=\"#{Enum.join(signed_headers, " ")}\",signature=\"#{encoded_signature}\""
+        ~s(keyId="#{user.ap_id}#ed25519-key",algorithm="hs2019",) <>
+          ~s(headers="#{Enum.join(signed_headers, " ")}",signature="#{encoded_signature}")
 
       conn = %Plug.Conn{
         method: "GET",
@@ -240,6 +248,29 @@ defmodule Pleroma.SignatureTest do
           {"signature", signature}
         ]
       }
+
+      assert [{:ed25519, ^public_key}] = User.public_keys(user)
+
+      assert {:ok, [{:ed25519, ^public_key}]} =
+               User.get_or_fetch_public_keys_for_ap_id(user.ap_id)
+
+      parsed_signature = HTTPSignatures.signature_for_conn(conn)
+      assert parsed_signature["headers"] == signed_headers
+
+      verification_headers =
+        conn.req_headers
+        |> Map.new()
+        |> Map.put("(request-target)", "get /inbox")
+        |> Map.put("(created)", parsed_signature["created"])
+        |> Map.put("(expires)", parsed_signature["expires"])
+
+      assert :crypto.verify(
+               :eddsa,
+               :none,
+               HTTPSignatures.build_signing_string(verification_headers, signed_headers),
+               Base.decode64!(parsed_signature["signature"]),
+               [public_key, :ed25519]
+             )
 
       Mox.expect(HTTPSignaturesMock, :validate_conn, fn _conn -> false end)
 
@@ -262,12 +293,16 @@ defmodule Pleroma.SignatureTest do
 
     test "treats HTTP signature errors as failed validation" do
       user = insert(:user)
+      date = Signature.signed_date()
 
       conn = %Plug.Conn{
         method: "GET",
         request_path: "/inbox",
         req_headers: [
-          {"signature", "keyId=\"#{user.ap_id}#main-key\",signature=\"invalid\""}
+          {"host", "example.com"},
+          {"date", date},
+          {"signature",
+           "keyId=\"#{user.ap_id}#main-key\",headers=\"(request-target) date host\",signature=\"invalid\""}
         ]
       }
 

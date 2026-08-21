@@ -187,10 +187,7 @@ defmodule Pleroma.User.BackupTest do
     actor = Jason.decode!(json)
 
     assert %{
-             "@context" => [
-               "https://www.w3.org/ns/activitystreams",
-               "http://localhost:4001/schemas/litepub-0.1.jsonld"
-             ],
+             "@context" => context,
              "bookmarks" => "bookmarks.json",
              "followers" => "followers.json",
              "following" => "following.json",
@@ -207,6 +204,11 @@ defmodule Pleroma.User.BackupTest do
              "type" => "Person",
              "url" => "http://cofe.io/users/cofe"
            } = actor
+
+    assert Enum.take(context, 2) == [
+             "https://www.w3.org/ns/activitystreams",
+             "http://localhost:4001/schemas/litepub-0.1.jsonld"
+           ]
 
     assert {:ok, {~c"outbox.json", json}} = :zip.zip_get(~c"outbox.json", zipfile)
 

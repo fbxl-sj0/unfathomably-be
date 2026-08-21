@@ -16,6 +16,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.CustomObjectHandlingTest do
 
   require Pleroma.Constants
 
+  setup_all do: clear_config([:instance, :federating], true)
+
   setup do
     actor =
       insert(:user,

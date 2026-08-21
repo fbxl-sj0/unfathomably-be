@@ -240,6 +240,7 @@ defmodule Pleroma.UserSearchTest do
     end
 
     test "works with URIs" do
+      clear_config([:instance, :federating], true)
       user = insert(:user)
 
       results =

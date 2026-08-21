@@ -12,11 +12,31 @@ defmodule Pleroma.ReverseProxy.Client.Hackney do
 
   @impl true
   def request(method, url, headers, body, opts \\ []) do
+    if allowed_url?(url, opts) do
+      request_allowed(method, url, headers, body, opts)
+    else
+      {:error, :private_network_address}
+    end
+  end
+
+  defp request_allowed(method, url, headers, body, opts) do
     if Keyword.get(opts, :follow_redirect, false) do
       request_follow_redirect(method, url, headers, body, opts, @max_redirects)
     else
       :hackney.request(method, url, headers, body, opts)
     end
+  end
+
+  defp request_checked(method, url, headers, body, opts) do
+    if allowed_url?(url, opts) do
+      :hackney.request(method, url, headers, body, opts)
+    else
+      {:error, :private_network_address}
+    end
+  end
+
+  defp allowed_url?(url, opts) do
+    not Keyword.get(opts, :public_only, false) or Pleroma.HTTP.PublicAddress.public_url?(url)
   end
 
   @impl true
@@ -41,7 +61,7 @@ defmodule Pleroma.ReverseProxy.Client.Hackney do
       |> Keyword.put(:follow_redirect, false)
       |> Keyword.put_new(:path_encode_fun, &URI.encode/1)
 
-    case :hackney.request(method, url, headers, body, opts) do
+    case request_checked(method, url, headers, body, opts) do
       {:ok, status, response_headers, _ref} = response
       when status in @redirect_statuses and redirects_left > 0 ->
         case redirect_location(url, response_headers) do

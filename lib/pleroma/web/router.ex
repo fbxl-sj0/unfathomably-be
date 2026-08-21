@@ -848,6 +848,13 @@ defmodule Pleroma.Web.Router do
 
     get("/discovery/native-communities", NativeCommunityCatalogController, :index)
     get("/discovery/native/workflows", NativeDiscoveryController, :workflows)
+
+    get(
+      "/discovery/native-objects/states/account/:id",
+      NativeObjectController,
+      :account_workspace_states
+    )
+
     get("/atproto/oauth/client-metadata.json", ATProtoController, :oauth_metadata)
     get("/atproto/oauth/callback", ATProtoController, :oauth_callback)
   end
@@ -920,6 +927,10 @@ defmodule Pleroma.Web.Router do
     get("/discovery/native-objects/catalog", NativeObjectController, :catalog)
     get("/discovery/native-objects/connectors", NativeObjectController, :connectors)
     get("/discovery/native-objects/resolve", NativeObjectController, :resolve)
+    get("/discovery/native-objects/state", NativeObjectController, :workspace_state)
+    get("/discovery/native-objects/states", NativeObjectController, :workspace_states)
+    put("/discovery/native-objects/state", NativeObjectController, :put_workspace_state)
+    delete("/discovery/native-objects/state", NativeObjectController, :delete_workspace_state)
     post("/discovery/native-objects", NativeObjectController, :create)
     patch("/discovery/native-objects/:id/state", NativeObjectController, :transition)
     get("/groups/:id/membership_requests", FederatedGroupController, :membership_requests)
@@ -1105,6 +1116,7 @@ defmodule Pleroma.Web.Router do
     get("/custom_emojis", CustomEmojiController, :index)
 
     get("/trends", MastodonAPIController, :empty_array)
+    get("/trends/statuses", MastodonAPIController, :empty_array)
 
     get("/timelines/public", TimelineController, :public)
     get("/timelines/bubble", TimelineController, :bubble)
@@ -1204,7 +1216,7 @@ defmodule Pleroma.Web.Router do
   # /users/:nickname profile route below, which otherwise treats "instance" as
   # a local profile nickname and returns a frontend-facing 404.
   scope "/", Pleroma.Web.ActivityPub do
-    pipe_through(:activitypub_client)
+    pipe_through(:ap_service_actor)
 
     get("/users/instance", ActivityPubController, :marketplace_service)
   end

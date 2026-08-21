@@ -128,7 +128,7 @@ defmodule HttpRequestMock do
         "https://osada.macgirvin.com/.well-known/webfinger?resource=acct:mike@osada.macgirvin.com",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -142,7 +142,7 @@ defmodule HttpRequestMock do
         "https://social.heldscal.la/.well-known/webfinger?resource=https://social.heldscal.la/user/29191",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -155,7 +155,7 @@ defmodule HttpRequestMock do
         "https://pawoo.net/.well-known/webfinger?resource=acct:https://pawoo.net/users/pekorino",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -168,7 +168,7 @@ defmodule HttpRequestMock do
         "https://social.stopwatchingus-heidelberg.de/.well-known/webfinger?resource=acct:https://social.stopwatchingus-heidelberg.de/user/18330",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -181,7 +181,7 @@ defmodule HttpRequestMock do
         "https://social.heldscal.la/.well-known/webfinger?resource=nonexistant@social.heldscal.la",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -194,7 +194,7 @@ defmodule HttpRequestMock do
         "https://social.heldscal.la/.well-known/webfinger?resource=acct:nonexistant@social.heldscal.la",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -213,7 +213,7 @@ defmodule HttpRequestMock do
         "https://squeet.me/xrd/?uri=acct:lain@squeet.me",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -640,7 +640,7 @@ defmodule HttpRequestMock do
      }}
   end
 
-  def get(url, _, _, [{"accept", "application/xrd+xml,application/jrd+json"}])
+  def get(url, _, _, [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}])
       when url in [
              "https://pleroma.soykaf.com/.well-known/webfinger?resource=acct:https://pleroma.soykaf.com/users/lain",
              "https://pleroma.soykaf.com/.well-known/webfinger?resource=https://pleroma.soykaf.com/users/lain"
@@ -656,7 +656,7 @@ defmodule HttpRequestMock do
         "https://shitposter.club/.well-known/webfinger?resource=https://shitposter.club/user/1",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -673,7 +673,7 @@ defmodule HttpRequestMock do
         "https://shitposter.club/.well-known/webfinger?resource=https://shitposter.club/user/5381",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -710,7 +710,7 @@ defmodule HttpRequestMock do
         "https://social.sakamoto.gq/.well-known/webfinger?resource=https://social.sakamoto.gq/users/eal",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -731,7 +731,7 @@ defmodule HttpRequestMock do
         "https://mastodon.social/.well-known/webfinger?resource=https://mastodon.social/users/lambadalambda",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -745,7 +745,7 @@ defmodule HttpRequestMock do
         "https://mastodon.social/.well-known/webfinger?resource=acct:not_found@mastodon.social",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok, %Tesla.Env{status: 404}}
   end
@@ -762,7 +762,7 @@ defmodule HttpRequestMock do
         "http://gs.example.org/.well-known/webfinger?resource=http://gs.example.org:4040/index.php/user/1",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -790,7 +790,7 @@ defmodule HttpRequestMock do
         "https://squeet.me/xrd?uri=lain@squeet.me",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -803,7 +803,7 @@ defmodule HttpRequestMock do
         "https://social.heldscal.la/.well-known/webfinger?resource=acct:shp@social.heldscal.la",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -817,7 +817,7 @@ defmodule HttpRequestMock do
         "https://social.heldscal.la/.well-known/webfinger?resource=acct:invalid_content@social.heldscal.la",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok, %Tesla.Env{status: 200, body: "", headers: [{"content-type", "application/jrd+json"}]}}
   end
@@ -834,7 +834,7 @@ defmodule HttpRequestMock do
         "https://framatube.org/main/xrd?uri=acct:framasoft@framatube.org",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -856,7 +856,7 @@ defmodule HttpRequestMock do
         "http://gnusocial.de/main/xrd?uri=winterdienst@gnusocial.de",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -894,7 +894,7 @@ defmodule HttpRequestMock do
         "https://gerzilla.de/xrd/?uri=acct:kaniini@gerzilla.de",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -1161,7 +1161,7 @@ defmodule HttpRequestMock do
         "https://zetsubou.xn--q9jyb4c/.well-known/webfinger?resource=acct:lain@zetsubou.xn--q9jyb4c",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -1175,7 +1175,7 @@ defmodule HttpRequestMock do
         "https://zetsubou.xn--q9jyb4c/.well-known/webfinger?resource=acct:https://zetsubou.xn--q9jyb4c/users/lain",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{
@@ -1226,7 +1226,7 @@ defmodule HttpRequestMock do
         "https://lm.kazv.moe/.well-known/webfinger?resource=acct:mewmew@lm.kazv.moe",
         _,
         _,
-        [{"accept", "application/xrd+xml,application/jrd+json"}]
+        [{"accept", "application/jrd+json, application/json, application/xrd+xml;q=0.9"}]
       ) do
     {:ok,
      %Tesla.Env{

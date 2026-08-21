@@ -94,8 +94,8 @@ defmodule Pleroma.Web.ActivityPub.ForwardedActivityVerifierTest do
              ForwardedActivityVerifier.verify_and_fetch(forwarded, @forwarder, fetcher)
   end
 
-  test "rejects destructive activity types" do
-    forwarded = Map.put(forwarded_activity(), "type", "Delete")
+  test "rejects unsupported destructive activity types" do
+    forwarded = Map.put(forwarded_activity(), "type", "Block")
 
     assert {:error, :invalid_forwarded_activity} =
              ForwardedActivityVerifier.verify_and_fetch(forwarded, @forwarder, fn _ ->

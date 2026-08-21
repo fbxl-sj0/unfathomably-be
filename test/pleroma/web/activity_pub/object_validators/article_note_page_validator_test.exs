@@ -151,25 +151,27 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidatorTest 
 
     test "preserves a modern GoToSocial reply authorization", %{note: note} do
       authorization = "https://parent.example/authorizations/reply-1"
+      parent = insert(:note)
 
       note =
         note
-        |> Map.put("inReplyTo", "https://parent.example/statuses/1")
+        |> Map.put("inReplyTo", parent.data["id"])
         |> Map.put("replyAuthorization", authorization)
 
-      assert {:ok, validated, []} = ObjectValidator.validate(note, local: false)
+      assert {:ok, validated, _meta} = ObjectValidator.validate(note, local: false)
       assert validated["replyAuthorization"] == authorization
     end
 
     test "canonicalizes deprecated approvedBy reply authorization", %{note: note} do
       authorization = "https://parent.example/authorizations/reply-legacy"
+      parent = insert(:note)
 
       note =
         note
-        |> Map.put("inReplyTo", "https://parent.example/statuses/1")
+        |> Map.put("inReplyTo", parent.data["id"])
         |> Map.put("approvedBy", authorization)
 
-      assert {:ok, validated, []} = ObjectValidator.validate(note, local: false)
+      assert {:ok, validated, _meta} = ObjectValidator.validate(note, local: false)
       assert validated["replyAuthorization"] == authorization
       refute Map.has_key?(validated, "approvedBy")
     end

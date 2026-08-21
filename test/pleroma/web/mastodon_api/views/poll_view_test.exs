@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.MastodonAPI.PollViewTest do
   use Pleroma.DataCase
 
+  @moduletag capture_log: true
+
   alias Pleroma.Object
   alias Pleroma.Web.CommonAPI
   alias Pleroma.Web.MastodonAPI.PollView
@@ -15,6 +17,7 @@ defmodule Pleroma.Web.MastodonAPI.PollViewTest do
 
   setup do
     mock(fn env -> apply(HttpRequestMock, :request, [env]) end)
+    clear_config([:instance, :federating], true)
     :ok
   end
 
@@ -143,33 +146,22 @@ defmodule Pleroma.Web.MastodonAPI.PollViewTest do
     assert result[:expired] == false
   end
 
-  test "doesn't strips HTML tags" do
+  test "rejects poll options that contain only HTML elements" do
     user = insert(:user)
 
-    {:ok, activity} =
-      CommonAPI.post(user, %{
-        status: "What's with the smug face?",
-        poll: %{
-          options: [
-            "<input type=\"date\">",
-            "<input type=\"date\" >",
-            "<input type=\"date\"/>",
-            "<input type=\"date\"></input>"
-          ],
-          expires_in: 20
-        }
-      })
-
-    object = Object.normalize(activity, fetch: false)
-
-    assert %{
-             options: [
-               %{title: "<input type=\"date\">", votes_count: 0},
-               %{title: "<input type=\"date\" >", votes_count: 0},
-               %{title: "<input type=\"date\"/>", votes_count: 0},
-               %{title: "<input type=\"date\"></input>", votes_count: 0}
-             ]
-           } = PollView.render("show.json", %{object: object})
+    assert {:error, "Poll options must contain non-empty text"} =
+             CommonAPI.post(user, %{
+               status: "What's with the smug face?",
+               poll: %{
+                 options: [
+                   "<input type=\"date\">",
+                   "<input type=\"date\" >",
+                   "<input type=\"date\"/>",
+                   "<input type=\"date\"></input>"
+                 ],
+                 expires_in: 20
+               }
+             })
   end
 
   test "displays correct voters count" do

@@ -10,7 +10,8 @@
 
 defmodule Pleroma.Web.Plugs.SignatureNegotiationPlugTest do
   use ExUnit.Case, async: true
-  use Plug.Test
+
+  import Plug.Test
 
   alias Pleroma.HTTP.SignatureNegotiation
   alias Pleroma.Web.Plugs.SignatureNegotiationPlug

@@ -761,6 +761,13 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
              object.data["language"],
              language
            ) do
+      result =
+        Map.put(
+          result,
+          :spoiler_text,
+          translate_spoiler_text(object.data["summary"], object.data["language"], language)
+        )
+
       render(conn, "translation.json", result)
     else
       {:authentication, false} ->
@@ -794,6 +801,16 @@ defmodule Pleroma.Web.MastodonAPI.StatusController do
         render_error(conn, :not_found, "Record not found")
     end
   end
+
+  defp translate_spoiler_text(summary, source_language, target_language)
+       when is_binary(summary) and summary != "" do
+    case Translation.translate(summary, source_language, target_language) do
+      {:ok, %{content: content}} when is_binary(content) -> content
+      _ -> summary
+    end
+  end
+
+  defp translate_spoiler_text(_summary, _source_language, _target_language), do: ""
 
   @doc "GET /api/v1/favourites"
   def favourites(%{assigns: %{user: %User{} = user}} = conn, params) do

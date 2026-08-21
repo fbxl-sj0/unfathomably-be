@@ -48,7 +48,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EventValidator do
 
   defp fix(data) do
     data
-    |> CommonFixes.fix_actor()
+    |> fix_actor()
     |> CommonFixes.fix_object_defaults()
     |> CommonFixes.fix_likes()
     |> fix_featured_image()
@@ -56,6 +56,25 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EventValidator do
     |> fix_location()
     |> Transmogrifier.fix_emoji()
   end
+
+  # Events may be authored by a service actor while being attributed to the
+  # same-host Group that owns them. The common status normalizer deliberately
+  # collapses attributedTo onto actor, so retain a scalar Event attribution for
+  # the origin and actor-type validation below.
+  defp fix_actor(data) do
+    attributed_to = event_attribution(data["attributedTo"])
+    data = CommonFixes.fix_actor(data)
+
+    if is_binary(attributed_to) do
+      Map.put(data, "attributedTo", attributed_to)
+    else
+      data
+    end
+  end
+
+  defp event_attribution(value) when is_binary(value), do: value
+  defp event_attribution(%{"id" => value}) when is_binary(value), do: value
+  defp event_attribution(_value), do: nil
 
   # Mobilizon publishes the event banner as a top-level Image. Event storage
   # uses the common attachment shape, so normalize the image before schema
@@ -78,7 +97,13 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.EventValidator do
 
         attachments =
           if Enum.any?(attachments, &(attachment_url(&1) == image_url)) do
-            attachments
+            Enum.map(attachments, fn attachment ->
+              if attachment_url(attachment) == image_url do
+                Map.merge(attachment, image)
+              else
+                attachment
+              end
+            end)
           else
             [image | attachments]
           end

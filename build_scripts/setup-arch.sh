@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Unfathomably BE Arch bootstrap
-# ------------------------------
+#
+# Project: Unfathomably BE host bootstrap
+# ----------------------------------------
 #
 # File: build_scripts/setup-arch.sh
 #
@@ -134,6 +135,7 @@ install_packages() {
         git \
         imagemagick \
         inotify-tools \
+        jq \
         libpng \
         libssh \
         libvips \
@@ -145,6 +147,7 @@ install_packages() {
         perl-image-exiftool \
         pkgconf \
         postgresql \
+        python \
         unixodbc \
         unzip \
         xz \

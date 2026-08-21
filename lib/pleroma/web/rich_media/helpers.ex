@@ -226,6 +226,7 @@ defmodule Pleroma.Web.RichMedia.Helpers do
   defp http_options(timeout) do
     base_options = [
       pool: :rich_media,
+      public_only: true,
       max_body: max_body(),
       recv_timeout: timeout
     ]

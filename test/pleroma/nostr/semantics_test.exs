@@ -59,15 +59,33 @@ defmodule Pleroma.Nostr.SemanticsTest do
       ]
     }
 
-    assert [
-             [
-               "imeta",
-               "url https://media.example/image.png",
-               "m image/png",
-               "dim 640x480",
-               "alt Example image"
-             ]
-           ] = Media.outbound_tags(object)
+    assert {"A post with media\n\nhttps://media.example/image.png",
+            [
+              [
+                "imeta",
+                "url https://media.example/image.png",
+                "m image/png",
+                "dim 640x480",
+                "alt Example image"
+              ]
+            ]} = Media.outbound("A post with media", object)
+  end
+
+  test "does not duplicate a media URL already present in content" do
+    object = %{
+      "attachment" => [
+        %{
+          "type" => "Document",
+          "mediaType" => "image/png",
+          "url" => [%{"href" => "https://media.example/image.png"}]
+        }
+      ]
+    }
+
+    content = "Already linked https://media.example/image.png"
+
+    assert {^content, [["imeta", "url https://media.example/image.png", "m image/png"]]} =
+             Media.outbound(content, object)
   end
 end
 

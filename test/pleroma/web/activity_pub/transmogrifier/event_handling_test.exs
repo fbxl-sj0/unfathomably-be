@@ -11,6 +11,10 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.EventHandlingTest do
   alias Pleroma.Object.Fetcher
   alias Pleroma.Web.ActivityPub.ObjectValidators.EventValidator
 
+  import Pleroma.Factory
+
+  setup_all do: clear_config([:instance, :federating], true)
+
   test "Mobilizon Event object" do
     Tesla.Mock.mock(fn
       %{url: "https://mobilizon.org/events/252d5816-00a3-4a89-a66f-15bf65c33e39"} ->

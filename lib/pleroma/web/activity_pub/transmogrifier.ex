@@ -197,6 +197,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     # identity for the same object.
     object
     |> Addressing.put_attributed_groups()
+    |> Addressing.put_targeted_groups()
     |> Map.put("actor", actor)
     |> Map.put("attributedTo", actor)
   end
@@ -235,7 +236,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
             "Couldn't fetch #{Pleroma.Helpers.UriHelper.log_safe_url(in_reply_to_id)}, error: #{Pleroma.Helpers.UriHelper.log_safe_text(e)}"
           )
 
-          object
+          maybe_drop_unavailable_public_reply(object, in_reply_to_id, options)
       end
     else
       object
@@ -273,6 +274,27 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
     end
   end
 
+  defp maybe_drop_unavailable_public_reply(object, in_reply_to_id, options) do
+    if Keyword.get(options, :allow_orphaned_public_reply, false) and
+         public_addressed?(object) and
+         is_nil(Activity.get_create_by_object_ap_id(in_reply_to_id)) do
+      # A quote can remain useful after its remote reply parent is deleted. This
+      # escape hatch is only enabled by the bounded quote hydrator and only for
+      # publicly addressed objects. Ordinary replies retain the edge so the
+      # normal protected-thread checks remain authoritative.
+      object
+      |> Map.delete("inReplyTo")
+      |> Map.delete("inReplyToAtomUri")
+    else
+      object
+    end
+  end
+
+  defp public_addressed?(object) do
+    public = Pleroma.Constants.as_public()
+    public in List.wrap(object["to"]) or public in List.wrap(object["cc"])
+  end
+
   def fix_context(object) do
     context = object["context"] || object["conversation"] || Utils.generate_context_id()
 
@@ -296,10 +318,14 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       Enum.map(attachment, fn
         %{"href" => href} = data when is_binary(href) ->
           if valid_http_url?(href) do
+            media_type =
+              Enum.find([data["mediaType"], data["mimeType"]], &valid_media_type?/1)
+
             data
             |> Map.take(~w(type href mediaType name summary hreflang rel))
             |> Map.put("type", "Link")
             |> Map.put("href", href)
+            |> Maps.put_if_present("mediaType", media_type)
           end
 
         data when is_map(data) ->
@@ -830,6 +856,12 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
          poll_actor when is_binary(poll_actor) <- poll["actor"] || poll["attributedTo"] do
       recipients = [poll_actor]
 
+      audience =
+        data
+        |> Map.get("audience")
+        |> List.wrap()
+        |> Enum.filter(&is_binary/1)
+
       answer = %{
         "id" => poll_vote_id <> "/answer",
         "type" => "Answer",
@@ -839,7 +871,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         "inReplyTo" => poll_id,
         "context" => poll["context"],
         "to" => [],
-        "cc" => recipients
+        "cc" => recipients,
+        "audience" => audience
       }
 
       data
@@ -847,6 +880,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
       |> Map.put("object", answer)
       |> Map.put("to", [])
       |> Map.put("cc", recipients)
+      |> Map.put("audience", audience)
       |> handle_incoming(options)
     else
       _ -> :error
@@ -938,8 +972,11 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
            {:ok, activity, _} <- Pipeline.common_pipeline(data, options) do
         {:ok, activity}
       else
-        {:existing, %Activity{} = activity} -> {:ok, activity}
-        e -> e
+        {:existing, %Activity{} = activity} ->
+          maybe_upgrade_custom_compatibility(activity, object, data)
+
+        e ->
+          e
       end
     else
       :error
@@ -1272,6 +1309,23 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier do
         else
           {:error, {:reject, :object_actor_mismatch}}
         end
+    end
+  end
+
+  defp maybe_upgrade_custom_compatibility(activity, incoming_object, data) do
+    actor = Containment.get_actor(data)
+
+    with %Object{} = stored_object <- Object.get_by_ap_id(incoming_object["id"]),
+         {:ok, _object, _updated?} <-
+           Pleroma.Object.Updater.do_custom_compatibility_upgrade(
+             stored_object,
+             incoming_object,
+             actor
+           ) do
+      {:ok, activity}
+    else
+      nil -> {:ok, activity}
+      {:error, _reason} = error -> error
     end
   end
 

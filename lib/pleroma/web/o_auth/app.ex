@@ -168,7 +168,16 @@ defmodule Pleroma.Web.OAuth.App do
   @spec destroy(pos_integer()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
   def destroy(id) do
     with %__MODULE__{} = app <- Repo.get(__MODULE__, id) do
-      Repo.delete(app)
+      destroy_app(app)
+    end
+  end
+
+  defp destroy_app(%__MODULE__{} = app) do
+    tokens = Token.Query.get_by_app(app.id) |> Repo.all()
+
+    with {:ok, app} <- Repo.delete(app) do
+      Enum.each(tokens, &Pleroma.Web.Streamer.close_streams_by_oauth_token/1)
+      {:ok, app}
     end
   end
 
@@ -230,7 +239,7 @@ defmodule Pleroma.Web.OAuth.App do
         limit: ^limit
       )
       |> Repo.all()
-      |> Enum.each(&Repo.delete(&1))
+      |> Enum.each(&destroy_app/1)
     end)
 
     :ok

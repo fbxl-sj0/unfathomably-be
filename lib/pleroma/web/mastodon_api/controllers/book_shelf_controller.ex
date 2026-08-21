@@ -20,8 +20,8 @@ defmodule Pleroma.Web.MastodonAPI.BookShelfController do
 
   alias Pleroma.BookShelfEntry
   alias Pleroma.User
-  alias Pleroma.WorldParticipation
   alias Pleroma.Web.Plugs.OAuthScopesPlug
+  alias Pleroma.WorldParticipation
 
   plug(OAuthScopesPlug, %{scopes: ["read:statuses"]} when action == :index)
   plug(OAuthScopesPlug, %{scopes: ["write:statuses"]} when action in [:put, :delete])

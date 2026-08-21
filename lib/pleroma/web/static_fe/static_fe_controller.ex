@@ -160,7 +160,8 @@ defmodule Pleroma.Web.StaticFE.StaticFEController do
   defp represent(%Activity{} = activity), do: represent(activity, false)
 
   defp represent(%Activity{object: %Object{data: data}} = activity, selected) do
-    {:ok, user} = User.get_or_fetch(activity.object.data["actor"])
+    actor = activity.object.data["actor"]
+    user = represent_user(actor)
 
     link =
       case user.local do
@@ -189,6 +190,29 @@ defmodule Pleroma.Web.StaticFE.StaticFEController do
       counts: get_counts(activity),
       id: activity.id
     }
+  end
+
+  # Cached activities can outlive a remote actor or remain useful while that
+  # actor is temporarily unavailable. StaticFE should still render the post
+  # rather than converting a failed profile refresh into an HTTP 500.
+  defp represent_user(actor) when is_binary(actor) do
+    case User.get_or_fetch(actor) do
+      {:ok, user} ->
+        user
+
+      _ ->
+        nickname =
+          case URI.parse(actor) do
+            %URI{host: host} when is_binary(host) -> host
+            _ -> "unknown"
+          end
+
+        %User{ap_id: actor, nickname: nickname, name: nickname, local: false}
+    end
+  end
+
+  defp represent_user(_actor) do
+    %User{nickname: "unknown", name: "Unknown remote account", local: false}
   end
 
   defp published_at(%Activity{} = activity, data) do

@@ -8,6 +8,7 @@ bridge support.
 ## Start here
 
 - [Install a new source deployment](INSTALLATION.MD)
+- [Enable optional protocols and product features](FEATURE_ENABLEMENT.md)
 - [Upgrade a Rebased, Soapbox, or Pleroma deployment](UPGRADE.MD)
 - [Review configuration](configuration/cheatsheet.md)
 - [Harden a deployment](configuration/hardening.md)

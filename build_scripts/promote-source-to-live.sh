@@ -136,9 +136,18 @@ if [ ! -f "$TARGET/config/prod.secret.exs" ]; then
 fi
 
 mkdir -p "$BACKUP_DIR"
-tar -C "$TARGET" -czf "$BACKUP_PATH" .
+tar -C "$TARGET" \
+    --exclude='./.git' \
+    --exclude='./_build' \
+    --exclude='./backups' \
+    --exclude='./deploy-backups' \
+    --exclude='./deps' \
+    --exclude='./instance' \
+    --exclude='./uploads' \
+    -czf "$BACKUP_PATH" .
 
 rsync -a --delete \
+    --filter='protect /uploads/***' \
     --exclude='.git/' \
     --exclude='_build/' \
     --exclude='deps/' \
@@ -171,6 +180,11 @@ sudo -u "$SERVICE_USER" -H env MIX_ENV=prod PATH="$SERVICE_PATH" bash -lc "
     mix deps.get
     mix compile
     mix ecto.migrate
+
+    if [ ! -s '$TARGET/_build/prod/lib/pleroma/ebin/pleroma.app' ]; then
+        echo 'Refusing activation: the compiled Pleroma application artifact is missing.' >&2
+        exit 70
+    fi
 "
 
 if [ "$RESTART" -eq 1 ]; then

@@ -4,11 +4,35 @@
 
 defmodule Pleroma.QuoteHydrationTest do
   use Pleroma.DataCase
+  use Oban.Testing, repo: Pleroma.Repo
 
   import Pleroma.Factory
 
   alias Pleroma.QuoteAuthorization
   alias Pleroma.QuoteHydration
+  alias Pleroma.Workers.RemoteFetcherWorker
+
+  test "enqueues a missing quote object for asynchronous hydration" do
+    quote_actor = insert(:user)
+    quote_url = "https://remote.example/objects/missing-quote"
+
+    quote_object =
+      insert(:note,
+        user: quote_actor,
+        data: %{
+          "id" => "https://remote.example/objects/quote",
+          "actor" => quote_actor.ap_id,
+          "quoteUrl" => quote_url
+        }
+      )
+
+    assert {:ok, %Oban.Job{}} = QuoteHydration.maybe_enqueue(quote_object, false, 1)
+
+    assert_enqueued(
+      worker: RemoteFetcherWorker,
+      args: %{"op" => "fetch_quote", "id" => quote_url, "depth" => 1}
+    )
+  end
 
   test "reconciles quote objects that reference the hydrated object" do
     quoted_actor = insert(:user)

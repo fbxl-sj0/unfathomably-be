@@ -12,6 +12,8 @@ defmodule Pleroma.Web.CommonAPI.UtilsTest do
   import ExUnit.CaptureLog
   import Pleroma.Factory
 
+  require Pleroma.Constants
+
   @public_address "https://www.w3.org/ns/activitystreams#Public"
 
   describe "add_attachments/2" do
@@ -519,11 +521,11 @@ defmodule Pleroma.Web.CommonAPI.UtilsTest do
 
       {to, cc} = Utils.get_to_and_cc(draft)
 
-      assert length(to) == 2
+      assert length(to) == 1
       assert Enum.empty?(cc)
 
-      assert mentioned_user.ap_id in to
       assert third_user.ap_id in to
+      refute mentioned_user.ap_id in to
     end
   end
 
@@ -626,7 +628,8 @@ defmodule Pleroma.Web.CommonAPI.UtilsTest do
       addressed_reply =
         reply
         |> Ecto.Changeset.change(data: Map.put(reply.data, "cc", [mentioned.ap_id]))
-        |> Pleroma.Repo.update!()
+        |> Pleroma.Object.update_and_set_cache()
+        |> elem(1)
 
       addressed_activity = insert(:note_activity, user: author, note: addressed_reply)
 

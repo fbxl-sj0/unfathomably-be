@@ -445,7 +445,7 @@ defmodule Pleroma.Web.Push.ImplTest do
 
       assert Impl.build_content(notif, actor, object) == %{
                body:
-                 "@Bob: Lorem ipsum dolor sit amet, consectetur  adipiscing elit. Fusce sagittis fini...",
+                 "@Bob: Lorem ipsum dolor sit amet, consectetur  adipiscing elit. Fusce sagitti...",
                title: "New Direct Message"
              }
 
@@ -463,7 +463,7 @@ defmodule Pleroma.Web.Push.ImplTest do
 
       assert Impl.build_content(notif, actor, object) == %{
                body:
-                 "@Bob: Lorem ipsum dolor sit amet, consectetur  adipiscing elit. Fusce sagittis fini...",
+                 "@Bob: Lorem ipsum dolor sit amet, consectetur  adipiscing elit. Fusce sagitti...",
                title: "New Mention"
              }
 

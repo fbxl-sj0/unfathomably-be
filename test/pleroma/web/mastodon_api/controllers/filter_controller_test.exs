@@ -18,7 +18,7 @@ defmodule Pleroma.Web.MastodonAPI.FilterControllerTest do
       conn
       |> put_req_header("content-type", "application/json")
       |> post("/api/v1/filters", %{"phrase" => "knights", context: ["home"]})
-      |> json_response(403)
+      |> json_response(401)
 
     assert response["error"] == "Invalid credentials."
   end
@@ -107,7 +107,7 @@ defmodule Pleroma.Web.MastodonAPI.FilterControllerTest do
     response =
       conn
       |> get("/api/v1/filters")
-      |> json_response(403)
+      |> json_response(401)
 
     assert response["error"] == "Invalid credentials."
   end
@@ -347,7 +347,7 @@ defmodule Pleroma.Web.MastodonAPI.FilterControllerTest do
         phrase: "nii",
         context: ["public"]
       })
-      |> json_response(403)
+      |> json_response(401)
 
     assert response["error"] == "Invalid credentials."
   end
@@ -403,7 +403,7 @@ defmodule Pleroma.Web.MastodonAPI.FilterControllerTest do
     response =
       conn
       |> delete("/api/v1/filters/#{filter.filter_id}")
-      |> json_response(403)
+      |> json_response(401)
 
     assert response["error"] == "Invalid credentials."
   end

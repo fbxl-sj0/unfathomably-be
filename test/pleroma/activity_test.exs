@@ -124,6 +124,7 @@ defmodule Pleroma.ActivityTest do
 
   describe "search" do
     setup do
+      clear_config([:instance, :federating], true)
       user = insert(:user)
 
       params = %{

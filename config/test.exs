@@ -53,7 +53,9 @@ config :pleroma, Pleroma.Repo,
   hostname: System.get_env("DB_HOST") || "localhost",
   port: System.get_env("DB_PORT") || "5432",
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: 10
+  pool_size: 10,
+  queue_target: 1_000,
+  queue_interval: 5_000
 
 config :pleroma, :dangerzone, override_repo_pool_size: true
 
@@ -188,6 +190,7 @@ config :pleroma, Pleroma.Application,
   internal_fetch: false,
   load_custom_modules: false,
   max_restarts: 100,
+  search_healthcheck: false,
   streamer_registry: false,
   test_http_pools: true
 

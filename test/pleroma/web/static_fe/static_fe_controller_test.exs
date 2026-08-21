@@ -190,6 +190,24 @@ defmodule Pleroma.Web.StaticFE.StaticFEControllerTest do
       assert html =~ "testing a dateless thing!"
     end
 
+    test "renders a cached notice when its remote author cannot be resolved", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, activity} = CommonAPI.post(user, %{status: "cached remote post"})
+      object = Object.normalize(activity, fetch: false)
+
+      object
+      |> Object.change(%{data: Map.put(object.data, "actor", "not-an-actor-uri")})
+      |> Repo.update!()
+
+      Object.invalid_object_cache(object)
+
+      conn = get(conn, "/notice/#{activity.id}")
+
+      assert html_response(conn, 200) =~ "cached remote post"
+    end
+
     test "redirects to json if requested", %{conn: conn, user: user} do
       {:ok, activity} = CommonAPI.post(user, %{status: "testing a thing!"})
 

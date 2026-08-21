@@ -190,13 +190,10 @@ defmodule Pleroma.Web.OStatus.OStatusControllerTest do
 
       assert like_activity.data["type"] == "Like"
 
-      resp =
-        conn
-        |> put_req_header("accept", "text/html")
-        |> get("/notice/#{like_activity.id}")
-        |> response(200)
-
-      refute resp =~ "initial-results"
+      conn
+      |> put_req_header("accept", "text/html")
+      |> get("/notice/#{like_activity.id}")
+      |> response(404)
     end
 
     test "404s a private notice", %{conn: conn} do

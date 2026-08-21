@@ -4,6 +4,7 @@
 
 defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorkerTest do
   use Pleroma.DataCase
+  use Oban.Testing, repo: Pleroma.Repo
 
   alias Pleroma.Activity
   alias Pleroma.Bookmark
@@ -26,6 +27,9 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorkerTest do
     clear_config([GroupDiscussionCleanupWorker, :candidate_query_chunk_size], 50)
     clear_config([GroupDiscussionCleanupWorker, :max_scan_pages], 4)
     clear_config([GroupDiscussionCleanupWorker, :query_timeout_ms], 60_000)
+    clear_config([GroupDiscussionCleanupWorker, :work_budget_ms], 60_000)
+    clear_config([GroupDiscussionCleanupWorker, :continuation_enabled], false)
+    clear_config([GroupDiscussionCleanupWorker, :continuation_delay_seconds], 60)
   end
 
   test "purges old remote group discussions without local user interaction" do
@@ -116,6 +120,29 @@ defmodule Pleroma.Workers.Cron.GroupDiscussionCleanupWorkerTest do
 
     assert %Object{data: %{"type" => "Tombstone"}} =
              Object.get_by_ap_id(second.object.data["id"])
+  end
+
+  test "schedules another bounded slice when a candidate page remains" do
+    clear_config([GroupDiscussionCleanupWorker, :batch_size], 2)
+    clear_config([GroupDiscussionCleanupWorker, :candidate_scan_limit], 1)
+    clear_config([GroupDiscussionCleanupWorker, :candidate_query_chunk_size], 1)
+    clear_config([GroupDiscussionCleanupWorker, :max_scan_pages], 1)
+    clear_config([GroupDiscussionCleanupWorker, :continuation_enabled], true)
+
+    remote_group_discussion()
+
+    assert {:ok, 1} = GroupDiscussionCleanupWorker.perform(%Oban.Job{})
+
+    assert_enqueued(
+      worker: GroupDiscussionCleanupWorker,
+      args: %{"continuation" => true}
+    )
+  end
+
+  test "paces continuation slices from measured work time" do
+    assert GroupDiscussionCleanupWorker.continuation_delay_seconds(1_000, 60) == 60
+    assert GroupDiscussionCleanupWorker.continuation_delay_seconds(20_000, 60) == 80
+    assert GroupDiscussionCleanupWorker.continuation_delay_seconds(2_000_000, 60) == 3_600
   end
 
   defp remote_group_discussion(age_days \\ 200, updated_age_days \\ nil) do

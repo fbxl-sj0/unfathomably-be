@@ -61,7 +61,7 @@ FW_BASE="http://127.0.0.1:$FW_PORT"
 FW_DB_NAME="${FW_DB_NAME:-funkwhale_smoke}"
 FW_DB_PASSWORD="${FW_DB_PASSWORD:-postgres}"
 
-IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:17-alpine}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7-alpine}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.27-alpine}"

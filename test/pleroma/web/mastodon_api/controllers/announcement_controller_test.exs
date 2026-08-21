@@ -21,7 +21,7 @@ defmodule Pleroma.Web.MastodonAPI.AnnouncementControllerTest do
         conn
         |> assign(:token, nil)
         |> get("/api/v1/announcements")
-        |> json_response_and_validate_schema(:forbidden)
+        |> json_response_and_validate_schema(:unauthorized)
     end
 
     test "it allows users with scopes" do
@@ -130,7 +130,7 @@ defmodule Pleroma.Web.MastodonAPI.AnnouncementControllerTest do
         conn
         |> assign(:token, nil)
         |> post("/api/v1/announcements/#{id}/dismiss")
-        |> json_response_and_validate_schema(:forbidden)
+        |> json_response_and_validate_schema(:unauthorized)
     end
 
     test "it requires write:accounts oauth scope" do

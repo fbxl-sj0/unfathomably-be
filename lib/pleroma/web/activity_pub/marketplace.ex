@@ -38,7 +38,7 @@ defmodule Pleroma.Web.ActivityPub.Marketplace do
   def service_actor do
     actor_ap_id = service_actor_ap_id()
 
-    case User.get_cached_by_ap_id(actor_ap_id) do
+    case User.get_by_ap_id(actor_ap_id) do
       %User{} = actor -> {:ok, actor}
       nil -> create_service_actor(actor_ap_id)
     end
@@ -52,7 +52,7 @@ defmodule Pleroma.Web.ActivityPub.Marketplace do
   cannot mutate local federation state during an endpoint-startup race.
   """
   def get_service_actor do
-    case User.get_cached_by_ap_id(service_actor_ap_id()) do
+    case User.get_by_ap_id(service_actor_ap_id()) do
       %User{} = actor -> {:ok, actor}
       nil -> {:error, :not_found}
     end

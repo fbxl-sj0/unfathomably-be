@@ -53,6 +53,7 @@ defmodule Pleroma.Web.Endpoint do
   plug(CORSPlug)
   plug(Pleroma.Web.Plugs.HTTPSecurityPlug)
   plug(Pleroma.Web.Plugs.UploadedMedia)
+  plug(Pleroma.Web.Plugs.FrontendAssetPathPlug)
 
   @static_cache_control "public, max-age=1209600, immutable"
   @static_cache_disabled "public, no-cache"

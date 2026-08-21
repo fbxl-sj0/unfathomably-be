@@ -3,11 +3,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Workers.ActorCollectionRefreshWorkerTest do
-  use Pleroma.DataCase, async: true
+  use Pleroma.DataCase, async: false
 
   alias Pleroma.Workers.ActorCollectionRefreshWorker
 
   import Pleroma.Factory
+
+  setup do: clear_config([:instance, :federating], true)
 
   test "keeps optional remote collection work bounded" do
     assert ActorCollectionRefreshWorker.timeout(%Oban.Job{}) == :timer.seconds(35)
@@ -53,6 +55,31 @@ defmodule Pleroma.Workers.ActorCollectionRefreshWorkerTest do
              args: %{
                "ap_id" => user.ap_id,
                "kind" => "featured",
+               "collection" => collection
+             }
+           }) == {:cancel, :cooldown}
+  end
+
+  test "cancels a moderator collection refresh while its failure cooldown is active" do
+    clear_config([:instance, :federating], true)
+    collection = "https://collection-cooldown.example/groups/local/moderators"
+
+    user =
+      insert(:user,
+        local: false,
+        actor_type: "Group",
+        ap_id: "https://collection-cooldown.example/groups/local",
+        attributed_to_address: collection
+      )
+
+    cache_key = {:actor_collection, collection}
+    Cachex.put(:failed_featured_collection_cache, cache_key, true)
+    on_exit(fn -> Cachex.del(:failed_featured_collection_cache, cache_key) end)
+
+    assert ActorCollectionRefreshWorker.perform(%Oban.Job{
+             args: %{
+               "ap_id" => user.ap_id,
+               "kind" => "moderators",
                "collection" => collection
              }
            }) == {:cancel, :cooldown}

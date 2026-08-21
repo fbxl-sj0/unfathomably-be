@@ -1012,6 +1012,10 @@ defmodule Pleroma.Web.ApiSpec.StatusOperation do
           type: :string,
           description: "Translated status content"
         },
+        spoiler_text: %Schema{
+          type: :string,
+          description: "Translated status content warning or subject"
+        },
         detected_source_language: %Schema{
           type: :string,
           description: "Detected source language"

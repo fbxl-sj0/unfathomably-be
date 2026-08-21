@@ -15,6 +15,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AudioHandlingTest do
 
   require Pleroma.Constants
 
+  setup_all do: clear_config([:instance, :federating], true)
+
   test "it works for incoming listens" do
     _user = insert(:user, ap_id: "http://mastodon.example.org/users/admin")
 
@@ -75,7 +77,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AudioHandlingTest do
     assert object.data["attachment"] == [
              %{
                "mediaType" => "audio/ogg",
-               "type" => "Link",
+               "type" => "Audio",
                "url" => [
                  %{
                    "href" =>

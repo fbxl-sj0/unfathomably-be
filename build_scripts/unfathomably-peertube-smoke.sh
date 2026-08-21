@@ -54,7 +54,7 @@ PEERTUBE_APP_HOST="${PEERTUBE_APP_HOST:-peertube-app}"
 BE_PORT="${BE_PORT:-4661}"
 PEERTUBE_PORT="${PEERTUBE_PORT:-4662}"
 
-IMAGE="${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 PEERTUBE_IMAGE="${PEERTUBE_IMAGE:-chocobozzz/peertube:production}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:17-alpine}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:8-alpine}"

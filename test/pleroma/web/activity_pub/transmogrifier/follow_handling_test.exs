@@ -17,6 +17,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.FollowHandlingTest do
   import Mock
 
   setup_all do
+    clear_config([:instance, :federating], true)
     Tesla.Mock.mock_global(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok
   end

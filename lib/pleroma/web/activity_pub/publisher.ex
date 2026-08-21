@@ -8,9 +8,9 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
   alias Pleroma.Activity
   alias Pleroma.Config
   alias Pleroma.Delivery
+  alias Pleroma.Helpers.UriHelper
   alias Pleroma.HTTP
   alias Pleroma.HTTP.SignatureNegotiation
-  alias Pleroma.Helpers.UriHelper
   alias Pleroma.Instances
   alias Pleroma.Instances.Instance
   alias Pleroma.Object
@@ -292,7 +292,7 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
       inbox,
       json,
       headers,
-      @delivery_http_options
+      Keyword.put(@delivery_http_options, :public_only, true)
     )
   end
 
@@ -318,7 +318,7 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
         inbox,
         json,
         headers,
-        @delivery_http_options
+        Keyword.put(@delivery_http_options, :public_only, true)
       )
     end
   end
@@ -553,10 +553,12 @@ defmodule Pleroma.Web.ActivityPub.Publisher do
         result =
           Enum.reduce_while(inboxes, :ok, fn {inbox, unreachable_since}, :ok ->
             %User{ap_id: ap_id} =
-              Enum.find(all_recipients, fn user -> determine_inbox(activity, user) == inbox end)
+              Enum.find(all_recipients, fn user ->
+                determine_inbox(activity, user) == inbox
+              end)
 
-            # Get all the recipients on the same host and add them to cc. Otherwise, a remote
-            # instance would only accept a first message for the first recipient and ignore the rest.
+            # Get all recipients on the same host and add them to cc. Otherwise, a remote
+            # instance may accept only the first recipient and ignore the rest.
             cc = get_cc_ap_ids(ap_id, all_recipients)
 
             cc =

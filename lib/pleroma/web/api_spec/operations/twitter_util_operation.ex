@@ -106,6 +106,7 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
             properties: %{status: %Schema{type: :string, example: "success"}}
           }),
         400 => Operation.response("Error", "application/json", ApiError),
+        401 => Operation.response("Invalid credentials", "application/json", ApiError),
         403 => Operation.response("Error", "application/json", ApiError)
       }
     }
@@ -142,6 +143,7 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
             properties: %{status: %Schema{type: :string, example: "success"}}
           }),
         400 => Operation.response("Error", "application/json", ApiError),
+        401 => Operation.response("Invalid credentials", "application/json", ApiError),
         403 => Operation.response("Error", "application/json", ApiError)
       }
     }
@@ -210,6 +212,7 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
             type: :object,
             properties: %{status: %Schema{type: :string, example: "success"}}
           }),
+        401 => Operation.response("Invalid credentials", "application/json", ApiError),
         403 => Operation.response("Error", "application/json", ApiError)
       }
     }
@@ -231,6 +234,7 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
             type: :object,
             properties: %{status: %Schema{type: :string, example: "success"}}
           }),
+        401 => Operation.response("Invalid credentials", "application/json", ApiError),
         403 => Operation.response("Error", "application/json", ApiError)
       }
     }
@@ -262,6 +266,7 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
             properties: %{status: %Schema{type: :string, example: "success"}}
           }),
         400 => Operation.response("Error", "application/json", ApiError),
+        401 => Operation.response("Invalid credentials", "application/json", ApiError),
         403 => Operation.response("Error", "application/json", ApiError),
         404 => Operation.response("Error", "application/json", ApiError),
         429 => Operation.response("Error", "application/json", ApiError)
@@ -342,6 +347,7 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
             }
           }),
         400 => Operation.response("Error", "application/json", ApiError),
+        401 => Operation.response("Invalid credentials", "application/json", ApiError),
         403 => Operation.response("Error", "application/json", ApiError)
       }
     }
@@ -366,6 +372,7 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
             }
           }),
         400 => Operation.response("Error", "application/json", ApiError),
+        401 => Operation.response("Invalid credentials", "application/json", ApiError),
         403 => Operation.response("Error", "application/json", ApiError),
         404 => Operation.response("Error", "application/json", ApiError)
       }
@@ -406,6 +413,7 @@ defmodule Pleroma.Web.ApiSpec.TwitterUtilOperation do
             }
           }),
         400 => Operation.response("Error", "application/json", ApiError),
+        401 => Operation.response("Invalid credentials", "application/json", ApiError),
         403 => Operation.response("Error", "application/json", ApiError),
         404 => Operation.response("Error", "application/json", ApiError)
       }

@@ -12,6 +12,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.ChatMessageTest do
   alias Pleroma.Object
   alias Pleroma.Web.ActivityPub.Transmogrifier
 
+  setup_all do: clear_config([:instance, :federating], true)
+
   describe "handle_incoming" do
     test "handles chonks with attachment" do
       data = %{

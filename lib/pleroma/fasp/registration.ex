@@ -340,9 +340,10 @@ defmodule Pleroma.FASP.Registration do
           |> URI.to_string()
           |> String.trim_trailing("/")
 
-        if byte_size(normalized) <= 2_048,
-          do: {:ok, normalized},
-          else: {:error, :invalid_base_url}
+        if byte_size(normalized) <= 2_048 and
+             Pleroma.HTTP.PublicAddress.public_url?(normalized),
+           do: {:ok, normalized},
+           else: {:error, :invalid_base_url}
 
       _ ->
         {:error, :invalid_base_url}

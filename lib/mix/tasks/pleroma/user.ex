@@ -96,12 +96,17 @@ defmodule Mix.Tasks.Pleroma.User do
   def run(["rm", nickname]) do
     start_pleroma()
 
-    with %User{local: true} = user <- User.get_cached_by_nickname(nickname),
-         {:ok, delete_data, _} <- Builder.delete(user, user.ap_id),
-         {:ok, _delete, _} <- Pipeline.common_pipeline(delete_data, local: true) do
-      shell_info("User #{nickname} deleted.")
-    else
-      _ -> shell_error("No local user #{nickname}")
+    case User.get_cached_by_nickname(nickname) do
+      %User{local: true} = user ->
+        with {:ok, delete_data, _} <- Builder.delete(user, user.ap_id),
+             {:ok, _delete, _} <- Pipeline.common_pipeline(delete_data, local: true) do
+          shell_info("User #{nickname} deleted.")
+        else
+          error -> shell_error("Could not delete local user #{nickname}: #{inspect(error)}")
+        end
+
+      _other ->
+        shell_error("No local user #{nickname}")
     end
   end
 

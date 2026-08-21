@@ -202,7 +202,15 @@ defmodule Pleroma.ReverseProxy do
         opts
       end
 
-    with {:ok, nil} <- @cachex.get(:failed_proxy_url_cache, url),
+    # Some media origins support GET but intermittently reject HEAD. Keep the
+    # failure cache method-specific so a metadata probe cannot suppress later
+    # playback of the same URL. URL-only entries from older code are ignored:
+    # carrying them into a hot upgrade would preserve the very cross-method
+    # failure this key prevents.
+    failure_cache_key = failed_request_cache_key(method, url)
+    opts = Keyword.put(opts, :request_method, method)
+
+    with {:ok, nil} <- @cachex.get(:failed_proxy_url_cache, failure_cache_key),
          {:ok, code, headers, client} <-
            request_with_constraints(method, url, req_headers, client_opts, opts) do
       response(conn, client, url, code, headers, opts)
@@ -543,7 +551,7 @@ defmodule Pleroma.ReverseProxy do
     conn
     |> put_resp_header("content-type", "image/svg+xml")
     |> put_resp_header("content-disposition", "inline; filename=\"remote-media-unavailable.svg\"")
-    |> put_resp_header("cache-control", "public, max-age=60")
+    |> put_resp_header("cache-control", "private, no-store")
     |> send_resp(200, @failed_image_placeholder)
     |> halt()
   end
@@ -873,8 +881,12 @@ defmodule Pleroma.ReverseProxy do
       end
 
     cached_response = %{status: response_code, body: response_body}
-    @cachex.put(:failed_proxy_url_cache, url, cached_response, expire: ttl)
+    method = Keyword.get(opts, :request_method, "GET")
+    cache_key = failed_request_cache_key(method, url)
+    @cachex.put(:failed_proxy_url_cache, cache_key, cached_response, expire: ttl)
   end
+
+  defp failed_request_cache_key(method, url), do: {:failed_proxy_request, method, url}
 
   defp origin_lock(url) do
     origin = origin_key(url)

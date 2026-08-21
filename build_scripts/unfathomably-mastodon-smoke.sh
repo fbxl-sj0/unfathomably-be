@@ -60,7 +60,7 @@ MASTODON_PORT="${MASTODON_PORT:-4642}"
 DB_PASSWORD="${DB_PASSWORD:-postgres}"
 PASSWORD="${PASSWORD:-unfathomably-smoke-password}"
 
-IMAGE="${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 NODE_IMAGE="${NODE_IMAGE:-node:26-bookworm}"
 MASTODON_IMAGE="${MASTODON_IMAGE:-ghcr.io/mastodon/mastodon:latest}"
 

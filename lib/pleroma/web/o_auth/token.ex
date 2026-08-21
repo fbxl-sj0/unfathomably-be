@@ -136,9 +136,19 @@ defmodule Pleroma.Web.OAuth.Token do
   end
 
   def delete_user_token(%User{id: user_id}, token_id) do
-    Query.get_by_user(user_id)
-    |> Query.get_by_id(token_id)
-    |> Repo.delete_all()
+    query = Query.get_by_user(user_id) |> Query.get_by_id(token_id)
+    token = Repo.one(query)
+    result = Repo.delete_all(query)
+
+    case {result, token} do
+      {{count, _}, %Token{} = token} when count > 0 ->
+        Pleroma.Web.Streamer.close_streams_by_oauth_token(token)
+
+      _ ->
+        :ok
+    end
+
+    result
   end
 
   def get_user_tokens(%User{id: user_id}) do

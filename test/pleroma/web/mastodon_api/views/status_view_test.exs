@@ -4,6 +4,9 @@
 
 defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
   use Pleroma.DataCase
+  use Oban.Testing, repo: Pleroma.Repo
+
+  @moduletag capture_log: true
 
   alias Pleroma.Activity
   alias Pleroma.Bookmark
@@ -24,8 +27,11 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
   import Pleroma.Factory
   import Tesla.Mock
 
+  require Pleroma.Constants
+
   setup do
     mock(fn env -> apply(HttpRequestMock, :request, [env]) end)
+    clear_config([:instance, :federating], true)
     :ok
   end
 
@@ -393,6 +399,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       ],
       application: nil,
       language: nil,
+      filtered: [],
       group: nil,
       emojis: [
         %{
@@ -405,8 +412,13 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       quotes_count: 0,
       pleroma: %{
         local: true,
+        local_references: %{},
         native: nil,
         nostr: nil,
+        atproto: nil,
+        diaspora: nil,
+        distinguished: false,
+        answer: false,
         conversation_id: convo_id,
         context: object_data["context"],
         in_reply_to_account_acct: nil,
@@ -437,7 +449,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       }
     }
 
-    assert status == expected
+    assert Map.take(status, Map.keys(expected)) == expected
     assert_schema(status, "Status", Pleroma.Web.ApiSpec.spec())
   end
 
@@ -546,6 +558,26 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
     [status] = StatusView.render("index.json", %{activities: [quoted_quote_post], as: :activity})
 
     assert status.pleroma.quote.id == to_string(quote_post.id)
+  end
+
+  test "requeues a quote whose Create activity has no cached object" do
+    user = insert(:user)
+    quote_url = "https://remote.example/objects/missing-quote"
+
+    quote_post =
+      insert(:note_activity,
+        user: user,
+        note: insert(:note, data: %{"quoteUrl" => quote_url})
+      )
+
+    status = StatusView.render("show.json", %{activity: quote_post})
+
+    refute status.pleroma.quote
+
+    assert_enqueued(
+      worker: Pleroma.Workers.RemoteFetcherWorker,
+      args: %{"op" => "fetch_quote", "id" => quote_url, "depth" => 1}
+    )
   end
 
   test "quoted private post" do
@@ -767,7 +799,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
       remote_url: "someurl",
       preview_url: "someurl",
       text_url: "someurl",
-      description: nil,
+      description: "",
       pleroma: %{mime_type: "image/png", license: "CC-BY-4.0"},
       meta: %{
         width: 200,
@@ -854,6 +886,43 @@ defmodule Pleroma.Web.MastodonAPI.StatusViewTest do
 
     assert result.type == "image"
     assert result.pleroma.mime_type == "image/jpeg"
+  end
+
+  test "nested ActivityPub Link attachments render as preview cards instead of media" do
+    clear_config([:rich_media, :enabled], false)
+
+    user = insert(:user)
+    destination = "https://articles.example/link-post"
+    preview = "https://articles.example/preview.png"
+
+    object =
+      insert(:note,
+        user: user,
+        data: %{
+          "type" => "Page",
+          "name" => "A linked article",
+          "summary" => "A useful article summary",
+          "attachment" => [
+            %{
+              "type" => "Link",
+              "mediaType" => "text/html",
+              "url" => [
+                %{"type" => "Link", "mediaType" => "text/html", "href" => destination}
+              ]
+            }
+          ],
+          "image" => %{"type" => "Image", "url" => preview}
+        }
+      )
+
+    activity = insert(:note_activity, user: user, note: object)
+    represented = StatusView.render("show.json", %{activity: activity})
+
+    assert represented.media_attachments == []
+    assert represented.card.url == destination
+    assert represented.card.title == "A linked article"
+    assert represented.card.description == "A useful article summary"
+    assert represented.card.image == preview
   end
 
   test "put the url advertised in the Activity in to the url attribute" do

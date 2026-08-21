@@ -151,6 +151,7 @@ defmodule Pleroma.Web.ApiSpec.PleromaEventOperation do
       parameters: [id_param(), participant_id_param()],
       responses: %{
         200 => event_response(),
+        400 => Operation.response("Error", "application/json", ApiError),
         403 => Operation.response("Forbidden", "application/json", ApiError),
         404 => Operation.response("Not Found", "application/json", ApiError)
       }

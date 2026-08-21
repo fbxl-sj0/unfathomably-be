@@ -71,6 +71,34 @@ defmodule Pleroma.Web.Plugs.UploadedMediaPlugTest do
     end)
   end
 
+  test "detects safe content types for extension-neutral local media" do
+    context = %{module: __MODULE__, case: __MODULE__}
+    Pleroma.DataCase.ensure_local_uploader(context)
+
+    filename = "extension-neutral-avatar.blob"
+    destination = Path.join(Pleroma.Uploaders.Local.upload_path(), filename)
+    File.cp!("test/fixtures/image.png", destination)
+
+    conn = get(build_conn(), "/media/#{filename}")
+
+    assert get_resp_header(conn, "content-type") == ["image/png"]
+    assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+  end
+
+  test "does not trust dangerous content in extension-neutral local media" do
+    context = %{module: __MODULE__, case: __MODULE__}
+    Pleroma.DataCase.ensure_local_uploader(context)
+
+    filename = "extension-neutral-document.blob"
+    destination = Path.join(Pleroma.Uploaders.Local.upload_path(), filename)
+    File.cp!("test/fixtures/nypd-facial-recognition-children-teenagers.html", destination)
+
+    conn = get(build_conn(), "/media/#{filename}")
+
+    assert get_resp_header(conn, "content-type") == ["application/octet-stream"]
+    assert get_resp_header(conn, "content-security-policy") == ["sandbox"]
+  end
+
   test "returns not found when the uploader cannot resolve a media path" do
     clear_config([Pleroma.Upload, :uploader], FailingUploader)
 

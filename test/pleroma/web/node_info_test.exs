@@ -11,6 +11,8 @@ defmodule Pleroma.Web.NodeInfoTest do
   setup do: clear_config(:instance)
 
   test "GET /.well-known/nodeinfo", %{conn: conn} do
+    assert {:ok, _actor} = Pleroma.Web.ActivityPub.Marketplace.service_actor()
+
     links =
       conn
       |> get("/.well-known/nodeinfo")
@@ -25,21 +27,23 @@ defmodule Pleroma.Web.NodeInfoTest do
              "https://www.w3.org/ns/activitystreams#Application"
            ]
 
-    Enum.each(links, fn link ->
+    links
+    |> Enum.reject(&(&1["rel"] == "https://www.w3.org/ns/activitystreams#Application"))
+    |> Enum.each(fn link ->
       href = Map.fetch!(link, "href")
 
-      conn
-      |> get(href)
+      build_conn()
+      |> get(URI.parse(href).path)
       |> json_response(200)
     end)
 
     application_actor =
       Enum.find(links, &(&1["rel"] == "https://www.w3.org/ns/activitystreams#Application"))
 
-    assert %{"id" => application_actor["href"], "type" => "Application"} =
-             conn
-             |> get(application_actor["href"])
-             |> json_response(200)
+    application_actor_href = application_actor["href"]
+
+    assert {:ok, %{ap_id: ^application_actor_href, actor_type: "Application"}} =
+             Pleroma.Web.ActivityPub.Marketplace.get_service_actor()
   end
 
   test "nodeinfo responses advertise their schema profile", %{conn: conn} do

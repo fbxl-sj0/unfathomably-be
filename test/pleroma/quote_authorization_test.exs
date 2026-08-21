@@ -12,6 +12,131 @@ defmodule Pleroma.QuoteAuthorizationTest do
   alias Pleroma.Repo
   alias Pleroma.Workers.QuoteAuthorizationWorker
 
+  test "first import enqueues verification for a remote quote authorization" do
+    quoted_actor = insert(:user)
+    quote_actor = insert(:user)
+    authorization = "https://remote.example/quote-authorizations/1"
+
+    quoted_object =
+      insert(:note,
+        data: %{
+          "id" => "https://remote.example/objects/quoted-on-import",
+          "type" => "Note",
+          "actor" => quoted_actor.ap_id,
+          "to" => ["https://www.w3.org/ns/activitystreams#Public"],
+          "interactionPolicy" => %{
+            "canQuote" => %{
+              "automaticApproval" => ["https://www.w3.org/ns/activitystreams#Public"]
+            }
+          }
+        }
+      )
+
+    quote_object =
+      insert(:note,
+        data: %{
+          "id" => "https://remote.example/objects/quote-on-import",
+          "type" => "Note",
+          "actor" => quote_actor.ap_id,
+          "quoteUrl" => quoted_object.data["id"],
+          "quoteAuthorization" => authorization,
+          "to" => ["https://www.w3.org/ns/activitystreams#Public"]
+        }
+      )
+
+    assert {:ok, registered_object, false} = QuoteAuthorization.register(quote_object, false)
+    assert registered_object.data["quoteState"] == "pending"
+
+    assert_enqueued(
+      worker: QuoteAuthorizationWorker,
+      args: %{
+        "quote_object_id" => quote_object.id,
+        "authorization" => authorization
+      }
+    )
+  end
+
+  test "legacy public quotes remain accepted without permission extensions" do
+    quoted_actor = insert(:user)
+    quote_actor = insert(:user)
+
+    quoted_object =
+      insert(:note,
+        data: %{
+          "id" => "https://legacy.example/objects/quoted",
+          "type" => "Note",
+          "actor" => quoted_actor.ap_id,
+          "to" => ["https://www.w3.org/ns/activitystreams#Public"]
+        }
+      )
+
+    quote_object =
+      insert(:note,
+        data: %{
+          "id" => "https://legacy.example/objects/quote",
+          "type" => "Note",
+          "actor" => quote_actor.ap_id,
+          "quoteUrl" => quoted_object.data["id"],
+          "to" => ["https://www.w3.org/ns/activitystreams#Public"]
+        }
+      )
+
+    assert {:ok, registered_object, true} = QuoteAuthorization.register(quote_object, false)
+    assert registered_object.data["quoteState"] == "accepted"
+    refute_enqueued(worker: QuoteAuthorizationWorker)
+  end
+
+  test "requeues a bounded stranded remote authorization only once" do
+    quoted_actor = insert(:user)
+    quote_actor = insert(:user)
+    authorization = "https://stranded.example/quote-authorizations/1"
+
+    quoted_object =
+      insert(:note,
+        data: %{
+          "id" => "https://stranded.example/objects/quoted",
+          "type" => "Note",
+          "actor" => quoted_actor.ap_id
+        }
+      )
+
+    quote_object =
+      insert(:note,
+        data: %{
+          "id" => "https://stranded.example/objects/quote",
+          "type" => "Note",
+          "actor" => quote_actor.ap_id,
+          "quoteUrl" => quoted_object.data["id"],
+          "quoteAuthorization" => authorization,
+          "quoteState" => "pending"
+        }
+      )
+
+    Repo.insert!(
+      QuoteAuthorization.changeset(%QuoteAuthorization{}, %{
+        quote_object_id: quote_object.id,
+        quoted_object_id: quoted_object.id,
+        quote_actor: quote_actor.ap_id,
+        quoted_actor: quoted_actor.ap_id,
+        state: "pending",
+        policy: "public",
+        local: false
+      })
+    )
+
+    assert 1 = QuoteAuthorization.requeue_stranded_remote_authorizations(10, 2)
+
+    assert_enqueued(
+      worker: QuoteAuthorizationWorker,
+      args: %{
+        "quote_object_id" => quote_object.id,
+        "authorization" => authorization
+      }
+    )
+
+    assert 0 = QuoteAuthorization.requeue_stranded_remote_authorizations(10, 2)
+  end
+
   test "an implicit update can enqueue verification without changing quote targets" do
     quoted_actor = insert(:user)
     quote_actor = insert(:user)
@@ -155,6 +280,15 @@ defmodule Pleroma.QuoteAuthorizationTest do
 
     assert {:error, :not_found} =
              QuoteAuthorization.authorization_document_for_requester(quote_object, nil)
+  end
+
+  test "treats an empty remote quote state as ordinary public quote behavior" do
+    assert QuoteAuthorization.visible_state?(%{"quoteState" => ""})
+    assert QuoteAuthorization.visible_state?(%{"quoteState" => nil})
+    assert QuoteAuthorization.visible_state?(%{})
+    assert QuoteAuthorization.visible_state?(%{"quoteState" => "accepted"})
+    refute QuoteAuthorization.visible_state?(%{"quoteState" => "pending"})
+    refute QuoteAuthorization.visible_state?(%{"quoteState" => "rejected"})
   end
 end
 

@@ -151,20 +151,25 @@ config :logger, :console,
     :activity_id,
     :activity_type,
     :actor,
+    :atproto_did,
+    :available_bytes,
     :delay_ms,
     :event_id,
     :failed,
     :group,
     :inbox,
+    :ingested,
     :path,
     :pubkey,
     :reason,
     :reasons,
     :rejected,
     :relay,
+    :skipped,
     :status,
     :subscription,
     :target,
+    :total_bytes,
     :type,
     :user
   ]
@@ -178,20 +183,25 @@ config :logger, :ex_syslogger,
     :activity_id,
     :activity_type,
     :actor,
+    :atproto_did,
+    :available_bytes,
     :delay_ms,
     :event_id,
     :failed,
     :group,
     :inbox,
+    :ingested,
     :path,
     :pubkey,
     :reason,
     :reasons,
     :rejected,
     :relay,
+    :skipped,
     :status,
     :subscription,
     :target,
+    :total_bytes,
     :type,
     :user
   ]
@@ -216,6 +226,15 @@ config :pleroma, :http,
   send_user_agent: true,
   user_agent: :default,
   adapter: []
+
+# Onion services are opt-in because they require a local Tor client. When
+# enabled, Pleroma.HTTP.Onion always uses the loopback SOCKS endpoint and never
+# sends onion names through the system DNS resolver.
+config :pleroma, Pleroma.HTTP.Onion,
+  enabled: false,
+  socks_port: 9050,
+  connect_timeout: 15_000,
+  recv_timeout: 30_000
 
 config :pleroma, :instance,
   name: "Unfathomably",
@@ -554,7 +573,7 @@ config :pleroma, :media_proxy,
   ],
   proxy_opts: [
     redirect_on_failure: false,
-    max_body_length: 25 * 1_048_576,
+    max_body_length: 64 * 1_048_576,
     # Note: max_read_duration defaults to Pleroma.ReverseProxy.max_read_duration_default/1
     max_read_duration: 30_000,
     http: [
@@ -707,6 +726,7 @@ config :pleroma, Oban,
   plugins: [{Oban.Plugins.Pruner, max_age: 900}, Oban.Plugins.Lifeline],
   crontab: [
     {"*/5 * * * *", Pleroma.Workers.ATProtoSyncWorker},
+    {"*/10 * * * *", Pleroma.Workers.NostrProfileSweepWorker},
     {"*/30 * * * *", Pleroma.Workers.NostrCommunityDiscoveryWorker},
     {"0 0 * * 0", Pleroma.Workers.Cron.DigestEmailsWorker},
     {"0 0 * * *", Pleroma.Workers.Cron.NewUsersDigestWorker},
@@ -714,7 +734,7 @@ config :pleroma, Oban,
     {"17 * * * *", Pleroma.Workers.Cron.ObanCleanupWorker},
     {"*/15 * * * *", Pleroma.Workers.Cron.RssSourceIngestWorker},
     {"0 3 * * *", Pleroma.Workers.Cron.ScheduleReachabilityWorker},
-    {"7 4 * * *", Pleroma.Workers.Cron.RemotePostCleanupWorker},
+    {"7 * * * *", Pleroma.Workers.Cron.RemotePostCleanupWorker},
     {"30 4 * * *", Pleroma.Workers.Cron.GroupDiscussionCleanupWorker}
   ]
 
@@ -727,6 +747,11 @@ config :pleroma, Pleroma.Nostr,
     "wss://relay.nostr.com",
     "wss://nostr.mom",
     "wss://relay.primal.net"
+  ],
+  response_relays: [
+    "wss://relay.snort.social",
+    "wss://nos.lol",
+    "wss://relay.damus.io"
   ],
   discovery_relays: [],
   group_relays: [],
@@ -749,6 +774,7 @@ config :pleroma, Pleroma.Nostr,
   max_filter_limit: 500,
   max_query_candidates: 2_000,
   max_search_candidates: 10_000,
+  local_response_subscription_overlap_seconds: 604_800,
   future_tolerance_seconds: 900,
   oldest_event_unix: 1_230_768_000,
   mostr_native_lookup_max_relays: 3,
@@ -781,21 +807,37 @@ config :pleroma, Pleroma.Diaspora, enabled: Mix.env() == :prod
 config :pleroma, Pleroma.Workers.Cron.RemotePostCleanupWorker,
   enabled: true,
   max_age_days: 365,
-  batch_size: 50,
-  candidate_scan_limit: 1_000,
+  batch_size: 500,
+  candidate_scan_limit: 5_000,
+  candidate_query_chunk_size: 10,
   max_scan_pages: 10,
   query_timeout_ms: 60_000,
   keep_threads_with_local_activity: true,
-  keep_direct_or_mentioned: true
+  keep_direct_or_mentioned: true,
+  orphan_activity_cleanup_enabled: true,
+  orphan_activity_batch_size: 500,
+  orphan_activity_scan_limit: 1_000,
+  orphan_activity_full_sweep_days: 30,
+  orphan_activity_continuation_enabled: true,
+  orphan_activity_continuation_delay_seconds: 5,
+  remote_cache_continuation_enabled: true,
+  remote_cache_continuation_delay_seconds: 30,
+  tombstone_cleanup_enabled: true,
+  tombstone_max_age_days: 730,
+  tombstone_batch_size: 500
 
 config :pleroma, Pleroma.Workers.Cron.GroupDiscussionCleanupWorker,
   enabled: true,
   max_age_days: 183,
   followed_group_max_age_days: 730,
   batch_size: 100,
-  candidate_scan_limit: 1_000,
+  candidate_scan_limit: 250,
+  candidate_query_chunk_size: 10,
   max_scan_pages: 10,
-  query_timeout_ms: 120_000
+  query_timeout_ms: 5_000,
+  work_budget_ms: 10_000,
+  continuation_enabled: true,
+  continuation_delay_seconds: 60
 
 config :pleroma, Pleroma.Workers.RemoteFetcherWorker, timeout_ms: 30_000
 config :pleroma, Pleroma.Workers.ReceiverWorker, timeout_ms: 90_000
@@ -976,6 +1018,7 @@ config :pleroma, :rate_limit,
   events_actions: {10_000, 15},
   password_reset: {1_800_000, 5},
   account_confirmation_resend: {8_640_000, 5},
+  account_confirmation_resend_target: {8_640_000, 5},
   ap_routes: {60_000, 15}
 
 config :pleroma, Pleroma.Workers.PurgeExpiredActivity, enabled: true, min_lifetime: 600
@@ -1097,6 +1140,11 @@ config :pleroma, :pools,
     size: 25,
     max_waiting: 20,
     recv_timeout: 15_000
+  ],
+  onion: [
+    size: 2,
+    max_waiting: 4,
+    recv_timeout: 30_000
   ],
   upload: [
     size: 25,
@@ -1222,6 +1270,7 @@ config :pleroma, Pleroma.Application,
   internal_fetch: true,
   load_custom_modules: true,
   max_restarts: 3,
+  search_healthcheck: true,
   streamer_registry: true,
   test_http_pools: false
 

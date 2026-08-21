@@ -53,6 +53,14 @@ defmodule Pleroma.Tests.Helpers do
     end
   end
 
+  defmacro clear_config_section(section, temp_settings) do
+    quote do
+      Enum.each(unquote(temp_settings), fn {key, value} ->
+        clear_config([unquote(section), key], value)
+      end)
+    end
+  end
+
   def require_migration(migration_name) do
     [{module, _}] = Code.require_file("#{migration_name}.exs", "priv/repo/migrations")
     {:ok, %{migration: module}}
@@ -63,7 +71,8 @@ defmodule Pleroma.Tests.Helpers do
       import Pleroma.Tests.Helpers,
         only: [
           clear_config: 1,
-          clear_config: 2
+          clear_config: 2,
+          clear_config_section: 2
         ]
 
       def time_travel(entity, seconds) do

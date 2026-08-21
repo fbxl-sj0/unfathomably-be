@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.ActivityPub.UserViewInteractionPolicyTest do
   use Pleroma.DataCase, async: true
 
+  require Pleroma.Constants
+
   import Pleroma.Factory
 
   alias Pleroma.Web.ActivityPub.UserView

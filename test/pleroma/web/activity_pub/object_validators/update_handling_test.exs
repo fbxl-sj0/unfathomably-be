@@ -72,7 +72,10 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateHandlingTest do
       note =
         insert(:note,
           user: user,
-          data: %{"inReplyTo" => parent.data["id"]}
+          data: %{
+            "id" => user.ap_id <> "/statuses/movable-reply",
+            "inReplyTo" => parent.data["id"]
+          }
         )
 
       updated_note = Map.put(note.data, "inReplyTo", other_parent.data["id"])
@@ -84,7 +87,12 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.UpdateHandlingTest do
 
     test "normalizes NodeBB Update(Tombstone) activities through Delete validation" do
       user = insert(:user, local: false)
-      note = insert(:note, user: user)
+
+      note =
+        insert(:note,
+          user: user,
+          data: %{"id" => user.ap_id <> "/statuses/nodebb-deleted-note"}
+        )
 
       update = %{
         "actor" => user.ap_id,

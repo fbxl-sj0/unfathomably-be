@@ -621,18 +621,25 @@ defmodule Pleroma.Web.AdminAPI.ConfigControllerTest do
     end
 
     test "saving full setting if value is in full_key_update list", %{conn: conn} do
-      backends = Application.get_env(:logger, :backends)
-      on_exit(fn -> Application.put_env(:logger, :backends, backends) end)
+      methods = Application.get_env(:cors_plug, :methods)
+
+      on_exit(fn ->
+        if is_nil(methods) do
+          Application.delete_env(:cors_plug, :methods)
+        else
+          Application.put_env(:cors_plug, :methods, methods)
+        end
+      end)
 
       insert(:config,
-        group: :logger,
-        key: :backends,
-        value: []
+        group: :cors_plug,
+        key: :methods,
+        value: ["GET"]
       )
 
       Pleroma.Config.TransferTask.load_and_update_env([], false)
 
-      assert Application.get_env(:logger, :backends) == []
+      assert Application.get_env(:cors_plug, :methods) == ["GET"]
 
       conn =
         conn
@@ -640,9 +647,9 @@ defmodule Pleroma.Web.AdminAPI.ConfigControllerTest do
         |> post("/api/pleroma/admin/config", %{
           configs: [
             %{
-              group: ":logger",
-              key: ":backends",
-              value: [":console"]
+              group: ":cors_plug",
+              key: ":methods",
+              value: ["POST"]
             }
           ]
         })
@@ -650,20 +657,16 @@ defmodule Pleroma.Web.AdminAPI.ConfigControllerTest do
       assert json_response_and_validate_schema(conn, 200) == %{
                "configs" => [
                  %{
-                   "group" => ":logger",
-                   "key" => ":backends",
-                   "value" => [
-                     ":console"
-                   ],
-                   "db" => [":backends"]
+                   "group" => ":cors_plug",
+                   "key" => ":methods",
+                   "value" => ["POST"],
+                   "db" => [":methods"]
                  }
                ],
                "need_reboot" => false
              }
 
-      assert Application.get_env(:logger, :backends) == [
-               :console
-             ]
+      assert Application.get_env(:cors_plug, :methods) == ["POST"]
     end
 
     test "saving full setting if value is not keyword", %{conn: conn} do

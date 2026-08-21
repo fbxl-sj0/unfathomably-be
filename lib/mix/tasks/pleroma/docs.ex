@@ -4,7 +4,6 @@
 
 defmodule Mix.Tasks.Pleroma.Docs do
   use Mix.Task
-  import Mix.Pleroma
 
   @shortdoc "Generates docs from descriptions.exs"
   @moduledoc """
@@ -30,8 +29,6 @@ defmodule Mix.Tasks.Pleroma.Docs do
   end
 
   defp do_run(implementation) do
-    start_pleroma()
-
     with descriptions <- Pleroma.Config.Loader.read("config/description.exs"),
          {:ok, file_path} <-
            Pleroma.Docs.Generator.process(

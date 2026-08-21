@@ -12,9 +12,11 @@ defmodule Pleroma.Web.RichMedia.Parsers.OEmbed do
     "provider_url" => 4_096,
     "thumbnail_url" => 4_096,
     "title" => 1_000,
-    "url" => 4_096
+    "url" => 4_096,
+    "version" => 32
   }
   @maximum_dimension 100_000
+  @maximum_cache_age 31_536_000
 
   def parse(html, _data) do
     with elements = [_ | _] <- get_discovery_data(html),
@@ -53,6 +55,9 @@ defmodule Pleroma.Web.RichMedia.Parsers.OEmbed do
       |> put_type(data["type"])
       |> put_dimension("width", data["width"])
       |> put_dimension("height", data["height"])
+      |> put_dimension("thumbnail_width", data["thumbnail_width"])
+      |> put_dimension("thumbnail_height", data["thumbnail_height"])
+      |> put_bounded_integer("cache_age", data["cache_age"], @maximum_cache_age)
 
     case normalized do
       %{"html" => html, "type" => type}
@@ -69,12 +74,21 @@ defmodule Pleroma.Web.RichMedia.Parsers.OEmbed do
   defp put_type(data, type) when type in @allowed_types, do: Map.put(data, "type", type)
   defp put_type(data, _type), do: data
 
-  defp put_dimension(data, field, value)
-       when is_integer(value) and value >= 0 and value <= @maximum_dimension do
-    Map.put(data, field, value)
+  defp put_dimension(data, field, value),
+    do: put_bounded_integer(data, field, value, @maximum_dimension)
+
+  defp put_bounded_integer(data, field, value, maximum)
+       when is_integer(value) and value >= 0 and value <= maximum,
+       do: Map.put(data, field, value)
+
+  defp put_bounded_integer(data, field, value, maximum) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} -> put_bounded_integer(data, field, integer, maximum)
+      _ -> data
+    end
   end
 
-  defp put_dimension(data, _field, _value), do: data
+  defp put_bounded_integer(data, _field, _value, _maximum), do: data
 
   defp bounded_text(value, limit) when is_binary(value) do
     value = String.trim(value)

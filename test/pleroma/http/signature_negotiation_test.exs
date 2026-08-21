@@ -9,7 +9,7 @@
 # This file intentionally does not perform HTTP requests or signature checks.
 
 defmodule Pleroma.HTTP.SignatureNegotiationTest do
-  use ExUnit.Case, async: false
+  use Pleroma.DataCase, async: false
 
   alias Pleroma.HTTP.SignatureNegotiation
 

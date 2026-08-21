@@ -12,6 +12,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.VideoHandlingTest do
   alias Pleroma.Web.ActivityPub.Transmogrifier
 
   setup_all do
+    clear_config([:instance, :federating], true)
     Tesla.Mock.mock_global(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok
   end
@@ -54,7 +55,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.VideoHandlingTest do
 
     assert object.data["attachment"] == [
              %{
-               "type" => "Link",
+               "type" => "Video",
                "mediaType" => "video/mp4",
                "url" => [
                  %{
@@ -76,7 +77,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.VideoHandlingTest do
 
     assert object.data["attachment"] == [
              %{
-               "type" => "Link",
+               "type" => "Video",
                "mediaType" => "video/mp4",
                "url" => [
                  %{
@@ -108,7 +109,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.VideoHandlingTest do
 
     assert object.data["attachment"] == [
              %{
-               "type" => "Link",
+               "type" => "Video",
                "mediaType" => "video/mp4",
                "url" => [
                  %{

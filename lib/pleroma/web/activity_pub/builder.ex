@@ -153,15 +153,17 @@ defmodule Pleroma.Web.ActivityPub.Builder do
   @spec emoji_react(User.t(), Object.t(), String.t()) :: {:ok, map(), keyword()}
   def emoji_react(actor, object, emoji) do
     with {:ok, data, meta} <- object_action(actor, object) do
-      data =
+      reaction =
         if Emoji.is_unicode_emoji?(emoji) do
           unicode_emoji_react(object, data, emoji)
         else
           custom_emoji_react(object, data, emoji)
         end
-        |> strip_public_recipients()
 
-      {:ok, data, meta}
+      case reaction do
+        %{} = reaction -> {:ok, strip_public_recipients(reaction), meta}
+        {:error, _reason} = error -> error
+      end
     end
   end
 
@@ -522,7 +524,7 @@ defmodule Pleroma.Web.ActivityPub.Builder do
 
     {:ok,
      %{
-       "id" => Utils.generate_activity_id(),
+       "id" => announce_activity_id(actor, object),
        "actor" => actor.ap_id,
        "object" => object.data["id"],
        "to" => to,

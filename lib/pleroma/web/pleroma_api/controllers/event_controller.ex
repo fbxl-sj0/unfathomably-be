@@ -216,6 +216,9 @@ defmodule Pleroma.Web.PleromaAPI.EventController do
       conn
       |> put_view(StatusView)
       |> try_render("show.json", activity: activity, for: user, as: :activity)
+    else
+      {:error, error} ->
+        json_response(conn, :bad_request, %{error: error})
     end
   end
 
@@ -254,7 +257,11 @@ defmodule Pleroma.Web.PleromaAPI.EventController do
       |> put_view(StatusView)
       |> try_render("show.json", activity: activity, for: for_user, as: :activity)
     else
-      {:own_event, _} -> {:error, :forbidden}
+      {:own_event, _} ->
+        {:error, :forbidden}
+
+      {:error, error} ->
+        json_response(conn, :bad_request, %{error: error})
     end
   end
 

@@ -11,7 +11,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.BlockNotificationPolicyTest do
   import Pleroma.Factory
 
   setup do:
-          clear_config(:mrf_block_notification_policy,
+          clear_config_section(:mrf_block_notification_policy,
             message: "@{actor} {action} @{target}",
             user: "beholder",
             visibility: "public"

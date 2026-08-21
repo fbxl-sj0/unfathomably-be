@@ -30,7 +30,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
     :ok
   end
 
-  setup do: clear_config([:instance, :federating])
+  setup do: clear_config([:instance, :federating], true)
 
   describe "streaming out participations" do
     test "it streams them out" do
@@ -69,6 +69,28 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
           |> Repo.preload(participations: :user)
 
         assert called(Pleroma.Web.Streamer.stream("participation", conversation.participations))
+      end
+    end
+
+    test "streams a created activity only after its transaction commits" do
+      user = insert(:user)
+      test_process = self()
+
+      with_mock Pleroma.Web.Streamer,
+        stream: fn
+          _topics, %Activity{id: activity_id} ->
+            visible_activity =
+              Task.async(fn -> Activity.get_by_id(activity_id) end)
+              |> Task.await()
+
+            send(test_process, {:streamed_activity_visible, visible_activity})
+            :ok
+
+          _topics, _item ->
+            :ok
+        end do
+        assert {:ok, _activity} = CommonAPI.post(user, %{status: "post-commit stream"})
+        assert_received {:streamed_activity_visible, %Activity{}}
       end
     end
   end
@@ -1153,6 +1175,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
   describe "insertion" do
     test "drops activities beyond a certain limit" do
       limit = Config.get([:instance, :remote_limit])
+      actor = insert(:user, local: false)
 
       random_text =
         :crypto.strong_rand_bytes(limit + 1)
@@ -1160,13 +1183,14 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
         |> binary_part(0, limit + 1)
 
       data = %{
+        "actor" => actor.ap_id,
         "ok" => true,
         "object" => %{
           "content" => random_text
         }
       }
 
-      assert {:error, :remote_limit} = ActivityPub.insert(data)
+      assert {:error, :remote_limit} = ActivityPub.insert(data, false)
     end
 
     test "doesn't drop activities with content being null" do
@@ -2195,9 +2219,14 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
 
       private_activity_1 = Activity.get_by_ap_id_with_object(private_activity_1.data["id"])
 
-      assert [public_activity.id, private_activity_1.id, private_activity_3.id] == activities
+      assert [
+               public_activity.id,
+               private_activity_1.id,
+               private_activity_2.id,
+               private_activity_3.id
+             ] == activities
 
-      assert length(activities) == 3
+      assert length(activities) == 4
 
       activities =
         ActivityPub.fetch_activities([user1.ap_id | User.following(user1)], %{user: user1})
@@ -2952,7 +2981,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
         ActivityPub.fetch_activities([user.ap_id | User.following(user)], params)
         |> Enum.map(& &1.id)
 
-      assert length(activities_ids) == 12
+      assert length(activities_ids) == 10
     end
 
     test "home timeline with default reply_visibility `following`", %{users: %{u1: user}} do
@@ -2969,7 +2998,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubTest do
         ActivityPub.fetch_activities([user.ap_id | User.following(user)], params)
         |> Enum.map(& &1.id)
 
-      assert length(activities_ids) == 12
+      assert length(activities_ids) == 10
     end
 
     test "home timeline with default reply_visibility `self`", %{

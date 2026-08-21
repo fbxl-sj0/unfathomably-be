@@ -66,6 +66,38 @@ defmodule Pleroma.Web.MastodonAPI.InstanceControllerTest do
     assert favicon == from_config_favicon
   end
 
+  test "advertises anonymous timeline capabilities from the effective access policy", %{
+    conn: conn
+  } do
+    clear_config([:restrict_unauthenticated, :timelines, :local], false)
+    clear_config([:restrict_unauthenticated, :timelines, :federated], false)
+
+    features =
+      conn
+      |> get("/api/v1/instance")
+      |> json_response_and_validate_schema(200)
+      |> get_in(["pleroma", "metadata", "features"])
+
+    assert "anonymous_public_timeline" in features
+    assert "anonymous_local_timeline" in features
+    assert "anonymous_public_streaming" in features
+    assert "anonymous_local_streaming" in features
+
+    Pleroma.Config.put([:restrict_unauthenticated, :timelines, :local], true)
+    Pleroma.Config.put([:restrict_unauthenticated, :timelines, :federated], true)
+
+    features =
+      build_conn()
+      |> get("/api/v1/instance")
+      |> json_response_and_validate_schema(200)
+      |> get_in(["pleroma", "metadata", "features"])
+
+    refute "anonymous_public_timeline" in features
+    refute "anonymous_local_timeline" in features
+    refute "anonymous_public_streaming" in features
+    refute "anonymous_local_streaming" in features
+  end
+
   test "get instance information preserves absolute configured background URLs", %{conn: conn} do
     background = "https://cdn.example.test/static/background.png"
     clear_config([:instance, :background_image], background)
@@ -211,6 +243,9 @@ defmodule Pleroma.Web.MastodonAPI.InstanceControllerTest do
 
     assert result["configuration"]["vapid"]["public_key"] ==
              Keyword.get(Pleroma.Web.Push.vapid_config(), :public_key)
+
+    assert result["configuration"]["urls"]["streaming"] ==
+             Pleroma.Web.Endpoint.websocket_url()
 
     assert result["urls"] == %{
              "about" => Pleroma.Web.Endpoint.url() <> "/about",

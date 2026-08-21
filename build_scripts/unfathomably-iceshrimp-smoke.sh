@@ -62,7 +62,7 @@ ICESHRIMP_DB_PASSWORD="${ICESHRIMP_DB_PASSWORD:-iceshrimp}"
 ICESHRIMP_TOKEN="${ICESHRIMP_TOKEN:-}"
 ICESHRIMP_REACTION="${ICESHRIMP_REACTION:-⭐}"
 
-IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:17-alpine}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.27-alpine}"
 ICESHRIMP_IMAGE="${ICESHRIMP_IMAGE:-iceshrimp.dev/iceshrimp/iceshrimp.net:dev}"

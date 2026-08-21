@@ -4,11 +4,12 @@
 
 defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
   use Pleroma.DataCase, async: false
+  use Oban.Testing, repo: Pleroma.Repo
 
   alias Pleroma.Config
   alias Pleroma.Emoji
-  alias Pleroma.Workers.StealEmojiWorker
   alias Pleroma.Web.ActivityPub.MRF.StealEmojiPolicy
+  alias Pleroma.Workers.StealEmojiWorker
 
   setup do
     emoji_path = [:instance, :static_dir] |> Config.get() |> Path.join("emoji/stolen")
@@ -41,7 +42,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
   test "ignores malformed actor hosts", %{message: message} do
     message = put_in(message, ["object", "actor"], "https://%")
 
-    clear_config(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
+    clear_config_section(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
 
     assert {:ok, _message} = StealEmojiPolicy.filter(message)
     refute "firedfox" in installed()
@@ -58,7 +59,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
       %Tesla.Env{status: 200, body: File.read!("test/fixtures/image.jpg")}
     end)
 
-    clear_config(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
+    clear_config_section(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
 
     assert {:ok, _message} = StealEmojiPolicy.filter(message)
 
@@ -74,7 +75,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
   end
 
   test "repeated deliveries enqueue one incomplete installation", %{message: message} do
-    clear_config(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
+    clear_config_section(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
 
     assert {:ok, _message} = StealEmojiPolicy.filter(message)
     assert {:ok, _message} = StealEmojiPolicy.filter(message)
@@ -85,7 +86,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
   test "reject regex shortcode", %{message: message} do
     refute "firedfox" in installed()
 
-    clear_config(:mrf_steal_emoji,
+    clear_config_section(:mrf_steal_emoji,
       hosts: ["example.org"],
       size_limit: 284_468,
       rejected_shortcodes: [~r/firedfox/]
@@ -113,7 +114,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
       %Tesla.Env{status: 200, body: File.read!("test/fixtures/image.jpg")}
     end)
 
-    clear_config(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
+    clear_config_section(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
 
     refute "fired/fox" in installed()
     refute File.exists?(path)
@@ -127,7 +128,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
   test "reject string shortcode", %{message: message} do
     refute "firedfox" in installed()
 
-    clear_config(:mrf_steal_emoji,
+    clear_config_section(:mrf_steal_emoji,
       hosts: ["example.org"],
       size_limit: 284_468,
       rejected_shortcodes: ["firedfox"]
@@ -145,7 +146,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
       %Tesla.Env{status: 200, body: File.read!("test/fixtures/image.jpg")}
     end)
 
-    clear_config(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 50_000)
+    clear_config_section(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 50_000)
 
     assert {:ok, _message} = StealEmojiPolicy.filter(message)
 
@@ -159,7 +160,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
       {:ok, %Tesla.Env{status: 404, body: "Not found"}}
     end)
 
-    clear_config(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
+    clear_config_section(:mrf_steal_emoji, hosts: ["example.org"], size_limit: 284_468)
 
     assert {:ok, _message} = StealEmojiPolicy.filter(message)
     assert :discard = perform_job(StealEmojiWorker, emoji_job_args())
@@ -169,7 +170,7 @@ defmodule Pleroma.Web.ActivityPub.MRF.StealEmojiPolicyTest do
 
   test "worker revalidates the source host before fetching" do
     Tesla.Mock.mock(fn _env -> flunk("a removed allowlist host must not be fetched") end)
-    clear_config(:mrf_steal_emoji, hosts: [])
+    clear_config_section(:mrf_steal_emoji, hosts: [])
 
     assert :discard = perform_job(StealEmojiWorker, emoji_job_args())
   end

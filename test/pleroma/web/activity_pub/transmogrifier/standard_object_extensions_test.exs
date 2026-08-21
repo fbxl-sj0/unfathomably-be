@@ -636,7 +636,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.StandardObjectExtensionsTest do
 
     assert {:ok, %Activity{}} = Transmogrifier.handle_incoming(update)
     assert %Object{} = revised_object = Object.get_by_ap_id(trail_id)
-    assert revised_object.data["content"] == "<h1>Alien escarpment route revised</h1>"
+    assert revised_object.data["content"] == "Alien escarpment route revised"
     assert revised_object.data["updated"] == update_timestamp
     assert revised_object.data["to"] == [Pleroma.Constants.as_public()]
     assert revised_object.data["cc"] == [actor.follower_address]
@@ -672,7 +672,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.StandardObjectExtensionsTest do
 
     assert {:ok, %Activity{}} = Transmogrifier.handle_incoming(same_second_update)
     assert %Object{} = final_object = Object.get_by_ap_id(trail_id)
-    assert final_object.data["content"] == "<h1>Alien escarpment route final</h1>"
+    assert final_object.data["content"] == "Alien escarpment route final"
 
     assert {:ok, final_updated, _offset} = DateTime.from_iso8601(final_object.data["updated"])
     assert {:ok, first_updated, _offset} = DateTime.from_iso8601(update_timestamp)
@@ -874,7 +874,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.StandardObjectExtensionsTest do
 
     assert {:ok, %Activity{id: activity_id}} = Transmogrifier.handle_incoming(update)
     assert activity_id == create_activity.id
-    assert Object.get_by_ap_id(note["id"]).data["content"] == note["content"]
+
+    assert Object.get_by_ap_id(note["id"]).data["content"] ==
+             "Alien federation radio <br/> Not native market data. Price: 25 CAD"
   end
 
   defp activity(type, object, actor, suffix) do

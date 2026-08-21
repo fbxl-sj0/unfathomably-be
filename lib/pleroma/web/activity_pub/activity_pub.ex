@@ -21,9 +21,9 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   alias Pleroma.Upload
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.ActorExtensions
-  alias Pleroma.Web.ActivityPub.IdentityProof
   alias Pleroma.Web.ActivityPub.Builder
   alias Pleroma.Web.ActivityPub.CustomObject
+  alias Pleroma.Web.ActivityPub.IdentityProof
   alias Pleroma.Web.ActivityPub.MRF
   alias Pleroma.Web.ActivityPub.Pipeline
   alias Pleroma.Web.ActivityPub.RemoteCollection
@@ -128,12 +128,15 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   defp check_actor_can_insert(_), do: true
 
-  defp check_remote_limit(%{"object" => %{"content" => content}}) when not is_nil(content) do
+  defp check_remote_limit(_map, true), do: true
+
+  defp check_remote_limit(%{"object" => %{"content" => content}}, false)
+       when not is_nil(content) do
     limit = Config.get([:instance, :remote_limit])
     String.length(content) <= limit
   end
 
-  defp check_remote_limit(_), do: true
+  defp check_remote_limit(_map, false), do: true
 
   def increase_note_count_if_public(actor, object) do
     if is_public?(object), do: User.increase_note_count(actor), else: {:ok, actor}
@@ -207,7 +210,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
     with nil <- Activity.normalize(map),
          map <- lazy_put_activity_defaults(map, fake),
          {_, true} <- {:actor_check, bypass_actor_check || check_actor_can_insert(map)},
-         {_, true} <- {:remote_limit_pass, check_remote_limit(map)},
+         {_, true} <- {:remote_limit_pass, check_remote_limit(map, local)},
          {:ok, map} <- MRF.filter(map),
          {recipients, _, _} = get_recipients(map),
          {:fake, false, map, recipients} <- {:fake, fake, map, recipients},
@@ -328,6 +331,11 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   defp activity_unique_ap_id_error?(_), do: false
 
   def notify_and_stream(activity) do
+    participations = prepare_notifications_and_conversation(activity)
+    stream_after_transaction(activity, participations)
+  end
+
+  defp prepare_notifications_and_conversation(activity) do
     NotificationWorker.enqueue("create", %{"activity_id" => activity.id})
 
     original_activity =
@@ -340,7 +348,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
       end
 
     conversation = create_or_bump_conversation(original_activity, original_activity.actor)
-    participations = get_participations(conversation)
+    get_participations(conversation)
+  end
+
+  defp stream_after_transaction(activity, participations) do
     stream_out(activity)
     stream_out_participations(participations)
   end
@@ -419,7 +430,14 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
   @spec create(map(), boolean()) :: {:ok, Activity.t()} | {:error, any()}
   def create(params, fake \\ false) do
     with {:ok, result} <- Repo.transaction(fn -> do_create(params, fake) end) do
-      result
+      case result do
+        {:ok, activity, participations} ->
+          stream_after_transaction(activity, participations)
+          {:ok, activity}
+
+        result ->
+          result
+      end
     end
   end
 
@@ -444,13 +462,13 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
          {:quick_insert, false, activity} <- {:quick_insert, quick_insert?, activity},
          {:ok, _actor} <- increase_note_count_if_public(actor, activity),
          {:ok, _actor} <- update_last_status_at_if_public(actor, activity),
-         _ <- notify_and_stream(activity),
+         participations <- prepare_notifications_and_conversation(activity),
          :ok <- maybe_schedule_poll_notifications(activity),
          :ok <- maybe_schedule_event_notifications(activity),
          :ok <- maybe_join_own_event(actor, activity),
          :ok <- maybe_handle_group_posts(activity),
          :ok <- maybe_federate(activity) do
-      {:ok, activity}
+      {:ok, activity, participations}
     else
       {:quick_insert, true, activity} ->
         {:ok, activity}
@@ -2905,18 +2923,27 @@ defmodule Pleroma.Web.ActivityPub.ActivityPub do
 
   def fetch_actor_collection_count(address) when is_binary(address) do
     with :ok <- Pleroma.Federation.ensure_enabled() do
-      case RemoteCollection.count(address, max_items: 1_000, max_pages: 8) do
-        {:ok, count} ->
-          {:ok, count}
+      cache_key = {:actor_collection, address}
 
-        e ->
-          log_remote_fetch_error(
-            "Could not fetch or read actor collection",
-            address,
-            unwrap_error(e)
-          )
+      if match?({:ok, true}, Cachex.get(@failed_featured_collection_cache, cache_key)) do
+        {:error, :cooldown}
+      else
+        case RemoteCollection.count(address, max_items: 1_000, max_pages: 8) do
+          {:ok, count} ->
+            Cachex.del(@failed_featured_collection_cache, cache_key)
+            {:ok, count}
 
-          e
+          e ->
+            Cachex.put(@failed_featured_collection_cache, cache_key, true)
+
+            log_remote_fetch_error(
+              "Could not fetch or read actor collection",
+              address,
+              unwrap_error(e)
+            )
+
+            e
+        end
       end
     end
   end

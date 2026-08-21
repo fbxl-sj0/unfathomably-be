@@ -13,6 +13,8 @@ defmodule Mix.Tasks.Pleroma.RelayTest do
   import ExUnit.CaptureLog
   import Pleroma.Factory
 
+  setup do: clear_config([:instance, :federating], true)
+
   setup_all do
     Tesla.Mock.mock_global(fn env -> apply(HttpRequestMock, :request, [env]) end)
 

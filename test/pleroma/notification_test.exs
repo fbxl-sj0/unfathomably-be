@@ -151,7 +151,7 @@ defmodule Pleroma.NotificationTest do
       assert notification.type == "mention"
       assert other_notification.activity_id == activity.id
 
-      assert [%Pleroma.Marker{unread_count: 2}] =
+      assert [%Pleroma.Marker{unread_count: 1}] =
                Pleroma.Marker.get_markers(other_user, ["notifications"])
     end
 

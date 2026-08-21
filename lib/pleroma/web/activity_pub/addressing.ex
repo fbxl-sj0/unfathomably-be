@@ -42,6 +42,14 @@ defmodule Pleroma.Web.ActivityPub.Addressing do
 
   def put_attributed_groups(object), do: object
 
+  def put_targeted_groups(object) when is_map(object) do
+    object
+    |> target_group_ap_ids()
+    |> then(&put_addressed_groups(object, &1))
+  end
+
+  def put_targeted_groups(object), do: object
+
   def put_mentioned_groups(object) when is_map(object) do
     group_ap_ids = mention_group_ap_ids(object) ++ content_group_ap_ids(object)
 

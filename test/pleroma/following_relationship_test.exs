@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.FollowingRelationshipTest do
+  use Oban.Testing, repo: Pleroma.Repo
   use Pleroma.DataCase, async: true
 
   alias Pleroma.FollowingRelationship

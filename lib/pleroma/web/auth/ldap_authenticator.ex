@@ -84,8 +84,8 @@ defmodule Pleroma.Web.Auth.LDAPAuthenticator do
       ]
     ]
 
-    sslopts = Keyword.merge(default_secure_opts, Keyword.get(ldap, :sslopts, []))
-    tlsopts = Keyword.merge(default_secure_opts, Keyword.get(ldap, :tlsopts, []))
+    sslopts = secure_tls_options(Keyword.get(ldap, :sslopts, []), default_secure_opts)
+    tlsopts = secure_tls_options(Keyword.get(ldap, :tlsopts, []), default_secure_opts)
 
     options = [{:port, port}, {:ssl, ssl}, {:timeout, @connection_timeout}]
     options = if ssl, do: [{:sslopts, sslopts} | options], else: options
@@ -109,6 +109,14 @@ defmodule Pleroma.Web.Auth.LDAPAuthenticator do
         Logger.error("Could not open LDAP connection: #{inspect(error)}")
         {:error, {:ldap_connection_error, error}}
     end
+  end
+
+  # Certificate verification and hostname checking are security invariants.
+  # Operator options may tune protocol details, but cannot turn either off.
+  defp secure_tls_options(configured, required) do
+    configured
+    |> Keyword.drop([:verify, :customize_hostname_check])
+    |> Keyword.merge(required)
   end
 
   defp maybe_start_tls(_connection, false, _tlsopts), do: :ok

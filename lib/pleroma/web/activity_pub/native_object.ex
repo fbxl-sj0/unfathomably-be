@@ -104,7 +104,9 @@ defmodule Pleroma.Web.ActivityPub.NativeObject do
       "language" => {:text, 32},
       "page" => {:integer, 1, 1_000_000},
       "quote" => {:text, 5_000},
-      "rating" => :book_rating
+      "rating" => :book_rating,
+      "series" => {:text, 160},
+      "series_number" => {:text, 80}
     },
     "bookmarks" => %{
       "site_name" => {:text, 160},
@@ -366,6 +368,8 @@ defmodule Pleroma.Web.ActivityPub.NativeObject do
     |> maybe_put("quote", fields["quote"])
     |> maybe_put("rating", fields["rating"])
     |> maybe_put("ratingBest", if(fields["rating"], do: 5))
+    |> maybe_put("series", fields["series"])
+    |> maybe_put("seriesNumber", fields["series_number"])
   end
 
   defp put_template_fields(

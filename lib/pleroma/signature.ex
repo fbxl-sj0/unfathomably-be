@@ -478,7 +478,7 @@ defmodule Pleroma.Signature do
          {:ok, decoded_signature} when byte_size(decoded_signature) == 64 <-
            Base.decode64(encoded_signature),
          signing_string <- HTTPSignatures.build_signing_string(headers, signed_headers) do
-      :crypto.verify(:eddsa, :none, decoded_signature, signing_string, [public_key, :ed25519])
+      :crypto.verify(:eddsa, :none, signing_string, decoded_signature, [public_key, :ed25519])
     else
       _ -> false
     end

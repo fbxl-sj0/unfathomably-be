@@ -34,7 +34,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-IMAGE="${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:17-alpine}"
 MARIADB_IMAGE="${MARIADB_IMAGE:-mariadb:11}"
 FRIENDICA_IMAGE="${FRIENDICA_IMAGE:-friendica:stable}"

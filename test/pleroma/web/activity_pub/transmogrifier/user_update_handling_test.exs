@@ -13,6 +13,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.UserUpdateHandlingTest do
 
   import Pleroma.Factory
 
+  setup_all do: clear_config([:instance, :federating], true)
+
   test "it works for incoming update activities" do
     user = insert(:user, local: false)
 

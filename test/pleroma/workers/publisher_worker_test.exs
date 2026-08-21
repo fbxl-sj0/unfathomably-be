@@ -19,6 +19,8 @@ defmodule Pleroma.Workers.PublisherWorkerTest do
   alias Pleroma.Web.Federator
   alias Pleroma.Workers.PublisherWorker
 
+  setup do: clear_config([:instance, :federating], true)
+
   describe "backoff/1" do
     test "caps publisher retry delays at one day" do
       assert PublisherWorker.backoff(%Oban.Job{attempt: 1_000}) == 24 * 60 * 60
@@ -168,10 +170,10 @@ defmodule Pleroma.Workers.PublisherWorkerTest do
     end
 
     test "cancels malformed publisher jobs" do
-      assert {:cancel, :invalid_params} =
+      assert {:cancel, :bad_request} =
                PublisherWorker.perform(%Oban.Job{args: %{"op" => "publish_one"}})
 
-      assert {:cancel, :invalid_params} =
+      assert {:cancel, :bad_request} =
                PublisherWorker.perform(%Oban.Job{args: %{"op" => "unknown"}})
     end
   end

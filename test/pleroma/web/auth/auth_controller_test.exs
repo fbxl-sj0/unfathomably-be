@@ -33,7 +33,7 @@ defmodule Pleroma.Web.Auth.AuthControllerTest do
       bad_token_conn
       |> assign(:token, nil)
       |> get("/test/api/do_oauth_check")
-      |> json_response(403)
+      |> json_response(401)
     end
   end
 
@@ -114,7 +114,7 @@ defmodule Pleroma.Web.Auth.AuthControllerTest do
 
       build_conn()
       |> get("/test/authenticated_api/skip_oauth_check")
-      |> json_response(403)
+      |> json_response(401)
     end
 
     test "fails on private instance if :user is not set" do
@@ -126,7 +126,7 @@ defmodule Pleroma.Web.Auth.AuthControllerTest do
 
       build_conn()
       |> get("/test/authenticated_api/skip_oauth_check")
-      |> json_response(403)
+      |> json_response(401)
     end
   end
 

@@ -76,10 +76,10 @@ defmodule Pleroma.Web.AdminAPI.AdminAPIControllerTest do
         |> assign(:token, good_token)
         |> get(url)
 
-      assert json_response(conn, :forbidden)
+      assert json_response(conn, :unauthorized)
     end
 
-    for bad_token <- [bad_token1, bad_token2, bad_token3] do
+    for bad_token <- [bad_token1, bad_token2] do
       conn =
         build_conn()
         |> assign(:user, admin)
@@ -88,6 +88,14 @@ defmodule Pleroma.Web.AdminAPI.AdminAPIControllerTest do
 
       assert json_response(conn, :forbidden)
     end
+
+    conn =
+      build_conn()
+      |> assign(:user, admin)
+      |> assign(:token, bad_token3)
+      |> get(url)
+
+    assert json_response(conn, :unauthorized)
   end
 
   describe "PUT /api/pleroma/admin/users/tag" do
@@ -576,10 +584,10 @@ defmodule Pleroma.Web.AdminAPI.AdminAPIControllerTest do
       %{conn: build_conn(), user: user}
     end
 
-    test "returns 403", %{conn: conn, user: user} do
+    test "returns 401", %{conn: conn, user: user} do
       conn
       |> get("/api/pleroma/admin/users/#{user.nickname}/chats")
-      |> json_response(403)
+      |> json_response(401)
     end
   end
 

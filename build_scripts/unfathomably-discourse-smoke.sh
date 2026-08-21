@@ -32,7 +32,7 @@
 
 set -euo pipefail
 
-IMAGE="${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 DISCOURSE_IMAGE="${DISCOURSE_IMAGE:-discourse/discourse_dev:release}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.27-alpine}"
 

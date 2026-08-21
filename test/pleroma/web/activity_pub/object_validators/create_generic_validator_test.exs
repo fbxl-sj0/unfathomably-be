@@ -74,9 +74,9 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidatorTest do
 
     insert(:user,
       local: false,
-      ap_id: group,
+      ap_id: community,
       actor_type: "Group",
-      follower_address: group <> "/followers"
+      follower_address: community <> "/followers"
     )
 
     note = %{
@@ -180,7 +180,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidatorTest do
       assert {:error, changeset} =
                event
                |> Map.put("attributedTo", attributed_to)
-               |> ObjectValidator.cast_and_apply()
+               |> ObjectValidator.validate(local: false)
 
       assert {:attributedTo, {_message, []}} =
                List.keyfind(changeset.errors, :attributedTo, 0)

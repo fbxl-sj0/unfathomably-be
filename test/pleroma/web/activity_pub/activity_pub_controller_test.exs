@@ -39,6 +39,10 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
 
   setup do: clear_config([:instance, :federating], true)
 
+  defp assert_problem_details(conn, status) do
+    assert %{"status" => ^status, "type" => "about:blank"} = json_response(conn, status)
+  end
+
   defp assign_valid_signature(conn) do
     conn
     |> assign(:valid_signature, true)
@@ -220,7 +224,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       assert json_response(conn, 200) == UserView.render("user.json", %{user: user})
     end
 
-    test "it returns 404 for remote users", %{
+    test "it redirects remote users to their canonical actor", %{
       conn: conn
     } do
       user = insert(:user, local: false, nickname: "remoteuser@example.com")
@@ -230,7 +234,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("accept", "application/json")
         |> get("/users/#{user.nickname}.json")
 
-      assert json_response(conn, 404)
+      assert redirected_to(conn, 302) == user.ap_id
     end
 
     test "it returns error when user is not found", %{conn: conn} do
@@ -240,7 +244,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> get("/users/jimm")
         |> json_response(404)
 
-      assert response == "Not found"
+      assert %{"status" => 404, "type" => "about:blank"} = response
     end
   end
 
@@ -637,7 +641,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("accept", "application/activity+json")
         |> get("/activities/#{uuid}")
 
-      assert "Not found" == json_response(conn2, :not_found)
+      assert_problem_details(conn2, 404)
     end
   end
 
@@ -1218,7 +1222,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("content-type", "application/activity+json")
         |> post("/users/#{user.nickname}/inbox", data)
 
-      assert "error, recipient not in message" == json_response(conn, 400)
+      assert_problem_details(conn, 400)
       refute Activity.get_by_ap_id(data["id"])
     end
 
@@ -1240,7 +1244,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("content-type", "application/activity+json")
         |> post("/users/#{user.nickname}/inbox", data)
 
-      assert "Invalid request." == json_response(conn, 400)
+      assert_problem_details(conn, 400)
       refute Activity.get_by_ap_id(data["id"])
 
       data = Map.put(data, "actor", actor.ap_id <> "/missing")
@@ -1251,7 +1255,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("content-type", "application/activity+json")
         |> post("/users/not-real/inbox", data)
 
-      assert "Not found" == json_response(conn, 404)
+      assert_problem_details(conn, 404)
     end
 
     test "it rejects signed delivery from a deactivated sender", %{
@@ -1281,7 +1285,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> put_req_header("content-type", "application/activity+json")
         |> post("/users/#{user.nickname}/inbox", data)
 
-      assert "Invalid request." == json_response(conn, 400)
+      assert_problem_details(conn, 400)
       refute Activity.get_by_ap_id(data["id"])
     end
 
@@ -1383,7 +1387,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       conn = put_req_header(conn, "accept", "application/activity+json")
 
       ret_conn = get(conn, "/users/#{user.nickname}/inbox")
-      assert json_response(ret_conn, 403)
+      assert_problem_details(ret_conn, 401)
 
       ret_conn =
         conn
@@ -1742,12 +1746,12 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
 
       conn
       |> post("/users/#{user.nickname}/outbox", activity)
-      |> json_response(403)
+      |> assert_problem_details(401)
 
       conn
       |> assign(:user, other_user)
       |> post("/users/#{user.nickname}/outbox", activity)
-      |> json_response(403)
+      |> assert_problem_details(403)
     end
 
     test "it inserts an incoming create activity into the database", %{
@@ -2101,7 +2105,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> post("/users/#{user.nickname}/outbox", activity)
         |> json_response(400)
 
-      assert result == "Character limit (5 characters) exceeded, contains 11 characters"
+      assert %{"status" => 400, "type" => "about:blank"} = result
     end
   end
 
@@ -2191,7 +2195,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> get("/users/#{other_user.nickname}/followers?page=1")
 
       assert result.status == 403
-      assert result.resp_body == ""
+      assert_problem_details(result, 403)
     end
 
     test "it renders the page, if the user has 'hide_followers' set and the request is authenticated with the same user",
@@ -2287,7 +2291,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
         |> get("/users/#{user_two.nickname}/following?page=1")
 
       assert result.status == 403
-      assert result.resp_body == ""
+      assert_problem_details(result, 403)
     end
 
     test "it renders the page, if the user has 'hide_follows' set and the request is authenticated with the same user",
@@ -2441,7 +2445,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
 
       conn
       |> get("/api/ap/whoami")
-      |> json_response(403)
+      |> assert_problem_details(401)
     end
 
     setup do: clear_config([:media_proxy])
@@ -2511,7 +2515,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubControllerTest do
       # Fails if unauthenticated
       conn
       |> post("/api/ap/upload_media", %{"file" => image, "description" => desc})
-      |> json_response(403)
+      |> assert_problem_details(401)
     end
   end
 

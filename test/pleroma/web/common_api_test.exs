@@ -105,7 +105,7 @@ defmodule Pleroma.Web.CommonAPITest do
       clear_config([:instance, :federating], true)
 
       with_mock Pleroma.Web.Federator,
-        publish: fn _ -> nil end do
+        publish: fn _ -> :ok end do
         assert User.get_follow_state(blocker, blocked) == :follow_accept
         refute is_nil(Pleroma.Web.ActivityPub.Utils.fetch_latest_follow(blocker, blocked))
 
@@ -133,7 +133,7 @@ defmodule Pleroma.Web.CommonAPITest do
       clear_config([:activitypub, :outgoing_blocks], false)
 
       with_mock Pleroma.Web.Federator,
-        publish: fn _ -> nil end do
+        publish: fn _ -> :ok end do
         assert {:ok, block} = CommonAPI.block(blocker, blocked)
 
         assert block.local
@@ -356,7 +356,7 @@ defmodule Pleroma.Web.CommonAPITest do
       |> Object.prune()
 
       with_mock Pleroma.Web.Federator,
-        publish: fn _ -> nil end do
+        publish: fn _ -> :ok end do
         assert {:ok, delete} = CommonAPI.delete(post.id, user)
         assert delete.local
         assert called(Pleroma.Web.Federator.publish(delete))
@@ -374,7 +374,7 @@ defmodule Pleroma.Web.CommonAPITest do
       clear_config([:instance, :federating], true)
 
       with_mock Pleroma.Web.Federator,
-        publish: fn _ -> nil end do
+        publish: fn _ -> :ok end do
         assert {:ok, delete} = CommonAPI.delete(post.id, user)
         assert delete.local
         assert called(Pleroma.Web.Federator.publish(delete))
@@ -451,7 +451,7 @@ defmodule Pleroma.Web.CommonAPITest do
       {:ok, post} = Transmogrifier.handle_incoming(data)
 
       with_mock Pleroma.Web.Federator,
-        publish: fn _ -> nil end do
+        publish: fn _ -> :ok end do
         assert {:ok, delete} = CommonAPI.delete(post.id, admin)
         assert delete.local
         refute called(Pleroma.Web.Federator.publish(:_))
@@ -714,6 +714,25 @@ defmodule Pleroma.Web.CommonAPITest do
   end
 
   describe "posting" do
+    test "it queues optional protocol exporters after an ordinary status commits" do
+      clear_config([Pleroma.ATProto, :enabled], true)
+      clear_config([Pleroma.Diaspora, :enabled], true)
+
+      user = insert(:user)
+      {:ok, activity} = CommonAPI.post(user, %{status: "export this status"})
+      activity_id = to_string(activity.id)
+
+      assert_enqueued(
+        worker: Pleroma.Workers.ATProtoPublishWorker,
+        args: %{"id" => activity_id}
+      )
+
+      assert_enqueued(
+        worker: Pleroma.Workers.DiasporaPublishWorker,
+        args: %{"id" => activity_id}
+      )
+    end
+
     test "it adds an emoji on an external site" do
       user = insert(:user)
       {:ok, activity} = CommonAPI.post(user, %{status: "hey :external_emoji:"})
@@ -728,6 +747,8 @@ defmodule Pleroma.Web.CommonAPITest do
     end
 
     test "it copies emoji from the subject of the parent post" do
+      clear_config([:instance, :federating], true)
+
       %Object{} =
         object =
         Object.normalize("https://patch.cx/objects/a399c28e-c821-4820-bc3e-4afeb044c16f",
@@ -1013,7 +1034,7 @@ defmodule Pleroma.Web.CommonAPITest do
       {:ok, _} = CommonAPI.post(user, %{status: "nice", quote_id: private.id})
       {:error, _} = CommonAPI.post(another_user, %{status: "nice", quote_id: private.id})
       {:ok, _} = CommonAPI.post(user, %{status: "nice", quote_id: unlisted.id})
-      {:ok, _} = CommonAPI.post(another_user, %{status: "nice", quote_id: unlisted.id})
+      {:error, _} = CommonAPI.post(another_user, %{status: "nice", quote_id: unlisted.id})
       {:ok, _} = CommonAPI.post(user, %{status: "nice", quote_id: local.id})
       {:ok, _} = CommonAPI.post(another_user, %{status: "nice", quote_id: local.id})
       {:ok, _} = CommonAPI.post(user, %{status: "nice", quote_id: public.id})
@@ -1230,7 +1251,7 @@ defmodule Pleroma.Web.CommonAPITest do
       clear_config([:instance, :federating], true)
 
       with_mock Pleroma.Web.Federator,
-        publish: fn _ -> nil end do
+        publish: fn _ -> :ok end do
         {:ok, activity} = CommonAPI.post(other_user, %{status: "cofe"})
         {:ok, reaction} = CommonAPI.react_with_emoji(activity.id, user, "👍")
 
@@ -2269,7 +2290,7 @@ defmodule Pleroma.Web.CommonAPITest do
       clear_config([:instance, :federating], true)
 
       with_mock Pleroma.Web.Federator,
-        publish: fn _p -> nil end do
+        publish: fn _p -> :ok end do
         {:ok, updated} = CommonAPI.update(user, activity, %{status: "updated 2 :#{emoji2}:"})
 
         assert updated.data["object"]["content"] == "updated 2 :#{emoji2}:"

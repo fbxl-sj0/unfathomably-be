@@ -301,5 +301,25 @@ defmodule Pleroma.HTMLTest do
 
       assert nil == HTML.extract_first_external_url_from_object(object)
     end
+
+    test "extracts nested ActivityPub Link attachment destinations" do
+      destination = "https://articles.example/link-post"
+
+      object = %Object{
+        data: %{
+          "attachment" => [
+            %{
+              "type" => "Link",
+              "mediaType" => "text/html",
+              "url" => [
+                %{"type" => "Link", "mediaType" => "text/html", "href" => destination}
+              ]
+            }
+          ]
+        }
+      }
+
+      assert HTML.extract_first_external_url_from_object(object) == destination
+    end
   end
 end

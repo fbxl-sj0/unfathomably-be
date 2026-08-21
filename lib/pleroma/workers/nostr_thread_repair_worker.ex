@@ -32,6 +32,7 @@ defmodule Pleroma.Workers.NostrThreadRepairWorker do
   alias Pleroma.Nostr.Thread
   alias Pleroma.Object
   alias Pleroma.Repo
+  alias Pleroma.Web.ActivityPub.ActivityPub
   alias Pleroma.Workers.NostrThreadFetchWorker
 
   @content_kinds [1, 9, 11, 1111, 30_023]
@@ -233,6 +234,7 @@ defmodule Pleroma.Workers.NostrThreadRepairWorker do
             refresh_projection_caches(repaired_activity, repaired_object)
             update_reply_counts(previous_parent_id, parent_object_id)
             enqueue_waiting_children(event)
+            ActivityPub.stream_out(%{repaired_activity | object: repaired_object})
             :ok
 
           {:error, operation, reason, _changes} ->

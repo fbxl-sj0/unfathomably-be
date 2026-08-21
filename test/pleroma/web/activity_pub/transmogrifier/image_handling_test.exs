@@ -10,6 +10,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.ImageHandlingTest do
   alias Pleroma.Object
   alias Pleroma.Web.ActivityPub.Transmogrifier
 
+  setup_all do: clear_config([:instance, :federating], true)
+
   test "Hubzilla Image object" do
     Tesla.Mock.mock(fn
       %{url: "https://hub.somaton.com/channel/testc6"} ->
@@ -33,7 +35,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.ImageHandlingTest do
     assert object.data["attachment"] == [
              %{
                "mediaType" => "image/jpeg",
-               "type" => "Link",
+               "type" => "Image",
                "url" => [
                  %{
                    "height" => 2200,

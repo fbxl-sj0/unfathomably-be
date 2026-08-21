@@ -54,6 +54,16 @@ defmodule Pleroma.Web.PleromaAPI.AccountController do
   plug(RateLimiter, [name: :account_confirmation_resend] when action == :confirmation_resend)
 
   plug(
+    RateLimiter,
+    [
+      name: :account_confirmation_resend_target,
+      params: ["email", "nickname"],
+      identity: :params
+    ]
+    when action == :confirmation_resend
+  )
+
+  plug(
     :assign_account_by_id
     when action in [:favourites, :endorsements, :subscribe, :unsubscribe]
   )

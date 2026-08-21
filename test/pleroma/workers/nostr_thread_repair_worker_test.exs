@@ -17,6 +17,7 @@
 defmodule Pleroma.Workers.NostrThreadRepairWorkerTest do
   use Pleroma.DataCase, async: false
 
+  import Mock
   import Pleroma.Factory
 
   alias Pleroma.Activity
@@ -68,11 +69,22 @@ defmodule Pleroma.Workers.NostrThreadRepairWorkerTest do
     # Warm the cache with the orphaned form to reproduce the live failure.
     assert %Object{data: %{"inReplyTo" => nil}} = Object.normalize(reply_activity, fetch: false)
 
-    assert :ok =
-             NostrThreadRepairWorker.perform(%Oban.Job{
-               args: %{"event_id" => reply_event_id},
-               attempt: 1
-             })
+    test_process = self()
+
+    with_mock Pleroma.Web.Streamer,
+      stream: fn topics, item ->
+        send(test_process, {:streamed_repair, topics, item})
+        :ok
+      end do
+      assert :ok =
+               NostrThreadRepairWorker.perform(%Oban.Job{
+                 args: %{"event_id" => reply_event_id},
+                 attempt: 1
+               })
+
+      assert_received {:streamed_repair, _topics, %Activity{id: repaired_activity_id}}
+      assert repaired_activity_id == reply_activity.id
+    end
 
     repaired_activity = Activity.get_by_id(reply_activity.id)
     repaired_object = Object.normalize(repaired_activity, fetch: false)

@@ -8,11 +8,12 @@
 #
 # Responsibilities:
 #   - parse and emit bounded NIP-92 imeta fields
+#   - keep outbound media URLs visible in event content for client discovery
 #   - recognize conservative HTTPS media URL fallbacks
 #   - build the attachment shape used by Mastodon-compatible clients
 #
 # This file intentionally does NOT fetch remote media, trust arbitrary MIME
-# types, or modify post text.
+# types, or rewrite authored post text beyond appending missing attachment URLs.
 
 defmodule Pleroma.Nostr.Media do
   alias Pleroma.Config
@@ -69,6 +70,20 @@ defmodule Pleroma.Nostr.Media do
   end
 
   def outbound_tags(_object), do: []
+
+  def outbound(content, object) when is_binary(content) and is_map(object) do
+    tags = outbound_tags(object)
+
+    content =
+      tags
+      |> Enum.flat_map(&outbound_tag_urls/1)
+      |> Enum.uniq()
+      |> Enum.reduce(content, &append_missing_url/2)
+
+    {content, tags}
+  end
+
+  def outbound(content, _object), do: {to_string(content || ""), []}
 
   defp imeta_candidate(["imeta" | fields]) when is_list(fields) do
     metadata =
@@ -145,6 +160,24 @@ defmodule Pleroma.Nostr.Media do
   end
 
   defp outbound_attachment(_attachment), do: []
+
+  defp outbound_tag_urls(["imeta" | fields]) do
+    Enum.flat_map(fields, fn
+      "url " <> url -> [url]
+      _field -> []
+    end)
+  end
+
+  defp outbound_tag_urls(_tag), do: []
+
+  defp append_missing_url(url, content) do
+    cond do
+      String.contains?(content, url) -> content
+      content == "" -> url
+      String.ends_with?(content, "\n") -> content <> url
+      true -> content <> "\n\n" <> url
+    end
+  end
 
   defp attachment_url([%{"href" => href} = link | _rest]) when is_binary(href),
     do: {href, link}

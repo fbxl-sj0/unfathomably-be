@@ -15,10 +15,10 @@
 defmodule Pleroma.Web.Diaspora.FetchController do
   use Pleroma.Web, :controller
 
-  alias Pleroma.Diaspora.Record
-  alias Pleroma.Diaspora.Protocol
-  alias Pleroma.Diaspora.Store
   alias Pleroma.Activity
+  alias Pleroma.Diaspora.Protocol
+  alias Pleroma.Diaspora.Record
+  alias Pleroma.Diaspora.Store
   alias Pleroma.User
 
   def show(conn, %{"type" => type, "guid" => guid}) do

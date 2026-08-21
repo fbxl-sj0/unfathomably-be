@@ -43,6 +43,7 @@ defmodule Pleroma.Web.Plugs.RateLimiter do
       * `name` required, always used to fetch the limit values from the config
       * `bucket_name` overrides name for counting purposes (e.g. to have a separate limit for a set of actions)
       * `params` appends values of specified request params (e.g. ["id"]) to bucket name
+      * `identity: :params` keys a bucket only by the selected normalized params
 
   Inside a controller:
 
@@ -283,9 +284,17 @@ defmodule Pleroma.Web.Plugs.RateLimiter do
   end
 
   defp make_key_name(action_settings) do
-    ""
-    |> attach_selected_params(action_settings)
-    |> attach_identity(action_settings)
+    if Keyword.get(action_settings.opts, :identity) == :params do
+      digest =
+        :crypto.hash(:sha256, selected_params(action_settings))
+        |> Base.url_encode64(padding: false)
+
+      "params:#{digest}"
+    else
+      ""
+      |> attach_selected_params(action_settings)
+      |> attach_identity(action_settings)
+    end
   end
 
   defp get_scale(_, {scale, _}), do: scale
@@ -307,16 +316,24 @@ defmodule Pleroma.Web.Plugs.RateLimiter do
     do: anon_bucket_name(bucket_name_root)
 
   defp attach_selected_params(input, %{conn_params: conn_params, opts: plug_opts}) do
-    params_string =
-      plug_opts
-      |> Keyword.get(:params, [])
-      |> Enum.sort()
-      |> Enum.map(&Map.get(conn_params, &1, ""))
-      |> Enum.join(":")
+    params_string = selected_params(%{conn_params: conn_params, opts: plug_opts})
 
     [input, params_string]
     |> Enum.join(":")
     |> String.replace_leading(":", "")
+  end
+
+  defp selected_params(%{conn_params: conn_params, opts: plug_opts}) do
+    plug_opts
+    |> Keyword.get(:params, [])
+    |> Enum.sort()
+    |> Enum.map_join(":", fn key ->
+      conn_params
+      |> Map.get(key, "")
+      |> to_string()
+      |> String.trim()
+      |> String.downcase()
+    end)
   end
 
   defp initialize_buckets!(%{name: name, limits: limits}) do

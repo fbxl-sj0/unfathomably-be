@@ -15,6 +15,8 @@ defmodule Pleroma.ObjectTest do
   alias Pleroma.Tests.ObanHelpers
   alias Pleroma.Web.CommonAPI
 
+  setup_all do: clear_config([:instance, :federating], true)
+
   setup do
     mock(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok

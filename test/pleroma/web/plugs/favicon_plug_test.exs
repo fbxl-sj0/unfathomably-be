@@ -13,6 +13,14 @@ defmodule Pleroma.Web.Plugs.FaviconPlugTest do
   end
 
   describe "default favicon" do
+    test "redirects the conventional ico path", %{conn: conn} do
+      conn = get(conn, "/favicon.ico")
+
+      assert conn.status == 308
+      assert get_resp_header(conn, "location") == ["/favicon.png"]
+      assert get_resp_header(conn, "cache-control") == ["public, max-age=86400, immutable"]
+    end
+
     test "returns favicon", %{conn: conn} do
       conn = get(conn, "/favicon.png")
 

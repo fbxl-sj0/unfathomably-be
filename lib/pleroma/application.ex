@@ -126,7 +126,8 @@ defmodule Pleroma.Application do
         task_children() ++
         streamer_registry() ++
         background_migrators() ++
-        [Pleroma.Gopher.Server, Pleroma.Search.Healthcheck]
+        [Pleroma.Gopher.Server] ++
+        search_healthcheck()
 
     # See http://elixir-lang.org/docs/stable/elixir/Supervisor.html
     # for other strategies and supported options
@@ -236,6 +237,14 @@ defmodule Pleroma.Application do
         Pleroma.Migrators.HashtagsTableMigrator,
         Pleroma.Migrators.ContextObjectsDeletionMigrator
       ]
+    else
+      []
+    end
+  end
+
+  defp search_healthcheck do
+    if application_config(:search_healthcheck, true) do
+      [Pleroma.Search.Healthcheck]
     else
       []
     end

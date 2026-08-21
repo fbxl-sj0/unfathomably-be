@@ -35,7 +35,7 @@ defmodule Pleroma.Web.ActivityPub.ReplyPolicyTest do
                in_reply_to_id: child.id
              })
 
-    assert Enum.any?(errors, &String.contains?(&1, "discussion is locked"))
+    assert String.contains?(errors, "discussion is locked")
 
     remote_replier =
       insert(:user,
@@ -82,6 +82,33 @@ defmodule Pleroma.Web.ActivityPub.ReplyPolicyTest do
 
     assert {:ok, _reply} =
              CommonAPI.post(owner, %{status: "Moderator reply", in_reply_to_id: child.id})
+  end
+
+  test "inspects the root at the maximum supported ancestor depth" do
+    remote_actor =
+      insert(:user,
+        local: false,
+        ap_id: "https://remote.example/users/deep-thread",
+        follower_address: "https://remote.example/users/deep-thread/followers"
+      )
+
+    deepest_object =
+      Enum.reduce(0..64, nil, fn index, parent ->
+        insert(:note,
+          user: remote_actor,
+          data: %{
+            "id" => "https://remote.example/statuses/deep-#{index}",
+            "actor" => remote_actor.ap_id,
+            "attributedTo" => remote_actor.ap_id,
+            "commentsEnabled" => true,
+            "inReplyTo" => parent && parent.data["id"],
+            "to" => [Pleroma.Constants.as_public()],
+            "cc" => []
+          }
+        )
+      end)
+
+    assert :ok = ReplyPolicy.allowed?(deepest_object, remote_actor)
   end
 end
 

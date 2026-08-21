@@ -48,7 +48,7 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidator do
   alias Pleroma.Web.ActivityPub.ObjectValidators.UndoValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.UpdateValidator
 
-  @normalized_standard_input_fields ~w[contentMap nameMap summaryMap]
+  @normalized_standard_input_fields ~w[approvedBy contentMap nameMap summaryMap]
 
   @impl true
   def validate(object, meta)

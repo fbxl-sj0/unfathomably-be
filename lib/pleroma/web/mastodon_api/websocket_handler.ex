@@ -103,9 +103,12 @@ defmodule Pleroma.Web.MastodonAPI.WebsocketHandler do
   end
 
   def handle_info(:ping, state) do
-    Process.send_after(self(), :ping, @tick)
-
-    {:push, {:ping, ""}, state}
+    if active_session?(state) do
+      Process.send_after(self(), :ping, @tick)
+      {:push, {:ping, ""}, state}
+    else
+      {:stop, {:closed, ~c"authentication expired"}, state}
+    end
   end
 
   def handle_info(:close, state) do
@@ -135,13 +138,29 @@ defmodule Pleroma.Web.MastodonAPI.WebsocketHandler do
 
   # Authenticated streams.
   defp authenticate_request(access_token) do
-    with oauth_token = %Token{user_id: user_id} <- Repo.get_by(Token, token: access_token),
+    with {:ok, %Token{user_id: user_id} = oauth_token} <- Token.get_by_token(access_token),
+         false <- Token.is_expired?(oauth_token),
          user = %User{is_active: true} <- User.get_cached_by_id(user_id) do
       {:ok, user, oauth_token}
     else
       _ -> {:error, :unauthorized}
     end
   end
+
+  defp active_session?(%{user: nil, oauth_token: nil}), do: true
+
+  defp active_session?(%{user: %User{id: user_id}, oauth_token: %Token{id: token_id}}) do
+    case Repo.get(Token, token_id) do
+      %Token{user_id: ^user_id} = token ->
+        not Token.is_expired?(token) and
+          match?(%User{is_active: true}, User.get_cached_by_id(user_id))
+
+      _ ->
+        false
+    end
+  end
+
+  defp active_session?(_state), do: false
 
   defp handle_client_event(%{"type" => "subscribe", "stream" => _topic} = params, state) do
     with {_, {:ok, topic}} <-

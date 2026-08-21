@@ -58,6 +58,25 @@ defmodule Pleroma.ATProto.ClientTest do
     assert {:error, :invalid_did_web} =
              Client.did_document("did:web:pds.example.com:user")
   end
+
+  test "refreshes a session without sending an XRPC request body" do
+    mock(fn env ->
+      assert env.method == :post
+      assert env.url == "https://pds.example.com/xrpc/com.atproto.server.refreshSession"
+      assert env.body == ""
+      assert {"authorization", "Bearer refresh-token"} in env.headers
+
+      json(%{
+        "did" => @did,
+        "handle" => "alice.example.com",
+        "accessJwt" => "new-access-token",
+        "refreshJwt" => "new-refresh-token"
+      })
+    end)
+
+    assert {:ok, %{"accessJwt" => "new-access-token"}} =
+             Client.refresh_session("https://pds.example.com", "refresh-token")
+  end
 end
 
 # end of test/pleroma/atproto/client_test.exs

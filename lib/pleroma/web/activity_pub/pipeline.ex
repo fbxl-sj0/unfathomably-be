@@ -170,7 +170,7 @@ defmodule Pleroma.Web.ActivityPub.Pipeline do
     case Repo.query(
            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
            [object_id],
-           timeout: Utils.query_timeout()
+           Utils.query_timeout()
          ) do
       {:ok, _result} -> :ok
       {:error, reason} -> {:error, reason}
@@ -263,7 +263,7 @@ defmodule Pleroma.Web.ActivityPub.Pipeline do
     case Repo.query(
            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
            [object_id],
-           timeout: Utils.query_timeout()
+           Utils.query_timeout()
          ) do
       {:ok, _result} -> :ok
       {:error, reason} -> {:error, reason}

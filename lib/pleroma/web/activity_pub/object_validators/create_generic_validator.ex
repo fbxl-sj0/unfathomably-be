@@ -281,14 +281,16 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.CreateGenericValidator do
   end
 
   def validate_actors_match(cng, object) do
-    attributed_to = object["attributedTo"] || object["actor"]
+    object_actors =
+      [object["actor"] | List.wrap(object["attributedTo"])]
+      |> Enum.filter(&is_binary/1)
 
     cng
     |> validate_change(:actor, fn :actor, actor ->
-      if actor == attributed_to do
+      if actor in object_actors do
         []
       else
-        [{:actor, "Actor doesn't match with object attributedTo"}]
+        [{:actor, "Actor doesn't match object actor or attributedTo"}]
       end
     end)
   end

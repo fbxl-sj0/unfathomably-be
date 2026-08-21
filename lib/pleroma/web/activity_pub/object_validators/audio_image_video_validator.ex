@@ -72,9 +72,28 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
 
     candidates = Enum.concat(url, tagged_urls)
 
-    Enum.find(candidates, &preferred_media_candidate?(&1, object_type)) ||
+    Enum.find(url, &direct_media_candidate?(&1, object_type)) ||
+      Enum.find(tagged_urls, &direct_media_candidate?(&1, object_type)) ||
+      Enum.find(candidates, &preferred_media_candidate?(&1, object_type)) ||
       Enum.find(candidates, &media_candidate?/1)
   end
+
+  defp direct_media_candidate?(candidate, "Video") do
+    candidate_media_type(candidate)
+    |> media_type_matches?(["video/"])
+  end
+
+  defp direct_media_candidate?(candidate, "Audio") do
+    candidate_media_type(candidate)
+    |> media_type_matches?(["audio/"])
+  end
+
+  defp direct_media_candidate?(candidate, "Image") do
+    candidate_media_type(candidate)
+    |> media_type_matches?(["image/"])
+  end
+
+  defp direct_media_candidate?(_candidate, _type), do: false
 
   defp fix_url(%{"url" => url} = data) when is_list(url) or is_map(url) do
     candidates = AttachmentValidator.normalize_url_candidates(List.wrap(url))
@@ -88,13 +107,13 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
       end)
 
     data
-    |> put_selected_attachment(attachment)
+    |> put_selected_attachment(attachment, data["type"])
     |> put_object_page_url(link_element, data["id"])
   end
 
   defp fix_url(data), do: data
 
-  defp put_selected_attachment(data, attachment) do
+  defp put_selected_attachment(data, attachment, object_type) do
     existing =
       data
       |> Map.get("attachment", [])
@@ -102,13 +121,24 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.AudioImageVideoValidator do
       |> Enum.filter(&is_map/1)
 
     attachments =
-      [attachment | existing]
+      [media_attachment(attachment, object_type) | existing]
       |> Enum.filter(&is_map/1)
       |> Enum.uniq_by(&attachment_identity/1)
       |> Enum.take(@maximum_remote_attachments)
 
     Map.put(data, "attachment", attachments)
   end
+
+  defp media_attachment(%{} = candidate, object_type)
+       when object_type in ["Audio", "Image", "Video"] do
+    %{
+      "type" => object_type,
+      "mediaType" => candidate_media_type(candidate) || "application/octet-stream",
+      "url" => [candidate]
+    }
+  end
+
+  defp media_attachment(_candidate, _object_type), do: nil
 
   defp preferred_media_candidate?(candidate, "Video") do
     candidate_media_type(candidate)

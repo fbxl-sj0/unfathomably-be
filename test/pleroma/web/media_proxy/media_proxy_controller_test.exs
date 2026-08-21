@@ -121,6 +121,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
                "inline; filename=\"remote-media-unavailable.svg\""
              ]
 
+      assert get_resp_header(response, "cache-control") == ["private, no-store"]
       assert response.resp_body =~ "<svg"
       refute response.resp_body =~ media_url
     end
@@ -209,7 +210,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
       assert redirected_to(response) == url
     end
 
-    test "serves a placeholder if the HEAD request to the media proxy fails", %{
+    test "falls back to the media proxy if the preview HEAD request fails", %{
       conn: conn,
       url: url,
       media_proxy_url: media_proxy_url
@@ -220,12 +221,11 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
       end)
 
       response = get(conn, url)
-      assert response.status == 200
-      assert Conn.get_resp_header(response, "content-type") == ["image/svg+xml"]
-      assert response.resp_body =~ "<svg"
+      assert response.status == 301
+      assert redirected_to(response, 301) == media_proxy_url
     end
 
-    test "serves a placeholder for an unsupported preview content type", %{
+    test "falls back to the media proxy for an unsupported preview content type", %{
       conn: conn,
       url: url,
       media_proxy_url: media_proxy_url
@@ -236,9 +236,8 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
       end)
 
       response = get(conn, url)
-      assert response.status == 200
-      assert Conn.get_resp_header(response, "content-type") == ["image/svg+xml"]
-      assert response.resp_body =~ "<svg"
+      assert response.status == 301
+      assert redirected_to(response, 301) == media_proxy_url
     end
 
     test "with `static=true` and GIF image preview requested, responds with JPEG image", %{
@@ -406,7 +405,7 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
       assert response.resp_body != ""
     end
 
-    test "serves a placeholder in case of a thumbnailing error", %{
+    test "falls back to the media proxy in case of a thumbnailing error", %{
       conn: conn,
       url: url,
       media_proxy_url: media_proxy_url
@@ -421,9 +420,8 @@ defmodule Pleroma.Web.MediaProxy.MediaProxyControllerTest do
 
       response = get(conn, url)
 
-      assert response.status == 200
-      assert Conn.get_resp_header(response, "content-type") == ["image/svg+xml"]
-      assert response.resp_body =~ "<svg"
+      assert response.status == 301
+      assert redirected_to(response, 301) == media_proxy_url
     end
   end
 end

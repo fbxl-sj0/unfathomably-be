@@ -33,7 +33,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-IMAGE="${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
 LEMMY_VERSION="${LEMMY_VERSION:-0.19.18}"
 LEMMY_DEBUG_IMAGE="${LEMMY_DEBUG_IMAGE:-unfathomably-lemmy-debug:$LEMMY_VERSION}"

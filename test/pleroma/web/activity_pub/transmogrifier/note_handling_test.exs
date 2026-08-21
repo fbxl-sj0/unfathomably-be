@@ -19,6 +19,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
   require Pleroma.Constants
 
   setup_all do
+    clear_config([:instance, :federating], true)
     Tesla.Mock.mock_global(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok
   end
@@ -51,6 +52,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
       data =
         File.read!("test/fixtures/mastodon-post-activity.json")
         |> Jason.decode!()
+        |> Map.put("actor", Object.normalize(activity, fetch: false).data["actor"])
         |> Map.put("object", Object.normalize(activity, fetch: false).data)
 
       {:ok, returned_activity} = Transmogrifier.handle_incoming(data)
@@ -999,11 +1001,11 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
         Map.put(data["object"], "inReplyTo", ["https://shitposter.club/notice/2827873"])
 
       modified_object = Transmogrifier.fix_in_reply_to(object_with_reply)
-      assert modified_object["inReplyTo"] == ["https://shitposter.club/notice/2827873"]
+      assert modified_object["inReplyTo"] == "https://shitposter.club/notice/2827873"
 
       object_with_reply = Map.put(data["object"], "inReplyTo", [])
       modified_object = Transmogrifier.fix_in_reply_to(object_with_reply)
-      assert modified_object["inReplyTo"] == []
+      assert modified_object["inReplyTo"] == nil
     end
 
     @tag capture_log: true
@@ -1075,15 +1077,9 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
                    ]
                  },
                  %{
+                   "href" => "https://pe.er/stat-480.mp4",
                    "mediaType" => "video/mp4",
-                   "type" => "Document",
-                   "url" => [
-                     %{
-                       "href" => "https://pe.er/stat-480.mp4",
-                       "mediaType" => "video/mp4",
-                       "type" => "Link"
-                     }
-                   ]
+                   "type" => "Link"
                  }
                ]
              }
@@ -1180,8 +1176,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
   end
 
   describe "addressing normalization" do
-    test "fix_addressing_public/2 tolerates malformed values" do
-      assert Transmogrifier.fix_addressing_public(
+    test "fix_addressing_list/2 tolerates malformed values" do
+      assert Transmogrifier.fix_addressing_list(
                %{
                  "to" => [
                    "Public",
@@ -1195,12 +1191,13 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.NoteHandlingTest do
              ) == %{
                "to" => [
                  Pleroma.Constants.as_public(),
+                 "ignored",
                  Pleroma.Constants.as_public(),
                  "https://remote/users/alice"
                ]
              }
 
-      assert Transmogrifier.fix_addressing_public(%{"to" => %{"bad" => "shape"}}, "to") == %{
+      assert Transmogrifier.fix_addressing_list(%{"to" => %{"bad" => "shape"}}, "to") == %{
                "to" => []
              }
     end

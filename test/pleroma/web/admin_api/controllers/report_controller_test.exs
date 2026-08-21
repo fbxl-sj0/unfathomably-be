@@ -461,10 +461,10 @@ defmodule Pleroma.Web.AdminAPI.ReportControllerTest do
                %{"error" => "User is not a staff member."}
     end
 
-    test "returns 403 when requested by anonymous" do
+    test "returns 401 when requested by anonymous" do
       conn = get(build_conn(), "/api/pleroma/admin/reports")
 
-      assert json_response(conn, :forbidden) == %{
+      assert json_response(conn, :unauthorized) == %{
                "error" => "Invalid credentials."
              }
     end

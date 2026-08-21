@@ -450,19 +450,24 @@ defmodule Pleroma.Object.Fetcher do
   end
 
   defp signed_fetch_options do
-    if Pleroma.Config.get([:activitypub, :sign_object_fetches]) do
-      actor = InternalFetchActor.get_actor()
+    options =
+      if Pleroma.Config.get([:activitypub, :sign_object_fetches]) do
+        actor = InternalFetchActor.get_actor()
 
-      [
-        follow_redirect: false,
-        force_redirect: false,
-        redirect_middleware:
-          {Pleroma.Tesla.Middleware.FederationRedirect,
-           signer: {__MODULE__, :resign_fetch_request, [actor]}}
-      ]
-    else
-      []
-    end
+        [
+          follow_redirect: false,
+          force_redirect: false,
+          redirect_middleware:
+            {Pleroma.Tesla.Middleware.FederationRedirect,
+             signer: {__MODULE__, :resign_fetch_request, [actor]}}
+        ]
+      else
+        []
+      end
+
+    options
+    |> Keyword.put(:pool, :federation)
+    |> Keyword.put(:public_only, true)
   end
 
   @doc false

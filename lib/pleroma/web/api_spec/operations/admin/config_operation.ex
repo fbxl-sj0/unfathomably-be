@@ -113,7 +113,7 @@ defmodule Pleroma.Web.ApiSpec.Admin.ConfigOperation do
         %Schema{type: :array},
         %Schema{type: :object},
         %Schema{type: :string},
-        %Schema{type: :integer},
+        %Schema{type: :number},
         %Schema{type: :boolean}
       ]
     }

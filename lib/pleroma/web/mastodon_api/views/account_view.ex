@@ -11,8 +11,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
   @maximum_remote_profile_note_chars 5_000
   @maximum_remote_profile_note_bytes @maximum_remote_profile_note_chars * 4
 
-  alias Pleroma.FederationStatus
   alias Pleroma.Activity
+  alias Pleroma.FederationStatus
   alias Pleroma.FollowingRelationship
   alias Pleroma.Instances.Instance
   alias Pleroma.Nostr.Identity
@@ -20,8 +20,8 @@ defmodule Pleroma.Web.MastodonAPI.AccountView do
   alias Pleroma.UserNote
   alias Pleroma.UserRelationship
   alias Pleroma.Utils.URIEncoding
-  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.ActivityPub.ActivityPub
+  alias Pleroma.Web.ActivityPub.ActorExtensions
   alias Pleroma.Web.CommonAPI.Utils
   alias Pleroma.Web.MastodonAPI.AccountView
   alias Pleroma.Web.MediaProxy

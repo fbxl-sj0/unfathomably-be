@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 defmodule Pleroma.Web.WebFingerTest do
-  use Pleroma.DataCase, async: true
+  use Pleroma.DataCase, async: false
   alias Pleroma.Web.ActivityPub.Marketplace
   alias Pleroma.Web.WebFinger
   import ExUnit.CaptureLog
@@ -16,21 +16,19 @@ defmodule Pleroma.Web.WebFingerTest do
   end
 
   test "advertises supported FEP-3b86 activity intents" do
+    clear_config([:instance, :federating], true)
+
     user = insert(:user)
     endpoint = Pleroma.Web.Endpoint.url()
     follow_template = endpoint <> "/activitypub/externalInteraction?uri={object}"
     create_template = endpoint <> "/share?url={object}"
     links = WebFinger.represent_user(user, "JSON")["links"]
 
-    assert %{
-             "rel" => "https://w3id.org/fep/3b86/Follow",
-             "template" => ^follow_template
-           } in links
+    assert %{"template" => ^follow_template} =
+             Enum.find(links, &(&1["rel"] == "https://w3id.org/fep/3b86/Follow"))
 
-    assert %{
-             "rel" => "https://w3id.org/fep/3b86/Create",
-             "template" => ^create_template
-           } in links
+    assert %{"template" => ^create_template} =
+             Enum.find(links, &(&1["rel"] == "https://w3id.org/fep/3b86/Create"))
   end
 
   describe "host meta" do
@@ -219,8 +217,8 @@ defmodule Pleroma.Web.WebFingerTest do
     end
 
     test "preserves bracketed IPv6 hosts and non-default ports from actor URLs" do
-      actor_id = "https://[2001:db8::10]:8443/users/alice"
-      expected_authority = "https://[2001:db8::10]:8443/"
+      actor_id = "https://[2606:4700:4700::1111]:8443/users/alice"
+      expected_authority = "https://[2606:4700:4700::1111]:8443/"
 
       Tesla.Mock.mock(fn env ->
         assert String.starts_with?(env.url, expected_authority)
@@ -235,7 +233,7 @@ defmodule Pleroma.Web.WebFingerTest do
              status: 200,
              body:
                Jason.encode!(%{
-                 "subject" => "acct:alice@[2001:db8::10]:8443",
+                 "subject" => "acct:alice@[2606:4700:4700::1111]:8443",
                  "links" => [
                    %{
                      "rel" => "self",

@@ -404,6 +404,8 @@ defmodule Pleroma.Web.ActivityPub.ReadingDiscovery do
             %{url: url, name: Map.get(author_names, url)}
           end),
         work_url: reference_url(value(data, "work")) |> safe_url(),
+        series: series_label(value(data, "series")),
+        series_number: series_number(value(data, "seriesNumber")),
         isbn_10: value(data, "isbn10") |> short_text(32),
         isbn_13: value(data, "isbn13") |> short_text(32),
         catalogue_links: catalogue_links(data),
@@ -423,6 +425,34 @@ defmodule Pleroma.Web.ActivityPub.ReadingDiscovery do
       }
     end
   end
+
+  defp series_label(value) when is_binary(value), do: short_text(value, 160)
+
+  defp series_label(%{} = series_value) do
+    [value(series_value, "name"), value(series_value, "title"), reference_url(series_value)]
+    |> first_present()
+    |> short_text(160)
+  end
+
+  defp series_label(values) when is_list(values) do
+    values
+    |> Enum.map(&series_label/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.join(", ")
+    |> short_text(160)
+  end
+
+  defp series_label(_value), do: nil
+
+  defp series_number(value) when is_integer(value),
+    do: Integer.to_string(value) |> short_text(80)
+
+  defp series_number(value) when is_float(value),
+    do: :erlang.float_to_binary(value, decimals: 3) |> short_text(80)
+
+  defp series_number(value) when is_binary(value), do: short_text(value, 80)
+  defp series_number(_value), do: nil
 
   defp catalogue_links(data) do
     [

@@ -109,6 +109,7 @@ defmodule Pleroma.Nostr do
     [
       Config.get([__MODULE__, :external_relays], []),
       Config.get([__MODULE__, :discovery_relays], []),
+      response_relays(),
       group_relays()
     ]
     |> List.flatten()
@@ -118,10 +119,20 @@ defmodule Pleroma.Nostr do
     |> Enum.uniq()
   end
 
+  def response_relays do
+    Config.get([__MODULE__, :response_relays], [])
+    |> List.wrap()
+    |> Enum.map(&Protocol.normalize_relay_url/1)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.reject(&compatibility_relay?/1)
+    |> Enum.reject(&(&1 == relay_url()))
+    |> Enum.uniq()
+  end
+
   def profile_discovery_relays do
     configured = configured_profile_discovery_relays()
 
-    relays = if configured == [], do: configured_relays(), else: configured
+    relays = if configured == [], do: configured_profile_fallback_relays(), else: configured
     group_relays = group_relays()
 
     relays
@@ -130,6 +141,15 @@ defmodule Pleroma.Nostr do
     |> Enum.reject(&compatibility_relay?/1)
     |> Enum.reject(&(&1 == relay_url()))
     |> Enum.reject(&(&1 in group_relays))
+    |> Enum.uniq()
+  end
+
+  @doc "Returns approved public write destinations with configured fallback relays."
+  def public_relay_destinations(primary_relays) do
+    (List.wrap(primary_relays) ++ profile_discovery_relays())
+    |> Enum.map(&Protocol.normalize_relay_url/1)
+    |> Enum.filter(&allowed_relay?/1)
+    |> Enum.reject(&(&1 == relay_url()))
     |> Enum.uniq()
   end
 
@@ -150,6 +170,19 @@ defmodule Pleroma.Nostr do
     |> Enum.filter(&is_binary/1)
     |> Enum.reject(&compatibility_relay?/1)
     |> Enum.reject(&(&1 == relay_url()))
+    |> Enum.uniq()
+  end
+
+  defp configured_profile_fallback_relays do
+    [
+      Config.get([__MODULE__, :external_relays], []),
+      Config.get([__MODULE__, :discovery_relays], []),
+      group_relays()
+    ]
+    |> List.flatten()
+    |> Enum.map(&Protocol.normalize_relay_url/1)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.reject(&compatibility_relay?/1)
     |> Enum.uniq()
   end
 

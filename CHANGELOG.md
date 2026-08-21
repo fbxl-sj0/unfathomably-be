@@ -5,9 +5,355 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Added
+- Added private native-object workspace state for books, culture, audio, video,
+  live streams, events, software projects, 3D models, marketplace listings,
+  games, routes, and coordination records. Users can keep bounded progress,
+  ratings, notes, and family-specific workflow state without publishing an
+  extra status or notifying followers.
+- Added OAuth-scoped workspace state APIs and optional public Worlds
+  participation. Public profile queries expose only records a user explicitly
+  marks public and never return their private notes; profile participation
+  counts now include those opted-in records.
+
+### Fixed
+- Reconciled required native Nostr profile-recovery and community-discovery
+  schedules after ConfigDB loading so stale Oban overrides cannot silently
+  disable newly added maintenance workers.
+- Fixed first-contact native Nostr replies that directly tag a local identity
+  so their signed events are accepted and their authors enter the normal
+  profile hydration path without broadening relay subscriptions into a
+  firehose.
+- Classified private-network remote fetch failures as terminal SSRF rejections
+  immediately and taught the Oban janitor to retire historical retries.
+- Fixed native Nostr contact hydration when kind-0 metadata was stored before
+  its mirror account existed, and made blank `display_name` values fall back to
+  useful profile names instead of rendering an empty account name.
+- Reworked unhydrated Nostr profile recovery with batched relay lookups and
+  durable 10-minute, hourly, six-hour, then daily retry backoff, allowing
+  recently propagated contact metadata to appear without flooding public
+  relays or waiting a full day after the first lookup miss, and moved the sweep
+  to an independent Oban worker so per-profile uniqueness cannot suppress it.
+- Moved optional NIP-05 proof lookups into stale-safe background jobs so dead
+  well-known endpoints cannot delay names, biographies, and avatars, while
+  continuing to hide every human-readable identifier until it verifies.
+- Fixed imported QuoteAuthorization records that could remain pending forever
+  by verifying authorization documents on first receipt and gradually
+  recovering older stranded records with bounded, per-host janitor pacing,
+  while retaining visibility-based compatibility for legacy servers that do
+  not publish interaction policies.
+- Enforced the group-cleanup query budget inside PostgreSQL while allowing a
+  separate bounded pool-checkout window, so expected cold-scan cancellation no
+  longer tears down healthy database connections during live traffic.
+- Closed a cleanup-worker startup race with a shared non-blocking runtime lock,
+  so overlapping group and orphan/cache janitors reschedule before checking out
+  PostgreSQL connections instead of timing out under live page traffic.
+- Stopped group detail and lookup responses from synchronously recounting every
+  locally cached top-level post, keeping cold group pages responsive while
+  preserving cached status totals and targeted member/moderator refreshes.
+- Bounded stale group-discussion cleanup by a wall-clock work budget, made it
+  coordinate symmetrically with orphan-activity cleanup, capped cold candidate
+  queries, and continued unfinished scans with adaptive pacing so maintenance
+  cannot starve live timeline requests on large federation databases.
+- Raised the bounded media-proxy streaming ceiling from 25 MiB to 64 MiB so
+  valid remote videos from modern federated servers remain playable without
+  removing response-size or read-time safeguards.
+- Prevented sustained orphan-activity backlog cleanup from starving live API
+  and federation requests by pacing continuation jobs according to the measured
+  database cost of each cleanup page.
+- Fixed reply-policy traversal at its depth boundary so a legitimate cached
+  root at depth 64 is inspected instead of being misclassified as a locked
+  thread, while deeper or cyclic ancestry continues to fail closed.
+- Preserved bounded BookWyrm series names and positions through received book
+  context, catalog-seeded reviews, and locally published book objects, so work
+  and edition relationships remain meaningful instead of being reduced to a
+  title and publisher string.
 
 ### Fixed
 
+- Improved Worlds discovery hydration by matching a bounded set of nested
+  book, media, event, project, and resource references to their existing local
+  status records, so specialized entries can reuse ordinary post interactions
+  without treating arbitrary nested metadata as a status.
+- Prevented blank search requests from reaching the database or external search
+  backend, avoiding needless empty discovery work.
+- Included translated status content warnings in Mastodon translation responses
+  while preserving the original warning if the optional second translation
+  request cannot be completed.
+- Fixed Nostr responder identity hydration by immediately scheduling signed
+  profile metadata backfills for newly projected authors and periodically
+  retrying a bounded set of legacy placeholders across native and response
+  relays, with a durable one-day retry cooldown for identities whose relays
+  publish no kind-0 profile event.
+- Fixed Nostr response ingestion for local posts by subscribing approved relays
+  to events tagging local actor keys, admitting unknown responders only when
+  their signed event references an exported local event, and adding a bounded
+  response-relay pool so replies and reactions published through Snort, nos.lol,
+  or Damus are recovered after reconnects without importing a public firehose.
+- Delayed Create-activity WebSocket broadcasts until after their database
+  transaction commits, preventing newly ingested Nostr posts from briefly
+  appearing as actor-name-only placeholders in live timelines.
+- Re-streamed Nostr projections after late thread-parent or group-address
+  repair so open timelines adopt the corrected reply and group context without
+  requiring a browser reload.
+- Made the retention janitor self-heal after transient database timeouts and
+  added a compact local-activity reference index so preserving local replies,
+  reactions, and other interactions does not repeatedly probe the global
+  multi-gigabyte activity index during historical cleanup; protection checks
+  now stop after the first matching local reference instead of materializing
+  every activity attached to a frequently referenced object. A compact,
+  transactionally maintained local-reference catalog now keeps those safety
+  checks fast on cold databases and is rechecked by the final delete.
+- Tuned per-table and TOAST autovacuum thresholds for the large activities and
+  objects caches so bounded retention work continuously makes deleted space
+  reusable instead of waiting for PostgreSQL's impractical default 20 percent
+  dead-row threshold.
+- Added janitor backpressure while PostgreSQL vacuums either large cache table,
+  allowing page reuse and statistics maintenance to finish without competing
+  with user requests for database connections and storage I/O; the probe uses
+  PostgreSQL's maintenance lock visible to the restricted application role and
+  yields conservatively when database load prevents a definitive answer.
+- Added a bounded, unique continuation lane for old remote objects, Tombstones,
+  and stale actors so retention backlogs converge without waiting for one small
+  hourly batch, while yielding to both the orphan-activity sweep and PostgreSQL
+  maintenance.
+- Fixed the hourly root retention job so it also defers old-object, Tombstone,
+  and stale-actor scans while an orphan-activity sweep is active, preventing
+  retrying root jobs from holding database connections until their worker
+  timeout while the bounded continuation lane was making progress.
+- Reworked remote-cache retention into a self-healing janitor: newly pruned
+  objects now shed safely detachable remote activity envelopes, historical
+  orphans are removed in restart-safe bounded batches with persistent progress,
+  local bookmarks, notifications, reports, replies, quotes, and interactions
+  remain protected, and old remote Tombstones expire on a longer safety window.
+- Increased recurring remote-post cleanup throughput and cadence, added compact
+  cursor indexes for orphan activities and Tombstones, and retained periodic
+  full sweeps so one-time cleanup gaps cannot silently regrow indefinitely;
+  orphan cleanup runs before expensive object-protection checks so a slow
+  remote-cache query cannot starve the bounded recovery lane, and local
+  reply/quote/activity protection is resolved once per indexed candidate set
+  rather than repeated as a correlated scan for every historical row. Added
+  the missing `quoteUri` lookup index so both quote field spellings retain the
+  same protection without a full object-table scan, and kept cleanup pages
+  deliberately small so cold multi-year databases self-throttle instead of
+  monopolizing a database connection.
+- Added the Mastodon-compatible `/api/v1/trends/statuses` fallback so clients
+  receive an empty collection instead of a route-level 404 until a
+  moderation-safe trending-status ranker is explicitly enabled.
+- Fixed authenticated ActivityPub inbox jobs so they use the configured
+  ReceiverWorker timeout instead of carrying a stale 20-second per-job
+  override that could abort valid slow federation deliveries.
+- Fixed static status metadata rendering for older objects with an unspecified
+  sensitive flag, so valid public notice pages render previews instead of
+  returning HTTP 500.
+- Prevented inline ActivityPub reply collection maps from being enumerated as
+  key/value tuples and inserted as malformed remote-fetch jobs.
+- Improved remote-cache janitor resilience by splitting candidate queries that
+  exceed their database timeout, allowing smaller safe slices to continue
+  instead of abandoning the full daily cleanup pass.
+- Added an ordered partial index for stale remote-actor cleanup so the janitor
+  no longer sorts and spills tens of millions of temporary blocks while
+  selecting its small bounded actor batch.
+- Requeued missing remote quote objects when a status is rendered, so a
+  previously missed or discarded quote hydration job can repair the embedded
+  quote asynchronously without blocking status requests or bypassing quote
+  visibility checks.
+- Treated empty quote-authorization state from older or foreign ActivityPub
+  implementations as ordinary public quote behavior instead of hiding the
+  quote as rejected.
+- Extended the Oban janitor's persistent-error boundary to incoming
+  federation jobs, so repeated remote HTTP 5xx responses from peers such as
+  Lemmy and snac receive the same bounded retry treatment as outbound
+  deliveries instead of consuming the full retry budget indefinitely.
+- Added a compiled-application artifact check to source promotion so a
+  missing `pleroma.app` stops activation before systemd can enter a restart
+  loop.
+- Reduced source-promotion backup scope so historical backup trees, build and
+  dependency caches, uploads, and server-local instance state are not copied
+  into every new rollback archive.
+- Restored the shipped Pleroma fallback avatar and header assets so legacy
+  `/images/avi.png` and `/images/banner.png` account URLs resolve instead of
+  producing browser 404s when the frontend receives them from an API payload.
+- Added the Mastodon v2 `configuration.urls.streaming` field while retaining
+  the existing top-level streaming URL alias, allowing current frontends to
+  discover authenticated WebSocket streaming without v1 fallback assumptions.
+
+### Security
+
+- Audited all 47 published Mastodon CVEs and Pleroma CVE-2023-5588 against
+  Unfathomably's corresponding code paths, with source-level dispositions and
+  regression evidence in `docs/SECURITY_CVE_AUDIT_2023_2026.md`.
+- Hardened ActivityPub, FASP, WebFinger, rich-media, and reverse-proxy requests
+  against SSRF by validating all resolved addresses, rejecting special IPv4
+  and IPv6 transition ranges, and pinning connections while retaining TLS
+  hostname checks.
+- Hardened OAuth and streaming lifecycles so expired or deleted tokens,
+  destroyed applications, password resets, and inactive users cannot retain a
+  live stream, and applied anonymous-federation restrictions to hashtag streams.
+- Prevented LDAP options from disabling TLS verification, bounded remote polls
+  and local lists, added destination confirmation throttling, and rejected
+  percent-routed email addresses.
+- Added a signed-release FFmpeg installer for CVE-2026-8461 so deployments can
+  use fixed FFmpeg 6.1.6 while affected distribution packages remain pending.
+
+### Added
+
+- Advertised explicit `native_federation` and `quote_post_listing` instance
+  capabilities so compatible frontends can expose specialized workflows and
+  quote listings without guessing from the backend software name.
+- Added a release-gated selective-protocol smoke contract covering AT Protocol,
+  Nostr, Diaspora, dedicated Tor onion routing, and the corresponding frontend
+  account-linking and protocol-identity presentation.
+- Updated the federation smoke suite to derive its Elixir image from the
+  repository's OTP 29 toolchain, rebuild stale labelled images, honor both
+  supported image overrides consistently, verify BE/FE version alignment, and
+  install the JSON and Python tooling required by current adapters.
+- Added a consolidated optional-feature enablement guide covering AT Protocol
+  and Bluesky account linking, Nostr identity and relay setup, Diaspora routes,
+  Tor client-only fetching and hidden-service entrances, Worlds discovery,
+  RSS sources, translation, Meilisearch, VAPID web push, FASP approvals, secret
+  handling, reverse-proxy requirements, and operational verification.
+- Replaced the legacy global Tor proxy and CSP-disable instructions with a
+  fail-closed client-only onion adapter procedure and a separate, non-relay
+  hidden-service entrance guide.
+- Added opt-in Tor v3 onion-service federation through a loopback-only SOCKS5
+  client, with address checksum validation, isolated bounded HTTP capacity, and
+  fail-closed handling that prevents onion names from leaking to ordinary DNS.
+
+### Fixed
+- Restored live local media after an ad hoc source deployment deleted the upload
+  tree, moved uploads outside the application checkout, and strengthened the
+  supported source-promotion path with independent rsync receiver protection.
+- Fixed extension-neutral local media such as legacy `.blob` avatars so safe
+  image, audio, and video signatures receive their real MIME type while unsafe
+  content remains sandboxed as generic binary data.
+- Added a permanent `/favicon.ico` compatibility redirect to the configured
+  PNG favicon so conventional browser and crawler requests no longer receive
+  the frontend application shell.
+
+- Documented the frontend streaming repair: initial WebSocket upgrade failures
+  now fall back to authenticated EventSource delivery, while top-of-list
+  timelines reconcile without requiring a manual refresh.
+- Fixed media-proxy failure caching so stale URL-only and failed HEAD entries
+  cannot suppress healthy GET or ranged media requests, and made failed
+  thumbnail generation fall back to the full proxied media instead of showing
+  an unavailable placeholder for healthy remote avatars. Temporary image
+  failure placeholders are now non-cacheable so an edge proxy cannot retain
+  one as an account's avatar after the remote image recovers, with matching
+  no-cache guards in the maintained nginx media-proxy examples.
+- Fixed outbound HTTP authority handling after public-address pinning so Gun
+  connects to the validated address while retaining the URI hostname for
+  HTTP/1 `Host` and HTTP/2 `:authority`, preventing widespread `421 Misdirected
+  Request` responses, missing avatars, and failed federation fetches on shared
+  CDNs.
+- Fixed StaticFE rendering for cached posts whose remote author cannot be
+  resolved, using a minimal remote-author placeholder instead of returning an
+  HTTP 500 for the entire notice thread.
+- Recovered stale frontend sessions whose older Vite preload runtime requested
+  nested `/packs/js/packs/js/` or `/packs/js/packs/assets/` paths, allowing the
+  existing content-hashed asset to load instead of triggering navigation errors.
+- Fixed WebFinger discovery for actor URLs with bracketed IPv6 hosts and
+  non-default ports by encoding IPv6 brackets safely inside resource queries.
+- Added a strict release-engineering gate covering dependency advisories and
+  freshness, warning-free compilation, formatting, strict Credo, isolated
+  test batches, documentation warnings, and security regression checks.
+- Made ExDoc generation warning-clean by fixing malformed local markup, giving
+  the README a stable documentation route, and explicitly baselining only
+  legacy deployed-guide and private/external API references.
+- Stopped the configuration documentation task from booting the database and
+  background workers, and made strict documentation builds clear stale output
+  before rendering so old page-name collisions cannot poison a release gate.
+- Updated test configuration helpers and call sites to use unambiguous per-key
+  section overrides instead of the deprecated whole-section keyword form.
+- Made the isolated release test matrix resumable from an exact numbered batch
+  without changing its deterministic file ordering or default full-suite run.
+- Fixed event-capacity API handling so full events return a useful client error
+  for both direct joins and participation approvals instead of a generic error
+  or controller exception.
+- Hardened post-archive imports by rejecting unsafe ZIP paths before extraction
+  can silently skip them and incorrectly mark the import complete.
+- Preserved bounded standard oEmbed cache, version, media, and thumbnail
+  dimensions, including numeric strings emitted by otherwise compatible media
+  providers, while continuing to discard unknown nested metadata.
+- Documented unauthenticated account-credential and alias failures as 401
+  responses in OpenAPI so generated clients match the hardened OAuth pipeline.
+- Made test teardown drain late-registered streamer workers before SQL sandbox
+  ownership ends, removing orphaned renderer queries and database disconnect
+  noise without changing streaming concurrency.
+- Fixed ActivityPub advisory-lock queries that nested repository timeout
+  options, and fixed outbox next-page links that were calculated from the
+  rendered collection's reversed order and could repeat the first page.
+- Fixed Ed25519 verification for legacy and RFC 9421-style HTTP signatures by
+  passing the signed message and signature to OTP crypto in the required order.
+- Normalized pinned-status timestamps before storing them in JSON-backed user
+  maps so fresh writes and reloaded users expose the same stable string type.
+
+- Fixed known remote-handle resolution so cached actors are used before an
+  alias lookup or new WebFinger request, keeping mentions functional while a
+  previously discovered peer is unavailable.
+- Made `mix pleroma.user rm` distinguish a missing local account from a
+  downstream delete-pipeline failure so operators receive an actionable error.
+- Made the backend release gate run explicit test-file batches serially because
+  the suite exercises shared Application configuration and process-wide caches,
+  removing parallel state failures while bounding compiled-test memory.
+- Strengthened the backend release gate with locked and unused dependency
+  checks, vendored dependency security auditing, warning-free compilation,
+  formatting, high-signal Credo checks, the full test suite, and strict ExDoc
+  generation.
+- Added regression coverage proving the vendored Gun and cowlib request-header,
+  structured-header, and cookie injection protections covered by narrowly
+  documented advisory exceptions.
+- Fixed stale test assumptions around capability configuration, MRF defaults,
+  push truncation, compile-time module requirements, and Oban test helpers.
+- Fixed the ExDoc output collision with its reserved search page and completed
+  structured logger metadata for memory and AT Protocol bridge events.
+- Fixed local group Announce retries so they use the existing deterministic
+  activity ID derivation instead of producing parallel federation activities.
+- Restored the Mastodon v2 instance `urls` object at its required top-level
+  location instead of nesting it inside `configuration`.
+- Split anonymous local and federated timeline and streaming capabilities from
+  the broad native-federation flag so clients follow the effective access
+  policy instead of assuming that every Unfathomably instance is public.
+- Fixed instance metadata to report the deployed Unfathomably FE 3.5.0 release
+  instead of the stale 3.4.0 frontend version.
+- Hardened frontend fallback routing so PHP, CGI, and other executable
+  web-shell probes return a real 404 instead of receiving the single-page app
+  shell, including nested script paths and common WordPress probe roots.
+- Made Nostr mirror provisioning conflict-safe when concurrent relay events
+  discover the same actor, preventing a harmless database race from retrying
+  an otherwise successful ingest job.
+- Scoped reverse-proxy failure caching by HTTP method so a transient failed
+  media `HEAD` probe cannot suppress a valid video `GET`, and added a short
+  cooldown for repeatedly failing optional actor collections.
+- Fixed Lemmy-style link posts whose ActivityPub `Link` destination is nested
+  under an attachment `url` array, rendering them as link-preview cards with
+  their title and image instead of unknown HTML media downloads.
+- Fixed Nostr projection interoperability observed in Snort: media URLs now
+  accompany NIP-92 `imeta`, replies to kind-1 notes use marked NIP-10 tags,
+  ActivityPub-only reply targets use NIP-22 external scopes, and nested NIP-22
+  replies preserve their original root scope.
+- Fixed public Nostr replies, reactions, reposts, and deletes so recipient
+  relays remain preferred while configured public relays provide durable
+  fallback delivery when a selective relay declines or later drops an event.
+- Fixed Nostr exports of locally authored plain-text and Markdown posts so
+  source whitespace around mentions and links is preserved instead of being
+  reconstructed from rendered ActivityPub HTML.
+- Fixed linked AT Protocol publishing after access-token expiry by sending the
+  no-input `com.atproto.server.refreshSession` procedure without an empty JSON
+  request body, which standards-compliant PDS implementations reject.
+- Fixed native AT Protocol publishing to use deterministic, lexicon-valid TID
+  record keys instead of prefixed hash keys rejected by compliant PDS
+  implementations for posts, follows, reactions, and reposts.
+- Fixed ordinary local status creation to enqueue AT Protocol and Diaspora
+  exporters after commit, matching the existing common ActivityPub pipeline
+  instead of silently queuing only Nostr publication.
+- Fixed AT Protocol reaction export by mapping local emoji reactions to
+  Bluesky Likes and securely recovering aged-out strong references from
+  embedded ATProto provenance only when the post DID matches its projection.
+- Fixed selective AT Protocol publishing so explicitly addressed Bluesky
+  projection accounts become native mention facets even when the stored local
+  object predates outgoing Mention-tag reconstruction, while preserving the
+  authored plain-text spacing around formatter-generated mention markup.
 - Kept Oban janitor uniqueness effective for suspended jobs and removed an
   unused native-discovery function default so current Elixir and Oban builds
   remain warning-clean in Unfathomably-owned source.
@@ -1326,6 +1672,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fixed OpenTranslate-backed status translation for remote posts whose detected
   source language is not directly advertised by the provider by retrying those
   concrete source-code failures with provider auto-detection.
+- Fixed quote hydration for publicly addressed remote posts whose reply parent
+  has been deleted or is unavailable, preserving the quote and its media without
+  weakening ordinary protected-reply validation.
+- Added bounded field-level diagnostics for terminal remote ActivityPub
+  validation failures so federation compatibility issues identify the rejected
+  fields instead of collapsing into generic churn.
 - Fixed Lemmy-family Create activities that carry the same recipients as their
   embedded object but partition the community differently between `to` and
   `cc`, preventing valid posts from being discarded as addressing mismatches.
@@ -1518,6 +1870,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   federation-heavy source installs.
 
 ### Changed
+- Refreshed the fully resolvable dependency graph for the release gate,
+  including castore, h2, hackney, mdex_native, Phoenix, LiveDashboard, and
+  WebTransport.
 - Classified FediGroups' documented stock limitations in the wide federation
   matrix so unsupported Delete, reaction, threaded-comment, follow, and
   moderation checks are not confused with untested local harness coverage.
@@ -1595,6 +1950,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from the shared Unfathomably defaults.
 
 ### Fixed
+- Made incoming-federation regression suites explicitly enable federation so
+  randomized and isolated release-test batches cannot depend on configuration
+  leaked by another module.
+- Fixed the admin configuration OpenAPI schema to accept floating-point JSON
+  values, aligned anonymous admin tests with the 401 authentication contract,
+  and refreshed admin account fixtures for alias and move metadata.
+- Fixed remote ActivityPub Update side effects so omitted local-delivery
+  metadata is treated as remote instead of raising during quote-authorization
+  reconciliation.
+- Preserved PieFed PollVote audiences on both the generated Create activity and
+  its Answer object so valid audience-bearing votes pass strict addressing
+  validation.
 - Fixed account unfollow cleanup when a compatibility follow relationship has
   no stored `Follow` activity, so cleanup succeeds instead of returning a 500
   after removing the relationship.
@@ -1697,6 +2064,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fixed VAPID web-push enabled detection so valid runtime configuration is not
   mistaken for missing keys when ConfigDB or runtime loading changes keyword
   ordering or representation.
+- Fixed FEP-e232 quote discovery for the specification's optional-`rel` form
+  while keeping unrelated ActivityPub object links out of quote handling.
+- Kept the remote post-size compatibility limit from rejecting valid local
+  posts, which already pass through the instance's local character limit.
+- Stopped canonicalized ActivityPub input aliases such as GoToSocial's legacy
+  `approvedBy` from being restored by generic extension preservation.
+- Preserved distinct Event group attribution through normalization so
+  Mobilizon-style service actors can attribute events to valid same-host Group
+  actors without allowing cross-host or ordinary-account claims.
+- Allowed a Create actor to match a validated object's explicit actor when the
+  object separately names a safe attribution, completing service-owned Event
+  delivery without loosening ordinary status ownership checks.
 
 ### Security
 - Wired the InboxGuard-style ActivityPub inbox guard into the runtime inbox pipeline, rejecting unsupported activity types early and limiting unsigned unknown-actor first contact to a narrow allowlist that still preserves Unfathomably group/source compatibility.

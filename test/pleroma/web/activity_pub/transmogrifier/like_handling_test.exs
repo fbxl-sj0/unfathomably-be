@@ -14,6 +14,8 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.LikeHandlingTest do
 
   import Pleroma.Factory
 
+  setup_all do: clear_config([:instance, :federating], true)
+
   test "it works for incoming likes" do
     user = insert(:user)
 
@@ -79,7 +81,7 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.LikeHandlingTest do
       |> Pleroma.Repo.update!()
 
     like = %{
-      "id" => "https://remote.example/activities/like/1",
+      "id" => "https://lemmy.example/activities/like/1",
       "actor" => liker.ap_id,
       "object" => object.data["id"],
       "audience" => group.ap_id,

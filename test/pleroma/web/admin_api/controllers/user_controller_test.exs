@@ -384,10 +384,10 @@ defmodule Pleroma.Web.AdminAPI.UserControllerTest do
           |> assign(:token, good_token)
           |> get(url)
 
-        assert json_response(conn, :forbidden)
+        assert json_response(conn, :unauthorized)
       end
 
-      for bad_token <- [bad_token1, bad_token2, bad_token3] do
+      for bad_token <- [bad_token1, bad_token2] do
         conn =
           build_conn()
           |> assign(:user, admin)
@@ -396,6 +396,14 @@ defmodule Pleroma.Web.AdminAPI.UserControllerTest do
 
         assert json_response_and_validate_schema(conn, :forbidden)
       end
+
+      conn =
+        build_conn()
+        |> assign(:user, admin)
+        |> assign(:token, bad_token3)
+        |> get(url)
+
+      assert json_response_and_validate_schema(conn, :unauthorized)
     end
   end
 
@@ -1110,6 +1118,9 @@ defmodule Pleroma.Web.AdminAPI.UserControllerTest do
       "url" => user.ap_id,
       "registration_reason" => nil,
       "actor_type" => "Person",
+      "also_known_as" => List.wrap(user.also_known_as),
+      "last_move_at" =>
+        if(user.last_move_at, do: CommonAPI.Utils.to_masto_date(user.last_move_at), else: nil),
       "created_at" => CommonAPI.Utils.to_masto_date(user.inserted_at)
     }
     |> Map.merge(attrs)

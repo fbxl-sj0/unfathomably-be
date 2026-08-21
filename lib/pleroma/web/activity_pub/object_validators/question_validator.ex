@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.ActivityPub.ObjectValidators.QuestionValidator do
   use Ecto.Schema
 
+  alias Pleroma.Config
   alias Pleroma.EctoType.ActivityPub.ObjectValidators
   alias Pleroma.Web.ActivityPub.ObjectValidators.ArticleNotePageValidator
   alias Pleroma.Web.ActivityPub.ObjectValidators.CommonValidations
@@ -103,6 +104,21 @@ defmodule Pleroma.Web.ActivityPub.ObjectValidators.QuestionValidator do
     |> CommonValidations.validate_fields_match([:actor, :attributedTo])
     |> CommonValidations.validate_actor_presence()
     |> CommonValidations.validate_any_presence([:oneOf, :anyOf])
+    |> validate_option_count()
     |> CommonValidations.validate_host_match()
+  end
+
+  defp validate_option_count(changeset) do
+    option_count =
+      length(get_field(changeset, :oneOf) || []) + length(get_field(changeset, :anyOf) || [])
+
+    maximum = Config.get([:instance, :poll_limits, :max_options], 20)
+    maximum = if is_integer(maximum) and maximum > 0, do: maximum, else: 20
+
+    if option_count > maximum do
+      add_error(changeset, :oneOf, "has too many poll options")
+    else
+      changeset
+    end
   end
 end

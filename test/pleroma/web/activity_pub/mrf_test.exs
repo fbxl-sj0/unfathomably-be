@@ -134,6 +134,7 @@ defmodule Pleroma.Web.ActivityPub.MRFTest do
           accept: [],
           avatar_removal: [],
           banner_removal: [],
+          content_warning: [],
           federated_timeline_removal: [],
           followers_only: [],
           media_nsfw: [],

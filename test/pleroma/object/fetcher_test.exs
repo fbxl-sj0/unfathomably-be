@@ -21,6 +21,8 @@ defmodule Pleroma.Object.FetcherTest do
   import Pleroma.Factory
   import Tesla.Mock
 
+  setup_all do: clear_config([:instance, :federating], true)
+
   setup do
     mock(fn
       %{method: :get, url: "https://mastodon.example.org/users/userisgone"} ->
@@ -53,7 +55,12 @@ defmodule Pleroma.Object.FetcherTest do
         %{method: :get, url: "https://social.sakamoto.gq/notice/9wTkLEnuq47B25EehM"} ->
           %Tesla.Env{
             status: 200,
-            body: File.read!("test/fixtures/fetch_mocks/9wTkLEnuq47B25EehM.json"),
+            body:
+              "test/fixtures/fetch_mocks/9wTkLEnuq47B25EehM.json"
+              |> File.read!()
+              |> Jason.decode!()
+              |> Map.put("url", "https://social.sakamoto.gq/notice/9wTkLEnuq47B25EehM")
+              |> Jason.encode!(),
             headers: HttpRequestMock.activitypub_object_headers()
           }
 
@@ -818,8 +825,8 @@ defmodule Pleroma.Object.FetcherTest do
     test "it goes through ObjectValidator and MRF", %{object2: object2} do
       with_mock Pleroma.Web.ActivityPub.MRF, [:passthrough],
         filter: fn
-          %{"type" => "Note"} = object ->
-            {:ok, Map.put(object, "content", "MRFd content")}
+          %{"type" => "Update", "object" => %{} = object} = update ->
+            {:ok, Map.put(update, "object", Map.put(object, "content", "MRFd content"))}
 
           arg ->
             passthrough([arg])

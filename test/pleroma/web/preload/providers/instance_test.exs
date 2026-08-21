@@ -23,7 +23,7 @@ defmodule Pleroma.Web.Preload.Providers.InstanceTest do
   end
 
   test "it works with overrides" do
-    clear_config([:instance, :static_dir], "test/fixtures/preload_static")
+    clear_config([:instance, :static_dir], Path.expand("test/fixtures/preload_static"))
 
     %{"/instance/panel.html" => panel} = Instance.generate_terms(nil)
 
@@ -47,7 +47,10 @@ defmodule Pleroma.Web.Preload.Providers.InstanceTest do
     "/api/pleroma/frontend_configurations" => fe_configs
   } do
     assert %{
-             pleroma_fe: %{background: "/images/city.jpg", logo: "/favicon.png"}
+             pleroma_fe: %{
+               background: "/images/city.jpg",
+               logo: "/images/unfathomably-logo.svg"
+             }
            } = fe_configs
   end
 end

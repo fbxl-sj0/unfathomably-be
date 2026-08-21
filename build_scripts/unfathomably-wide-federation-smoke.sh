@@ -48,7 +48,7 @@ RUN_PUBLIC_AUDIT="${FEDERATION_WIDE_PUBLIC_AUDIT:-1}"
 LOCAL_PLATFORMS="${FEDERATION_WIDE_LOCAL_PLATFORMS:-bookwyrm,forgefed,manyfold,ibis,neodb,wanderer,dokieli,flohmarkt,castling,bonfire-valueflows,zenpub,activitypods,mutual-aid,fedigroups,gancio,mobilizon,wordpress,xwiki,writefreely,snac,mitra,owncast,sharkey,wafrn,postmarks}"
 LOCAL_KEEP_CONTAINERS="${FEDERATION_WIDE_KEEP_CONTAINERS:-0}"
 RUN_SAFETY="${FEDERATION_WIDE_SAFETY:-1}"
-SAFETY_BE_IMAGE="${FEDERATION_WIDE_SAFETY_BE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}}"
+SAFETY_BE_IMAGE="${FEDERATION_WIDE_SAFETY_BE_IMAGE:-${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}}"
 
 usage() {
     cat <<'EOF'

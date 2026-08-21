@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Unfathomably BE Debian/Ubuntu bootstrap
-# ---------------------------------------
+#
+# Project: Unfathomably BE host bootstrap
+# ----------------------------------------
 #
 # File: build_scripts/setup-debian-ubuntu.sh
 #
@@ -148,6 +149,7 @@ install_packages() {
         git \
         imagemagick \
         inotify-tools \
+        jq \
         libimage-exiftool-perl \
         libmagic-dev \
         libncurses-dev \
@@ -161,6 +163,7 @@ install_packages() {
         openssl \
         pkg-config \
         postgresql-client \
+        python3 \
         unzip \
         unixodbc-dev \
         xz-utils \

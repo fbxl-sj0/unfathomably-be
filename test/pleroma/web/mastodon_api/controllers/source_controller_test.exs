@@ -16,6 +16,7 @@ defmodule Pleroma.Web.MastodonAPI.SourceControllerTest do
 
   setup do
     Mox.stub_with(Pleroma.UnstubbedConfigMock, Pleroma.Config)
+    clear_config([:instance, :federating], true)
     :ok
   end
 

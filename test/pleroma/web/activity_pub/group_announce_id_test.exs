@@ -5,6 +5,8 @@
 defmodule Pleroma.Web.ActivityPub.GroupAnnounceIdTest do
   use Pleroma.DataCase, async: true
 
+  require Pleroma.Constants
+
   import Pleroma.Factory
 
   alias Pleroma.Activity

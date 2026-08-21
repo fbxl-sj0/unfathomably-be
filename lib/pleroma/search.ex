@@ -12,11 +12,17 @@ defmodule Pleroma.Search do
     SearchIndexingWorker.enqueue("remove_from_index", %{"object" => object_id})
   end
 
-  def search(query, options) do
-    search_module = Pleroma.Config.get([Pleroma.Search, :module])
+  def search(query, options) when is_binary(query) do
+    if String.trim(query) == "" do
+      []
+    else
+      search_module = Pleroma.Config.get([Pleroma.Search, :module])
 
-    search_module.search(options[:for_user], query, options)
+      search_module.search(options[:for_user], query, options)
+    end
   end
+
+  def search(_query, _options), do: []
 
   def healthcheck_endpoints do
     search_module = Pleroma.Config.get([Pleroma.Search, :module])

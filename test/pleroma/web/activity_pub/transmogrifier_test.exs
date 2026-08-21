@@ -21,6 +21,7 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
   import ExUnit.CaptureLog
 
   setup_all do
+    clear_config([:instance, :federating], true)
     Tesla.Mock.mock_global(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok
   end
@@ -86,7 +87,7 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       assert activity.data["object"] == [user.ap_id, note_obj]
       assert activity.data["content"] == "blocked AND reported!!!"
       assert activity.data["actor"] == other_user.ap_id
-      assert activity.data["cc"] == [user.ap_id]
+      assert activity.data["cc"] == []
     end
 
     test "it retains a late group Announce for an existing unassociated Create" do
@@ -145,7 +146,13 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
 
     test "it unwraps Mbin group announces around Flag activities" do
       user = insert(:user)
-      reporter = insert(:user, local: false)
+
+      reporter =
+        insert(:user,
+          local: false,
+          ap_id: "https://mbin.example/u/reporter",
+          follower_address: "https://mbin.example/u/reporter/followers"
+        )
 
       group =
         insert(:user,
@@ -196,7 +203,7 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       assert activity.data["object"] == [user.ap_id, note_obj]
       assert activity.data["content"] == "reported from a magazine"
       assert activity.data["actor"] == reporter.ap_id
-      assert activity.data["cc"] == [user.ap_id]
+      assert activity.data["cc"] == []
     end
 
     test "it rejects Flag activities when both reporter and reported account are remote" do
@@ -275,12 +282,7 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
 
       message = File.read!("test/fixtures/fep-e232.json") |> Jason.decode!()
 
-      assert {{:ok, activity}, log} =
-               with_log(fn ->
-                 Transmogrifier.handle_incoming(message)
-               end)
-
-      assert log =~ "Error while fetching https://example.org/objects/9"
+      assert {:ok, activity} = Transmogrifier.handle_incoming(message)
 
       object = Object.normalize(activity)
       assert [%{"type" => "Mention"}, %{"type" => "Link"}] = object.data["tag"]
@@ -304,8 +306,9 @@ defmodule Pleroma.Web.ActivityPub.TransmogrifierTest do
       object = Object.normalize(activity)
       assert object.data["quoteUrl"] == "https://misskey.io/notes/8vs6wxufd0"
 
-      # It fetched the quoted post
-      assert Object.normalize("https://misskey.io/notes/8vs6wxufd0")
+      # Quote targets remain lazy so one incoming post cannot force another
+      # synchronous remote fetch in the receiver path.
+      refute Object.get_by_ap_id("https://misskey.io/notes/8vs6wxufd0")
     end
   end
 

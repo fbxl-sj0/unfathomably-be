@@ -5,8 +5,8 @@
 defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
   use Pleroma.Web, :view
 
-  alias Pleroma.FederationStatus
   alias Pleroma.FederatedTargetCuration
+  alias Pleroma.FederationStatus
   alias Pleroma.GroupMembership
   alias Pleroma.Nostr.Identity, as: NostrIdentity
   alias Pleroma.User
@@ -369,6 +369,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedTargetView do
 
   defp group_moderator_count(group, opts, _nostr), do: group_moderator_count(group, opts)
 
+  defp group_status_count(group, %{refresh_status_count: false}), do: group.note_count || 0
   defp group_status_count(group, %{refresh_counts: false}), do: group.note_count || 0
   defp group_status_count(group, _opts), do: FederatedTarget.group_status_count(group)
 

@@ -91,6 +91,26 @@ defmodule Pleroma.Web.FallbackTest do
            |> response(400) == "Malformed request path"
   end
 
+  test "GET executable web probes returns not found instead of the frontend shell" do
+    for path <- [
+          "/wp-config.php",
+          "/wp-admin/includes/about.php",
+          "/index.php/status",
+          "/shell.phtml",
+          "/cgi-bin/diagnostic"
+        ] do
+      assert build_conn()
+             |> get(path)
+             |> response(404) == "Not found"
+    end
+  end
+
+  test "GET ordinary frontend deep links still return the frontend shell", %{conn: conn} do
+    assert conn
+           |> get("/worlds/books")
+           |> html_response(200) =~ "initial-results"
+  end
+
   test "GET /pleroma/admin -> /pleroma/admin/", %{conn: conn} do
     assert redirected_to(get(conn, "/pleroma/admin")) =~ "/pleroma/admin/"
   end

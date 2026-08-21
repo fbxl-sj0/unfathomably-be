@@ -461,7 +461,7 @@ defmodule Pleroma.Web.ActivityPub.ActivityPubController do
       |> render("activity_collection_page.json", %{
         activities: activities,
         total_items: result[:total],
-        pagination: ControllerHelper.get_pagination_fields(conn, activities),
+        pagination: ControllerHelper.get_pagination_fields(conn, Enum.reverse(activities)),
         iri: "#{user.ap_id}/outbox"
       })
     end

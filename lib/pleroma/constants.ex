@@ -53,6 +53,7 @@ defmodule Pleroma.Constants do
       "sensitive",
       "attachment",
       "generator",
+      "interactionPolicy",
       "language",
       "startTime",
       "endTime",

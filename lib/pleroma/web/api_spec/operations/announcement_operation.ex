@@ -21,6 +21,7 @@ defmodule Pleroma.Web.ApiSpec.AnnouncementOperation do
       security: [%{"oAuth" => []}],
       responses: %{
         200 => Operation.response("Response", "application/json", list_of_announcements()),
+        401 => Operation.response("Unauthorized", "application/json", ApiError),
         403 => Operation.response("Forbidden", "application/json", ApiError)
       }
     }
@@ -42,6 +43,7 @@ defmodule Pleroma.Web.ApiSpec.AnnouncementOperation do
       ],
       responses: %{
         200 => Operation.response("Response", "application/json", %Schema{type: :object}),
+        401 => Operation.response("Unauthorized", "application/json", ApiError),
         403 => Operation.response("Forbidden", "application/json", ApiError),
         404 => Operation.response("Not Found", "application/json", ApiError)
       }

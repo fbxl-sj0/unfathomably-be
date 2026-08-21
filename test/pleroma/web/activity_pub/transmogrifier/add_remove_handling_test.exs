@@ -4,7 +4,7 @@
 
 defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
   use Oban.Testing, repo: Pleroma.Repo
-  use Pleroma.DataCase, async: true
+  use Pleroma.DataCase, async: false
 
   require Pleroma.Constants
 
@@ -14,6 +14,11 @@ defmodule Pleroma.Web.ActivityPub.Transmogrifier.AddRemoveHandlingTest do
   alias Pleroma.User
   alias Pleroma.Web.ActivityPub.Transmogrifier
   alias Pleroma.Web.CommonAPI
+
+  setup do
+    clear_config([:instance, :federating], true)
+    :ok
+  end
 
   test "it accepts Add/Remove activities" do
     user =

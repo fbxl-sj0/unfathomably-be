@@ -21,7 +21,9 @@
 
 ## Configuration
 
+- [Optional feature enablement](FEATURE_ENABLEMENT.md)
 - [Cheatsheet](configuration/cheatsheet.md)
+- [Tor onion federation](configuration/onion_federation.md)
 - [Hardening](configuration/hardening.md)
 - [Authentication](configuration/auth.md)
 - [Moderation and federation policy](configuration/mrf.md)

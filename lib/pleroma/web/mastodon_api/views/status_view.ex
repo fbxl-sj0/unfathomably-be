@@ -15,6 +15,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   alias Pleroma.Maps
   alias Pleroma.Object
   alias Pleroma.QuoteAuthorization
+  alias Pleroma.QuoteHydration
   alias Pleroma.Repo
   alias Pleroma.User
   alias Pleroma.UserRelationship
@@ -34,6 +35,8 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   alias Pleroma.Web.MediaProxy
   alias Pleroma.Web.PleromaAPI.EmojiReactionController
   alias Pleroma.Web.RichMedia.Card
+
+  @quote_hydration_depth 1
 
   import Pleroma.Web.ActivityPub.Visibility,
     only: [get_visibility: 1, visible_for_user?: 3]
@@ -629,7 +632,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     card =
       case Card.get_by_activity(activity, Map.put(opts, :stream, false)) do
         %Card{} = result -> render("card.json", result)
-        _ -> nil
+        _ -> fallback_link_card(object.data)
       end
 
     url =
@@ -959,7 +962,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   end
 
   defp media_attachment_data(attachments) when is_list(attachments) do
-    Enum.reject(attachments, &link_attachment?/1)
+    Enum.reject(attachments, &is_binary(HTML.link_attachment_url(&1)))
   end
 
   defp media_attachment_data(_), do: []
@@ -1010,10 +1013,52 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     end
   end
 
-  defp link_attachment?(%{"type" => "Link", "href" => href}) when is_binary(href),
-    do: href != ""
+  defp fallback_link_card(data) when is_map(data) do
+    with url when is_binary(url) <- link_attachment_url(data["attachment"]) do
+      fields =
+        %{
+          "url" => url,
+          "title" => link_card_title(data, url),
+          "description" => link_card_description(data)
+        }
+        |> Maps.put_if_present("image", object_image_url(data["image"]))
+        |> Maps.put_if_present("image:alt", object_image_description(data["image"]))
 
-  defp link_attachment?(_), do: false
+      render_card(%Card{fields: fields})
+    end
+  end
+
+  defp fallback_link_card(_data), do: nil
+
+  defp link_attachment_url(attachments) when is_list(attachments) do
+    Enum.find_value(attachments, &HTML.link_attachment_url/1)
+  end
+
+  defp link_attachment_url(attachment), do: HTML.link_attachment_url(attachment)
+
+  defp link_card_title(%{"name" => name}, _url) when is_binary(name) do
+    case String.trim(HTML.strip_tags(name)) do
+      "" -> nil
+      title -> title
+    end
+  end
+
+  defp link_card_title(_data, url), do: url
+
+  defp link_card_description(%{"summary" => summary}) when is_binary(summary) do
+    HTML.strip_tags(summary)
+  end
+
+  defp link_card_description(_data), do: ""
+
+  defp object_image_url(%{"url" => url}), do: object_image_url(url)
+  defp object_image_url(%{"href" => href}) when is_binary(href), do: href
+  defp object_image_url([first | rest]), do: object_image_url(first) || object_image_url(rest)
+  defp object_image_url(url) when is_binary(url), do: url
+  defp object_image_url(_image), do: nil
+
+  defp object_image_description(%{"name" => name}) when is_binary(name), do: name
+  defp object_image_description(_image), do: nil
 
   defp render_attachment(%{attachment: attachment}) do
     [attachment_url | _] = attachment["url"]
@@ -1258,6 +1303,20 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
   defp render_translation(%{
          content: content,
          detected_source_language: detected_source_language,
+         provider: provider,
+         spoiler_text: spoiler_text
+       }) do
+    %{
+      content: content,
+      spoiler_text: spoiler_text,
+      detected_source_language: detected_source_language,
+      provider: provider
+    }
+  end
+
+  defp render_translation(%{
+         content: content,
+         detected_source_language: detected_source_language,
          provider: provider
        }) do
     %{content: content, detected_source_language: detected_source_language, provider: provider}
@@ -1324,13 +1383,26 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     end
   end
 
-  def get_quote(activity, %{quoted_activities: quoted_activities}) do
+  def get_quote(activity, %{quoted_activities: quoted_activities} = opts) do
     object = Object.normalize(activity, fetch: false)
 
     with true <- QuoteAuthorization.visible_state?(object.data),
-         nil <- quoted_activities[object.data["quoteUrl"]] do
+         quote_url when is_binary(quote_url) and quote_url != "" <- object.data["quoteUrl"] do
       # For when a quote post is inside an Announce
-      Activity.get_create_by_object_ap_id_with_object(object.data["quoteUrl"])
+      case quoted_activities[quote_url] ||
+             Activity.get_create_by_object_ap_id_with_object(quote_url) do
+        %Activity{} = quote_activity ->
+          if Object.normalize(quote_activity, fetch: false) do
+            quote_activity
+          else
+            enqueue_missing_quote(object, opts)
+          end
+
+        _ ->
+          enqueue_missing_quote(object, opts)
+      end
+    else
+      _ -> nil
     end
   end
 
@@ -1343,6 +1415,20 @@ defmodule Pleroma.Web.MastodonAPI.StatusView do
     else
       nil
     end
+  end
+
+  defp quote_hydration_depth(opts) do
+    case opts[:depth] do
+      depth when is_integer(depth) and depth >= 0 -> depth + 1
+      _ -> @quote_hydration_depth
+    end
+  end
+
+  defp enqueue_missing_quote(object, opts) do
+    # A remote quote may arrive after its quoting post. Queue the fetch here as
+    # a bounded repair, but never block a status request on it.
+    QuoteHydration.maybe_enqueue(object, false, quote_hydration_depth(opts))
+    nil
   end
 
   def render_content(%{data: %{"name" => name, "type" => type}} = object)

@@ -22,6 +22,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
 
   alias Pleroma.Config
   alias Pleroma.Instances
+  alias Pleroma.QuoteAuthorization
   alias Pleroma.Repo
 
   require Logger
@@ -44,6 +45,8 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
   @persistent_publisher_server_error_pattern "status[^0-9]*5[0-9][0-9]"
   @persistent_publisher_server_error_attempts 12
   @terminal_incoming_status_pattern "http[^0-9]*(400|401|403|404|405|406|410|501)"
+  @persistent_receiver_server_error_pattern "http[^0-9]*5[0-9][0-9]"
+  @persistent_receiver_server_error_attempts 12
   @terminal_remote_fetch_status_pattern "http[^0-9]*(400|403|404|405|406|410|501)"
   @receiver_worker "Pleroma.Workers.ReceiverWorker"
   @receiver_transport_retry_limit 3
@@ -81,6 +84,7 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
     "%unsupported_uri_scheme%",
     "%id must be a string%",
     "%invalid_id%",
+    "%private_network_address%",
     "%terminal_status%",
     "%unreachable_host%"
   ]
@@ -95,6 +99,8 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
       {:collapsed_duplicate_remote_fetch_jobs, &collapse_duplicate_remote_fetch_jobs/0},
       {:collapsed_triggered_remote_reply_jobs, &collapse_triggered_remote_reply_jobs/0},
       {:collapsed_duplicate_incoming_jobs, &collapse_duplicate_incoming_jobs/0},
+      {:requeued_stranded_quote_authorizations,
+       &QuoteAuthorization.requeue_stranded_remote_authorizations/0},
       {:discarded_exhausted_receiver_transport_retries,
        &discard_exhausted_receiver_transport_retries/0},
       {:discarded_exhausted_native_nostr_retries, &discard_exhausted_native_nostr_retries/0},
@@ -487,7 +493,10 @@ defmodule Pleroma.Workers.Cron.ObanCleanupWorker do
       |> where(
         [job],
         fragment("?::text ILIKE ANY(?)", job.errors, ^@fixed_federation_error_patterns) or
-          fragment("?::text ~ ?", job.errors, ^@terminal_incoming_status_pattern)
+          fragment("?::text ~ ?", job.errors, ^@terminal_incoming_status_pattern) or
+          (job.worker == ^@receiver_worker and
+             job.attempt >= ^@persistent_receiver_server_error_attempts and
+             fragment("?::text ~ ?", job.errors, ^@persistent_receiver_server_error_pattern))
       )
     )
   end

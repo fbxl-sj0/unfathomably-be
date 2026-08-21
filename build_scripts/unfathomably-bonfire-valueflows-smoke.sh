@@ -332,7 +332,6 @@ prepare_bonfire_image() {
         --build-arg FLAVOUR=cooperation \
         --build-arg WITH_API_GRAPHQL=1 \
         --build-arg WITH_IMAGE_VIX=false \
-        --build-arg WITH_AI=false \
         --build-arg ALPINE_VERSION="$BONFIRE_ALPINE_VERSION" \
         --build-arg ELIXIR_DOCKER_IMAGE="$BONFIRE_ELIXIR_IMAGE" \
         --build-arg RUSTLER_BUILD_ALL=false \

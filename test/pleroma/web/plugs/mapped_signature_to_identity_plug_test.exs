@@ -10,6 +10,7 @@ defmodule Pleroma.Web.Plugs.MappedSignatureToIdentityPlugTest do
   import Plug.Conn
 
   setup do
+    clear_config([:instance, :federating], true)
     mock(fn env -> apply(HttpRequestMock, :request, [env]) end)
     :ok
   end

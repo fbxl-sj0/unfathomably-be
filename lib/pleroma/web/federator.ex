@@ -66,10 +66,7 @@ defmodule Pleroma.Web.Federator do
     else
       ReceiverWorker.enqueue(
         "incoming_ap_doc",
-        incoming_job_args(params, %{
-          "req_headers" => req_headers,
-          "timeout" => :timer.seconds(20)
-        }),
+        incoming_job_args(params, %{"req_headers" => req_headers}),
         priority: 2
       )
     end

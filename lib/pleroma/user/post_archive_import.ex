@@ -322,14 +322,36 @@ defmodule Pleroma.User.PostArchiveImport do
   end
 
   defp extract_archive(import) do
-    import
-    |> path()
-    |> String.to_charlist()
-    |> :zip.extract([:memory])
-    |> case do
-      {:ok, files} -> {:ok, files}
-      {:error, reason} -> {:error, {:zip, reason}}
+    archive_path = import |> path() |> String.to_charlist()
+
+    case :zip.table(archive_path) do
+      {:ok, table} ->
+        with :ok <- validate_archive_table(table) do
+          case :zip.extract(archive_path, [:memory]) do
+            {:ok, files} -> {:ok, files}
+            {:error, reason} -> {:error, {:zip, reason}}
+          end
+        end
+
+      {:error, reason} ->
+        {:error, {:zip, reason}}
     end
+  end
+
+  # :zip.extract/2 skips unsafe names after logging them, which could make an
+  # archive containing both valid files and traversal entries look successful.
+  # Inspect the central directory first so every unsafe entry rejects the job.
+  defp validate_archive_table(table) do
+    Enum.reduce_while(table, :ok, fn entry, :ok ->
+      if is_tuple(entry) and tuple_size(entry) >= 2 and elem(entry, 0) == :zip_file do
+        case archive_entry(entry |> elem(1) |> to_string()) do
+          {:error, reason} -> {:halt, {:error, reason}}
+          _ -> {:cont, :ok}
+        end
+      else
+        {:cont, :ok}
+      end
+    end)
   end
 
   defp index_archive_entries(files) do

@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.Nodeinfo.NodeinfoController do
   use Pleroma.Web, :controller
 
+  alias Pleroma.Web.ActivityPub.Marketplace
   alias Pleroma.Web.Endpoint
   alias Pleroma.Web.Nodeinfo.Nodeinfo
 
@@ -24,18 +25,22 @@ defmodule Pleroma.Web.Nodeinfo.NodeinfoController do
             %{rel: schema_rel(version), href: href},
             %{rel: schema_rel_https(version), href: href}
           ]
-        end) ++
-          [
-            %{
-              rel: @application_actor_rel,
-              href: Endpoint.url() <> "/users/instance"
-            }
-          ]
+        end) ++ application_actor_links()
     }
 
     conn
     |> put_nodeinfo_cache_header()
     |> json(response)
+  end
+
+  defp application_actor_links do
+    case Marketplace.get_service_actor() do
+      {:ok, _actor} ->
+        [%{rel: @application_actor_rel, href: Endpoint.url() <> "/users/instance"}]
+
+      {:error, :not_found} ->
+        []
+    end
   end
 
   # Schema definition: https://github.com/jhass/nodeinfo/blob/master/schemas/2.0/schema.json

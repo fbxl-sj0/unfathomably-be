@@ -34,8 +34,11 @@ defmodule Pleroma.Web.Metadata.Utils do
   def scrub_html_and_truncate(%{}), do: ""
 
   def scrub_html_and_truncate_for_preview(%{data: data} = object, hide_sensitive?)
-      when is_map(data) and is_boolean(hide_sensitive?) do
-    if hide_sensitive? do
+      when is_map(data) do
+    # Activity sensitivity is optional on older stored objects. Only an
+    # explicit true value should hide preview text; nil means that the object
+    # did not declare itself sensitive.
+    if hide_sensitive? == true do
       case scrub_html_and_truncate(data["summary"] || "") do
         "" -> "Sensitive content"
         summary -> summary

@@ -5,6 +5,7 @@
 defmodule Pleroma.Web.MediaProxy do
   alias Pleroma.Config
   alias Pleroma.Helpers.UriHelper
+  alias Pleroma.HTTP.PublicAddress
   alias Pleroma.Upload
   alias Pleroma.Web.Endpoint
   alias Pleroma.Web.MediaProxy.Invalidation
@@ -123,7 +124,11 @@ defmodule Pleroma.Web.MediaProxy do
   end
 
   def verify_remote_http_url(url) do
-    if remote_http_url?(url), do: :ok, else: {:error, :unsupported_remote_url}
+    if remote_http_url?(url) and PublicAddress.public_url?(url) do
+      :ok
+    else
+      {:error, :unsupported_remote_url}
+    end
   end
 
   def preview_url(url, preview_params \\ []) do

@@ -99,12 +99,47 @@ defmodule Pleroma.ReverseProxyTest do
 
     refute log =~ "[error]"
 
-    assert Cachex.get(:failed_proxy_url_cache, url) ==
+    assert Cachex.get(:failed_proxy_url_cache, {:failed_proxy_request, "GET", url}) ==
              {:ok, %{status: 502, body: "Upstream request failed"}}
 
     cached_conn = ReverseProxy.call(recycle(conn), url)
     assert cached_conn.status == 502
     assert cached_conn.resp_body == "Upstream request failed"
+  end
+
+  test "a failed HEAD probe does not suppress a later GET", %{conn: conn} do
+    url = "/method-scoped-failure"
+
+    ClientMock
+    |> expect(:request, fn :head, ^url, _, _, _ -> {:error, :closed} end)
+
+    head_conn = ReverseProxy.call(%{conn | method: "HEAD"}, url)
+    assert head_conn.status == 502
+
+    ClientMock
+    |> expect(:request, fn :get, ^url, _, _, _ -> {:ok, 200, [], %{url: url, body: "ok"}} end)
+    |> expect(:stream_body, fn %{body: "ok"} = client -> {:ok, "ok", %{client | body: ""}} end)
+    |> expect(:stream_body, fn %{body: ""} -> :done end)
+
+    get_conn = ReverseProxy.call(recycle(conn), url)
+    assert get_conn.status == 200
+    assert get_conn.resp_body == "ok"
+  end
+
+  test "an old URL-only failure entry does not suppress a request", %{conn: conn} do
+    url = "/legacy-url-only-failure"
+
+    Cachex.put(:failed_proxy_url_cache, url, true, expire: :timer.seconds(60))
+    on_exit(fn -> Cachex.del(:failed_proxy_url_cache, url) end)
+
+    ClientMock
+    |> expect(:request, fn :get, ^url, _, _, _ -> {:ok, 200, [], %{url: url, body: "ok"}} end)
+    |> expect(:stream_body, fn %{body: "ok"} = client -> {:ok, "ok", %{client | body: ""}} end)
+    |> expect(:stream_body, fn %{body: ""} -> :done end)
+
+    get_conn = ReverseProxy.call(conn, url)
+    assert get_conn.status == 200
+    assert get_conn.resp_body == "ok"
   end
 
   test "uses the image fallback for an animated PNG during an origin cooldown", %{conn: conn} do
@@ -235,7 +270,10 @@ defmodule Pleroma.ReverseProxyTest do
       refute log =~ "[error]"
 
       assert {:ok, %{status: 502, body: "Upstream request failed"}} ==
-               Cachex.get(:failed_proxy_url_cache, "/huge-file")
+               Cachex.get(
+                 :failed_proxy_url_cache,
+                 {:failed_proxy_request, "GET", "/huge-file"}
+               )
 
       assert capture_log(fn ->
                ReverseProxy.call(conn, "/huge-file", max_body_length: 4)
@@ -285,10 +323,12 @@ defmodule Pleroma.ReverseProxyTest do
       assert capture_log(fn -> ReverseProxy.call(conn, url) end) =~
                "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/500\" failed with HTTP status 500"
 
-      assert Cachex.get(:failed_proxy_url_cache, url) ==
+      assert Cachex.get(:failed_proxy_url_cache, {:failed_proxy_request, "GET", url}) ==
                {:ok, %{status: 500, body: "Request failed: Internal Server Error"}}
 
-      {:ok, ttl} = Cachex.ttl(:failed_proxy_url_cache, url)
+      {:ok, ttl} =
+        Cachex.ttl(:failed_proxy_url_cache, {:failed_proxy_request, "GET", url})
+
       assert ttl <= 60_000
     end
 
@@ -299,10 +339,11 @@ defmodule Pleroma.ReverseProxyTest do
       assert capture_log(fn -> ReverseProxy.call(conn, url) end) =~
                "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/400\" failed with HTTP status 400"
 
-      assert Cachex.get(:failed_proxy_url_cache, url) ==
+      assert Cachex.get(:failed_proxy_url_cache, {:failed_proxy_request, "GET", url}) ==
                {:ok, %{status: 400, body: "Request failed: Bad Request"}}
 
-      assert Cachex.ttl(:failed_proxy_url_cache, url) == {:ok, nil}
+      assert Cachex.ttl(:failed_proxy_url_cache, {:failed_proxy_request, "GET", url}) ==
+               {:ok, nil}
     end
 
     test "403", %{conn: conn} do
@@ -319,7 +360,9 @@ defmodule Pleroma.ReverseProxyTest do
 
       refute log =~ "[error]"
 
-      {:ok, ttl} = Cachex.ttl(:failed_proxy_url_cache, url)
+      {:ok, ttl} =
+        Cachex.ttl(:failed_proxy_url_cache, {:failed_proxy_request, "GET", url})
+
       assert ttl > 100_000
     end
 
@@ -337,10 +380,11 @@ defmodule Pleroma.ReverseProxyTest do
              end) =~
                "[warning] Elixir.Pleroma.ReverseProxy: request to \"/status/204\" failed with HTTP status 204"
 
-      assert Cachex.get(:failed_proxy_url_cache, url) ==
+      assert Cachex.get(:failed_proxy_url_cache, {:failed_proxy_request, "GET", url}) ==
                {:ok, %{status: 204, body: "Request failed: No Content"}}
 
-      assert Cachex.ttl(:failed_proxy_url_cache, url) == {:ok, nil}
+      assert Cachex.ttl(:failed_proxy_url_cache, {:failed_proxy_request, "GET", url}) ==
+               {:ok, nil}
     end
   end
 

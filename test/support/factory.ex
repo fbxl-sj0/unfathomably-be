@@ -97,7 +97,8 @@ defmodule Pleroma.Factory do
     %Pleroma.UserRelationship{
       source_id: source.id,
       target_id: target.id,
-      relationship_type: relationship_type
+      relationship_type: relationship_type,
+      expires_at: attrs[:expires_at]
     }
   end
 

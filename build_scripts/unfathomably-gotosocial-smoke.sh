@@ -67,7 +67,7 @@ SMOKE_TLS="${SMOKE_TLS:-0}"
 BE_FEDERATION_SCHEME="${BE_FEDERATION_SCHEME:-http}"
 BE_FEDERATION_PORT="${BE_FEDERATION_PORT:-80}"
 
-IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:15-alpine}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:1.27-alpine}"
 GTS_IMAGE="${GTS_IMAGE:-superseriousbusiness/gotosocial:latest}"

@@ -22,7 +22,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
   import Pleroma.Factory
   require Pleroma.Constants
 
-  setup do: clear_config([:instance, :federating])
+  setup do: clear_config([:instance, :federating], true)
   setup do: clear_config([:instance, :allow_relay])
   setup do: clear_config([:rich_media, :enabled])
   setup do: clear_config([:mrf, :policies])
@@ -1680,7 +1680,7 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
       assert build_conn()
              |> put_req_header("content-type", "application/json")
              |> post("/api/v1/statuses/#{activity.id}/pin")
-             |> json_response(403) == %{"error" => "Invalid credentials."}
+             |> json_response(401) == %{"error" => "Invalid credentials."}
     end
 
     test "/pin: returns 400 error when activity is not public", %{conn: conn, user: user} do
@@ -2585,9 +2585,9 @@ defmodule Pleroma.Web.MastodonAPI.StatusControllerTest do
     assert [second_status] = json_response_and_validate_schema(second_conn, 200)
     assert second_status["id"] == to_string(second_activity.id)
 
-    third_conn = get(conn, "/api/v1/favourites?limit=0")
+    third_conn = get(conn, "/api/v1/favourites?limit=1")
 
-    assert [] = json_response_and_validate_schema(third_conn, 200)
+    assert [_status] = json_response_and_validate_schema(third_conn, 200)
   end
 
   test "expires_at is nil for another user" do

@@ -6,6 +6,8 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
   use Pleroma.Web.ConnCase
   use Oban.Testing, repo: Pleroma.Repo
 
+  @moduletag :needs_streamer
+
   alias Pleroma.Repo
   alias Pleroma.Tests.ObanHelpers
   alias Pleroma.User
@@ -382,16 +384,14 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
   describe "POST /api/pleroma/change_email" do
     setup do: oauth_access(["write:accounts"])
 
-    test "without permissions", %{conn: conn} do
+    test "without credentials", %{conn: conn} do
       conn =
         conn
         |> assign(:token, nil)
         |> put_req_header("content-type", "multipart/form-data")
         |> post("/api/pleroma/change_email", %{password: "hi", email: "test@test.com"})
 
-      assert json_response_and_validate_schema(conn, 403) == %{
-               "error" => "Insufficient permissions: write:accounts."
-             }
+      assert json_response_and_validate_schema(conn, 401) == %{"error" => "Invalid credentials."}
     end
 
     test "with proper permissions and invalid password", %{conn: conn} do
@@ -505,7 +505,7 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
   describe "POST /api/pleroma/change_password" do
     setup do: oauth_access(["write:accounts"])
 
-    test "without permissions", %{conn: conn} do
+    test "without credentials", %{conn: conn} do
       conn =
         conn
         |> assign(:token, nil)
@@ -516,9 +516,7 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
           "new_password_confirmation" => "newpass"
         })
 
-      assert json_response_and_validate_schema(conn, 403) == %{
-               "error" => "Insufficient permissions: write:accounts."
-             }
+      assert json_response_and_validate_schema(conn, 401) == %{"error" => "Invalid credentials."}
     end
 
     test "with proper permissions and invalid password", %{conn: conn} do
@@ -597,14 +595,13 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
   describe "POST /api/pleroma/delete_account" do
     setup do: oauth_access(["write:accounts"])
 
-    test "without permissions", %{conn: conn} do
+    test "without credentials", %{conn: conn} do
       conn =
         conn
         |> assign(:token, nil)
         |> post("/api/pleroma/delete_account")
 
-      assert json_response_and_validate_schema(conn, 403) ==
-               %{"error" => "Insufficient permissions: write:accounts."}
+      assert json_response_and_validate_schema(conn, 401) == %{"error" => "Invalid credentials."}
     end
 
     test "with proper permissions and wrong or missing password", %{conn: conn} do
@@ -654,9 +651,12 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
   end
 
   describe "POST /api/pleroma/move_account" do
-    setup do: oauth_access(["write:accounts"])
+    setup do
+      clear_config([:instance, :federating], true)
+      oauth_access(["write:accounts"])
+    end
 
-    test "without permissions", %{conn: conn} do
+    test "without credentials", %{conn: conn} do
       target_user = insert(:user)
       target_nick = target_user |> User.full_nickname()
 
@@ -669,9 +669,7 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
           "target_account" => target_nick
         })
 
-      assert json_response_and_validate_schema(conn, 403) == %{
-               "error" => "Insufficient permissions: write:accounts."
-             }
+      assert json_response_and_validate_schema(conn, 401) == %{"error" => "Invalid credentials."}
     end
 
     test "with proper permissions and invalid password", %{conn: conn} do
@@ -950,15 +948,13 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
   describe "GET /api/pleroma/aliases" do
     setup do: oauth_access(["read:accounts"])
 
-    test "without permissions", %{conn: conn} do
+    test "without credentials", %{conn: conn} do
       conn =
         conn
         |> assign(:token, nil)
         |> get("/api/pleroma/aliases")
 
-      assert json_response_and_validate_schema(conn, 403) == %{
-               "error" => "Insufficient permissions: read:accounts."
-             }
+      assert json_response_and_validate_schema(conn, 401) == %{"error" => "Invalid credentials."}
     end
 
     test "with permissions", %{
@@ -990,16 +986,14 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
   describe "PUT /api/pleroma/aliases" do
     setup do: oauth_access(["write:accounts"])
 
-    test "without permissions", %{conn: conn} do
+    test "without credentials", %{conn: conn} do
       conn =
         conn
         |> assign(:token, nil)
         |> put_req_header("content-type", "application/json")
         |> put("/api/pleroma/aliases", %{alias: "none"})
 
-      assert json_response_and_validate_schema(conn, 403) == %{
-               "error" => "Insufficient permissions: write:accounts."
-             }
+      assert json_response_and_validate_schema(conn, 401) == %{"error" => "Invalid credentials."}
     end
 
     test "with permissions, no alias param", %{
@@ -1040,16 +1034,14 @@ defmodule Pleroma.Web.TwitterAPI.UtilControllerTest do
       |> Map.put(:non_alias_user, non_alias_user)
     end
 
-    test "without permissions", %{conn: conn} do
+    test "without credentials", %{conn: conn} do
       conn =
         conn
         |> assign(:token, nil)
         |> put_req_header("content-type", "application/json")
         |> delete("/api/pleroma/aliases", %{alias: "none"})
 
-      assert json_response_and_validate_schema(conn, 403) == %{
-               "error" => "Insufficient permissions: write:accounts."
-             }
+      assert json_response_and_validate_schema(conn, 401) == %{"error" => "Invalid credentials."}
     end
 
     test "with permissions, no alias param", %{conn: conn} do

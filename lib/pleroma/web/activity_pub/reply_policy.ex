@@ -45,7 +45,7 @@ defmodule Pleroma.Web.ActivityPub.ReplyPolicy do
     match?({:ok, nil}, locked_ancestor(object_or_activity, MapSet.new(), 0))
   end
 
-  defp locked_ancestor(_reference, _visited, depth) when depth >= @max_ancestor_depth,
+  defp locked_ancestor(_reference, _visited, depth) when depth > @max_ancestor_depth,
     do: {:error, :maximum_depth}
 
   defp locked_ancestor(reference, visited, depth) do

@@ -26,6 +26,9 @@ defmodule Pleroma.QuoteAuthorization do
   alias Pleroma.Workers.QuoteAuthorizationWorker
 
   @states ~w[pending accepted rejected revoked]
+  @default_recovery_batch_size 100
+  @default_recovery_per_host 5
+  @quote_authorization_worker "Pleroma.Workers.QuoteAuthorizationWorker"
 
   schema "quote_authorizations" do
     belongs_to(:quote_object, Object)
@@ -101,10 +104,13 @@ defmodule Pleroma.QuoteAuthorization do
            ) do
         {:ok, %{id: nil}} ->
           record = get_by_quote_object(quote_object)
-          {:ok, put_object_state(quote_object, record), false}
+          quote_object = put_object_state(quote_object, record)
+          maybe_enqueue_remote_authorization(quote_object, record, local)
+          {:ok, quote_object, false}
 
         {:ok, record} ->
           quote_object = put_object_state(quote_object, record)
+          maybe_enqueue_remote_authorization(quote_object, record, local)
           {:ok, quote_object, state == "accepted"}
 
         error ->
@@ -196,6 +202,62 @@ defmodule Pleroma.QuoteAuthorization do
   end
 
   def reconcile_implicit_update(_old_object, _updated_data), do: :ok
+
+  @doc "Requeues remote authorization documents stranded before first-import verification."
+  def requeue_stranded_remote_authorizations(
+        limit \\ @default_recovery_batch_size,
+        per_host_limit \\ @default_recovery_per_host
+      )
+      when is_integer(limit) and limit > 0 and is_integer(per_host_limit) and
+             per_host_limit > 0 do
+    limit = min(limit, 1_000)
+    per_host_limit = min(per_host_limit, 50)
+
+    %{rows: rows} =
+      Repo.query!(
+        """
+        WITH ranked AS MATERIALIZED (
+          SELECT
+            quote_record.quote_object_id,
+            object.data->>'quoteAuthorization' AS authorization_uri,
+            row_number() OVER (
+              PARTITION BY lower(
+                split_part(
+                  split_part(object.data->>'quoteAuthorization', '://', 2),
+                  '/',
+                  1
+                )
+              )
+              ORDER BY quote_record.id
+            ) AS host_rank
+          FROM quote_authorizations AS quote_record
+          INNER JOIN objects AS object ON object.id = quote_record.quote_object_id
+          WHERE quote_record.local = false
+            AND quote_record.state = 'pending'
+            AND quote_record.authorization_ap_id IS NULL
+            AND jsonb_typeof(object.data->'quoteAuthorization') = 'string'
+            AND object.data->>'quoteAuthorization' <> ''
+            AND NOT EXISTS (
+              SELECT 1
+              FROM oban_jobs AS job
+              WHERE job.worker = $3
+                AND job.args->>'quote_object_id' = quote_record.quote_object_id::text
+                AND job.args->>'authorization' = object.data->>'quoteAuthorization'
+            )
+        )
+        SELECT quote_object_id, authorization_uri
+        FROM ranked
+        WHERE host_rank <= $2
+        ORDER BY host_rank, quote_object_id
+        LIMIT $1
+        """,
+        [limit, per_host_limit, @quote_authorization_worker]
+      )
+
+    Enum.count(rows, fn [quote_object_id, authorization] ->
+      match?({:ok, _job}, QuoteAuthorizationWorker.enqueue(quote_object_id, authorization))
+    end)
+  end
 
   def revoke_from_document(%{
         "attributedTo" => actor,
@@ -327,7 +389,8 @@ defmodule Pleroma.QuoteAuthorization do
     Pleroma.Web.Endpoint.url() <> "/quote_authorizations/" <> to_string(id)
   end
 
-  def visible_state?(%{"quoteState" => state}), do: state == "accepted"
+  def visible_state?(%{"quoteState" => state}) when state in [nil, "", "accepted"], do: true
+  def visible_state?(%{"quoteState" => _state}), do: false
   def visible_state?(_), do: true
 
   def manageable?(%Object{data: data}, %User{} = user) do
@@ -426,6 +489,23 @@ defmodule Pleroma.QuoteAuthorization do
 
   defp local_authorization?(authorization, quote_object),
     do: authorization == authorization_uri(quote_object)
+
+  defp maybe_enqueue_remote_authorization(
+         %Object{data: data, id: quote_object_id},
+         %__MODULE__{state: "pending", authorization_ap_id: stored_authorization},
+         false
+       ) do
+    authorization = data["quoteAuthorization"]
+
+    if is_binary(authorization) and authorization != "" and
+         authorization != stored_authorization do
+      _ = QuoteAuthorizationWorker.enqueue(quote_object_id, authorization)
+    end
+
+    :ok
+  end
+
+  defp maybe_enqueue_remote_authorization(_quote_object, _record, _local), do: :ok
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

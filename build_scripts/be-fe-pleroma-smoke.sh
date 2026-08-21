@@ -118,7 +118,7 @@ FE_PORT="${FE_PORT:-4630}"
 DB_PASSWORD="${DB_PASSWORD:-postgres}"
 PASSWORD="${PASSWORD:-unfathomably-smoke-password}"
 
-IMAGE="${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp28}"
+IMAGE="${UNFATHOMABLY_SMOKE_IMAGE:-${SMOKE_IMAGE:-unfathomably-elixir-smoke:otp29}}"
 PLEROMA_IMAGE="${PLEROMA_IMAGE:-$IMAGE}"
 NODE_IMAGE="${NODE_IMAGE:-node:26-bookworm}"
 

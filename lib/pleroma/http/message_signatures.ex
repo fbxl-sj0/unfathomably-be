@@ -494,7 +494,7 @@ defmodule Pleroma.HTTP.MessageSignatures do
 
   defp verify(base, signature, {:ed25519, public_key})
        when is_binary(public_key) and byte_size(public_key) == 32 do
-    :crypto.verify(:eddsa, :none, signature, base, [public_key, :ed25519])
+    :crypto.verify(:eddsa, :none, base, signature, [public_key, :ed25519])
   end
 
   defp verify(_base, _signature, _public_key), do: false

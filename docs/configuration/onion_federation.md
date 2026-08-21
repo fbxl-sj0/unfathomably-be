@@ -1,159 +1,147 @@
-# Easy Onion Federation (Tor)
-Tor can free people from the necessity of a domain, in addition to helping protect their privacy. As Pleroma's goal is to empower the people and let as many as possible host an instance with as little resources as possible, the ability to host an instance with a small, cheap computer like a RaspberryPi along with Tor, would be a great way to achieve that.  
-In addition, federating with such instances will also help furthering that goal.
+# Tor Onion Federation
 
-This is a guide to show you how it can be easily done.
+Unfathomably can fetch ActivityPub resources from valid Tor v3 onion services
+without routing ordinary HTTP traffic through Tor. It can also be exposed
+through a separate onion address. These are independent configurations.
 
-This guide assumes you already got Pleroma working, and that it's running on the default port 4000.  
-Currently only has an Nginx example.
+Neither configuration makes the host a Tor exit node or a public Tor relay.
 
-To install Tor on Debian / Ubuntu:
-```
-apt -yq install tor
-```
-If using an old server version (older than Debian Stretch or Ubuntu 18.04), install from backports or PPA.
-I recommend using a newer server version instead.
+## Outbound onion fetching
 
-To have the newest, V3 onion addresses (which I recommend) in Debian, install Tor from backports.
-If you do not have backports, uncomment the stretch-backports links at the end of `/etc/apt/sources.list`.
-Then install:
-```
+Run Tor as a client on the same host as the backend, or on a private host whose
+SOCKS port is reachable only by the backend.
+
+### Install Tor
+
+On Debian or Ubuntu:
+
+```sh
 apt update
-apt -t stretch-backports  -yq install tor
+apt install tor
 ```
-**WARNING:** Onion instances not using a Tor version supporting V3 addresses will not be able to federate with you. 
 
-Create the hidden service for your Pleroma instance in `/etc/tor/torrc`:
+### Configure a client-only listener
+
+Use a dedicated Tor configuration or add equivalent settings to the packaged
+client instance:
+
+```text
+ClientOnly 1
+SocksPort 127.0.0.1:9050 OnionTrafficOnly
+SocksPolicy accept 127.0.0.1
+SocksPolicy reject *
+ORPort 0
+DirPort 0
+ControlPort 0
+ExitRelay 0
+ExitPolicy reject *:*
+SafeLogging 1
+Log notice syslog
 ```
-HiddenServiceDir /var/lib/tor/pleroma_hidden_service/
-HiddenServicePort 80 127.0.0.1:8099
-HiddenServiceVersion 3  # Remove if Tor version is below 0.3 ( tor --version )
-```
-Restart Tor to generate an address:
-```
+
+`OnionTrafficOnly` ensures this listener cannot become a general clearnet
+proxy. The reject-all exit policy and disabled OR/Dir ports prevent relay and
+exit operation. Some packaged Tor services maintain a local Unix control
+socket; that is not a network control port.
+
+Validate and restart the packaged client:
+
+```sh
+tor --verify-config -f /etc/tor/torrc
 systemctl restart tor@default.service
 ```
-Get the address:
-```
-cat /var/lib/tor/pleroma_hidden_service/hostname
-```
 
-# Federation
+Confirm that Tor reaches 100 percent bootstrap and that the SOCKS listener is
+bound only to loopback.
 
-Next, edit your Pleroma config.
-If running in prod, cd to your Pleroma directory, edit `config/prod.secret.exs`
-and append this line:
-```
-config :pleroma, :http, proxy_url: {:socks5, :localhost, 9050}
-```
-In your Pleroma directory, assuming you're running prod,
-run the following:
-```
-su pleroma
-MIX_ENV=prod mix deps.get
-MIX_ENV=prod mix ecto.migrate
-exit
-```
-restart Pleroma (if using systemd):
-```
-systemctl restart pleroma
+### Enable the dedicated backend adapter
+
+```elixir
+config :pleroma, Pleroma.HTTP.Onion,
+  enabled: true,
+  socks_port: 9050,
+  connect_timeout: 15_000,
+  recv_timeout: 30_000
 ```
 
-# Tor Instance Access
+Do not set the general `:http, :proxy_url` option to the Tor SOCKS listener.
+The dedicated adapter validates Tor v3 hostnames and sends only valid
+`.onion` requests through Tor. Ordinary federation, media, uploads, and
+remote APIs continue to use their normal pools.
 
-Make your instance accessible using Tor.
+Restart the backend after enabling the adapter.
 
-## Tor-only Instance
-If creating a Tor-only instance, open `config/prod.secret.exs` and under "config :pleroma, Pleroma.Web.Endpoint," edit "https" and "port: 443" to the following:
-```
-   url: [host: "onionaddress", scheme: "http", port: 80],
-```
-In addition to that, replace the existing nginx config's contents with the example below.
+### Verify fail-closed behavior
 
-## Existing Instance (Clearnet Instance)
-If not a Tor-only instance, 
-add the nginx config below to your existing config at `/etc/nginx/sites-enabled/pleroma.nginx`.
+Test a known official onion service through the loopback SOCKS listener:
 
----
-For both cases, disable CSP in Pleroma's config (STS is disabled by default) so you can define those yourself separately from the clearnet (if your instance is also on the clearnet).
-Copy the following into the `config/prod.secret.exs` in your Pleroma folder (/home/pleroma/pleroma/):
-```
-config :pleroma, :http_security,
-  enabled: false
+```sh
+curl --socks5-hostname 127.0.0.1:9050 \
+  http://2gzyxa5ihm7nsggfxnu52ffnz4z2d55r3zjkue3sl7p3tqfdqj7m6iid.onion/
 ```
 
-Use this as the Nginx config:
-```
-proxy_cache_path /tmp/pleroma-media-cache levels=1:2 keys_zone=pleroma_media_cache:10m max_size=10g inactive=720m use_temp_path=off;
-# The above already exists in a clearnet instance's config.
-# If not, add it.
+Then attempt a clearnet URL through the same listener. It should fail because
+the listener is onion-only.
 
-server {
-    listen 127.0.0.1:8099;
-    server_name youronionaddress;
+Inspect backend logs for malformed onion hostnames, timeouts, and TLS failures.
+The backend should reject invalid v3 addresses before connecting and should
+return normal error tuples rather than falling back to clearnet DNS.
 
-    # Comment to enable logs
-    access_log /dev/null;
-    error_log /dev/null;
+## Inbound onion entrance
 
-    gzip_vary on;
-    gzip_proxied any;
-    gzip_comp_level 6;
-    gzip_buffers 16 8k;
-    gzip_http_version 1.1;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript application/activity+json application/atom+xml;
+An inbound hidden service lets Tor users open the existing Unfathomably site
+through an alternate onion address. ActivityPub IDs, OAuth callback origins,
+and canonical links should remain on the configured public HTTPS origin unless
+the entire instance is intentionally operated as onion-only.
 
-    client_max_body_size 16m;
+Run the hidden service on the reverse-proxy host where possible:
 
-    location / {
-
-        add_header X-XSS-Protection "1; mode=block";
-        add_header X-Permitted-Cross-Domain-Policies none;
-        add_header X-Frame-Options DENY;
-        add_header X-Content-Type-Options nosniff;
-        add_header Referrer-Policy same-origin;
-        add_header X-Download-Options noopen;
-
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $http_host;
-
-        proxy_pass http://localhost:4000;
-
-        client_max_body_size 16m;
-    }
-
-    location /proxy {
-        proxy_cache pleroma_media_cache;
-        proxy_cache_lock on;
-        proxy_ignore_client_abort on;
-        proxy_pass http://localhost:4000;
-    }
-}
-```
-reload Nginx:
-```
-systemctl reload nginx
+```text
+HiddenServiceDir /var/lib/tor/unfathomably
+HiddenServiceVersion 3
+HiddenServicePort 80 127.0.0.1:8099
 ```
 
-You should now be able to both access your instance using Tor and federate with other Tor instances!
+Configure the listener on `127.0.0.1:8099` to proxy to the same backend as the
+public virtual host. Preserve the original application host expected by the
+backend and pass WebSocket upgrades. Do not expose the loopback listener to the
+LAN.
 
----
+Restart Tor and read the generated address:
 
-### Possible Issues
+```sh
+systemctl restart tor@default.service
+cat /var/lib/tor/unfathomably/hostname
+```
 
-*  In Debian, make sure your hidden service folder `/var/lib/tor/pleroma_hidden_service/` and its contents, has debian-tor as both owner and group by using 
-```
-ls -la /var/lib/tor/
-```
-If it's not, run:
-```
-chown -R debian-tor:debian-tor /var/lib/tor/pleroma_hidden_service/
-```
-* Make sure *only* the owner has *only* read and write permissions.
-If not, run:
-```
-chmod -R 600 /var/lib/tor/pleroma_hidden_service/
-```
-* If you have trouble logging in to the Mastodon Frontend when using Tor, use the Tor Browser Bundle.
+Back up the hidden-service directory securely. Its private key controls the
+onion address.
+
+Test the onion entrance with Tor Browser:
+
+1. Load public timelines and local profile pages.
+2. Sign in and complete an OAuth redirect.
+3. Open a streaming timeline and confirm that WebSockets remain connected.
+4. Load local and proxied media.
+5. Confirm that canonical links and federated IDs still use the public origin.
+
+Do not disable Content-Security-Policy globally to make an onion entrance work.
+Add only the minimum origin allowances required by a deliberately supported
+alternate entrance.
+
+## Security boundaries
+
+| Boundary | Expected behavior |
+| --- | --- |
+| Public SOCKS exposure | None; the listener is loopback or private-host only |
+| Tor relay ports | Disabled |
+| Exit policy | Reject all |
+| Clearnet through onion SOCKS | Rejected |
+| Invalid onion hostname | Rejected before connection |
+| DNS for onion requests | Resolved by Tor through SOCKS, not local DNS |
+| Canonical ActivityPub identity | Remains the configured endpoint URL |
+| Hidden-service private key | Root/Tor owned and backed up securely |
+
+For the broader protocol setup sequence, see
+[Optional Feature Enablement](../FEATURE_ENABLEMENT.md).
+

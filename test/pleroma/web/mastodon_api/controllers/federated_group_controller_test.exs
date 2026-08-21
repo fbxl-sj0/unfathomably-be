@@ -167,7 +167,8 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
           nickname: "video@peertube.example",
           ap_id: "https://peertube.example/video-channels/video",
           name: "Video Channel",
-          follower_count: 7
+          follower_count: 7,
+          note_count: 23
         )
 
       group_id = to_string(group.id)
@@ -177,6 +178,7 @@ defmodule Pleroma.Web.MastodonAPI.FederatedGroupControllerTest do
                "owner" => %{"id" => ^group_id},
                "slug" => ^group_id,
                "members_count" => 7,
+               "statuses_count" => 23,
                "target_profile" => "collection_channel"
              } =
                conn

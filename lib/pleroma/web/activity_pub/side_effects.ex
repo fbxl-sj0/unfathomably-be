@@ -31,8 +31,8 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
   alias Pleroma.Web.Federator
   alias Pleroma.Web.Push
   alias Pleroma.Web.Streamer
-  alias Pleroma.Workers.EventReminderWorker
   alias Pleroma.Workers.ActorOutboxBackfillWorker
+  alias Pleroma.Workers.EventReminderWorker
   alias Pleroma.Workers.PollWorker
   alias Pleroma.Workers.RemoteRepliesFetcherWorker
 
@@ -758,14 +758,25 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
       # Remote reply prefetching follows the explicit replies collection when a
       # server provides it. The depth guard keeps hostile or huge trees bounded.
       if Pleroma.Web.Federator.allowed_thread_distance?(reply_depth) and
-           object.data["replies"] != nil do
-        for reply_id <- object.data["replies"] do
-          Pleroma.Workers.RemoteFetcherWorker.enqueue("fetch_remote", %{
-            "id" => reply_id,
-            "depth" => reply_depth,
-            "thread" => true
-          })
-        end
+           is_list(object.data["replies"]) do
+        Enum.each(object.data["replies"], fn
+          reply_id when is_binary(reply_id) ->
+            Pleroma.Workers.RemoteFetcherWorker.enqueue("fetch_remote", %{
+              "id" => reply_id,
+              "depth" => reply_depth,
+              "thread" => true
+            })
+
+          %{"id" => reply_id} when is_binary(reply_id) ->
+            Pleroma.Workers.RemoteFetcherWorker.enqueue("fetch_remote", %{
+              "id" => reply_id,
+              "depth" => reply_depth,
+              "thread" => true
+            })
+
+          _invalid_reply_reference ->
+            :ok
+        end)
       end
 
       if not activity.local do
@@ -1054,8 +1065,33 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
     end
   end
 
-  defp add_pinned_object(%User{} = user, object_id) do
-    User.add_pinned_object_id(user, object_id)
+  defp add_pinned_object(%User{id: user_id}, object_id) do
+    # The user helper opens a nested transaction. Reject a predictable local
+    # limit failure before entering it so the outer ActivityPub transaction is
+    # not marked rollback-only and the caller receives the useful limit error.
+    current_user =
+      Repo.one(from(user in User, where: user.id == ^user_id, lock: "FOR UPDATE"))
+
+    case current_user do
+      %User{} = user -> maybe_add_local_pinned_object(user, object_id)
+      nil -> {:error, :user_not_found}
+    end
+  end
+
+  defp maybe_add_local_pinned_object(%User{} = user, object_id) do
+    pinned_objects = if is_map(user.pinned_objects), do: user.pinned_objects, else: %{}
+    maximum = Pleroma.Config.get([:instance, :max_pinned_statuses], 0)
+
+    cond do
+      Map.has_key?(pinned_objects, object_id) ->
+        {:ok, user}
+
+      not is_integer(maximum) or maximum <= map_size(pinned_objects) ->
+        {:error, :pinned_statuses_limit_reached}
+
+      true ->
+        User.add_pinned_object_id(user, object_id)
+    end
   end
 
   defp maybe_add_remote_pinned_object(%User{} = user, object_id) do
@@ -1301,7 +1337,7 @@ defmodule Pleroma.Web.ActivityPub.SideEffects do
           Object.Updater.do_update_and_invalidate_cache(orig_object, updated_object)
 
         if updated do
-          if not meta[:local] do
+          if meta[:local] != true do
             QuoteAuthorization.reconcile_implicit_update(orig_object, updated_object)
           end
 

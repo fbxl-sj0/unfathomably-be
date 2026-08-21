@@ -29,6 +29,7 @@ defmodule Pleroma.Nostr.Identity do
   alias Pleroma.User
   alias Pleroma.Web.Endpoint
   alias Pleroma.Web.WebFinger
+  alias Pleroma.Workers.NostrNIP05VerificationWorker
 
   @profile_metadata_keys ~w(name display_name displayName username about picture banner nip05 website lud16 lud06 bot birthday)
   @external_identity_providers ~w(github twitter mastodon telegram)
@@ -174,7 +175,8 @@ defmodule Pleroma.Nostr.Identity do
         metadata
         |> normalize_profile_metadata()
         |> Map.put("emojis", profile_emojis(event))
-        |> validate_nip05(event["pubkey"])
+        |> Map.put("profile_event_id", event["id"])
+        |> stage_nip05(entity.metadata || %{})
 
       merged_metadata = Map.merge(entity.metadata || %{}, metadata)
 
@@ -188,12 +190,46 @@ defmodule Pleroma.Nostr.Identity do
       with {:ok, user} <- update_user(user, attrs),
            {:ok, _entity} <-
              update_entity(entity, metadata, event["id"], relay_url) do
+        NostrNIP05VerificationWorker.enqueue_verification(
+          entity.id,
+          event["id"],
+          merged_metadata["nip05_claim"]
+        )
+
         {:ok, user}
       end
     else
       _ -> {:error, :invalid_metadata}
     end
   end
+
+  def verify_nip05(entity_id, event_id, claim)
+      when is_binary(entity_id) and is_binary(event_id) and is_binary(claim) do
+    with %Entity{pubkey: pubkey} <- current_nip05_entity(entity_id, event_id, claim) do
+      verification = NIP05.verify(claim, pubkey)
+
+      with %Entity{user: %User{} = user} = entity <-
+             current_nip05_entity(entity_id, event_id, claim) do
+        metadata = verified_nip05_metadata(entity.metadata || %{}, claim, verification)
+
+        with {:ok, entity} <-
+               entity
+               |> Entity.changeset(%{metadata: metadata})
+               |> Repo.update(),
+             {:ok, _user} <-
+               update_user(user, profile_user_attrs(metadata, pubkey, entity, user)) do
+          RelayManager.sync_now()
+          :ok
+        end
+      else
+        _ -> {:cancel, :stale_profile_metadata}
+      end
+    else
+      _ -> {:cancel, :stale_profile_metadata}
+    end
+  end
+
+  def verify_nip05(_entity_id, _event_id, _claim), do: {:cancel, :bad_request}
 
   def update_external_identities(event, relay_url) do
     with {:ok, user} <-
@@ -223,11 +259,9 @@ defmodule Pleroma.Nostr.Identity do
            resolve(%{type: :profile, pubkey: event["pubkey"], relays: [relay_url]}),
          %Entity{} = entity <- get_by_user(user) do
       metadata =
-        Map.put(
-          entity.metadata || %{},
-          "relay_list",
-          relay_list_from_event(event)
-        )
+        (entity.metadata || %{})
+        |> Map.put("relay_list", relay_list_from_event(event))
+        |> Map.put("relay_list_event_id", event["id"])
 
       with {:ok, entity} <- update_entity(entity, metadata, event["id"], relay_url) do
         RelayManager.sync_now()
@@ -532,25 +566,35 @@ defmodule Pleroma.Nostr.Identity do
     short_name = "nostr_" <> String.slice(pubkey, 0, 24)
     display_name = "Nostr " <> String.slice(pubkey, 0, 12)
 
-    create_mirror(
-      short_name,
-      %{
-        actor_type: "Person",
-        name: display_name,
-        bio: "",
-        raw_bio: "",
-        is_locked: false,
-        actor_extensions: %{
-          "nostr" => %{"pubkey" => pubkey, "relay" => relay_url, "mirror" => true}
+    result =
+      create_mirror(
+        short_name,
+        %{
+          actor_type: "Person",
+          name: display_name,
+          bio: "",
+          raw_bio: "",
+          is_locked: false,
+          actor_extensions: %{
+            "nostr" => %{"pubkey" => pubkey, "relay" => relay_url, "mirror" => true}
+          }
+        },
+        %{
+          kind: "mirror_profile",
+          pubkey: pubkey,
+          relay_url: relay_url,
+          metadata: %{}
         }
-      },
-      %{
-        kind: "mirror_profile",
-        pubkey: pubkey,
-        relay_url: relay_url,
-        metadata: %{}
-      }
-    )
+      )
+
+    case result do
+      {:ok, %User{} = user} ->
+        Pleroma.Workers.NostrProfileBackfillWorker.enqueue(user)
+        result
+
+      _ ->
+        result
+    end
   end
 
   defp create_group(pubkey, relay_url, group_id),
@@ -666,13 +710,16 @@ defmodule Pleroma.Nostr.Identity do
         )
 
       Repo.transaction(fn ->
-        with {:ok, user} <- Repo.insert(user),
+        with {:ok, _candidate} <-
+               Repo.insert(user, on_conflict: :nothing, conflict_target: :ap_id),
+             %User{} = user <- Repo.get_by(User, ap_id: ap_id),
              {:ok, entity} <-
                %Entity{}
                |> Entity.changeset(Map.put(entity_attrs, :user_id, user.id))
                |> Repo.insert() do
           {user, entity}
         else
+          nil -> Repo.rollback(:user_conflict)
           {:error, error} -> Repo.rollback(error)
         end
       end)
@@ -718,8 +765,12 @@ defmodule Pleroma.Nostr.Identity do
     }
 
     case %Entity{} |> Entity.changeset(attrs) |> Repo.insert() do
-      {:ok, entity} -> {:ok, %{entity | user: user}}
-      {:error, _changeset} -> fetch_local_entity(user)
+      {:ok, entity} ->
+        RelayManager.sync_now()
+        {:ok, %{entity | user: user}}
+
+      {:error, _changeset} ->
+        fetch_local_entity(user)
     end
   end
 
@@ -784,8 +835,14 @@ defmodule Pleroma.Nostr.Identity do
 
   defp profile_user_attrs(metadata, pubkey, entity, user) do
     display_name =
-      metadata["display_name"] || metadata["displayName"] || metadata["name"] ||
-        metadata["username"] || "Nostr #{String.slice(pubkey, 0, 12)}"
+      [
+        metadata["display_name"],
+        metadata["displayName"],
+        metadata["name"],
+        metadata["username"]
+      ]
+      |> Enum.find(&present_profile_text?/1)
+      |> Kernel.||("Nostr #{String.slice(pubkey, 0, 12)}")
 
     raw_bio = metadata["about"] || ""
     fields = profile_fields(metadata)
@@ -822,6 +879,9 @@ defmodule Pleroma.Nostr.Identity do
       actor_extensions: Map.put(user.actor_extensions || %{}, "nostr", nostr_extension)
     }
   end
+
+  defp present_profile_text?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_profile_text?(_value), do: false
 
   defp group_user_attrs(metadata, group) do
     name = metadata["name"] || group.name
@@ -1171,20 +1231,28 @@ defmodule Pleroma.Nostr.Identity do
 
   defp valid_http_url?(_url), do: false
 
-  defp validate_nip05(metadata, pubkey) do
+  defp stage_nip05(metadata, existing_metadata) do
     case metadata["nip05"] do
       identifier when is_binary(identifier) and identifier != "" ->
-        case NIP05.verify(identifier, pubkey) do
-          {:ok, %{identifier: verified, relays: relays}} ->
+        case NIP05.parse_identifier(identifier) do
+          {:ok, %{display: claim}} ->
+            verified? =
+              existing_metadata["nip05_valid"] == true and
+                existing_metadata["nip05"] == claim
+
             metadata
-            |> Map.put("nip05", verified)
-            |> Map.put("nip05_valid", true)
-            |> Map.put("nip05_relays", relays)
+            |> Map.put("nip05_claim", claim)
+            |> Map.put("nip05", if(verified?, do: claim))
+            |> Map.put("nip05_valid", verified?)
+            |> Map.put(
+              "nip05_relays",
+              if(verified?, do: existing_metadata["nip05_relays"] || [], else: [])
+            )
 
           {:error, _reason} ->
             metadata
-            |> Map.put("nip05_claim", identifier)
             |> Map.put("nip05", nil)
+            |> Map.delete("nip05_claim")
             |> Map.put("nip05_valid", false)
             |> Map.put("nip05_relays", [])
         end
@@ -1193,6 +1261,41 @@ defmodule Pleroma.Nostr.Identity do
         metadata
         |> Map.put("nip05", nil)
         |> Map.delete("nip05_claim")
+        |> Map.put("nip05_valid", false)
+        |> Map.put("nip05_relays", [])
+    end
+  end
+
+  defp current_nip05_entity(entity_id, event_id, claim) do
+    case Repo.get(Entity, entity_id) do
+      %Entity{} = entity ->
+        entity = Repo.preload(entity, :user)
+        metadata = entity.metadata || %{}
+
+        if metadata["profile_event_id"] == event_id and metadata["nip05_claim"] == claim do
+          entity
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp verified_nip05_metadata(metadata, claim, verification) do
+    metadata = Map.put(metadata, "nip05_checked_at", System.system_time(:second))
+
+    case verification do
+      {:ok, %{identifier: verified, relays: relays}} ->
+        metadata
+        |> Map.put("nip05_claim", claim)
+        |> Map.put("nip05", verified)
+        |> Map.put("nip05_valid", true)
+        |> Map.put("nip05_relays", relays)
+
+      {:error, _reason} ->
+        metadata
+        |> Map.put("nip05_claim", claim)
+        |> Map.put("nip05", nil)
         |> Map.put("nip05_valid", false)
         |> Map.put("nip05_relays", [])
     end

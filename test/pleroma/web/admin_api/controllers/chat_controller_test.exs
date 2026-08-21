@@ -232,7 +232,7 @@ defmodule Pleroma.Web.AdminAPI.ChatControllerTest do
       conn
       |> put_req_header("content-type", "application/json")
       |> delete("/api/pleroma/admin/chats/#{chat.id}/messages/#{cm_ref.id}")
-      |> json_response(403)
+      |> json_response(401)
 
       assert MessageReference.get_by_id(cm_ref.id) == cm_ref
     end
@@ -240,13 +240,13 @@ defmodule Pleroma.Web.AdminAPI.ChatControllerTest do
     test "GET /api/pleroma/admin/chats/:id/messages", %{conn: conn, chat: chat} do
       conn
       |> get("/api/pleroma/admin/chats/#{chat.id}/messages")
-      |> json_response(403)
+      |> json_response(401)
     end
 
     test "GET /api/pleroma/admin/chats/:id", %{conn: conn, chat: chat} do
       conn
       |> get("/api/pleroma/admin/chats/#{chat.id}")
-      |> json_response(403)
+      |> json_response(401)
     end
   end
 end
